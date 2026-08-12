@@ -1,0 +1,37 @@
+# --- sekrety i lokalne nadpisania ---
+.env
+compose.override.yaml
+
+# --- certyfikaty generowane lokalnie ---
+infra/elasticsearch/certs/
+*.p12
+*.key
+*.crt
+
+# --- aplikacje PHP ---
+apps/*/vendor/
+apps/*/node_modules/
+apps/*/public/build/
+apps/*/public/hot
+apps/*/storage/*.key
+apps/*/storage/logs/*
+apps/*/storage/framework/cache/*
+apps/*/storage/framework/sessions/*
+apps/*/storage/framework/views/*
+apps/*/var/
+apps/*/.env
+apps/*/.env.local
+apps/*/.phpunit.result.cache
+
+# --- narzędzia ---
+tools/**/out/
+*.log
+
+# --- system ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# generowany z definitions.template.json przez tools/render-rabbitmq-definitions.py
+infra/rabbitmq/definitions.json

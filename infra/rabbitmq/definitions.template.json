@@ -1,0 +1,129 @@
+{
+  "rabbit_version": "4.3.4",
+  "rabbitmq_version": "4.3.4",
+  "product_name": "RabbitMQ",
+  "product_version": "4.3.4",
+
+  "vhosts": [
+    { "name": "/" }
+  ],
+
+  "parameters": [],
+  "global_parameters": [],
+  "policies": [],
+
+  "exchanges": [
+    {
+      "name": "marketplace.events",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "marketplace.dlx",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+
+  "queues": [
+    {
+      "name": "search.product.sync",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "marketplace.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "search.analytics.ingest",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "marketplace.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
+      "name": "notifications.alerts",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "marketplace.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+
+    {
+      "name": "search.product.sync.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "search.analytics.ingest.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "notifications.alerts.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    }
+  ],
+
+  "bindings": [
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.product.sync",
+      "destination_type": "queue", "routing_key": "product.#", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.product.sync",
+      "destination_type": "queue", "routing_key": "offer.#", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.product.sync",
+      "destination_type": "queue", "routing_key": "seller.#", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.product.sync",
+      "destination_type": "queue", "routing_key": "category.#", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.product.sync",
+      "destination_type": "queue", "routing_key": "review.#", "arguments": {} },
+
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.analytics.ingest",
+      "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
+
+    { "source": "marketplace.events", "vhost": "/", "destination": "notifications.alerts",
+      "destination_type": "queue", "routing_key": "alert.#", "arguments": {} },
+
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.product.sync.dlq",
+      "destination_type": "queue", "routing_key": "product.#", "arguments": {} },
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.product.sync.dlq",
+      "destination_type": "queue", "routing_key": "offer.#", "arguments": {} },
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.product.sync.dlq",
+      "destination_type": "queue", "routing_key": "seller.#", "arguments": {} },
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.product.sync.dlq",
+      "destination_type": "queue", "routing_key": "category.#", "arguments": {} },
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.product.sync.dlq",
+      "destination_type": "queue", "routing_key": "review.#", "arguments": {} },
+
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.analytics.ingest.dlq",
+      "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
+
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "notifications.alerts.dlq",
+      "destination_type": "queue", "routing_key": "alert.#", "arguments": {} }
+  ]
+}

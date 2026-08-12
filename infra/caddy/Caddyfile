@@ -1,0 +1,59 @@
+# ============================================================================
+#  Caddyfile dla FrankenPHP — aplikacja catalog (Laravel + Inertia/Vue)
+#
+#  Caddy jest tu serwerem HTTP, a PHP działa jako jego moduł (jeden proces).
+#  Certyfikat dla *.localhost wystawia wewnętrzne CA Caddy'ego — przy pierwszym
+#  wejściu przeglądarka poprosi o zaufanie. To normalne i lokalne.
+# ============================================================================
+
+{
+	# Ogranicza automatyczne HTTPS do domen lokalnych — bez prób kontaktu
+	# z Let's Encrypt (co lokalnie i tak by się nie udało).
+	local_certs
+
+	frankenphp {
+		# Worker mode włączamy zmienną OCTANE_ENABLED (decyzja D-07b).
+		# Odkomentujemy w ETAPIE 4, po zmierzeniu wariantu klasycznego.
+		# worker {
+		#     file ./public/frankenphp-worker.php
+		#     num 4
+		# }
+	}
+}
+
+{$SERVER_NAME:catalog.localhost} {
+	log {
+		# Logi w JSON, bo mają trafić do Elasticsearcha w ETAPIE 11 (ECS).
+		# Format tekstowy wymagałby parsowania grokiem — po co, skoro można od razu.
+		output stdout
+		format json
+	}
+
+	encode zstd gzip
+
+	# --- Vite dev server (HMR) --------------------------------------------
+	# W dev assety serwuje Vite, nie Caddy. Bez tego proxy w przeglądarce
+	# musiałbyś żonglować dwoma portami, a HMR przez WebSocket by nie działał.
+	#
+	# PUŁAPKA: jeśli strona działa, ale zmiany w komponentach Vue się nie
+	# odświeżają i konsola pokazuje błąd WebSocketa — sprawdź `server.hmr.host`
+	# w vite.config.js. Musi wskazywać domenę widzianą przez PRZEGLĄDARKĘ,
+	# nie nazwę kontenera. (Zapisane w RUNBOOK-u.)
+	@vite path /@vite/* /@id/* /resources/* /node_modules/* /@fs/*
+	reverse_proxy @vite {$VITE_DEV_SERVER:http://catalog-vite:5173}
+
+	# Klient HMR Vite łączy się WebSocketem.
+	@viteHmr {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @viteHmr {$VITE_DEV_SERVER:http://catalog-vite:5173}
+
+	root * public/
+
+	# Pliki statyczne obsługuje Caddy — PHP nie jest w ogóle uruchamiane.
+	# To jedna z przewag nad php-fpm, gdzie każdy request przechodzi przez PHP.
+	file_server
+
+	php_server
+}
