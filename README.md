@@ -65,9 +65,22 @@ Wszystkie komendy: `make help`
 | 1 | Postgres (2 bazy) + Redis | ✅ |
 | 2 | Elasticsearch + Kibana + TLS + RBAC + pluginy PL | ✅ |
 | 3 | RabbitMQ: exchange'e, kolejki quorum, DLQ | ✅ |
-| 4 | Laravel 13 + Inertia/Vue na FrankenPHP | ⏳ szkielet gotowy, czeka na projekt |
-| 5 | Symfony 8 + Messenger | ⏳ szkielet gotowy, czeka na projekt |
-| 6+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
+| 4 | Laravel 13 + Inertia/Vue na FrankenPHP | ✅ |
+| 5 | Symfony 8 + Messenger | ✅ |
+| 6 | Model domenowy + Transactional Outbox + konsument + mapowanie ES | ⏳ napisane i zlintowane, **nieuruchomione** — czeka na `make up-apps` |
+| 7+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
+
+> **Stan ETAPU 6 wymaga wyjaśnienia.** Cały kod (migracje, modele, outbox,
+> publikator AMQP, konsument Symfony, mapowanie ES) powstał przy
+> **wyłączonym Dockerze** i jest zweryfikowany tak daleko, jak się dało bez
+> niego: 51/51 testów Pest (SQLite in-memory), kompilacja kontenera DI
+> Symfony, `debug:messenger` potwierdzający routing, `php -l` na każdym
+> pliku. Nieprzetestowane pozostaje to, co wymaga żywej infrastruktury:
+> realna publikacja do RabbitMQ, konsumpcja, zapis do ES, migracja
+> `processed_events` (Postgres-specific SQL). **Pierwsza rzecz po
+> `make up-apps`: `php artisan migrate`, `php bin/console
+> doctrine:migrations:migrate`, `php bin/console search:index:create`,
+> potem end-to-end: dodaj ofertę → sprawdź, czy jest w ES.**
 
 ---
 
