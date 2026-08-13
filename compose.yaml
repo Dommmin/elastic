@@ -157,6 +157,7 @@ services:
       cluster.initial_master_nodes: es01
     volumes:
       - es01-data:/usr/share/elasticsearch/data
+      - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
       - es-snapshots:/snapshots
       - es-certs:/usr/share/elasticsearch/config/certs:ro
     ports:
@@ -175,6 +176,7 @@ services:
       node.roles: '["master","data","ingest","remote_cluster_client"]'
     volumes:
       - es02-data:/usr/share/elasticsearch/data
+      - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
       - es-snapshots:/snapshots
       - es-certs:/usr/share/elasticsearch/config/certs:ro
     depends_on:
@@ -191,6 +193,7 @@ services:
       node.roles: '["master","data","ingest","remote_cluster_client"]'
     volumes:
       - es03-data:/usr/share/elasticsearch/data
+      - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
       - es-snapshots:/snapshots
       - es-certs:/usr/share/elasticsearch/config/certs:ro
     depends_on:
@@ -376,10 +379,16 @@ services:
       ELASTICSEARCH_USER: searchsvc
       ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
       MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+      # Zwykłe HTTP na nazwę serwisu dockerowego, port 80 — NIE
+      # https://catalog.localhost. Patrz komentarz w infra/caddy/Caddyfile
+      # przy bloku "catalog-app:80" (SNI nie pasowałby do certyfikatu
+      # wystawionego dla catalog.localhost).
+      CATALOG_INTERNAL_BASE_URL: http://catalog-app
     volumes:
       - ./apps/search:/app
     depends_on:
       postgres: { condition: service_healthy }
+      catalog-app: { condition: service_healthy }
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     mem_limit: 512m

@@ -1,0 +1,18 @@
+# Synonimy dla analizatora pl_search (docs/03-SCIEZKA-NAUKI.md, moduł 3).
+#
+# Format Solr: "a, b, c" => wszystkie cztery słowa są sobie równoważne
+# (dwukierunkowo). "a, b => c" => a i b są ZASTĘPOWANE przez c (jednokierunkowo).
+#
+# UWAGA: ten plik jest ładowany TYLKO przy tworzeniu/otwarciu indeksu.
+# Zmiana wymaga `POST /products-search/_reload_search_analyzers` — to
+# świadomie ćwiczone w module 3 (synonimy bez pełnego reindeksu).
+#
+# Startowy, mały zestaw — rozbudować w trakcie modułu 3 na realnych
+# zapytaniach użytkowników (np. z raportu "zero results", moduł 13a).
+
+laptop, notebook, komputer przenośny
+telefon, smartfon, komórka
+słuchawki, słuchawki bezprzewodowe => słuchawki
+pralka, pralka automatyczna => pralka
+lodówka, chłodziarka
+tv, telewizor

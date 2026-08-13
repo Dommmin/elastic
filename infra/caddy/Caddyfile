@@ -57,3 +57,28 @@
 
 	php_server
 }
+
+# --- Ruch WEWNĄTRZ sieci dockerowej (search-service -> catalog) -------------
+#
+# DLACZEGO osobny blok, nie ten sam co wyżej: powyższy site block wymusza
+# automatyczne przekierowanie HTTP -> HTTPS z certyfikatem lokalnego CA
+# wystawionym dla identyfikatora "catalog.localhost". search-consumer łączy
+# się po NAZWIE SERWISU DOCKEROWEGO (`catalog-app`), więc SNI/Host nigdy nie
+# będzie pasować do tego certyfikatu — handshake TLS by się wywalał.
+#
+# Zamiast zmuszać wewnętrzny ruch serwis-serwis do TLS z certyfikatem
+# wystawionym pod inną nazwę (i tak nieprzydatnym poza tą siecią), ten blok
+# słucha zwykłego HTTP na porcie 80 pod nazwą kontenera. Nie jest wystawiony
+# na hosta (compose.yaml publikuje tylko 80/443 spod głównego bloku) — patrz
+# `ports:` w compose.yaml: to jest ruch, który NIGDY nie opuszcza sieci
+# `marketplace`, więc brak TLS tutaj nie jest realnym ryzykiem.
+#
+# Świadomie tylko prefiks /api/ — to jedyne, czego wewnętrzni klienci
+# (search-service, ETAP 6) powinni móc dotknąć.
+catalog-app:80 {
+	route /api/* {
+		root * public/
+		php_server
+	}
+	respond 404
+}

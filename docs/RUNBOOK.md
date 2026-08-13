@@ -21,6 +21,10 @@
 | [006](#006) | Licznik wiadomości w kolejce „nie nadąża" | RabbitMQ | 3 |
 | [007](#007) | Polski stemmer kaleczy nazwy własne („Łodzi" → „łodzić") | Elasticsearch | 3 |
 | [008](#008) | Klaster `yellow` na jednym node'zie | Elasticsearch | 2 |
+| [009](#009) | Eloquent: `NOT NULL` przy kolumnie ustawionej przez trait | Laravel | 6 |
+| [010](#010) | `parent::metoda()` nie widzi metody z traita | PHP | 6 |
+| [011](#011) | `*/` wewnątrz treści komentarza `/** ... */` ubija plik | PHP | 6 |
+| [012](#012) | `json_encode(4.0)` renderuje `4`, nie `4.0` | PHP | 6 |
 
 ---
 
@@ -282,6 +286,137 @@ Przy jednym node'zie repliki są więc trwale nieprzypisane → yellow.
 - `yellow` = wszystkie primary działają, brakuje replik → **dane kompletne, brak HA**.
 - `red` = brakuje primary → **część danych niedostępna**. To jest alarm.
 - Na produkcji z 1 nodem yellow jest normą i alertowanie na nim to szum.
+
+---
+
+<a id="009"></a>
+## 009 — Eloquent: `NOT NULL` przy kolumnie ustawionej przez trait
+
+**Objaw**
+```
+SQLSTATE[23000]: Integrity constraint violation: 19 NOT NULL constraint
+failed: outbox.sequence
+```
+mimo że kod jawnie ustawiał tę wartość przed zapisem.
+
+**Diagnoza**
+Wypisanie `$model->attributesToArray()` tuż po `static::create($attrs)`
+pokazywało brak klucza `version` w ogóle — mimo że trait go dokładał do
+tablicy atrybutów przekazywanej do `create()`.
+
+**Przyczyna**
+`$fillable` na modelu nie zawierał `'version'`. Mass-assignment guard
+Eloquenta **po cichu odrzuca** klucze spoza `$fillable` — bez wyjątku,
+bez ostrzeżenia. Trait poprawnie dokładał wartość, ale `create()` i tak ją
+wyrzucał, zanim doszło do SQL-a.
+
+**Naprawa**
+Dodać `'version'` do `$fillable` na każdym modelu, który go używa.
+
+**Czego się nauczyłem**
+- Mass assignment w Laravelu **milczy** przy odrzuceniu pola — nie rzuca
+  wyjątku jak np. walidacja. Jeśli coś "znika" między kodem a bazą,
+  `$fillable`/`$guarded` to pierwsze podejrzane miejsce.
+- Osobna, głębsza pułapka pod spodem: Eloquent **nie odświeża w pamięci**
+  kolumn wypełnionych przez `DEFAULT` bazy danych po `INSERT`. Poleganie na
+  `->default(1)` z migracji i pomijanie wartości w PHP wygląda na
+  oszczędność kodu, ale zostawia model w niespójnym stanie do pierwszego
+  `->fresh()`. Ustawiaj jawnie to, co ma być znane od razu w PHP.
+
+---
+
+<a id="010"></a>
+## 010 — `parent::metoda()` nie widzi metody zdefiniowanej w traicie
+
+**Objaw**
+```
+Call to undefined method App\Models\Offer::updateWithOutbox()
+```
+mimo że `Offer` używa traita `EmitsOutboxEvents`, który **ma** metodę
+`updateWithOutbox()`, a `Offer` jawnie ją nadpisuje i woła
+`parent::updateWithOutbox(...)`.
+
+**Diagnoza**
+Błąd pojawiał się dopiero **przy pierwszym wywołaniu w runtime** — `php -l`
+i statyczna analiza nic nie wykrywają, bo to nie jest błąd składni.
+
+**Przyczyna**
+`parent::` w PHP odnosi się wyłącznie do **klasy bazowej w hierarchii
+dziedziczenia** (tu: `Illuminate\Database\Eloquent\Model`), nigdy do
+traita. Trait jest "wklejany" w ciało klasy — metoda z traita, którą klasa
+nadpisuje, nie tworzy relacji parent/child. `Model` nie ma metody
+`updateWithOutbox()`, więc `parent::` szuka jej tam i nie znajduje.
+
+**Naprawa**
+W traicie: publiczna metoda `updateWithOutbox()` to cienki wrapper wołający
+`protected function performUpdateWithOutbox()` z właściwą logiką. Model,
+który chce nadpisać zachowanie, nadpisuje `updateWithOutbox()` i woła
+`$this->performUpdateWithOutbox(...)` bezpośrednio (nie `parent::`) — działa,
+bo to metoda tej samej klasy (odziedziczona przez trait), nie klasy bazowej.
+
+**Czego się nauczyłem**
+Jeśli trait ma metodę, którą implementująca klasa będzie nadpisywać i chce
+wywołać oryginalną logikę — nie projektuj tego z myślą o `parent::`. Albo
+alias przez `insteadof`/`as` w konflikcie traitów, albo (prościej) rozbij
+na publiczny punkt wejścia + chronioną metodę z logiką, wołaną przez `$this`.
+
+---
+
+<a id="011"></a>
+## 011 — `*/` wewnątrz treści komentarza blokowego ubija plik
+
+**Objaw**
+```
+Parse error: syntax error, unexpected identifier "review", expecting "function"
+```
+w linii, która była zwykłym tekstem wewnątrz `/** ... */`.
+
+**Przyczyna**
+Komentarz zawierał frazę „offer.*/review.*" (chciałem napisać „offer.* lub
+review.*" skrótem). Parser PHP nie wie nic o Markdownie ani o intencji —
+sekwencja znaków `*/` **zawsze** kończy blok `/** ... */`, niezależnie od
+kontekstu. Wszystko po niej (reszta zdania, kolejne linie) stało się
+"zwykłym kodem" i się nie parsowało.
+
+**Naprawa**
+Nie używać `*/` (ani samego `/*`) w treści komentarza blokowego. Pisać
+pełnymi słowami ("zdarzenia oferty i opinii") zamiast skrótów z gwiazdką.
+
+**Czego się nauczyłem**
+`php -l` łapie to natychmiast i bezbłędnie — ale tylko jeśli się je
+uruchomi. Lintuj **każdy** nowy plik PHP zanim przejdziesz dalej, nawet
+"tylko komentarz". Ten błąd akurat jest tani (widać go od razu), ale uczy
+ogólnej zasady: komentarz też jest częścią gramatyki języka, nie jest
+"bezpiecznym" tekstem.
+
+---
+
+<a id="012"></a>
+## 012 — `json_encode(4.0)` renderuje `4`, nie `4.0`
+
+**Objaw**
+Test API asercji `assertJsonPath('rating_avg', 4.0)` failował z
+"Failed asserting that 4 is identical to 4.0", mimo że PHP-owa wartość
+przed serializacją **była** floatem (`round(4.0, 2)` zwraca `float(4)`).
+
+**Przyczyna**
+PHP-owy `json_encode()` domyślnie renderuje float, którego wartość jest
+liczbą całkowitą, **bez** części dziesiętnej: `json_encode(4.0)` daje
+napis `"4"`, nie `"4.0"`. Po drugiej stronie kontraktu (Symfony,
+`json_decode("4")`) taka wartość staje się `int`, nie `float` — cicha
+utrata informacji o typie w danych przekazywanych między serwisami.
+
+**Naprawa**
+`response()->json($data, options: JSON_PRESERVE_ZERO_FRACTION)` — ta flaga
+każe silnikowi JSON zachować `.0` dla floatów będących liczbami całkowitymi.
+
+**Czego się nauczyłem**
+Typ w PHP (`float`) i typ w JSON-ie na drucie to dwie różne rzeczy — jedno
+nie gwarantuje drugiego bez jawnej flagi. W systemie z wieloma serwisami
+(Laravel → Symfony), gdzie kontraktem jest JSON, ten rodzaj rozjazdu nie
+wybuchnie od razu przy pierwszym teście integracyjnym — wybuchnie kiedyś,
+w polu liczbowym, które akurat wyszło całkowite, i będzie wyglądał jak
+błąd zupełnie gdzie indziej.
 
 ---
 

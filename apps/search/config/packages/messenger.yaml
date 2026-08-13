@@ -19,8 +19,14 @@ framework:
             # UWAGA: klucz to "queues" (liczba mnoga, mapa nazwa -> opcje),
             # NIE "queue". Connection::AVAILABLE_OPTIONS w symfony/amqp-messenger
             # nie zna klucza "queue" i rzuca LogicException "Invalid option(s)".
+            # `serializer`: App\Messenger\ExternalJsonEnvelopeSerializer —
+            # te wiadomości publikuje Laravel surowym php-amqplib, nie
+            # Symfony Messenger, więc domyślny serializer (który oczekuje
+            # WŁASNEJ koperty z nagłówkami X-Message-Stamp-*) nic by tu nie
+            # zrozumiał. Patrz komentarz w klasie serializera.
             product_sync:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                serializer: App\Messenger\ExternalJsonEnvelopeSerializer
                 options:
                     auto_setup: false
                     queues:
@@ -30,6 +36,7 @@ framework:
                     multiplier: 2
             analytics:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                serializer: App\Messenger\ExternalJsonEnvelopeSerializer
                 options:
                     auto_setup: false
                     queues:
@@ -39,6 +46,7 @@ framework:
                     multiplier: 2
             alerts:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                serializer: App\Messenger\ExternalJsonEnvelopeSerializer
                 options:
                     auto_setup: false
                     queues:

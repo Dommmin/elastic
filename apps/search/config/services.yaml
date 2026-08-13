@@ -18,6 +18,24 @@ services:
     # this creates a service per class whose id is the fully-qualified class name
     App\:
         resource: '../src/'
+        # Skalary poniżej nie dają się wywnioskować przez autowiring —
+        # trzeba je jawnie zbindować z env.
+        bind:
+            $baseUrl: '%env(CATALOG_INTERNAL_BASE_URL)%'
+            $projectDir: '%kernel.project_dir%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
+
+    App\Service\ElasticsearchClientFactory:
+        arguments:
+            $host: '%env(ELASTICSEARCH_HOST)%'
+            $user: '%env(ELASTICSEARCH_USER)%'
+            $password: '%env(ELASTICSEARCH_PASSWORD)%'
+
+    # Klient ES jako usługa — powstaje wywołaniem fabryki, nie `new` wprost,
+    # bo budowa klienta (auth, hosty) to logika, nie tylko wstrzykiwanie
+    # zależności. Wszystko, co potrzebuje `Client` (autowiring po typie),
+    # dostanie dokładnie ten sam, skonfigurowany obiekt.
+    Elastic\Elasticsearch\Client:
+        factory: ['@App\Service\ElasticsearchClientFactory', 'create']

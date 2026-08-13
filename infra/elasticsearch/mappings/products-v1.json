@@ -1,0 +1,88 @@
+{
+  "_meta": {
+    "description": "Mapowanie products-v1 — docs/02-APLIKACJE.md sekcja 6, docs/03-SCIEZKA-NAUKI.md moduł 3-4.",
+    "note": "Pola offers/attributes/category odzwierciedlają dokładnie kształt odpowiedzi GET /internal/products/{id}/projection (apps/catalog). Zmiana jednej strony bez drugiej cicho zepsuje indeksację — to jest kontrakt, nie przypadek."
+  },
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s",
+    "analysis": {
+      "filter": {
+        "pl_stem": { "type": "stemmer", "language": "polish" },
+        "pl_stop": { "type": "stop", "stopwords": "_polish_" },
+        "synonyms_pl": {
+          "type": "synonym_graph",
+          "synonyms_path": "analysis/synonyms.txt",
+          "updateable": true
+        },
+        "edge2_20": { "type": "edge_ngram", "min_gram": 2, "max_gram": 20 }
+      },
+      "analyzer": {
+        "pl_index": {
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding", "pl_stop", "pl_stem"]
+        },
+        "pl_search": {
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding", "synonyms_pl", "pl_stop", "pl_stem"]
+        },
+        "pl_autocomplete": {
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding", "edge2_20"]
+        }
+      },
+      "normalizer": {
+        "keyword_lc": {
+          "type": "custom",
+          "filter": ["lowercase", "asciifolding"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "name": {
+        "type": "text",
+        "analyzer": "pl_index",
+        "search_analyzer": "pl_search",
+        "fields": {
+          "raw": { "type": "keyword", "normalizer": "keyword_lc" },
+          "ac": { "type": "text", "analyzer": "pl_autocomplete", "search_analyzer": "pl_search" }
+        }
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "pl_index",
+        "search_analyzer": "pl_search"
+      },
+      "brand": { "type": "keyword" },
+      "category": {
+        "properties": {
+          "id": { "type": "keyword" },
+          "path": { "type": "keyword" }
+        }
+      },
+      "attributes": { "type": "flattened" },
+      "price_min": { "type": "scaled_float", "scaling_factor": 100 },
+      "price_max": { "type": "scaled_float", "scaling_factor": 100 },
+      "in_stock": { "type": "boolean" },
+      "rating_avg": { "type": "half_float" },
+      "rating_count": { "type": "integer" },
+      "offers": {
+        "type": "nested",
+        "properties": {
+          "offer_id": { "type": "keyword" },
+          "seller_id": { "type": "keyword" },
+          "seller": { "type": "keyword" },
+          "price": { "type": "scaled_float", "scaling_factor": 100 },
+          "stock": { "type": "integer" },
+          "location": { "type": "geo_point" }
+        }
+      },
+      "created_at": { "type": "date" },
+      "indexed_at": { "type": "date" }
+    }
+  }
+}
