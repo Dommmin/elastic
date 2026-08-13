@@ -35,4 +35,23 @@ return [
         ],
     ],
 
+    // Zmienne ustawione w compose.yaml (profil `apps`, serwis catalog-app).
+    // Publikator outboxu (App\Console\Commands\PublishOutbox) czyta stąd,
+    // nie bezpośrednio z env() — żeby działać poprawnie z `config:cache`.
+    'rabbitmq' => [
+        'host' => env('RABBITMQ_HOST', 'rabbitmq'),
+        'port' => (int) env('RABBITMQ_PORT', 5672),
+        'user' => env('RABBITMQ_USER', 'guest'),
+        'password' => env('RABBITMQ_PASSWORD', 'guest'),
+        'vhost' => env('RABBITMQ_VHOST', '/'),
+        // Zgodne z infra/rabbitmq/definitions.template.json (docs/01-INFRASTRUKTURA.md).
+        'events_exchange' => env('RABBITMQ_EVENTS_EXCHANGE', 'marketplace.events'),
+    ],
+
+    'elasticsearch' => [
+        'host' => env('ELASTICSEARCH_HOST', 'http://es01:9200'),
+        'user' => env('ELASTICSEARCH_USER'),
+        'password' => env('ELASTICSEARCH_PASSWORD'),
+    ],
+
 ];

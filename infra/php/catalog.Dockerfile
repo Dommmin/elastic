@@ -52,12 +52,16 @@ WORKDIR /app
 #    Naprawa: `--resolve` + URL na DOKŁADNIE tę nazwę hosta, którą ma
 #    skonfigurowany Caddyfile — wtedy SNI pasuje do certyfikatu.
 #
-# Docelowo (docs/02-APLIKACJE.md) ma tu być dedykowany endpoint `/health`
-# sprawdzający PG/Redis/ES/RabbitMQ z degradacją — to zadanie z ETAPU 4/6,
-# nie z tego kroku. Na razie sprawdzamy, że PHP w ogóle poprawnie odpowiada.
+# `/up` to WBUDOWANY health check Laravela (bootstrap/app.php: health: '/up')
+# — czysta liveness (PHP wstał, framework się zbootstrapował), bez zależności
+# od DB/sesji/Vite. Świadomie NIE używamy tu `/health` (ETAP 6): ten endpoint
+# sprawdza PG/Redis/ES/RabbitMQ, a "sprawdzaj zależności w Docker HEALTHCHECK"
+# to prosta droga do lawiny restartów, gdy jedna z nich spowolni na chwilę.
+# `/health` służy monitoringowi/load balancerowi (readiness), nie orkiestracji
+# kontenera (liveness) — to świadomie dwa różne pytania.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
   CMD curl -fsSkL --resolve "${SERVER_NAME:-catalog.localhost}:443:127.0.0.1" \
-      "https://${SERVER_NAME:-catalog.localhost}/" -o /dev/null || exit 1
+      "https://${SERVER_NAME:-catalog.localhost}/up" -o /dev/null || exit 1
 
 # ----------------------------------------------------------------- dev ------
 FROM base AS dev
