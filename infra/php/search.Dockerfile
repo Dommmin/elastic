@@ -28,6 +28,11 @@ RUN install-php-extensions \
       zip \
       @composer
 
+# procps daje `pgrep`, którego używa HEALTHCHECK poniżej — nie jest domyślnie
+# w tym obrazie. Przyda się też do debugowania (`ps aux` w kontenerze).
+RUN apt-get update && apt-get install -y --no-install-recommends procps \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # --- ustawienia dla procesów długo działających -----------------------------
@@ -35,6 +40,14 @@ WORKDIR /app
 # HTTP i tu nie pasują.
 ENV PHP_MEMORY_LIMIT=256M \
     PHP_MAX_EXECUTION_TIME=0
+
+# Obraz bazowy dunglas/frankenphp ma wbudowany HEALTHCHECK sprawdzający
+# Admin API Caddy'ego na porcie 2019. Te kontenery NIE uruchamiają serwera
+# HTTP FrankenPHP — to gołe procesy CLI (messenger:consume) — więc ten port
+# nigdy się nie otworzy i kontener byłby wiecznie "unhealthy" mimo poprawnej
+# pracy. Zastępujemy sprawdzeniem, że proces konsumenta faktycznie żyje.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD pgrep -f "messenger:consume" || exit 1
 
 FROM base AS dev
 ENV APP_ENV=dev \
@@ -54,4 +67,6 @@ COPY apps/search/ ./
 RUN composer dump-autoload --optimize --classmap-authoritative \
  && php bin/console cache:warmup
 
-CMD ["php", "bin/console", "messenger:consume", "sync", "--time-limit=3600", "--memory-limit=256M"]
+# "product_sync", NIE "sync" — patrz messenger.yaml (kolizja z wbudowanym
+# pseudo-transportem synchronicznym Symfony).
+CMD ["php", "bin/console", "messenger:consume", "product_sync", "--time-limit=3600", "--memory-limit=256M"]

@@ -1,0 +1,68 @@
+framework:
+    messenger:
+        failure_transport: failed
+
+        transports:
+            # https://symfony.com/doc/current/messenger.html#transport-configuration
+            #
+            # Trzy transporty odpowiadają trzem kolejkom quorum zadeklarowanym
+            # w infra/rabbitmq/definitions.template.json (docs/02-APLIKACJE.md,
+            # tabela "Katalog zdarzeń"). `auto_setup: false`, bo topologia
+            # RabbitMQ jest już zadeklarowana JAKO KOD w definitions.json —
+            # gdyby Messenger próbował sam deklarować exchange/queue/bindingi,
+            # dwa źródła prawdy mogłyby się rozjechać przy zmianie jednego z nich.
+            #
+            # UWAGA: transport CELOWO nie nazywa się "sync" — to zarezerwowana
+            # nazwa wbudowanego pseudo-transportu synchronicznego Symfony
+            # (natychmiastowe wykonanie w procesie, bez kolejki). Użycie jej
+            # jako nazwy realnego transportu AMQP to pułapka do zapamiętania.
+            # UWAGA: klucz to "queues" (liczba mnoga, mapa nazwa -> opcje),
+            # NIE "queue". Connection::AVAILABLE_OPTIONS w symfony/amqp-messenger
+            # nie zna klucza "queue" i rzuca LogicException "Invalid option(s)".
+            product_sync:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    auto_setup: false
+                    queues:
+                        search.product.sync: ~
+                retry_strategy:
+                    max_retries: 3
+                    multiplier: 2
+            analytics:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    auto_setup: false
+                    queues:
+                        search.analytics.ingest: ~
+                retry_strategy:
+                    max_retries: 3
+                    multiplier: 2
+            alerts:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    auto_setup: false
+                    queues:
+                        notifications.alerts: ~
+                retry_strategy:
+                    max_retries: 3
+                    multiplier: 2
+
+            async:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                retry_strategy:
+                    max_retries: 3
+                    multiplier: 2
+            failed: 'doctrine://default?queue_name=failed'
+
+        default_bus: messenger.bus.default
+
+        buses:
+            messenger.bus.default: []
+
+        routing:
+            Symfony\Component\Mailer\Messenger\SendEmailMessage: async
+            Symfony\Component\Notifier\Message\ChatMessage: async
+            Symfony\Component\Notifier\Message\SmsMessage: async
+
+            # Route your messages to the transports
+            # 'App\Message\YourMessage': async

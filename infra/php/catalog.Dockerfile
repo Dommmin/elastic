@@ -36,8 +36,28 @@ RUN install-php-extensions \
 WORKDIR /app
 
 # Healthcheck aplikacji — używany przez compose i przez `make smoke`.
+#
+# UWAGA na DWA błędy, które tu były i które naprawiłem (zostawiam opis,
+# bo to klasyka Caddy/TLS i sam się na to złapałem):
+#
+# 1. `curl -f` bez `-L` NIE traktuje przekierowania 308 (http->https) jako
+#    błędu — kończy się sukcesem, nawet gdy PHP pod spodem rzuca 500.
+#    Kontener wychodził "healthy", mimo że aplikacja realnie nie działała
+#    (np. brakujące migracje). Naprawa: dodać `-L`, żeby curl poszedł za
+#    przekierowaniem i realnie ocenił status odpowiedzi.
+# 2. `curl http://localhost/` wysyła Host: localhost. Caddy przekierowuje
+#    na `https://localhost/`, ale lokalny certyfikat CA jest wystawiony dla
+#    identyfikatora z $SERVER_NAME (catalog.localhost), nie dla "localhost".
+#    SNI się nie zgadza -> handshake pada z "tlsv1 alert internal error".
+#    Naprawa: `--resolve` + URL na DOKŁADNIE tę nazwę hosta, którą ma
+#    skonfigurowany Caddyfile — wtedy SNI pasuje do certyfikatu.
+#
+# Docelowo (docs/02-APLIKACJE.md) ma tu być dedykowany endpoint `/health`
+# sprawdzający PG/Redis/ES/RabbitMQ z degradacją — to zadanie z ETAPU 4/6,
+# nie z tego kroku. Na razie sprawdzamy, że PHP w ogóle poprawnie odpowiada.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
-  CMD curl -fsS http://localhost/health || exit 1
+  CMD curl -fsSkL --resolve "${SERVER_NAME:-catalog.localhost}:443:127.0.0.1" \
+      "https://${SERVER_NAME:-catalog.localhost}/" -o /dev/null || exit 1
 
 # ----------------------------------------------------------------- dev ------
 FROM base AS dev
@@ -50,6 +70,37 @@ COPY infra/caddy/Caddyfile /etc/frankenphp/Caddyfile
 
 # Kod montowany jako volume (patrz compose.yaml) — nic nie kopiujemy.
 CMD ["frankenphp", "run", "--config", "/etc/frankenphp/Caddyfile"]
+
+# ------------------------------------------------------------- vite (dev) ---
+# Osobny kontener dla `npm run dev` (HMR). Bazuje na TYM SAMYM obrazie co
+# `base` (PHP 8.5.9), a nie na czystym node:alpine, z jednego konkretnego
+# powodu: `@laravel/vite-plugin-wayfinder` przy starcie Vite shelluje do
+# `php artisan wayfinder:generate`, żeby wygenerować typowane helpery tras
+# w TS. Bez PHP w tym samym kontenerze Vite pada od razu przy starcie
+# ("php: not found"). Node dokładamy przez NodeSource — nie da się po prostu
+# skopiować binarki z obrazu node:alpine, bo Alpine (musl) i Debian (glibc,
+# baza FrankenPHP) mają niekompatybilne libc.
+FROM base AS vite
+
+ARG NODE_VERSION
+
+# Nadpisujemy HEALTHCHECK odziedziczony z `base` (curl na Caddy'ego przez
+# HTTPS) — ten kontener nie uruchamia Caddy'ego/FrankenPHP w ogóle, tylko
+# `npm run dev` na porcie 5173 zwykłym HTTP. Ta sama klasa błędu co poniżej
+# w search.Dockerfile: sprawdzaj to, co kontener FAKTYCZNIE robi.
+#
+# UWAGA: `/` na Vite w integracji z Laravelem zwraca 404 CELOWO — Vite tu
+# jest czystym serwerem assetów/HMR, stronę główną renderuje PHP przez Caddy.
+# `/@vite/client` to skrypt HMR, który Vite zawsze serwuje — dobry cel testu.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD curl -fsS http://localhost:5173/@vite/client -o /dev/null || exit 1
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && curl -fsSL https://deb.nodesource.com/setup_$(echo "${NODE_VERSION}" | cut -d. -f1).x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+CMD ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
 
 # ------------------------------------------------------- assets (prod) ------
 FROM node:${NODE_VERSION}-alpine AS assets

@@ -296,12 +296,19 @@ services:
       OCTANE_ENABLED: ${OCTANE_ENABLED}
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # DB_CONNECTION jest KLUCZOWE: .env Laravela ma domyślnie sqlite
+      # (tak stawia installer). Bez tego nadpisania kontener po cichu
+      # ignorowałby DB_HOST/DB_DATABASE poniżej i pisał do pliku SQLite,
+      # mimo że Postgres jest skonfigurowany i zdrowy.
+      DB_CONNECTION: pgsql
       DB_HOST: postgres
+      DB_PORT: "5432"
       DB_DATABASE: ${CATALOG_DB}
       DB_USERNAME: ${CATALOG_DB_USER}
       DB_PASSWORD: ${CATALOG_DB_PASSWORD}
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_CLIENT: phpredis
       ELASTICSEARCH_HOST: http://es01:9200
       ELASTICSEARCH_USER: catalog
       ELASTICSEARCH_PASSWORD: ${ES_CATALOG_PASSWORD}
@@ -328,9 +335,17 @@ services:
 
   catalog-vite:
     profiles: [apps]
-    image: node:${NODE_VERSION}-alpine
-    working_dir: /app
-    command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
+    build:
+      context: .
+      dockerfile: infra/php/catalog.Dockerfile
+      # NIE zwykły node:alpine — @laravel/vite-plugin-wayfinder wymaga PHP
+      # w tym samym kontenerze (shelluje do `php artisan wayfinder:generate`
+      # przy każdym starcie Vite). Patrz komentarz przy targecie `vite`.
+      target: vite
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+        NODE_VERSION: ${NODE_VERSION}
     volumes:
       - ./apps/catalog:/app
     ports:
@@ -348,9 +363,14 @@ services:
       args:
         FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
         PHP_VERSION: ${PHP_VERSION}
-    command: ["php", "bin/console", "messenger:consume", "sync", "-vv", "--time-limit=3600", "--memory-limit=256M"]
+    # Transport nazywa się product_sync, NIE "sync" — patrz komentarz w
+    # apps/search/config/packages/messenger.yaml (kolizja z wbudowaną nazwą).
+    command: ["php", "bin/console", "messenger:consume", "product_sync", "-vv", "--time-limit=3600", "--memory-limit=256M"]
     environment:
-      APP_ENV: ${APP_ENV}
+      # BRAK APP_ENV tutaj celowo: Symfony i Laravel mają różne konwencje
+      # (dev/prod/test vs local/production) i współdzielony APP_ENV z jednego
+      # .env powodował crash "environment local is not registered". Każda
+      # apka rządzi swoim APP_ENV z WŁASNEGO pliku .env (już poprawnie dev).
       DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}
       ELASTICSEARCH_HOST: http://es01:9200
       ELASTICSEARCH_USER: searchsvc
