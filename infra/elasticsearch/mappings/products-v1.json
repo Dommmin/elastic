@@ -9,7 +9,7 @@
     "refresh_interval": "1s",
     "analysis": {
       "filter": {
-        "pl_stem": { "type": "stemmer", "language": "polish" },
+        "pl_stem": { "type": "polish_stem" },
         "pl_stop": { "type": "stop", "stopwords": "_polish_" },
         "synonyms_pl": {
           "type": "synonym_graph",

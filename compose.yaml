@@ -374,7 +374,14 @@ services:
       # (dev/prod/test vs local/production) i współdzielony APP_ENV z jednego
       # .env powodował crash "environment local is not registered". Każda
       # apka rządzi swoim APP_ENV z WŁASNEGO pliku .env (już poprawnie dev).
-      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}
+      # serverVersion jest WYMAGANY: bez niego Doctrine DBAL rzuca
+      # "Invalid platform version" zamiast autodetekcji (znalezione dopiero
+      # przy realnym uruchomieniu migracji — Postgres-specific SQL nie da
+      # się zweryfikować bez żywej bazy, patrz README "Stan ETAPU 6").
+      # UWAGA: Doctrine wymaga formatu major.minor.PATCH, a nasz
+      # POSTGRES_VERSION (obraz) to tylko "18.4" — stąd osobna, jawna wartość
+      # tutaj, nie ${POSTGRES_VERSION} wprost.
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
       ELASTICSEARCH_HOST: http://es01:9200
       ELASTICSEARCH_USER: searchsvc
       ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
@@ -386,6 +393,11 @@ services:
       CATALOG_INTERNAL_BASE_URL: http://catalog-app
     volumes:
       - ./apps/search:/app
+      # search-consumer widzi TYLKO ./apps/search jako /app — infra/ w repo
+      # root w ogóle nie istnieje w jego systemie plików. CreateSearchIndexCommand
+      # (search:index:create) czyta stąd mapowanie products-v1.json — ta sama
+      # zawartość, którą montujemy też do node'ów ES (analysis/synonyms.txt).
+      - ./infra/elasticsearch/mappings:/infra/elasticsearch/mappings:ro
     depends_on:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }

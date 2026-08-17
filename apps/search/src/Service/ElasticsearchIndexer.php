@@ -9,6 +9,22 @@ use Elastic\Elasticsearch\Exception\ClientResponseException;
  * Jedyne miejsce w search-service, które pisze do Elasticsearcha — zbiera
  * cały kod stykający się z external versioning w jednym punkcie
  * (docs/05-SPOJNOSC-DANYCH.md, sekcja 3, [5]).
+ *
+ * ZNANE OGRANICZENIE (znalezione przy pierwszym realnym uruchomieniu,
+ * ETAP 6, nie naprawione — świadomie odłożone, opisuję żeby nie zaskoczyło
+ * po cichu): `sequence` przekazywane do `version` to LOKALNY licznik
+ * agregatu źródłowego (Product.version, Offer.version — każdy zaczyna od 1
+ * niezależnie), a jeden dokument ES bywa budowany z KILKU agregatów
+ * (product.* ORAZ offer.* piszą do tego samego `_id`). Dwa różne agregaty
+ * mogą mieć ten sam numer sekwencji — ES odrzuci drugi zapis jako "stale"
+ * (409), NIEZALEŻNIE od tego, czy faktycznie jest przestarzały. W praktyce
+ * zwykle nie szkodzi, bo projekcja (CatalogProjectionClient) zawsze ciągnie
+ * PEŁNY aktualny stan produktu — pierwszy zapis i tak zawiera świeże dane
+ * z obu źródeł. Ale to jest kruche: kolejna, PRAWDZIWA zmiana oferty na
+ * niskim numerze sekwencji może zostać błędnie odrzucona jako nieaktualna.
+ * Właściwa naprawa (poza zakresem ETAPU 6): jeden monotoniczny licznik NA
+ * DOKUMENT, utrzymywany przez search-service (nie kopiowany 1:1 z Laravela),
+ * albo porównanie po `occurred_at` zamiast surowego numeru wersji źródła.
  */
 final class ElasticsearchIndexer
 {

@@ -25,6 +25,12 @@
 | [010](#010) | `parent::metoda()` nie widzi metody z traita | PHP | 6 |
 | [011](#011) | `*/` wewnątrz treści komentarza `/** ... */` ubija plik | PHP | 6 |
 | [012](#012) | `json_encode(4.0)` renderuje `4`, nie `4.0` | PHP | 6 |
+| [013](#013) | Doctrine: „Invalid platform version" na `DATABASE_URL` | Symfony | 6 |
+| [014](#014) | Mapowanie ES: „Invalid stemmer class specified: Polish" | Elasticsearch | 6 |
+| [015](#015) | Messenger: retry wywala się na `encode()` transportu | Symfony | 6 |
+| [016](#016) | Caddy globalnie przekierowuje HTTP→HTTPS mimo jawnego portu | Caddy | 6 |
+| [017](#017) | External versioning: kolizja `sequence` między różnymi agregatami | Architektura | 6 |
+| [018](#018) | `php artisan test` w kontenerze czyści prawdziwą bazę deweloperską | Testy | 6 |
 
 ---
 
@@ -417,6 +423,287 @@ nie gwarantuje drugiego bez jawnej flagi. W systemie z wieloma serwisami
 wybuchnie od razu przy pierwszym teście integracyjnym — wybuchnie kiedyś,
 w polu liczbowym, które akurat wyszło całkowite, i będzie wyglądał jak
 błąd zupełnie gdzie indziej.
+
+---
+
+<a id="013"></a>
+## 013 — Doctrine: „Invalid platform version" na `DATABASE_URL`
+
+**Objaw**
+```
+Invalid platform version "" specified. The platform version has to be
+specified in the format: "<major_version>.<minor_version>.<patch_version>".
+```
+przy pierwszym `doctrine:migrations:migrate` na żywym Postgresie — coś,
+czego nie dało się złapać wcześniej, bo Symfony (w odróżnieniu od Laravela
+z SQLite) nie ma taniego sposobu na testowanie migracji bez prawdziwej bazy.
+
+**Przyczyna**
+`DATABASE_URL` w `compose.yaml` nie miało parametru `serverVersion`.
+Doctrine DBAL wymaga znać wersję Postgresa, żeby wybrać właściwy dialekt
+SQL — bez `?serverVersion=...` w DSN dostaje pusty string zamiast numeru
+i odmawia startu, zamiast (jak można by się spodziewać) samodzielnie
+wykryć wersję przez połączenie.
+
+**Naprawa**
+```
+DATABASE_URL: postgresql://user:pass@host:5432/db?serverVersion=18.4.0&charset=utf8
+```
+Druga pułapka po drodze: Doctrine wymaga **trzech** segmentów
+(major.minor.patch), a nasz `POSTGRES_VERSION` w `.env` to tylko `18.4`
+(taka jest konwencja tagów obrazu) — nie da się użyć tej zmiennej wprost,
+potrzebna osobna, jawna wartość z trzecim segmentem.
+
+**Czego się nauczyłem**
+Laravel + SQLite in-memory dał złudne poczucie bezpieczeństwa — 51/51
+testów przechodziło, a mimo to Symfony miało błąd, którego żaden test
+by nie złapał, bo dotyczył configu specyficznego dla Postgresa. Kod można
+zweryfikować bez Dockera; **konfigurację łączącą się z realną
+infrastrukturą — nie zawsze.**
+
+---
+
+<a id="014"></a>
+## 014 — Mapowanie ES: „Invalid stemmer class specified: Polish"
+
+**Objaw**
+```
+400 Bad Request: {"error":{"...","reason":"Invalid stemmer class specified: Polish",
+"caused_by":{"type":"class_not_found_exception",
+"reason":"org.tartarus.snowball.ext.PolishStemmer"}},"status":400}
+```
+przy `search:index:create`.
+
+**Przyczyna**
+Filtr `pl_stem` w `products-v1.json` był zdefiniowany jako
+`{"type": "stemmer", "language": "polish"}` — to generyczny filtr oparty
+na bibliotece Snowball, która **nie ma polskiego** (`PolishStemmer` nie
+istnieje w Snowball). Polski stemming daje dopiero plugin
+`analysis-stempel`, który wystawia **własny, dedykowany typ filtra**:
+`polish_stem`. Sam wcześniej to poprawnie udokumentowałem w
+`docs/02-APLIKACJE.md`, a przy pisaniu właściwego pliku mapowania
+pomyliłem formę.
+
+**Naprawa**
+```json
+"pl_stem": { "type": "polish_stem" }
+```
+Bez `language` — to nie generyczny filtr, tylko gotowy, jeden filtr od
+konkretnego pluginu.
+
+**Czego się nauczyłem**
+`GET _cat/plugins` pokaże, że `analysis-stempel` jest zainstalowany — ale
+to nie znaczy, że użyłeś go poprawnie w mapowaniu. Dwie różne rodziny
+filtrów stemujących (`stemmer`+`language` z rdzenia ES vs. dedykowany typ
+z pluginu) łatwo pomylić, bo obie "brzmią" tak samo w JSON-ie. Warto
+przetestować `_analyze` na WŁAŚCIWYM, nazwanym analizatorze z indeksu
+(`POST products-search/_analyze {"analyzer":"pl_index",...}`), nie tylko
+na wbudowanym `"polish"` — dopiero to łapie błędy w customowej definicji.
+
+---
+
+<a id="015"></a>
+## 015 — Messenger: retry wywala się na `encode()` transportu
+
+**Objaw**
+Handler poprawnie rzuca `RecoverableMessageHandlingException` (błąd
+przejściowy, retry ma sens), ale wiadomość i tak ląduje w DLQ po
+**jednej** próbie, nie po skonfigurowanych trzech. W logu:
+```
+Symfony\Component\Messenger\Exception\LogicException: <treść wyjątku z encode()>
+  at App\Messenger\ExternalJsonEnvelopeSerializer->encode()
+  ... SendFailedMessageForRetryListener->onMessageFailed() ...
+```
+
+**Przyczyna**
+Napisałem `encode()` w customowym serializerze transportu tak, żeby
+zawsze rzucał wyjątkiem — założenie było "Symfony nigdy nie publikuje do
+tych transportów, tylko konsumuje". Błędne założenie: **retry TEŻ jest
+publikacją**. `retry_strategy` (max_retries, multiplier) działa przez
+ponowne wysłanie wiadomości na TEN SAM transport — a to wymaga
+`encode()`. Mój `encode()` rzucał, więc PRÓBA RETRY sama się wywalała,
+i wiadomość szła do DLQ natychmiast, maskując przy tym oryginalny,
+pierwotny błąd w logu konsoli (widoczny był tylko wyjątek z `encode()`,
+nie ten, który naprawdę spowodował niepowodzenie — trzeba było zajrzeć do
+`var/log/dev.log`, Monologa, żeby zobaczyć oba, po kolei, osobno).
+
+**Naprawa**
+Zaimplementować `encode()` jako lustrzane odbicie `decode()` — ten sam
+kształt JSON, w drugą stronę. Retry wtedy działa jak zaprojektowano:
+ponawia z backoffem (multiplier), a dopiero po wyczerpaniu prób ląduje
+w `failure_transport`.
+
+**Czego się nauczyłem**
+- Jeśli implementujesz tylko połowę dwukierunkowego interfejsu (tu:
+  `SerializerInterface::decode()`/`encode()`) z założeniem "ta druga
+  połowa nigdy się nie wykona" — sprawdź DOKŁADNIE, czy framework
+  faktycznie nigdy jej nie wywoła sam, wewnętrznie, z innego powodu niż
+  ten, przed którym się zabezpieczasz. Retry, DLQ i inne mechanizmy
+  odporności często cicho korzystają z tych samych ścieżek co "normalna"
+  praca.
+- Gdy stack trace w konsoli wygląda podejrzanie krótko/nie na temat —
+  sprawdź plik logu (Monolog), nie tylko to, co wypisało się na stdout.
+  Console error handler pokazuje często tylko OSTATNI wyjątek w łańcuchu,
+  nie ten, który zaczął całą kaskadę.
+
+---
+
+<a id="016"></a>
+## 016 — Caddy globalnie przekierowuje HTTP→HTTPS mimo jawnego portu
+
+**Objaw**
+Kod jawnie łączy się przez `http://catalog-app/...`, ale błąd TLS mówi
+o **`https://catalog-app/...`**:
+```
+TLS connect error: error:0A000438:SSL routines::tlsv1 alert internal error
+for "https://catalog-app/api/internal/products/1/projection".
+```
+mimo że dedykowany blok Caddy'ego dla ruchu wewnętrznego był zapisany
+jako `catalog-app:80 { ... }` (jawny port, bez schematu `https`).
+
+**Przyczyna**
+Gdy w Caddyfile istnieje **choćkolwiek jeden** site z automatycznym HTTPS
+(tu: główny blok `{$SERVER_NAME:catalog.localhost}`), Caddy instaluje
+**globalny listener** przekierowujący port 80 → 443 dla wszystkich
+requestów, zanim w ogóle dojdzie do routingu po nazwie hosta/site'a.
+Samo podanie portu (`nazwa:80`) bez jawnego schematu **nie wystarcza**,
+żeby dany blok wypisał się z tego globalnego przekierowania — to
+zadziałało inaczej, niż się spodziewałem.
+
+**Naprawa**
+Jawny schemat w adresie site'a: `http://catalog-app { ... }` zamiast
+`catalog-app:80 { ... }`. To jedyny pewny sposób powiedzenia Caddy'emu
+"ten blok ma być czystym HTTP, nie wciągaj go do automatycznego HTTPS".
+
+**Czego się nauczyłem**
+W konfiguracji reverse proxy/serwera "wygląda na to, że powinno działać"
+nie zastępuje sprawdzenia na żywo. Zachowania automatyczne (tu: auto-HTTPS)
+bywają **globalne dla całego procesu**, nie per-blok, nawet jeśli
+składnia sugeruje izolację. Warto zawsze przetestować DOKŁADNIE tę ścieżkę
+sieciową, którą będzie szedł realny ruch (serwis-do-serwisu, nie tylko
+przeglądarka-do-serwera) — te dwie ścieżki mogą trafiać w zupełnie różne
+bloki konfiguracji.
+
+---
+
+<a id="017"></a>
+## 017 — External versioning: kolizja `sequence` między różnymi agregatami
+
+**Objaw**
+Zdarzenie `offer.created` zostało odrzucone jako "nieaktualne" (409)
+w logu:
+```
+Pominięto nieaktualne zdarzenie (nowsza wersja już zaindeksowana).
+{"product_id":"2","event_type":"offer.created","sequence":1}
+```
+mimo że było to PIERWSZE zdarzenie dla tej oferty, nie duplikat ani
+spóźniona dostawa. Dane w Elasticsearchu wyszły poprawne — ale przez
+przypadek, nie dzięki poprawnie działającemu mechanizmowi.
+
+**Diagnoza**
+Dwa zdarzenia (`product.created` i `offer.created`) dla tego samego
+produktu przyszły niemal jednocześnie. Pierwsze zaindeksowało dokument
+z `version=1`. Drugie próbowało zapisać **też** z `version=1` (nie 2) —
+ES odrzucił jako nie-nowszą wersję.
+
+**Przyczyna**
+`sequence` w kopercie zdarzenia to KOPIA lokalnego licznika `version`
+z tabeli źródłowej (`products.version` albo `offers.version` w Laravelu)
+— a to są **dwa niezależne liczniki**, oba zaczynające się od 1. Jeden
+dokument Elasticsearcha bywa jednak budowany z KILKU różnych agregatów
+źródłowych (produkt + jego oferty), które piszą do tego samego `_id`.
+External versioning zakłada JEDEN monotoniczny licznik na dokument — a tu
+dostaje dwa różne, przypadkowo nakładające się liczniki.
+
+**Dlaczego tym razem nie zaszkodziło**
+`CatalogProjectionClient` zawsze pobiera PEŁNY aktualny stan produktu
+(łącznie z ofertami), niezależnie od tego, które zdarzenie wywołało
+przeliczenie. Pierwszy zapis (z `product.created`) i tak zawierał świeże
+dane oferty. Odrzucenie drugiego zdarzenia nie zgubiło więc żadnej
+informacji — ale to przypadek tej konkretnej kolejności zdarzeń, nie
+gwarancja.
+
+**Status: NIE naprawione, świadomie odłożone.** Udokumentowane w
+`ElasticsearchIndexer.php` i tutaj, żeby nie zaskoczyło po cichu przy
+pierwszej prawdziwej zmianie ceny na niskim numerze sekwencji.
+
+**Kierunek właściwej naprawy (przyszły moduł)**
+Jeden monotoniczny licznik NA DOKUMENT, utrzymywany przez search-service
+(np. w tabeli stanu indeksacji), zamiast kopiowania 1:1 wersji ze źródła.
+Alternatywa: porównywać po `occurred_at` (znacznik czasu zdarzenia)
+zamiast surowego numeru wersji — mniej precyzyjne przy zdarzeniach z tej
+samej milisekundy, ale odporne na kolizję liczników z różnych tabel.
+
+**Czego się nauczyłem**
+"Zadziałało" i "mechanizm jest poprawny" to dwa różne stwierdzenia —
+trzeba je sprawdzać osobno. External versioning wymaga **jednego wspólnego
+licznika** dla wszystkiego, co pisze do tego samego dokumentu; ponowne
+użycie liczników z systemu źródłowego działa tylko wtedy, gdy jeden
+dokument = jeden agregat źródłowy. W momencie, gdy denormalizujesz
+wiele tabel w jeden dokument (a to jest dokładnie to, co robi ES —
+patrz `04-ES-JAKO-PLATFORMA.md`), ten prosty schemat wersjonowania
+przestaje wystarczać.
+
+---
+
+<a id="018"></a>
+## 018 — `php artisan test` w kontenerze czyści PRAWDZIWĄ bazę deweloperską
+
+**Objaw**
+`php artisan test` uruchomiony na hoście: 51/51 zielone. Ten sam
+`php artisan test` uruchomiony **w kontenerze** (`docker compose exec
+catalog-app php artisan test`): 18 nieudanych. Po sprawdzeniu — dane
+utworzone chwilę wcześniej ręcznie (E2E test produktu/oferty) **zniknęły
+z prawdziwego Postgresa**.
+
+**Przyczyna**
+`phpunit.xml` ustawiał `DB_CONNECTION=sqlite`/`DB_DATABASE=:memory:` przez
+`<env>` **bez atrybutu `force="true"`**. Domyślne zachowanie PHPUnit:
+taki wpis ustawia zmienną TYLKO jeśli nie jest już obecna w środowisku
+procesu. Na hoście nic nie ustawiało `DB_CONNECTION` jako realną zmienną
+systemową, więc wpis z `phpunit.xml` wygrywał. W kontenerze `compose.yaml`
+wstrzykuje `DB_CONNECTION=pgsql`, `DB_HOST=postgres` jako PRAWDZIWE
+zmienne środowiskowe kontenera — te istniały już przed startem PHPUnit,
+więc nieforsowany `<env>` był po cichu ignorowany. Testy łączyły się
+z prawdziwą bazą `catalog`, a `RefreshDatabase` (używane przez wszystkie
+testy Feature) ją migrowało/czyściło między testami — kasując rzeczywiste
+dane deweloperskie.
+
+**Naprawa**
+```xml
+<env name="DB_CONNECTION" value="sqlite" force="true"/>
+<env name="DB_DATABASE" value=":memory:" force="true"/>
+<env name="DB_HOST" value="" force="true"/>
+```
+`force="true"` każe PHPUnit nadpisać zmienną BEZWARUNKOWO, niezależnie od
+tego, co już jest w środowisku procesu.
+
+**Czego się nauczyłem**
+- To jest **realne ryzyko utraty danych**, nie tylko niewygoda — dokładnie
+  ten rodzaj błędu, przed którym miał chronić SQLite-w-pamięci z ETAPU 6.
+  Ochrona działała tylko na hoście; w kontenerze była iluzoryczna.
+- Zasada ogólna: konfiguracja izolacji środowiska testowego, która "działa"
+  w jednym kontekście uruchomienia, może **cicho przestać działać** w innym
+  (host vs kontener, CI vs lokalnie) — jeśli mechanizm izolacji polega na
+  "ustaw, jeśli jeszcze nie ustawione", a nie na jawnym wymuszeniu.
+  Zawsze `force="true"` na zmiennych, których wyciek oznacza realną szkodę
+  (baza danych!), nigdy nie zakładaj, że brak konfliktu dziś oznacza brak
+  konfliktu jutro (albo w innym środowisku uruchomieniowym).
+- **Przed pierwszym `php artisan test` w nowym środowisku uruchomieniowym
+  (nowy kontener, CI, inny host) — zweryfikuj, że baza testowa faktycznie
+  jest izolowana**, np. `php artisan tinker --execute 'echo config("database.default");'`
+  powinno pokazać `sqlite`, nie `pgsql`.
+
+**Efekt uboczny tego dochodzenia**
+Przy okazji znaleziono (ale świadomie NIE naprawiono, bo poza zakresem
+ETAPU 6) 18 nieudanych testów startera Fortify (`AuthenticationTest`,
+`PasswordResetTest`, `SecurityTest` itd.) — przechodzą czysto na hoście,
+failują tylko w kontenerze mimo poprawnie izolowanej bazy. Zweryfikowane:
+to nie problem hashowania haseł ani samego `Auth::attempt()` (działa
+poprawnie w izolacji przez tinker) — coś w cyklu żądanie-sesja klienta
+testowego HTTP zachowuje się inaczej w kontenerze. Niezdiagnozowane do
+końca — do zbadania osobno, nie blokuje ETAPU 6 (wszystkie testy własne:
+outbox, health, projekcja — 12/12 zielone w obu środowiskach).
 
 ---
 

@@ -75,7 +75,17 @@
 #
 # Świadomie tylko prefiks /api/ — to jedyne, czego wewnętrzni klienci
 # (search-service, ETAP 6) powinni móc dotknąć.
-catalog-app:80 {
+#
+# UWAGA (błąd, który tu był): samo `catalog-app:80` (bez schematu) NIE
+# wystarczyło, żeby wyłączyć automatyczne HTTPS. Gdy w Caddyfile jest choć
+# jeden site z automatycznym HTTPS (blok wyżej), Caddy instaluje GLOBALNY
+# listener przekierowujący port 80 -> 443 dla WSZYSTKICH hostów, zanim
+# w ogóle dojdzie do routingu po nazwie site'a. Realny objaw: request
+# wychodził z Symfony jako `http://catalog-app/...`, a błąd TLS przychodził
+# dla `https://catalog-app/...` — Caddy po cichu podmieniał schemat.
+# Naprawa: JAWNY schemat `http://` w adresie site'a. To jedyny pewny sposób
+# na całkowite wypisanie się z automatycznego HTTPS dla danego bloku.
+http://catalog-app {
 	route /api/* {
 		root * public/
 		php_server

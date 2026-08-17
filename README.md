@@ -67,20 +67,19 @@ Wszystkie komendy: `make help`
 | 3 | RabbitMQ: exchange'e, kolejki quorum, DLQ | ✅ |
 | 4 | Laravel 13 + Inertia/Vue na FrankenPHP | ✅ |
 | 5 | Symfony 8 + Messenger | ✅ |
-| 6 | Model domenowy + Transactional Outbox + konsument + mapowanie ES | ⏳ napisane i zlintowane, **nieuruchomione** — czeka na `make up-apps` |
+| 6 | Model domenowy + Transactional Outbox + konsument + mapowanie ES | ✅ zweryfikowane end-to-end na żywym stacku |
 | 7+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
-> **Stan ETAPU 6 wymaga wyjaśnienia.** Cały kod (migracje, modele, outbox,
-> publikator AMQP, konsument Symfony, mapowanie ES) powstał przy
-> **wyłączonym Dockerze** i jest zweryfikowany tak daleko, jak się dało bez
-> niego: 51/51 testów Pest (SQLite in-memory), kompilacja kontenera DI
-> Symfony, `debug:messenger` potwierdzający routing, `php -l` na każdym
-> pliku. Nieprzetestowane pozostaje to, co wymaga żywej infrastruktury:
-> realna publikacja do RabbitMQ, konsumpcja, zapis do ES, migracja
-> `processed_events` (Postgres-specific SQL). **Pierwsza rzecz po
-> `make up-apps`: `php artisan migrate`, `php bin/console
-> doctrine:migrations:migrate`, `php bin/console search:index:create`,
-> potem end-to-end: dodaj ofertę → sprawdź, czy jest w ES.**
+> **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:
+> `Product::createWithOutbox()` → outbox → `outbox:publish` (potwierdzenia
+> brokera) → RabbitMQ → `search-consumer` → `GET /api/internal/.../projection`
+> → `ElasticsearchIndexer` (external versioning) → dokument w
+> `products-search`. Po drodze znalezione i naprawione 6 błędów, których
+> SQLite-w-pamięci nie mogło złapać (wymagały żywej infrastruktury) —
+> pełne opisy w [RUNBOOK #013–018](docs/RUNBOOK.md#013), w tym jeden
+> poważny (czyszczenie prawdziwej bazy przez źle skonfigurowaną izolację
+> testów) i jeden świadomie odłożony (kolizja `sequence` między różnymi
+> agregatami piszącymi do tego samego dokumentu — opisana, nie naprawiona).
 
 ---
 

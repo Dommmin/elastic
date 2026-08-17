@@ -18,14 +18,26 @@
         </include>
     </source>
     <php>
-        <env name="APP_ENV" value="testing"/>
+        <!--
+            force="true" na izolacji bazy jest KRYTYCZNE, nie kosmetyczne.
+            Bez tego atrybutu PHPUnit ustawia <env> tylko wtedy, gdy dana
+            zmienna NIE jest już obecna w środowisku procesu. compose.yaml
+            (profil apps) wstrzykuje DB_CONNECTION=pgsql/DB_HOST=postgres
+            jako prawdziwe zmienne środowiskowe kontenera — bez force="true"
+            te wpisy są po cichu ignorowane, testy łączą się z PRAWDZIWĄ
+            bazą deweloperską, a RefreshDatabase ją CZYŚCI między testami.
+            Znalezione boleśnie: pierwsze uruchomienie `php artisan test`
+            w kontenerze wykasowało dane E2E z realnego Postgresa (RUNBOOK 018).
+        -->
+        <env name="APP_ENV" value="testing" force="true"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
-        <env name="DB_URL" value=""/>
+        <env name="DB_CONNECTION" value="sqlite" force="true"/>
+        <env name="DB_DATABASE" value=":memory:" force="true"/>
+        <env name="DB_HOST" value="" force="true"/>
+        <env name="DB_URL" value="" force="true"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

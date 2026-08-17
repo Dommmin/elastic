@@ -32,9 +32,19 @@ final class CreateSearchIndexCommand extends Command
 
     private const ALIAS_NAME = 'products-search';
 
+    /**
+     * ŚCIEŻKA ABSOLUTNA, nie wędrówka `../../` od `%kernel.project_dir%`.
+     * Kontener search-consumer widzi WYŁĄCZNIE `./apps/search` jako `/app` —
+     * katalog `infra/` z korzenia repo w ogóle nie istnieje w jego systemie
+     * plików. compose.yaml montuje `infra/elasticsearch/mappings` osobno,
+     * dokładnie pod tę ścieżkę (patrz komentarz przy `search-consumer.volumes`).
+     * Odkryte dopiero przy realnym uruchomieniu — na hosta `../../` "działało"
+     * tylko dlatego, że lokalny filesystem ma tam repo, czego kontener nie ma.
+     */
+    private const MAPPINGS_DIR = '/infra/elasticsearch/mappings';
+
     public function __construct(
         private readonly Client $client,
-        private readonly string $projectDir,
     ) {
         parent::__construct();
     }
@@ -48,7 +58,7 @@ final class CreateSearchIndexCommand extends Command
     {
         $io = new SymfonyStyle($input, $output);
 
-        $mappingPath = $this->projectDir.'/../../infra/elasticsearch/mappings/'.self::INDEX_NAME.'.json';
+        $mappingPath = self::MAPPINGS_DIR.'/'.self::INDEX_NAME.'.json';
 
         if (! is_file($mappingPath)) {
             $io->error("Brak pliku mapowania: {$mappingPath}");

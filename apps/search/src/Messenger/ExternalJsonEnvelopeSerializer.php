@@ -24,9 +24,15 @@ use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
  * Symfony trafia do właściwego handlera (patrz `fromTransport` w
  * atrybutach `#[AsMessageHandler]`).
  *
- * encode() celowo rzuca wyjątkiem: Symfony w tym systemie NIGDY nie
- * publikuje do tych transportów, tylko konsumuje — to jednokierunkowa
- * integracja (docs/02-APLIKACJE.md, D-02).
+ * UWAGA (błąd, który tu był): encode() pierwotnie rzucał wyjątkiem z
+ * założeniem "Symfony nigdy nie publikuje do tych transportów". To błędne
+ * założenie — `retry_strategy` w messenger.yaml (max_retries: 3) PRZY
+ * NIEUDANEJ PRÓBIE PONAWIA wiadomość, wysyłając ją z powrotem na TEN SAM
+ * transport, co wymaga encode(). Rzucanie wyjątku tutaj wywalało cały
+ * mechanizm retry: SendFailedMessageForRetryListener łapał wyjątek
+ * handlera, próbował odesłać wiadomość, encode() rzucał kolejny wyjątek,
+ * i wiadomość lądowała w DLQ po PIERWSZEJ próbie zamiast po trzech
+ * (z odpowiednim backoffem). Retry to też publikacja — trzeba to wspierać.
  */
 final class ExternalJsonEnvelopeSerializer implements SerializerInterface
 {
@@ -65,12 +71,40 @@ final class ExternalJsonEnvelopeSerializer implements SerializerInterface
         return new Envelope($message);
     }
 
+    /**
+     * Odwrotność decode() — potrzebna WYŁĄCZNIE do retry (patrz uwaga w
+     * docblocku klasy). search-service nadal nigdy nie publikuje NOWYCH
+     * zdarzeń tymi transportami (D-02) — to wyłącznie ponowna wysyłka
+     * wiadomości, która już przyszła z Laravela, w tym samym formacie.
+     */
     public function encode(Envelope $envelope): array
     {
-        throw new \LogicException(
-            'search-service tylko konsumuje te transporty, nigdy nie publikuje '.
-            '(docs/02-APLIKACJE.md, D-02) — jeśli tu trafiłeś, prawdopodobnie '.
-            'próbujesz $bus->dispatch() zamiast oczekiwać na wiadomość z RabbitMQ.',
-        );
+        $message = $envelope->getMessage();
+
+        if (! $message instanceof IntegrationEvent) {
+            throw new \LogicException(
+                'ExternalJsonEnvelopeSerializer umie zakodować tylko IntegrationEvent, otrzymał: '
+                .get_debug_type($message),
+            );
+        }
+
+        $body = json_encode([
+            'id' => $message->id,
+            'type' => $message->type,
+            'version' => $message->version,
+            'source' => $message->source,
+            'occurred_at' => $message->occurredAt->format(DATE_ATOM),
+            'aggregate' => [
+                'type' => $message->aggregateType,
+                'id' => $message->aggregateId,
+            ],
+            'sequence' => $message->sequence,
+            'data' => $message->data,
+        ], JSON_THROW_ON_ERROR);
+
+        return [
+            'body' => $body,
+            'headers' => ['content_type' => 'application/json'],
+        ];
     }
 }
