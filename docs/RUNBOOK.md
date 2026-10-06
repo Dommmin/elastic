@@ -31,6 +31,13 @@
 | [016](#016) | Caddy globalnie przekierowuje HTTP→HTTPS mimo jawnego portu | Caddy | 6 |
 | [017](#017) | External versioning: kolizja `sequence` między różnymi agregatami | Architektura | 6 |
 | [018](#018) | `php artisan test` w kontenerze czyści prawdziwą bazę deweloperską | Testy | 6 |
+| [019](#019) | `search_after`: sort po `_id` odrzucony — fielddata wyłączone | Elasticsearch | 7 |
+| [020](#020) | `_rank_eval`: `ratings` po aliasie dają same "unrated_docs" | Elasticsearch | 7 |
+| [021](#021) | Restart klastra 3-node wisi w nieskończoność (`master_not_discovered`) | Docker | 2 |
+| [022](#022) | `port is already allocated` — stack wstaje w połowie | Docker | 7 |
+| [023](#023) | Przewinięcie wyników po minucie: `search_context_missing_exception` (500) | Elasticsearch | 7 |
+| [024](#024) | ESLint/Vite na hoście: `Cannot find native binding` | Docker / Node | 7 |
+| [025](#025) | Node'y ES znikają bez logu zamknięcia, restartują się w kółko | Docker | 7 |
 
 ---
 
@@ -644,6 +651,18 @@ wiele tabel w jeden dokument (a to jest dokładnie to, co robi ES —
 patrz `04-ES-JAKO-PLATFORMA.md`), ten prosty schemat wersjonowania
 przestaje wystarczać.
 
+**Dopisek (ETAP 7, seeder)** — `SeedMarketplaceCommand` (`marketplace:seed`)
+trafia na dokładnie ten problem przy generowaniu wielu ofert na produkt
+w krótkim czasie: `offer.created` (sequence=1) koliduje z `product.created`
+(sequence=1) tego samego produktu i zostaje odrzucony jako "stale", mimo że
+to pierwsza oferta. Seeder obchodzi to STRUKTURALNIE, nie łatając
+`ProductSyncHandler`: buduje w Postgresie pełny stan produktu (wszystkie
+oferty) NAJPIERW, dopiero potem emituje jedno zdarzenie `product.created`.
+Ponieważ `search-consumer` i tak robi pełny read-back projekcji, jeden
+event wystarcza do zaindeksowania produktu ze wszystkimi ofertami —
+sprawdzone na 1500 produktach / ~4500 ofertach: `products-search`
+count = liczba produktów, bez strat.
+
 ---
 
 <a id="018"></a>
@@ -704,6 +723,373 @@ poprawnie w izolacji przez tinker) — coś w cyklu żądanie-sesja klienta
 testowego HTTP zachowuje się inaczej w kontenerze. Niezdiagnozowane do
 końca — do zbadania osobno, nie blokuje ETAPU 6 (wszystkie testy własne:
 outbox, health, projekcja — 12/12 zielone w obu środowiskach).
+
+---
+
+<a id="019"></a>
+## 019 — `search_after`: sort po `_id` odrzucony — fielddata wyłączone
+
+**Objaw**
+Pierwsze wywołanie `ProductSearchService::search()` z sortem `[['_score' =>
+'desc'], ['_id' => 'asc']]` (tie-breaker do stabilnej paginacji, moduł 9)
+kończyło się błędem 400:
+```
+illegal_argument_exception: Fielddata access on the _id field is
+disallowed, you can re-enable it by updating the dynamic cluster setting:
+indices.id_field_data.enabled
+```
+
+**Diagnoza**
+Zapytanie wyglądało poprawnie składniowo — problem ujawnił się dopiero przy
+realnym wywołaniu na żywym klastrze, nie przy samym budowaniu DSL (stąd
+osobne testy jednostkowe DSL i integracyjne na żywym ES — `tests/Unit/
+Services/ProductSearchServiceQueryTest.php` tego by nie złapało).
+
+**Przyczyna**
+`_id` to pole metadanych, nie zwykłe pole dokumentu — sortowanie po nim
+wymaga fielddata (budowania odwróconego indeksu w pamięci dla pola, które
+z definicji ma tyle unikalnych wartości co dokumentów). ES **celowo**
+blokuje to domyślnie — włączenie tego ustawienia to type of footgun, którego
+dokumentacja ES explicite odradza.
+
+**Naprawa**
+Point In Time (PIT) + sort po `_shard_doc` zamiast `_id` — dokładnie to,
+co moduł 9 (`docs/03-SCIEZKA-NAUKI.md`) opisuje jako poprawny mechanizm
+głębokiej paginacji. `_shard_doc` to wewnętrzny numer dokumentu na shardzie,
+zawsze unikalny i tani do sortowania, ale wymaga zamrożonego widoku
+shardów (stąd PIT). Implementacja: `ProductSearchService::resolvePagination()`
+otwiera PIT dla pierwszej strony (`openPointInTime`), cursor koduje
+`{pit, sort}` razem (nie sam `sort` — PIT musi być spójny między stronami),
+kolejne strony przekazują ten sam (lub odświeżony z odpowiedzi) `pit_id`.
+
+**Czego się nauczyłem**
+"Wygląda dobrze w DSL" i "działa na żywym klastrze" to dwa różne testy —
+ten konkretny błąd nie miał ŻADNEGO sygnału na poziomie budowania zapytania
+w PHP, tylko przy realnym wykonaniu. Pola metadanych (`_id`, `_index`) mają
+inne zasady niż zwykłe pola mapowania i nie da się ich używać zamiennie
+z polami dokumentu tylko dlatego, że składniowo pasują w to samo miejsce
+(`sort`).
+
+---
+
+<a id="020"></a>
+## 020 — `_rank_eval`: `ratings` po aliasie dają same "unrated_docs"
+
+**Objaw**
+`php artisan search:eval` (Faza 5, harness `_rank_eval` dla nDCG@10)
+zwracał `nDCG@10 = 0.000` dla WSZYSTKICH 13 zapytań kontrolnych, mimo że
+`ProductSearchService::search()` na te same zapytania zwracał poprawne,
+oczekiwane wyniki na czołowych pozycjach (zweryfikowane ręcznie przez
+`tinker` przed napisaniem samej komendy eval).
+
+**Diagnoza**
+`unrated_docs` w odpowiedzi `_rank_eval` pokazywał dokładnie te same ID
+dokumentów, które ręcznie oceniłem jako trafne (`ratings`) — więc dopasowanie
+NIE działało, mimo identycznych `_id`. Ręczny `curl` na `_rank_eval` z tym
+samym zapytaniem i `"_index": "products-search"` w `ratings` odtworzył
+problem 1:1.
+
+**Przyczyna**
+`_rank_eval` dopasowuje wpis z `ratings` do trafienia zapytania po PARZE
+`_index`+`_id`, **dokładnie** (string match, nie przez alias). Zapytanie
+szło przez alias `products-search`, ale każde trafienie w `hits` i tak
+raportuje **fizyczny** indeks (`products-v1`) jako swój `_index` — bo alias
+to tylko wskaźnik czasu zapytania, nie tożsamość dokumentu. `ratings`
+oceniane po nazwie aliasu nigdy nie mogły się dopasować do trafień
+raportujących fizyczny indeks.
+
+**Naprawa**
+`SearchEvalCommand::resolveAliasTarget()` odpytuje `GET _alias/products-search`
+i podstawia PRAWDZIWĄ, aktualną nazwę fizycznego indeksu do `ratings._index`
+— **tylko w tej komendzie**, świadomie NIE w `ProductSearchService` (D-11/D-09:
+serwis produkcyjny ma zostać ślepy na fizyczne nazwy indeksów, `search:eval`
+to narzędzie deweloperskie i może znać ten szczegół, podobnie jak
+`search:index:create` po stronie Symfony).
+
+**Czego się nauczyłem**
+Alias jest przezroczysty dla ZAPYTANIA (czego szukasz), ale NIE dla
+ODPOWIEDZI (co dokładnie zostało znalezione, z metadanymi) — każde API,
+które porównuje odpowiedź z zewnętrznym zbiorem danych po `_index`+`_id`
+(nie tylko `_rank_eval` — to samo dotyczyłoby np. `mget` po wynikach
+zapisanych wcześniej), musi liczyć się z fizyczną nazwą, nie aliasem.
+
+---
+
+<a id="021"></a>
+## 021 — Restart klastra 3-node wisi w nieskończoność (`master_not_discovered`)
+
+**Objaw**
+`make up-cluster` uruchomiony na klastrze, który WCZEŚNIEJ już działał
+(kontenery zatrzymane, wolumeny `es0{1,2,3}-data` zachowane) wieszał się
+bez końca. `docker compose ps` pokazywał `es01` jako `Up (unhealthy)`,
+a `es02`/`es03` w stanie `Created` — nigdy nie wystartowane. `make es-health`:
+```
+{"error":{"root_cause":[{"type":"master_not_discovered_exception","reason":null}]},"status":503}
+```
+Logi `es01`: `master not discovered or elected yet, an election requires
+at least 2 nodes with ids from [...], have only discovered non-quorum
+[{es01}...]`.
+
+**Diagnoza**
+Przy PIERWSZYM (świeżym) `make up-cluster` — na pustych wolumenach — ten
+sam stack startuje bez problemu. Problem pojawia się WYŁĄCZNIE przy
+restarcie klastra, który ma już zapisane dane. To odróżnienie ("pierwszy
+raz" vs "restart") było kluczowe do znalezienia przyczyny — nie jest to
+usterka Dockera ani sieci, tylko stan zapisany na dysku node'a.
+
+**Przyczyna**
+Dwa mechanizmy nakładają się na siebie w `compose.yaml`:
+1. `es01` ma `cluster.initial_master_nodes: es01` — świadoma decyzja
+   (komentarz w kodzie: "ta sama konfiguracja działa w trybie 1-node
+   i 3-node"), dzięki której `es01` może sam sformować klaster przy
+   PIERWSZYM starcie, bez czekania na `es02`/`es03`.
+2. `es02`/`es03` mają `depends_on: es01: condition: service_healthy` —
+   celowe: "poczekaj, aż pierwszy node żyje, zanim dołączysz kolejne".
+
+To działa idealnie za pierwszym razem: `es01` bootstrapuje się sam (szybko
+staje się `healthy`), potem wstają `es02`/`es03`. ALE `cluster.
+initial_master_nodes` działa TYLKO przy formowaniu zupełnie NOWEGO klastra
+— gdy `es01-data` ma już zapisaną konfigurację głosującą (voting
+configuration) z poprzedniego życia klastra jako 3-node, `es01` przy
+starcie próbuje dołączyć do "ostatnio znanego" stanu klastra, co wymaga
+KWORUM (2 z 3 node'ów), nie samego siebie. `es02`/`es03` czekają na
+`es01: healthy`, `es01` nigdy nie będzie `healthy` bez `es02`/`es03` —
+zakleszczenie strukturalne, nie tymczasowy problem wydajnościowy. Więcej
+czasu oczekiwania NIC by nie zmieniło.
+
+**Naprawa**
+`depends_on.es01.condition` dla `es02` i `es03` zmienione z
+`service_healthy` na `service_started` (`compose.yaml`). Discovery klastra
+(`discovery.seed_hosts: es01,es02,es03`) samo w sobie odpytuje w pętli,
+dopóki node'y się nie znajdą — nie potrzebuje pomocy od `depends_on`, żeby
+wiedzieć, KIEDY zacząć próbować. Zweryfikowane: pełny `docker compose stop
+es01 es02 es03` + `up -d es01 es02 es03` z ZACHOWANYMI danymi — wszystkie
+trzy kontenery startują RÓWNOCZEŚNIE (bez oczekiwania), klaster osiąga
+`green` w ~30 s.
+
+**Czego się nauczyłem**
+`depends_on: condition: service_healthy` wygląda na zawsze bezpieczniejszy
+wybór niż `service_started` ("poczekaj, aż będzie NAPRAWDĘ gotowy, nie
+tylko uruchomiony") — ale healthcheck, który sam zależy od stanu innych
+serwisów w tej samej grupie startowej (klaster potrzebuje kworum, żeby być
+"zdrowy"), zamienia "poczekaj, aż będzie gotowy" w "czekaj na coś, co nigdy
+nie nadejdzie bez ciebie". To jest ten sam kształt problemu co zator
+w wielowątkowości (dwa wątki czekające na siebie nawzajem) — tylko na
+poziomie orkiestracji kontenerów. Kiedy usługa A i usługa B mogą się
+wzajemnie potrzebować do wystartowania (klaster, nie prosty łańcuch
+zależności), `depends_on` powinien pilnować TYLKO kolejności URUCHOMIENIA
+procesu (`service_started`), a nie stanu, który sam zależy od pozostałych
+uczestników tej samej grupy.
+
+---
+
+<a id="022"></a>
+## 022 — `port is already allocated` — stack wstaje w połowie
+
+**Objaw**
+`make up-cluster` po kilku tygodniach przerwy:
+```
+Error response from daemon: failed to set up container networking: driver failed
+programming external connectivity on endpoint marketplace-rabbitmq-1 (...):
+Bind for 0.0.0.0:5672 failed: port is already allocated
+```
+Część kontenerów wystartowała, reszta została w stanie `Created`.
+
+**Diagnoza**
+```bash
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '5672|9200|5432'
+# igrit-rabbitmq-1        0.0.0.0:5672->5672/tcp ...
+# igrit-elasticsearch-1   0.0.0.0:9200->9200/tcp
+```
+Inny projekt na tej samej maszynie (`igrit`, `starter-local`) trzymał 7 z naszych
+portów: 5432, 6379, 9200, 5672, 15672, 8080, 5173.
+
+**Przyczyna**
+Porty publikowane na hoście są wspólne dla WSZYSTKICH stacków dockerowych na
+maszynie. `docker compose up` nie sprawdza ich z góry — startuje kontenery po
+kolei i wywraca się na pierwszym zajętym, zostawiając stack w połowie.
+
+**Naprawa**
+1. `tools/doctor.sh` sprawdza teraz porty PRZED startem i mówi, kto je trzyma
+   (`make doctor`, `make up-cluster`, `make up-apps` — ten ostatni wcześniej
+   w ogóle nie odpalał doctora).
+2. W lokalnym `.env` porty przesunięte o +10000/+20000 (ES 19200, Postgres
+   15432, Redis 16379, RabbitMQ 25672/35672, HTTP 18080, Vite 15173).
+   `.env.example` zostaje ze standardowymi — to ustawienie TEJ maszyny.
+3. Vite: `public/hot` zawierał `http://0.0.0.0:5173` na sztywno — po zmianie
+   portu przeglądarka ładowałaby skrypty z CUDZEGO Vite na 5173. Teraz
+   `vite.config.ts` czyta `VITE_PUBLIC_PORT` (z compose) i zapisuje adres
+   hosta: `http://localhost:15173`.
+
+**Czego się nauczyłem**
+Port na hoście to tylko "drzwi z zewnątrz" — kontenery rozmawiają po sieci
+dockerowej (`es01:9200`), więc zmiana `ES_PORT` nic w aplikacjach nie psuje.
+Ale wszystko, co adres hosta ZAPISUJE gdzieś na trwałe (tu: plik `hot` Vite),
+trzeba sprawdzić osobno — to tam port "przecieka" do przeglądarki.
+
+---
+
+<a id="023"></a>
+## 023 — Przewinięcie wyników po minucie: `search_context_missing_exception` (500)
+
+**Objaw**
+Znalezione przy przeglądzie kodu, potwierdzone eksperymentem: kolejna strona
+wyników ("załaduj więcej" / infinite scroll) po ponad minucie od poprzedniej
+kończyła się błędem 500:
+```
+404 Not Found: {"error":{"root_cause":[{"type":"search_context_missing_exception",
+"reason":"No search context found for id [...]"}]
+```
+
+**Diagnoza**
+```php
+$pit = $client->openPointInTime(['index' => 'products-search', 'keep_alive' => '1s'])->asArray()['id'];
+$client->closePointInTime(['body' => ['id' => $pit]]);
+$client->search(['body' => ['pit' => ['id' => $pit, ...], 'search_after' => [5], ...]]);
+// ClientResponseException, code=404, search_context_missing_exception
+```
+
+**Przyczyna**
+Point In Time (RUNBOOK #019) żyje `keep_alive` (u nas 1 minuta) od OSTATNIEGO
+zapytania. Człowiek czytający wyniki dłużej niż minutę "zabija" swój PIT,
+a kursor kolejnej strony nadal go wskazuje.
+
+**Naprawa**
+`ProductSearchService::searchWithPit()`: przy 404 `search_context_missing` na
+stronie KOLEJNEJ (z kursorem) otwiera nowy PIT i kontynuuje z tymi samymi
+wartościami `search_after`. Świadomy kompromis: `_shard_doc` nowego PIT-a
+odpowiada staremu tylko, jeśli na shardzie nie było zapisów/merge'ów —
+inaczej na granicy strony możliwy duplikat (zdejmuje go `matchOn('data.id')`
+po stronie Inertii) albo pominięcie jednej pozycji. Test:
+`SearchIntegrationTest` — "przewinięcie po wygaśnięciu PIT...".
+
+Dlaczego nie po prostu `keep_alive: 30m`: otwarty PIT trzyma segmenty, które
+merge chciałby już usunąć. Tysiąc porzuconych kart przeglądarki = tysiąc
+trzymanych zestawów segmentów. Krótki PIT + tanie odtworzenie jest zdrowsze.
+
+**Czego się nauczyłem**
+Każdy zasób serwera z czasem życia (PIT, scroll, sesja, lock) trzeba
+przemyśleć od strony "co jeśli użytkownik poszedł zrobić kawę". Testy
+automatyczne tego nie złapią, bo wykonują się w milisekundach — trzeba
+zasymulować wygaśnięcie jawnie (tu: ręczne `closePointInTime`).
+
+---
+
+<a id="024"></a>
+## 024 — ESLint/Vite na hoście: `Cannot find native binding`
+
+**Objaw**
+`npx eslint resources/js` na hoście (macOS): błąd w KAŻDYM pliku, w linii 1:
+```
+Resolve error: Cannot find native binding. npm has a bug related to optional
+dependencies (https://github.com/npm/cli/issues/4828). Please try `npm i` again
+```
+
+**Diagnoza**
+Błąd dotyczył wszystkich plików naraz, także nietkniętych od tygodni — więc nie
+kod, tylko środowisko. Kontener `catalog-vite` ma w CMD `npm install && npm run
+dev` i montuje `./apps/catalog:/app` — razem z `node_modules`.
+
+**Przyczyna**
+Pakiety z natywnymi binarkami (resolver ESLinta, rolldown w Vite) instalują
+TYLKO wariant dla platformy, na której biegnie `npm install`. Kontener (Linux)
+nadpisywał `node_modules` hosta binarkami pod Linuksa → macOS-owy ESLint nie
+mógł ich załadować. W drugą stronę tak samo: `npm i` na hoście psuło kontener
+przy jego następnym starcie. Ping-pong bez końca. Przy okazji ten sam
+mechanizm zmieniał `name` w `package-lock.json` (`app` vs `catalog` — npm bierze
+nazwę z katalogu, gdy `package.json` jej nie ma).
+
+**Naprawa**
+- `compose.yaml`: nazwany wolumen `catalog-node-modules:/app/node_modules` dla
+  `catalog-vite` — kontener ma WŁASNE `node_modules`, host swoje.
+- `package.json`: jawne `"name": "catalog"` — koniec przepychanki w lockfile.
+
+**Czego się nauczyłem**
+Bind-mount katalogu z kodem to także bind-mount wszystkiego, co w nim leży —
+w tym artefaktów zależnych od platformy (`node_modules`, `vendor` z
+rozszerzeniami, skompilowane binarki). Wspólny katalog źródeł: tak; wspólne
+zależności natywne: nigdy.
+
+---
+
+<a id="025"></a>
+## 025 — Node'y ES znikają bez logu zamknięcia, restartują się w kółko
+
+**Objaw**
+Klaster raz `green`, raz `unreachable`; `docker compose ps` pokazuje node'y
+z różnym czasem "Up" (es01 13 min, es02 8 min, es03 5 min). `docker exec` do
+innych kontenerów wisi po kilkadziesiąt sekund, 5 testów Pest trwa 300 s
+zamiast 3 s. W logach node'a — zwykłe ostrzeżenia discovery, a zaraz po nich
+start nowej JVM. ŻADNEGO "stopping", "shutdown", wyjątku.
+
+**Diagnoza**
+```bash
+docker inspect marketplace-es02 --format 'restarts={{.RestartCount}} oom={{.State.OOMKilled}}'
+# restarts=2 oom=false          <- limit KONTENERA nie został przekroczony
+docker info --format '{{.MemTotal}}'          # 15.6 GB (w ETAPIE 6 było 32 GB)
+docker stats --no-stream ...                  # kontenery razem: 12.2 GB
+```
+
+**Przyczyna**
+Docker VM dostał mniej pamięci niż w ETAPIE 6, a równolegle działały inne
+projekty (sam `clamav` ~1.9 GB). 3 node'y x limit 4 GB + `-XX:+AlwaysPreTouch`
+(JVM rezerwuje cały heap przy starcie) przekraczały WOLNĄ pamięć VM. Linuxowy
+OOM killer w VM zabija proces Javy "z zewnątrz" — dlatego `OOMKilled=false`
+(to flaga limitu cgroup kontenera, a nie VM) i brak jakiegokolwiek logu
+zamknięcia: proces po prostu przestaje istnieć, a `restart: unless-stopped`
+podnosi go od nowa.
+
+**Naprawa**
+- `.env` (lokalnie): `ES_HEAP=1g`, `ES_MEM_LIMIT=2g` — przy 1500 dokumentach
+  z zapasem; PRZED ETAPEM 8 (5 mln dokumentów) wrócić do tabeli w `.env`.
+- `tools/doctor.sh` liczy teraz pamięć zajętą przez INNE projekty i ostrzega,
+  gdy po jej odjęciu nie starczy na ten stack. Przy dzisiejszych liczbach
+  (2g heap: potrzeba ~13.1 GB, wolne ~9.7 GB) ostrzeżenie padłoby przed startem.
+
+**Czego się nauczyłem**
+`OOMKilled=false` NIE znaczy "to nie OOM". Są dwa różne OOM-y: limitu
+kontenera (flaga = true, exit 137) i całej maszyny/VM (flaga = false, proces
+znika). Proces, który ginie bez słowa w logach, prawie zawsze został zabity
+z zewnątrz — szukaj po stronie zasobów, nie konfiguracji.
+
+---
+
+## Notatka — czytanie `_explain` (ETAP 7)
+
+Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć
+wyjaśnić, DLACZEGO wynik #1 wygrywa z #2, przez `_explain`, a to dobre
+miejsce, żeby to zostawić.
+
+Zapytanie `q=Wyman-Howell Laptop Ultra 14"` (bez żadnych filtrów) zwraca na
+pierwszym miejscu dokument `74` (`"Wyman-Howell Laptop Ultra 14\""`, score
+**53.09**), na drugim `1157` (`"Wyman-Howell Laptop Neo 14\""`, score
+**45.62**) — ta sama marka, ta sama kategoria, RÓŻNY model.
+
+```
+POST /products-search/_explain/74
+{ "query": { "bool": { "must": [{"multi_match": {
+    "query": "Wyman-Howell Laptop Ultra 14\"",
+    "type": "best_fields", "tie_breaker": 0.3,
+    "fields": ["name^3", "name.ac", "brand^2", "description"]
+}}], "filter": [] } } }
+```
+
+Oba dokumenty dostają pełne trafienie na `Wyman-Howell` (brand^2) i `Laptop
+14"` (name/name.ac) — te składniki `_score` są niemal identyczne. Różnica
+53.09 vs 45.62 pochodzi WYŁĄCZNIE z tokenu `Ultra`: dokument `74` ma go
+w `name`/`name.ac` (dodatkowe trafienie BM25 na rzadkim termie — tylko 59 na
+1500 dokumentów zawiera „ultra” po analizie, wysokie `idf`), dokument `1157`
+go nie ma (ma za to `Neo`, które nie występuje w zapytaniu, więc nic nie
+wnosi do `_score`). To jest dokładnie zachowanie, którego oczekujemy od
+`best_fields` + BM25: dokument z WIĘKSZYM pokryciem unikalnych termów
+zapytania wygrywa, nawet gdy oba mają identyczne trafienie na marce
+i kategorii.
+
+**Jak to samemu odtworzyć:** `docker compose exec catalog-app php artisan
+tinker`, zbuduj `SearchCriteria`, wywołaj `app(App\Services\
+ProductSearchService::class)->buildSearchQuery($criteria)` żeby dostać
+dokładny DSL, wklej do `_explain` przez `make es-analyze` albo bezpośrednio
+`curl` (przykład wyżej).
 
 ---
 

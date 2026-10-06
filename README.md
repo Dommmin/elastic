@@ -54,6 +54,7 @@ Wszystkie komendy: `make help`
 | [07-WERSJE](docs/07-WERSJE.md) | przypięte wersje i zasady utrzymania |
 | [RUNBOOK](docs/RUNBOOK.md) | **przewodnik diagnostyczny — uzupełniaj po każdym błędzie** |
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
+| [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
 
 ---
 
@@ -68,7 +69,8 @@ Wszystkie komendy: `make help`
 | 4 | Laravel 13 + Inertia/Vue na FrankenPHP | ✅ |
 | 5 | Symfony 8 + Messenger | ✅ |
 | 6 | Model domenowy + Transactional Outbox + konsument + mapowanie ES | ✅ zweryfikowane end-to-end na żywym stacku |
-| 7+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
+| 7 | Wyszukiwarka: `ProductSearchService`, facety, autocomplete, UI Vue/Inertia | ✅ zweryfikowane end-to-end na żywym stacku |
+| 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:
 > `Product::createWithOutbox()` → outbox → `outbox:publish` (potwierdzenia
@@ -81,6 +83,27 @@ Wszystkie komendy: `make help`
 > testów) i jeden świadomie odłożony (kolizja `sequence` między różnymi
 > agregatami piszącymi do tego samego dokumentu — opisana, nie naprawiona).
 
+> **ETAP 7 zweryfikowany end-to-end** — pełny opis krok po kroku, z kodem,
+> błędami i ich diagnozą: **[Wyszukiwarka dla ludzi](docs/blog/etap-07-wyszukiwarka.md)**.
+> `ProductSearchService` (Query DSL, facety jako filtered aggregations
+> w `global`, `nested inner_hits` dla najtańszej oferty, PIT + `search_after`
+> odporne na wygaśnięcie PIT) → `SearchController` (leniwe propsy,
+> `Inertia::scroll()` z kursorem, `Inertia::defer()` dla histogramu) + JSON API
+> → `Search.vue` (partial reloads, `<InfiniteScroll>`, autocomplete z obroną
+> przed wyścigiem żądań). 1500 produktów / ~4500 ofert zaseedowanych
+> prawdziwym pipeline'em outboxu.
+>
+> **Dowody, nie deklaracje:** `make search-proof` (slowlog, próg 0 ms)
+> pokazuje, że każda akcja na stronie to dokładnie jedno zapytanie do ES —
+> klik w facet nie liczy histogramu, przewinięcie nie liczy facetów
+> ([POMIARY 5b](docs/POMIARY.md)); `make eval` daje **nDCG@10 = 0.967**
+> na 13 zapytaniach kontrolnych ([POMIARY 5a](docs/POMIARY.md)).
+> Błędy złapane po drodze: [RUNBOOK #019–025](docs/RUNBOOK.md#019).
+>
+> Do zrobienia ręcznie: lista kontrolna w przeglądarce (sekcja "Twoja
+> kolej" w przewodniku). Świadomie poza zakresem: ~50 zapytań kontrolnych
+> zamiast 13, SSR (ETAP 7b) — oba jako zadania domowe w przewodniku.
+
 ---
 
 ## Najczęstsze komendy
@@ -90,6 +113,10 @@ make es-health      # zdrowie klastra, node'y, indeksy
 make es-shards      # rozmieszczenie shardów (UNASSIGNED na górze)
 make es-explain     # DLACZEGO shard nie jest przypisany
 make mq-status      # głębokość kolejek, konsumenci
+make up-apps         # doctor (pamięć, porty) -> cały stack z aplikacjami
+make seed n=1500     # dane pod wyszukiwarkę, prawdziwym pipeline'em outboxu
+make eval            # nDCG@10 na zapytaniach kontrolnych (ETAP 7)
+make search-proof    # ile zapytań do ES kosztuje każda akcja na /search
 make psql db=catalog
 make logs s=es01
 ```

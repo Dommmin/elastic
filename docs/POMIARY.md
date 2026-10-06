@@ -89,6 +89,43 @@ Hipoteza z planu do zweryfikowania: **im lżejsze żądanie, tym większy zysk**
 
 ---
 
+## 5a. Relewancja — baseline ETAP 7 (`search:eval`, 13 zapytań)
+
+Świadomie MNIEJSZY harness niż docelowy z sekcji 6 (tam: ~50 zapytań,
+ETAP 12) — fundament na ~1500-produktowym syntetycznym seedzie
+(`php artisan marketplace:seed`, `tests/relevance/queries.yaml`), nie
+docelowy zestaw na prawdziwym wolumenie. Patrz `docs/RUNBOOK.md` #020
+(pułapka: `_rank_eval` `ratings` po aliasie zamiast fizycznego indeksu).
+
+| Data | Konfiguracja | nDCG@10 (średnia, 13 zapytań) | Uwagi |
+|---|---|---|---|
+| 2026-08-17 | `multi_match best_fields` (`name^3`, `name.ac`, `brand^2`, `description`), bez fuzziness, + 2 zapytania testujące `synonyms.txt` | **0.967** | Jedno zapytanie (`Orn PLC`, samo dopasowanie marki jako wolny tekst) ma nDCG 0.571 — oczekiwane: równe `_score` dla wszystkich trafień daje arbitralną kolejność remisów, `ratings` obejmuje tylko część z >15 pasujących dokumentów. Nie jest to regresja do pilnowania, tylko właściwość zapytania tego typu (do rozważenia: filtr `term` na `brand`, nie `multi_match`, gdyby to był realny przypadek użycia, nie test synonimów/kategorii). |
+
+**Uruchomienie:** `make eval` (albo `docker compose exec catalog-app php artisan search:eval`).
+
+---
+
+## 5b. Ile zapytań do ES kosztuje każda akcja na /search (ETAP 7, DoD)
+
+`make search-proof` — slowlog z progiem 0ms, żądania z nagłówkami Inertii
+dokładnie takimi jak z przeglądarki. 3 node'y, heap 1g, ~1500 produktów,
+maszyna obciążona innymi projektami (czasy orientacyjne, liczby zapytań — nie).
+
+| Akcja użytkownika | Zapytań do ES — PRZED poprawką | PO poprawce (2026-10-06) | Co liczyło | took |
+|---|---|---|---|---|
+| Pierwsze wejście (`/search?q=laptop`) | 1 | **1** | wyniki + facety | 54 ms |
+| Auto-request po `priceHistogram` (deferred) | **2** (search + histogram) | **1** | tylko histogram | 26 ms |
+| Klik w facet marki | 1 | **1** | wyniki + facety, bez histogramu | 14 ms |
+| Przewinięcie (kolejna strona) | 1 (z agregacjami facetów) | **1** | wyniki, **bez agregacji** | 16 ms |
+
+"Przed" = wersja z pierwszej sesji ETAPU 7 (`results`/`facets` jako zwykłe
+tablice liczone zawsze, facety także na stronie 2+). Poprawka: leniwe closures
+z memoizacją w `SearchController` + agregacje tylko dla pierwszej strony
+w `ProductSearchService::search()`. Dowód automatyczny bez ES:
+`tests/Feature/SearchPropsLazinessTest.php` (Mockery liczy wywołania serwisu).
+
+---
+
 ## 6. Relewancja (moduł 7, ETAP 12)
 
 Mierzone przez `_rank_eval` na zestawie ~50 zapytań kontrolnych.
