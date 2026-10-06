@@ -1,5 +1,6 @@
 {
     "$schema": "https://www.schemastore.org/package.json",
+    "name": "catalog",
     "private": true,
     "type": "module",
     "scripts": {
@@ -37,12 +38,12 @@
         "@inertiajs/vite": "^3.0.0",
         "@inertiajs/vue3": "^3.0.0",
         "@laravel/passkeys": "^0.2.0",
-        "@lucide/vue": "^1.17.0",
+        "@lucide/vue": "^1.31.0",
         "@vueuse/core": "^12.8.2",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "laravel-vite-plugin": "^3.0.0",
-        "reka-ui": "^2.9.8",
+        "reka-ui": "^2.10.3",
         "tailwind-merge": "^3.2.0",
         "tailwindcss": "^4.1.1",
         "tw-animate-css": "^1.2.5",
