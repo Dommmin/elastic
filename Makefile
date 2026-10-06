@@ -176,9 +176,12 @@ mq-publish: ## Testowa wiadomość (make mq-publish rk=offer.created)
 
 .PHONY: mq-get
 mq-get: ## Podejrzyj wiadomość bez usuwania (make mq-get q=search.product.sync)
+	@# --ack-mode jawnie: domyślne w rabbitmqadmin v2 to ack_requeue_false,
+	@# czyli "get" KASUJE wiadomości z kolejki (RUNBOOK #027).
 	@$(DC) exec rabbitmq rabbitmqadmin \
 		--username $(RABBITMQ_USER) --password $(RABBITMQ_PASSWORD) \
-		get messages --queue $(or $(q),search.product.sync) --count 5
+		get messages --queue $(or $(q),search.product.sync) --count 5 \
+		--ack-mode ack_requeue_true
 
 ## Dane
 .PHONY: seed

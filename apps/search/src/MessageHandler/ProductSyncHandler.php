@@ -91,7 +91,9 @@ final class ProductSyncHandler
             $projection = $this->catalogClient->fetchProductProjection($productId);
         } catch (ProjectionUnavailableException $e) {
             // Laravel odpowiedziało 5xx/timeout — PRZEJŚCIOWE, ma sens ponowić.
-            throw new RecoverableMessageHandlingException($e->getMessage(), previous: $e);
+            // forceRetry: false (RUNBOOK #027) — domyślne true w Symfony 8
+            // każe ponawiać BEZ LIMITU, ignorując retry_strategy.max_retries.
+            throw new RecoverableMessageHandlingException($e->getMessage(), previous: $e, forceRetry: false);
         }
 
         if ($projection === null) {

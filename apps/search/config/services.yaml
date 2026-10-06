@@ -38,3 +38,20 @@ services:
     # dostanie dokładnie ten sam, skonfigurowany obiekt.
     Elastic\Elasticsearch\Client:
         factory: ['@App\Service\ElasticsearchClientFactory', 'create']
+
+    # Transporty AMQP: reject po przejęciu wiadomości przez retry /
+    # failure_transport -> ack, żeby *.dlq łapała tylko trucizny (redelivery
+    # po crashu, błędy dekodowania), a nie kopię KAŻDEJ nieudanej próby.
+    # Dlaczego i kiedy nack zostaje nackiem — docblock klasy, RUNBOOK #027.
+    app.messenger.transport.product_sync.ack_after_hand_off:
+        class: App\Messenger\AckAfterHandOffTransport
+        decorates: messenger.transport.product_sync
+        arguments: ['@.inner']
+    app.messenger.transport.analytics.ack_after_hand_off:
+        class: App\Messenger\AckAfterHandOffTransport
+        decorates: messenger.transport.analytics
+        arguments: ['@.inner']
+    app.messenger.transport.alerts.ack_after_hand_off:
+        class: App\Messenger\AckAfterHandOffTransport
+        decorates: messenger.transport.alerts
+        arguments: ['@.inner']

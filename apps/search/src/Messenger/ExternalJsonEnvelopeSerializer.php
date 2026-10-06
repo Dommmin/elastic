@@ -5,6 +5,7 @@ namespace App\Messenger;
 use App\Message\IntegrationEvent;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
+use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
 /**
@@ -33,9 +34,19 @@ use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
  * handlera, próbował odesłać wiadomość, encode() rzucał kolejny wyjątek,
  * i wiadomość lądowała w DLQ po PIERWSZEJ próbie zamiast po trzech
  * (z odpowiednim backoffem). Retry to też publikacja — trzeba to wspierać.
+ *
+ * DRUGA UWAGA (RUNBOOK #027): licznik ponowień Messengera to STAMP
+ * (RedeliveryStamp), a stampy przeżywają podróż przez brokera tylko wtedy,
+ * gdy serializer je zapisze. Domyślny serializer robi to sam
+ * (X-Message-Stamp-*); ten — nie robił. Każdy retry wracał więc jako
+ * "próba #1", MultiplierRetryStrategy nigdy nie widziała przekroczonego
+ * max_retries i wiadomość krążyła bez końca co ~1 s. Stąd nagłówek
+ * RETRY_COUNT_HEADER poniżej — jedyny stan, który musimy nieść.
  */
 final class ExternalJsonEnvelopeSerializer implements SerializerInterface
 {
+    public const RETRY_COUNT_HEADER = 'X-Message-Retry-Count';
+
     public function decode(array $encodedEnvelope): Envelope
     {
         $body = $encodedEnvelope['body'] ?? '';
@@ -68,7 +79,12 @@ final class ExternalJsonEnvelopeSerializer implements SerializerInterface
             data: $payload['data'],
         );
 
-        return new Envelope($message);
+        $envelope = new Envelope($message);
+
+        // Brak nagłówka = świeża wiadomość z Laravela (licznik 0).
+        $retryCount = (int) ($encodedEnvelope['headers'][self::RETRY_COUNT_HEADER] ?? 0);
+
+        return $retryCount > 0 ? $envelope->with(new RedeliveryStamp($retryCount)) : $envelope;
     }
 
     /**
@@ -102,9 +118,16 @@ final class ExternalJsonEnvelopeSerializer implements SerializerInterface
             'data' => $message->data,
         ], JSON_THROW_ON_ERROR);
 
+        $headers = ['content_type' => 'application/json'];
+
+        $retryCount = RedeliveryStamp::getRetryCountFromEnvelope($envelope);
+        if ($retryCount > 0) {
+            $headers[self::RETRY_COUNT_HEADER] = (string) $retryCount;
+        }
+
         return [
             'body' => $body,
-            'headers' => ['content_type' => 'application/json'],
+            'headers' => $headers,
         ];
     }
 }

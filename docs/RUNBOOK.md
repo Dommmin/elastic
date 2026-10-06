@@ -39,6 +39,7 @@
 | [024](#024) | ESLint/Vite na hoście: `Cannot find native binding` | Docker / Node | 7 |
 | [025](#025) | Node'y ES znikają bez logu zamknięcia, restartują się w kółko | Docker | 7 |
 | [026](#026) | 18 testów Fortify pada tylko w kontenerze (419) — i testy WCIĄŻ czyściły Postgresa | Laravel / PHPUnit | 7 |
+| [027](#027) | Retry Messengera: `no exchange 'delays'` -> DLQ po 1 próbie (a pod spodem retry bez limitu) | RabbitMQ / Symfony | 7 |
 
 ---
 
@@ -553,6 +554,14 @@ w `failure_transport`.
   sprawdź plik logu (Monolog), nie tylko to, co wypisało się na stdout.
   Console error handler pokazuje często tylko OSTATNI wyjątek w łańcuchu,
   nie ten, który zaczął całą kaskadę.
+
+> **KOREKTA (ETAP 7, wpis [027](#027)):** po tej naprawie retry nadal NIE
+> działał "jak zaprojektowano" — nikt tego nie sprawdził na żywym brokerze.
+> Następny w kolejce był brak exchange'a opóźnień (`no exchange 'delays'`,
+> bo `auto_setup: false`), a pod nim retry bez limitu (`forceRetry`
+> domyślnie `true` + serializer gubiący `RedeliveryStamp`). Do tego
+> wyczerpane próby trafiają do `failure_transport` (Doctrine), a nie do DLQ
+> w RabbitMQ.
 
 ---
 
@@ -1141,6 +1150,170 @@ nie da się odzyskać z tej bazy — trzeba je zasiać ponownie.
 - 18 "dziwnych" testów z [018](#018) było tym samym błędem co utrata danych,
   tylko widzianym z innej strony. Pozostawione "niezdiagnozowane do końca"
   czerwone testy mogą być jedynym widocznym objawem dużo groźniejszego problemu.
+
+---
+
+<a id="027"></a>
+## 027 — Retry Messengera: `no exchange 'delays'`, a pod spodem jeszcze trzy błędy
+
+**Objaw**
+`make seed n=1500` (2026-10-06): pobranie projekcji produktu 457 kończy się
+`Idle timeout reached for "http://catalog-app/api/internal/products/457/projection"`,
+a próba retry wywala konsumenta:
+```
+WARNING [messenger] Error thrown while handling message App\Message\IntegrationEvent {}.
+        Sending for retry #1 using 1067 ms delay. Error: "... Idle timeout reached ..."
+AMQPQueueException: Server channel error: 404, message: NOT_FOUND - no exchange 'delays' in vhost '/'
+  ... SendFailedMessageForRetryListener->onMessageFailed() ...
+WARNING [messenger] ... Sending for retry #1 using 1088 ms delay.
+        Error: "Redelivered message from AMQP detected that will be rejected and trigger the retry logic."
+```
+Po JEDNEJ próbie wiadomość leży w `search.product.sync.dlq` (`x-death`:
+`reason: rejected`), zamiast przejść 3 ponowienia z backoffem.
+
+**Diagnoza**
+1. `rabbitmqctl list_exchanges` — exchange'a `delays` nie ma nigdzie.
+   W `vendor/symfony/amqp-messenger/Transport/Connection.php`:
+   `publishWithDelay()` publikuje na `delay.exchange_name` (domyślnie
+   `delays`), a `setupDelay()` deklaruje ten exchange TYLKO gdy
+   `auto_setup: true`. My mamy `false` (topologia jako kod, wpis do
+   `messenger.yaml`) — i w `definitions.json` exchange'a nie było.
+2. Test integracyjny na żywym brokerze
+   (`apps/search/tests/Integration/Messenger/ProductSyncRetryTest.php`,
+   jednorazowa kolejka quorum z DLX, prawdziwy `ProductSyncHandler`, klient
+   katalogu celujący w zamknięty port) najpierw odtworzył dokładnie ten 404.
+   Po dodaniu exchange'a test pokazał **kolejny** błąd: **18 wywołań handlera
+   w 20 s**, co ~1 s — retry bez końca.
+3. `vendor/symfony/messenger/EventListener/SendFailedMessageForRetryListener.php`,
+   `shouldRetry()`: `RecoverableExceptionInterface` z `forceRetry() === true`
+   -> `return true` bez pytania strategii o `max_retries`. W Symfony 8.1
+   `RecoverableMessageHandlingException` ma `forceRetry = true` DOMYŚLNIE.
+4. Po `forceRetry: false` nadal 20 wywołań — bo `retryCount` w logu to
+   zawsze `#1`. Licznik ponowień to `RedeliveryStamp`, a nasz
+   `ExternalJsonEnvelopeSerializer` nie zapisywał stampów: każda wiadomość
+   z kolejki opóźnień wracała jako świeża.
+5. Po naprawie licznika: 4 wywołania, backoff OK, ale w DLQ testu **3 kopie**.
+   `Worker::handleMessage()` po każdej porażce woła `$receiver->reject()`,
+   `AmqpReceiver::reject()` = `nack` bez requeue, a kolejka ma
+   `x-dead-letter-exchange` -> każda nieudana próba to kopia w `*.dlq`.
+6. Osobno, w Postgresie: `select * from processed_events where
+   event_id='01M4942WSEH91185DWY7MJCV95'` -> znacznik z **17:28:43**, a
+   handler padł o **17:28:46**. `tryMarkProcessed()` commituje się przed
+   pobraniem projekcji — udany retry trafiłby na "Duplikat, pomijam",
+   dostałby ack, a produkt nie zostałby przeindeksowany.
+
+**Przyczyna**
+Cztery błędy w jednym łańcuchu, każdy zasłonięty poprzednim:
+1. **Topologia:** brak exchange'a opóźnień przy `auto_setup: false`.
+   Mechanizm retry w AMQP to: publikacja na exchange opóźnień -> dynamiczna
+   kolejka `delay_<exchange>_<kolejka>_<ms>_retry` z `x-message-ttl` ->
+   po TTL jej DLX (`''`, default exchange) oddaje wiadomość do kolejki
+   źródłowej. Samą kolejkę opóźnień Messenger deklaruje zawsze (nazwa jest
+   dynamiczna) — exchange musi już istnieć.
+2. **`forceRetry` domyślnie `true`** — retry bez limitu, `max_retries`
+   ignorowane.
+3. **Serializer gubił `RedeliveryStamp`** — strategia nigdy nie widziała
+   przekroczonego limitu. Domyślny serializer Messengera robi to sam
+   (nagłówki `X-Message-Stamp-*`), więc problem dotyczy tylko własnych
+   serializerów.
+4. **Semantyka DLQ vs. Messenger:** worker nackuje każdą nieudaną próbę,
+   także tę, którą już przejął retry albo `failure_transport`.
+
+Plus dedup przed efektem ubocznym (punkt 6 diagnozy) — bez transakcji
+pierwszy retry po naprawie 1–3 byłby cichą utratą zdarzenia.
+
+Dlaczego dane w ES i tak były spójne: produkt 457 zaindeksowało inne
+zdarzenie tego samego agregatu (`_version: 1`, `count` 1500/1500).
+
+**Naprawa**
+1. `infra/rabbitmq/definitions.template.json`: exchange `marketplace.delays`
+   (`direct`, durable). `messenger.yaml`, transporty AMQP:
+   `options.delay.exchange_name: marketplace.delays` + `arguments:
+   {x-queue-type: classic}` (kolejka opóźnień żyje sekundy, a
+   `rabbitmq.conf` ma `default_queue_type = quorum` — Raft dla niej to narzut).
+   Na działającym brokerze bez restartu, bo import jest addytywny:
+   ```bash
+   make up   # renderuje definitions.json z szablonu
+   docker compose exec rabbitmq rabbitmqctl import_definitions /etc/rabbitmq/definitions.json
+   docker compose exec rabbitmq rabbitmqctl list_exchanges name type | grep delays
+   ```
+2. `ProductSyncHandler`: `new RecoverableMessageHandlingException(...,
+   forceRetry: false)`.
+3. `ExternalJsonEnvelopeSerializer`: `encode()` zapisuje licznik w nagłówku
+   `X-Message-Retry-Count`, a `decode()` odtwarza z niego `RedeliveryStamp`.
+4. `App\Messenger\AckAfterHandOffTransport` (dekorator transportów AMQP,
+   `services.yaml`): `reject()` po przejęciu wiadomości -> `ack`. Prawdziwy
+   `nack` (-> DLQ) zostaje tylko dla wiadomości redelivered, czyli po crashu
+   konsumenta, zanim cokolwiek ją przejęło. Błędy dekodowania `AmqpReceiver`
+   nackuje sam, poza dekoratorem, więc też trafiają do DLQ.
+   **Od teraz: `*.dlq` = trucizny, `failure_transport` (tabela
+   `messenger_messages`, `queue_name='failed'`) = wyczerpane próby.**
+5. `messenger.yaml`: middleware `doctrine_transaction` na busie — znacznik
+   dedup i obsługa w jednej transakcji, wyjątek albo zerwane połączenie
+   robią rollback.
+6. `make mq-get`: `--ack-mode ack_requeue_true` — patrz niżej.
+
+Dowody:
+- `ProductSyncRetryTest` (2 testy, 18 asercji): 1 próba + 3 ponowienia,
+  odstępy ≈1 s/2 s/4 s (±10% jitter), 1 wpis w `failure_transport`, pusta
+  kolejka i DLQ. Scenariusz crash -> redelivery: dokładnie 1 kopia w DLQ,
+  a wiadomość i tak przechodzi retry.
+  ```bash
+  docker compose exec search-consumer php vendor/bin/phpunit --group integration
+  ```
+- Ręczny repro na prawdziwym stacku (bus z `doctrine_transaction`, Postgres,
+  kolejka `search.product.sync`):
+  ```bash
+  docker compose stop search-consumer          # żeby nie zabrał wiadomości
+  docker compose exec rabbitmq rabbitmqadmin --username $RABBITMQ_USER --password $RABBITMQ_PASSWORD \
+    publish message --exchange marketplace.events --routing-key product.updated \
+    --payload '{"id":"01REPRO027","type":"product.updated","version":1,"source":"catalog","occurred_at":"2026-10-06T18:00:00+00:00","aggregate":{"type":"product","id":"457"},"sequence":1,"data":{}}'
+  docker compose run --rm -e CATALOG_INTERNAL_BASE_URL=http://127.0.0.1:9 search-consumer \
+    php bin/console messenger:consume product_sync --limit=4 -vv
+  ```
+  Wynik (2026-10-06):
+  ```
+  17:53:54 WARNING ... Sending for retry #1 using 999 ms delay.
+  17:53:55 WARNING ... Sending for retry #2 using 1993 ms delay.
+  17:53:57 WARNING ... Sending for retry #3 using 4014 ms delay.
+  17:54:02 CRITICAL ... Removing from transport after 3 retries.
+  17:54:02 INFO ... Rejected message ... will be sent to the failure transport DoctrineTransport
+  ```
+  `processed_events` dla tego `event_id`: **0** (rollback),
+  `messenger_messages` (`failed`): **1**, `search.product.sync.dlq`: **0**.
+  Sprzątanie: `messenger:failed:remove <id> --force`,
+  `docker compose start search-consumer`.
+
+**Wpadka przy diagnozie: `rabbitmqadmin get` KASUJE wiadomości**
+Pozostałą w DLQ wiadomość (event `01M4942WSEH91185DWY7MJCV95`,
+`product.created` 457) podejrzałem przez `rabbitmqadmin get messages` — i
+tym samym ją usunąłem. W rabbitmqadmin v2 `--ack-mode` ma domyślnie
+`ack_requeue_false`. `make mq-get` ("podejrzyj bez usuwania") robił to
+samo. Skutek żaden (duplikat już zaindeksowanego dokumentu — i tak do
+purge'a), ale na prawdziwej DLQ to utrata dowodów. Payload dla porządku:
+```json
+{"id":"01M4942WSEH91185DWY7MJCV95","type":"product.created","version":1,"source":"catalog","occurred_at":"2026-10-06T17:27:21+00:00","aggregate":{"type":"product","id":"457"},"sequence":1,"data":{"id":457,"ean":"0451540293504","name":"Romaguera Inc Kurtka softshell Ultra","version":1,"brand_id":15,"attributes":{"color":"purple","model":"Ultra"},"created_at":"2026-10-06T17:27:21.000000Z","updated_at":"2026-10-06T17:27:21.000000Z","category_id":7,"description":"Modi quidem architecto et exercitationem praesentium. Unde quasi id veritatis iure. Vel nihil dolor sit distinctio. Ipsa voluptatem nulla et tempore eveniet ipsa aliquam."}}
+```
+
+**Czego się nauczyłem**
+- **`auto_setup: false` to umowa: wszystko, czego Messenger potrzebuje
+  w brokerze, musi być w `definitions.json`** — także to, czego nie widać
+  w `messenger.yaml` (exchange opóźnień). Nazwa ustawiona jawnie po obu
+  stronach to jedno źródło prawdy zamiast ukrytego defaultu.
+- Ścieżki awaryjne testuj **na prawdziwym brokerze**, nie na
+  `InMemoryTransport`. Żaden z tych czterech błędów nie istnieje w pamięci:
+  nie ma tam exchange'y, serializacji ani nacka.
+- Gdy naprawa ujawnia następny błąd, nie kończ na pierwszym zielonym
+  objawie. Test, który sprawdza **zachowanie końcowe** ("4 próby, potem
+  failure"), a nie "brak wyjątku", złapał wszystkie warstwy po kolei.
+- Retry ma sens tylko wtedy, gdy porażka niczego nie zostawia:
+  znacznik idempotencji musi żyć w tej samej transakcji co efekt, inaczej
+  ponowienie jest no-opem.
+- DLQ na kolejce i `failure_transport` Messengera to dwa mechanizmy
+  z różną semantyką. Ustal, co który znaczy, zanim alert na DLQ zacznie
+  dzwonić przy każdym timeoucie.
+- Przed "podglądem" kolejki narzędziem CLI sprawdź `--help` pod kątem
+  trybu ack. "Get" w AMQP to konsumpcja.
 
 ---
 

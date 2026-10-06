@@ -24,11 +24,26 @@ framework:
             # Symfony Messenger, więc domyślny serializer (który oczekuje
             # WŁASNEJ koperty z nagłówkami X-Message-Stamp-*) nic by tu nie
             # zrozumiał. Patrz komentarz w klasie serializera.
+            # Opcje `delay` (RUNBOOK #027): retry z opóźnieniem NIE wraca na
+            # kolejkę od razu — Messenger publikuje kopię na exchange opóźnień,
+            # deklaruje dynamiczną kolejkę "delay_..._retry" z x-message-ttl,
+            # a jej DLX ('' = default exchange) oddaje wiadomość do kolejki
+            # źródłowej po upływie TTL. Przy `auto_setup: false` Messenger NIE
+            # zadeklaruje sobie tego exchange'a — musi być w definitions.json
+            # (stąd jawna nazwa, wspólna dla obu plików; domyślna "delays"
+            # nigdzie nie istniała -> 404 NOT_FOUND przy pierwszym retry).
+            # x-queue-type: classic, bo rabbitmq.conf ma
+            # default_queue_type = quorum, a kolejka opóźnień żyje kilka
+            # sekund (x-expires) — Raft dla niej to czysty narzut.
             product_sync:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
                 serializer: App\Messenger\ExternalJsonEnvelopeSerializer
                 options:
                     auto_setup: false
+                    delay: &amqp_retry_delay
+                        exchange_name: marketplace.delays
+                        arguments:
+                            x-queue-type: classic
                     queues:
                         search.product.sync: ~
                 retry_strategy:
@@ -39,6 +54,7 @@ framework:
                 serializer: App\Messenger\ExternalJsonEnvelopeSerializer
                 options:
                     auto_setup: false
+                    delay: *amqp_retry_delay
                     queues:
                         search.analytics.ingest: ~
                 retry_strategy:
@@ -49,6 +65,7 @@ framework:
                 serializer: App\Messenger\ExternalJsonEnvelopeSerializer
                 options:
                     auto_setup: false
+                    delay: *amqp_retry_delay
                     queues:
                         notifications.alerts: ~
                 retry_strategy:
@@ -65,7 +82,17 @@ framework:
         default_bus: messenger.bus.default
 
         buses:
-            messenger.bus.default: []
+            # doctrine_transaction (RUNBOOK #027): ProductSyncHandler zapisuje
+            # znacznik deduplikacji (processed_events) ZANIM pobierze projekcję
+            # i zaindeksuje produkt. Bez transakcji znacznik był commitowany od
+            # razu — porażka po nim zamieniała retry w "Duplikat, pomijam" i
+            # zdarzenie przepadało po cichu. W transakcji każdy wyjątek (także
+            # zabicie konsumenta = zerwane połączenie) cofa znacznik.
+            # Koszt: transakcja Postgresa otwarta na czas HTTP + ES (timeout
+            # klienta katalogu to 3 s) — świadomy wybór przy tej skali.
+            messenger.bus.default:
+                middleware:
+                    - doctrine_transaction
 
         routing:
             Symfony\Component\Mailer\Messenger\SendEmailMessage: async
