@@ -1,0 +1,193 @@
+# Zestaw zapytań kontrolnych do `_rank_eval` (ETAP 7, Faza 5,
+# docs/06-PLAN-WDROZENIA.md, część F, artefakt #4).
+#
+# `php artisan search:eval` (apps/catalog) czyta ten plik, buduje dla
+# każdego zapytania TEN SAM query template co ProductSearchService::search()
+# (App\Services\ProductSearchService::buildSearchQuery — jeden template dla
+# wyników i dla oceny, żeby nie ocenić czegoś innego, niż faktycznie widzi
+# użytkownik) i liczy nDCG@10 przez `_rank_eval`.
+#
+# `grade` to relevance rating 0-3 (0 pomijamy — po prostu nie wypisujemy
+# dokumentu jako relevant): 3 = dokładnie ten produkt, o który pytano;
+# 1 = trafny wynik szerszej kategorii/marki/synonimu.
+#
+# ŚWIADOME OGRANICZENIE (docs/RUNBOOK.md, dopisek ETAP 7 przy #017): 13 par
+# zamiast docelowych ~50 z dokumentu planu — to fundament harnessu na
+# ~1500-produktowym seedzie (Faza 1), nie ETAP 8 (skala). ID-ki dokumentów
+# są przywiązane do `php artisan marketplace:seed` ze stałym seedem Fakera
+# (42) — świeży `marketplace:seed --fresh` odtwarza te same dane.
+#
+# Dwa zapytania (`notebook`, `komórka`) testują SYNONIMY z
+# infra/elasticsearch/analysis/synonyms.txt, nie samo dopasowanie tekstu —
+# zweryfikowane ręcznie na żywym indeksie: `notebook` zwraca DOKŁADNIE ten
+# sam zestaw dokumentów co `Laptop`, `komórka` — co `Smartfon`.
+
+queries:
+    - query: 'Wyman-Howell Laptop Ultra 14"'
+      relevant:
+          - { id: '74', grade: 3 }
+
+    - query: 'Bailey Ltd Smartfon Nova 128GB'
+      relevant:
+          - { id: '158', grade: 3 }
+
+    - query: 'Orn PLC'
+      relevant:
+          - { id: '45', grade: 1 }
+          - { id: '64', grade: 1 }
+          - { id: '135', grade: 1 }
+          - { id: '144', grade: 1 }
+          - { id: '160', grade: 1 }
+          - { id: '167', grade: 1 }
+          - { id: '173', grade: 1 }
+          - { id: '73', grade: 1 }
+          - { id: '75', grade: 1 }
+          - { id: '93', grade: 1 }
+          - { id: '14', grade: 1 }
+          - { id: '24', grade: 1 }
+          - { id: '29', grade: 1 }
+          - { id: '5', grade: 1 }
+          - { id: '30', grade: 1 }
+
+    - query: 'smartfon'
+      relevant:
+          - { id: '158', grade: 1 }
+          - { id: '183', grade: 1 }
+          - { id: '86', grade: 1 }
+          - { id: '117', grade: 1 }
+          - { id: '16', grade: 1 }
+          - { id: '7', grade: 1 }
+          - { id: '32', grade: 1 }
+          - { id: '369', grade: 1 }
+          - { id: '380', grade: 1 }
+          - { id: '195', grade: 1 }
+          - { id: '210', grade: 1 }
+          - { id: '448', grade: 1 }
+          - { id: '329', grade: 1 }
+          - { id: '308', grade: 1 }
+          - { id: '264', grade: 1 }
+
+    - query: 'buty do biegania'
+      relevant:
+          - { id: '167', grade: 1 }
+          - { id: '181', grade: 1 }
+          - { id: '184', grade: 1 }
+          - { id: '101', grade: 1 }
+          - { id: '25', grade: 1 }
+          - { id: '361', grade: 1 }
+          - { id: '386', grade: 1 }
+          - { id: '243', grade: 1 }
+          - { id: '325', grade: 1 }
+          - { id: '306', grade: 1 }
+          - { id: '486', grade: 1 }
+          - { id: '513', grade: 1 }
+          - { id: '577', grade: 1 }
+          - { id: '606', grade: 1 }
+          - { id: '739', grade: 1 }
+
+    - query: 'kurtka zimowa'
+      relevant:
+          - { id: '52', grade: 1 }
+          - { id: '148', grade: 1 }
+          - { id: '189', grade: 1 }
+          - { id: '75', grade: 1 }
+          - { id: '83', grade: 1 }
+          - { id: '121', grade: 1 }
+          - { id: '366', grade: 1 }
+          - { id: '212', grade: 1 }
+          - { id: '333', grade: 1 }
+          - { id: '519', grade: 1 }
+
+    - query: 'meble ogrodowe'
+      relevant:
+          - { id: '50', grade: 1 }
+          - { id: '159', grade: 1 }
+          - { id: '69', grade: 1 }
+          - { id: '96', grade: 1 }
+          - { id: '104', grade: 1 }
+          - { id: '107', grade: 1 }
+          - { id: '122', grade: 1 }
+          - { id: '13', grade: 1 }
+          - { id: '4', grade: 1 }
+          - { id: '30', grade: 1 }
+
+    - query: 'wiertarka'
+      relevant:
+          - { id: '63', grade: 1 }
+          - { id: '65', grade: 1 }
+          - { id: '162', grade: 1 }
+          - { id: '100', grade: 1 }
+          - { id: '20', grade: 1 }
+          - { id: '213', grade: 1 }
+          - { id: '348', grade: 1 }
+          - { id: '356', grade: 1 }
+          - { id: '302', grade: 1 }
+          - { id: '317', grade: 1 }
+
+    - query: 'rower górski'
+      relevant:
+          - { id: '173', grade: 1 }
+          - { id: '177', grade: 1 }
+          - { id: '187', grade: 1 }
+          - { id: '111', grade: 1 }
+          - { id: '360', grade: 1 }
+          - { id: '439', grade: 1 }
+          - { id: '346', grade: 1 }
+          - { id: '320', grade: 1 }
+          - { id: '269', grade: 1 }
+          - { id: '413', grade: 1 }
+
+    # Synonim (infra/elasticsearch/analysis/synonyms.txt: "laptop, notebook,
+    # komputer przenośny") — te same ID-ki co zapytanie o "Laptop".
+    - query: 'notebook'
+      relevant:
+          - { id: '74', grade: 1 }
+          - { id: '80', grade: 1 }
+          - { id: '105', grade: 1 }
+          - { id: '447', grade: 1 }
+          - { id: '294', grade: 1 }
+          - { id: '297', grade: 1 }
+          - { id: '535', grade: 1 }
+          - { id: '551', grade: 1 }
+          - { id: '624', grade: 1 }
+          - { id: '630', grade: 1 }
+
+    # Synonim ("telefon, smartfon, komórka") — te same ID-ki co "smartfon".
+    - query: 'komórka'
+      relevant:
+          - { id: '158', grade: 1 }
+          - { id: '183', grade: 1 }
+          - { id: '86', grade: 1 }
+          - { id: '117', grade: 1 }
+          - { id: '16', grade: 1 }
+          - { id: '7', grade: 1 }
+          - { id: '32', grade: 1 }
+          - { id: '369', grade: 1 }
+          - { id: '380', grade: 1 }
+          - { id: '195', grade: 1 }
+
+    - query: 'telefon'
+      relevant:
+          - { id: '158', grade: 1 }
+          - { id: '183', grade: 1 }
+          - { id: '86', grade: 1 }
+          - { id: '117', grade: 1 }
+          - { id: '16', grade: 1 }
+          - { id: '7', grade: 1 }
+          - { id: '32', grade: 1 }
+          - { id: '369', grade: 1 }
+          - { id: '380', grade: 1 }
+          - { id: '195', grade: 1 }
+
+    - query: 'słuchawki bezprzewodowe'
+      relevant:
+          - { id: '57', grade: 1 }
+          - { id: '156', grade: 1 }
+          - { id: '176', grade: 1 }
+          - { id: '194', grade: 1 }
+          - { id: '88', grade: 1 }
+          - { id: '92', grade: 1 }
+          - { id: '98', grade: 1 }
+          - { id: '359', grade: 1 }
+          - { id: '370', grade: 1 }
+          - { id: '378', grade: 1 }

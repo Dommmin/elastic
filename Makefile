@@ -57,7 +57,10 @@ up-cluster: ## Start klastra 3-nodowego (tryb docelowy, D-12)
 
 .PHONY: up-apps
 up-apps: ## Start z aplikacjami (Laravel + Symfony)
+	@bash tools/doctor.sh cluster apps
+	@python3 tools/render-rabbitmq-definitions.py
 	$(DC) --profile cluster --profile apps up -d
+	@$(MAKE) --no-print-directory wait
 
 .PHONY: wait
 wait: ## Czekaj aż klaster odpowie
@@ -129,6 +132,28 @@ es-analyze: ## Test analizatora (make es-analyze t="butów do biegania" a=polish
 	@$(CURL_ES) -X POST "$(ES_URL)/_analyze?pretty" -H 'Content-Type: application/json' \
 		-d '{"analyzer":"$(or $(a),standard)","text":"$(t)"}'
 
+.PHONY: es-slowlog-on
+es-slowlog-on: ## Loguj KAŻDE zapytanie do products-search (próg 0ms) — dowody w ETAPIE 7
+	@$(CURL_ES) -X PUT "$(ES_URL)/products-search/_settings" -H 'Content-Type: application/json' \
+		-d '{"index.search.slowlog.threshold.query.trace":"0ms","index.search.slowlog.include.user":true}'
+	@echo ""
+
+.PHONY: es-slowlog-off
+es-slowlog-off: ## Wyłącz slowlog-wszystkiego (przywróć domyślne progi)
+	@$(CURL_ES) -X PUT "$(ES_URL)/products-search/_settings" -H 'Content-Type: application/json' \
+		-d '{"index.search.slowlog.threshold.query.trace":null,"index.search.slowlog.include.user":null}'
+	@echo ""
+
+.PHONY: es-slowlog
+es-slowlog: ## Zapytania ze slowloga z ostatnich N sekund (make es-slowlog since=60s)
+	@$(DC) logs --no-log-prefix --since $(or $(since),60s) es01 es02 es03 2>/dev/null \
+		| grep 'index_search_slowlog' \
+		| python3 tools/slowlog-summary.py
+
+.PHONY: search-proof
+search-proof: ## DoD ETAP 7: które zapytania do ES wywołuje każda akcja na /search (slowlog)
+	@bash tools/search-slowlog-proof.sh
+
 .PHONY: certs-reset
 certs-reset: ## Wygeneruj certyfikaty TLS od nowa
 	$(DC) down
@@ -154,6 +179,15 @@ mq-get: ## Podejrzyj wiadomość bez usuwania (make mq-get q=search.product.sync
 	@$(DC) exec rabbitmq rabbitmqadmin \
 		--username $(RABBITMQ_USER) --password $(RABBITMQ_PASSWORD) \
 		get messages --queue $(or $(q),search.product.sync) --count 5
+
+## Dane
+.PHONY: seed
+seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500), realnym pipeline'em outboxu
+	$(DC) exec catalog-app php artisan marketplace:seed --n=$(or $(n),1500)
+
+.PHONY: eval
+eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
+	$(DC) exec catalog-app php artisan search:eval
 
 ## Bazy danych
 .PHONY: psql
