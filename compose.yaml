@@ -179,9 +179,11 @@ services:
       - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
       - es-snapshots:/snapshots
       - es-certs:/usr/share/elasticsearch/config/certs:ro
+    # `service_started`, NIE `service_healthy` — patrz komentarz przy es03,
+    # ten sam deadlock dotyczy obu node'ów symetrycznie.
     depends_on:
       es01:
-        condition: service_healthy
+        condition: service_started
 
   es03:
     <<: *es-common
@@ -196,9 +198,29 @@ services:
       - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
       - es-snapshots:/snapshots
       - es-certs:/usr/share/elasticsearch/config/certs:ro
+    # `service_started`, NIE `service_healthy` (docs/RUNBOOK.md #021).
+    #
+    # DLACZEGO nie `service_healthy`, mimo że tak sugerowałby zdrowy rozsądek
+    # ("poczekaj, aż pierwszy node naprawdę żyje"): healthcheck es01 sprawdza
+    # `_cluster/health` (status green/yellow), czyli wymaga UTWORZONEGO
+    # klastra. Przy PIERWSZYM starcie (puste wolumeny) es01 formuje klaster
+    # SAM dzięki `cluster.initial_master_nodes: es01` — więc szybko staje
+    # się healthy i ten depends_on w ogóle nie przeszkadza. Ale
+    # `cluster.initial_master_nodes` działa TYLKO przy pierwszym bootstrapie
+    # — po restarcie z istniejącymi danymi (`es01-data` ma już zapisaną
+    # konfigurację głosującą 3 node'ów) es01 wymaga KWORUM (2 z 3), żeby
+    # w ogóle dołączyć do "ostatniego znanego" stanu klastra. Rezultat:
+    # es02/es03 czekają na `es01: healthy`, a `es01` nigdy nie będzie
+    # healthy bez es02/es03 — klasyczny deadlock, który NIE ujawnia się przy
+    # pierwszym `make up-cluster` (puste wolumeny), tylko po restarcie.
+    #
+    # `service_started` wystarcza: dyskrecja klastra (`discovery.seed_hosts`)
+    # sama w sobie odpytuje DNS/porty w pętli, dopóki node'y się nie znajdą
+    # — to jest dokładnie mechanizm, po który sięga się przy współbieżnym
+    # starcie klastra wielonodowego, i nie zależy od kolejności kontenerów.
     depends_on:
       es01:
-        condition: service_healthy
+        condition: service_started
 
   # Kontener jednorazowy: hasło kibana_system + role i użytkownicy aplikacji.
   # To jest lekcja "jak inicjalizuje się sekrety w klastrze" (ETAP 2).
@@ -323,6 +345,11 @@ services:
       - ./apps/catalog:/app
       - caddy-data:/data
       - caddy-config:/config
+      # catalog-app widzi TYLKO ./apps/catalog jako /app — tests/ w repo root
+      # w ogóle nie istnieje w jego systemie plików (ten sam powód co przy
+      # search-consumer i infra/elasticsearch/mappings, patrz tamten
+      # komentarz). `search:eval` (ETAP 7) czyta stąd zapytania kontrolne.
+      - ./tests/relevance:/tests/relevance:ro
     ports:
       - "127.0.0.1:${CATALOG_HTTP_PORT}:80"
       - "127.0.0.1:${CATALOG_HTTPS_PORT}:443"
@@ -349,8 +376,17 @@ services:
         FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
         PHP_VERSION: ${PHP_VERSION}
         NODE_VERSION: ${NODE_VERSION}
+    environment:
+      # Port Vite widziany z HOSTA — trafia do public/hot (patrz vite.config.ts).
+      VITE_PUBLIC_PORT: ${VITE_PORT}
     volumes:
       - ./apps/catalog:/app
+      # WŁASNE node_modules kontenera, przykrywające te z hosta (RUNBOOK #024).
+      # Bez tego `npm install` z CMD (Linux) nadpisywał node_modules hosta
+      # (macOS) natywnymi binarkami pod Linuksa — i ESLint/Vite na hoście
+      # padały z "Cannot find native binding". Odwrotnie tak samo: `npm i` na
+      # hoście psuło kontener przy następnym starcie. Ping-pong bez końca.
+      - catalog-node-modules:/app/node_modules
     ports:
       - "127.0.0.1:${VITE_PORT}:5173"
     mem_limit: 1g
@@ -436,3 +472,4 @@ volumes:
   rabbitmq-data:
   caddy-data:
   caddy-config:
+  catalog-node-modules:

@@ -54,6 +54,22 @@ if awk -v m="$MEM_GB" -v n="$NEEDED" 'BEGIN{exit !(m < n)}'; then
   echo ""
 else
   ok "Pamięci wystarczy"
+
+  # Całkowita pamięć VM to nie to samo co WOLNA pamięć: inne projekty
+  # działające równolegle zjadają ją po cichu, a ES zabity przez OOM killera
+  # VM-a (nie limit kontenera!) znika bez żadnego logu zamknięcia — patrz
+  # RUNBOOK #025. Liczymy więc też to, co zajmują kontenery spoza tego stacku.
+  OTHERS_GB=$(docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}' 2>/dev/null \
+    | grep -v "^${COMPOSE_PROJECT_NAME:-marketplace}-" \
+    | awk -F'\t' '{split($2, a, " "); v=a[1];
+        if (v ~ /GiB/) {sub("GiB","",v); s+=v}
+        else if (v ~ /MiB/) {sub("MiB","",v); s+=v/1024}}
+        END {printf "%.1f", s}')
+  FREE_GB=$(awk -v m="$MEM_GB" -v o="$OTHERS_GB" 'BEGIN{printf "%.1f", m-o}')
+  echo "    Inne projekty zajmują już: ${OTHERS_GB} GB  ->  zostaje ${FREE_GB} GB"
+  if awk -v f="$FREE_GB" -v n="$NEEDED" 'BEGIN{exit !(f < n)}'; then
+    warn "Po odjęciu innych działających projektów pamięci NIE wystarczy — ES może ginąć z OOM bez śladu w logach. Zatrzymaj tamte projekty albo obniż ES_HEAP/ES_MEM_LIMIT w .env."
+  fi
 fi
 
 # --- CPU --------------------------------------------------------------------
@@ -87,6 +103,67 @@ if [ -n "${DISK_AVAIL:-}" ]; then
   else
     ok "Miejsca wystarczy"
   fi
+fi
+
+# --- porty na hoście --------------------------------------------------------
+# Kilka stacków dockerowych naraz (inne projekty) to norma. `docker compose up`
+# przy zajętym porcie startuje stack W POŁOWIE: część kontenerów wstaje, a jeden
+# pada z "Bind for 0.0.0.0:5672 failed: port is already allocated" — reszta
+# zostaje w stanie "Created". Lepiej wiedzieć PRZED startem (RUNBOOK #022).
+#
+# Port na hoście zmienia TYLKO to, jak Ty łączysz się z hosta (curl, Kibana,
+# psql). Kontenery rozmawiają między sobą po sieci dockerowej (es01:9200,
+# rabbitmq:5672) — zmiana ES_PORT w .env nie dotyka aplikacji.
+PROJECT="${COMPOSE_PROJECT_NAME:-marketplace}"
+CONTAINER_PORTS=$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null)
+
+check_port() {
+  local var="$1" severity="$2"
+  local port="${!var:-}"
+  [ -z "$port" ] && return
+
+  # Własne kontenery (stack już działa) to nie kolizja.
+  if echo "$CONTAINER_PORTS" | grep "^${PROJECT}-" | grep -q ":${port}->"; then
+    ok "${var}=${port} (używa go już ten stack)"
+    return
+  fi
+
+  local owner
+  owner=$(echo "$CONTAINER_PORTS" | grep -v "^${PROJECT}-" | grep ":${port}->" | cut -f1 | head -1)
+  if [ -n "$owner" ]; then
+    "$severity" "${var}=${port} zajęty przez kontener '${owner}' (inny projekt)"
+    PORT_CONFLICTS=$((PORT_CONFLICTS+1))
+    return
+  fi
+
+  local process
+  process=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1" (PID "$2")"}')
+  if [ -n "$process" ]; then
+    "$severity" "${var}=${port} zajęty przez proces na hoście: ${process}"
+    PORT_CONFLICTS=$((PORT_CONFLICTS+1))
+    return
+  fi
+
+  ok "${var}=${port}"
+}
+
+PORT_CONFLICTS=0
+echo -e "\n  ${BLD}Porty na hoście${NC}"
+for var in POSTGRES_PORT REDIS_PORT ES_PORT KIBANA_PORT RABBITMQ_PORT RABBITMQ_UI_PORT; do
+  check_port "$var" err
+done
+
+# Porty aplikacji liczą się tylko przy profilu `apps` (make up-apps).
+if [ "${2:-}" = "apps" ]; then
+  for var in CATALOG_HTTP_PORT CATALOG_HTTPS_PORT VITE_PORT; do
+    check_port "$var" err
+  done
+fi
+
+if [ "$PORT_CONFLICTS" -gt 0 ]; then
+  echo ""
+  echo "    Zmień kolidujące porty w .env (np. ES_PORT=19200) albo zatrzymaj tamten projekt."
+  echo "    To zmienia tylko dostęp z hosta — kontenery i tak gadają po sieci dockerowej."
 fi
 
 # --- podsumowanie -----------------------------------------------------------
