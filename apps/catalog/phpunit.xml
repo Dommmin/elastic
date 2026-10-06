@@ -44,5 +44,20 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!--
+            <server> jest DRUGĄ połową izolacji i bez niej force="true" nie wystarcza
+            (RUNBOOK 026). <env force="true"> ustawia tylko putenv() i $_ENV —
+            NIGDY $_SERVER. A PHP CLI kopiuje zmienne środowiskowe kontenera do
+            $_SERVER, Dotenv Laravela czyta $_SERVER jako PIERWSZE źródło. Efekt:
+            w kontenerze APP_ENV=local i DB_CONNECTION=pgsql z compose.yaml
+            wygrywały z phpunit.xml — testy jechały na prawdziwym Postgresie
+            (RefreshDatabase go czyścił), a CSRF nie był wyłączany (419).
+            <server> zawsze nadpisuje $_SERVER, atrybut force jest zbędny.
+        -->
+        <server name="APP_ENV" value="testing"/>
+        <server name="DB_CONNECTION" value="sqlite"/>
+        <server name="DB_DATABASE" value=":memory:"/>
+        <server name="DB_HOST" value=""/>
+        <server name="DB_URL" value=""/>
     </php>
 </phpunit>

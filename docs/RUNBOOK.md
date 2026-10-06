@@ -38,6 +38,7 @@
 | [023](#023) | Przewinięcie wyników po minucie: `search_context_missing_exception` (500) | Elasticsearch | 7 |
 | [024](#024) | ESLint/Vite na hoście: `Cannot find native binding` | Docker / Node | 7 |
 | [025](#025) | Node'y ES znikają bez logu zamknięcia, restartują się w kółko | Docker | 7 |
+| [026](#026) | 18 testów Fortify pada tylko w kontenerze (419) — i testy WCIĄŻ czyściły Postgresa | Laravel / PHPUnit | 7 |
 
 ---
 
@@ -713,6 +714,14 @@ tego, co już jest w środowisku procesu.
   jest izolowana**, np. `php artisan tinker --execute 'echo config("database.default");'`
   powinno pokazać `sqlite`, nie `pgsql`.
 
+> **KOREKTA (ETAP 7, wpis [026](#026)):** ta naprawa była NIEPEŁNA i baza
+> w kontenerze **nadal nie była izolowana**. `<env force="true">` ustawia tylko
+> `putenv()` i `$_ENV`, a Laravel czyta najpierw `$_SERVER`, gdzie wciąż
+> siedziało `DB_CONNECTION=pgsql` z compose. Weryfikacja przez `tinker`
+> (poniżej) też była mylna — tinker nie przechodzi przez `phpunit.xml`, więc
+> nic nie mówi o środowisku testów. Prawdziwa naprawa: `<server>` w
+> `phpunit.xml` + bezpiecznik w `tests/TestCase.php`.
+
 **Efekt uboczny tego dochodzenia**
 Przy okazji znaleziono (ale świadomie NIE naprawiono, bo poza zakresem
 ETAPU 6) 18 nieudanych testów startera Fortify (`AuthenticationTest`,
@@ -1051,6 +1060,87 @@ podnosi go od nowa.
 kontenera (flaga = true, exit 137) i całej maszyny/VM (flaga = false, proces
 znika). Proces, który ginie bez słowa w logach, prawie zawsze został zabity
 z zewnątrz — szukaj po stronie zasobów, nie konfiguracji.
+
+<a id="026"></a>
+## 026 — 18 testów Fortify pada tylko w kontenerze (419) — i testy WCIĄŻ czyściły Postgresa
+
+**Objaw**
+`docker compose exec -T catalog-app php artisan test --compact`: 62 zielone,
+18 czerwonych (`AuthenticationTest`, `PasswordResetTest`, `RegistrationTest`,
+`TwoFactorChallengeTest`, `VerificationNotificationTest`, `ProfileUpdateTest`,
+`SecurityTest`). Na hoście wszystko zielone. Asercje: `Session is missing
+expected key [errors]`, `assertRedirect`, `assertAuthenticated` — a pod nimi
+wspólny mianownik: **każdy POST dostaje 419** (CSRF token mismatch).
+
+**Diagnoza**
+419 w testach to podejrzane, bo `ValidateCsrfToken` sam się wyłącza, gdy
+`app()->runningUnitTests()` — czyli gdy `APP_ENV=testing`. Hipoteza "zmienne
+sesji/cache z compose" odpadła od razu: `docker compose exec catalog-app env`
+nie ma ani `SESSION_*`, ani `CACHE_*`. Tymczasowy test-zrzut (nie tinker —
+tinker nie ładuje `phpunit.xml`, więc nie widzi środowiska testów):
+```
+"app.env": "local",            <- a powinno być testing
+"runningUnitTests": false,
+"getenv APP_ENV": "testing",   <- phpunit.xml zadziałał...
+"_ENV":           "testing",
+"_SERVER":        "local",     <- ...ale nie tutaj
+"db": "pgsql", "db_name": "catalog"   <- !!!
+```
+A potem: `select count(*) from products` w deweloperskim Postgresie -> **0**.
+Wszystkie tabele puste, tylko `migrations` = 13 — klasyczny ślad
+`RefreshDatabase` (`migrate:fresh`).
+
+**Przyczyna**
+Dwa mechanizmy, które razem dają cichy wyciek:
+1. PHPUnit `<env name=... force="true">` (`PhpHandler::handleEnvironmentVariables`)
+   robi `putenv()` i `$_ENV[...] = ...` — **nigdy nie dotyka `$_SERVER`**.
+2. PHP CLI kopiuje zmienne środowiskowe procesu (z `environment:` w
+   `compose.yaml`) do `$_SERVER`, a repozytorium Dotenv Laravela
+   (`RepositoryBuilder::createWithDefaultAdapters()`) pyta **najpierw**
+   `ServerConstAdapter`, dopiero potem `EnvConstAdapter`/`putenv`.
+
+Więc w kontenerze `APP_ENV=local` i `DB_CONNECTION=pgsql` z compose wygrywały
+z `phpunit.xml` mimo `force="true"`. Skutki: (a) środowisko `local` -> CSRF
+aktywny -> 419 na każdym POST-cie -> 18 czerwonych testów; (b) testy jechały
+na prawdziwej bazie `catalog`, a `RefreshDatabase` (podpięty w `Pest.php` do
+całego `Feature/`) czyścił ją przy każdym uruchomieniu. Wpis [018](#018)
+naprawił tylko połowę (`$_ENV`), a weryfikacja przez tinker dała fałszywe
+poczucie bezpieczeństwa. Na hoście problemu nie ma, bo tam nic nie ustawia
+tych zmiennych w środowisku procesu.
+
+**Naprawa**
+1. `apps/catalog/phpunit.xml` — zmienne krytyczne dla izolacji również jako
+   `<server>` (PHPUnit nadpisuje `$_SERVER` bezwarunkowo, `force` niepotrzebne):
+   ```xml
+   <server name="APP_ENV" value="testing"/>
+   <server name="DB_CONNECTION" value="sqlite"/>
+   <server name="DB_DATABASE" value=":memory:"/>
+   <server name="DB_HOST" value=""/>
+   <server name="DB_URL" value=""/>
+   ```
+2. `apps/catalog/tests/TestCase.php` — bezpiecznik w `setUpTraits()` (czyli
+   PRZED `RefreshDatabase`): jeśli env != `testing` albo baza != sqlite
+   `:memory:`, test rzuca wyjątek zamiast migrować. Sprawdzone na starym
+   `phpunit.xml`: testy odmawiają startu z komunikatem
+   `env=local, db=pgsql/catalog`, Postgres nietknięty.
+
+Wynik: kontener **80/80** (444 asercje), host 65 zielonych + 15 pominiętych
+(funkcje Fortify wyłączone na hoście — bez zmian). Danych deweloperskich
+nie da się odzyskać z tej bazy — trzeba je zasiać ponownie.
+
+**Czego się nauczyłem**
+- "Zmienna środowiskowa" w PHP to trzy różne miejsca: `getenv()`, `$_ENV`,
+  `$_SERVER`. Narzędzie może ustawić jedno, a framework czytać drugie.
+  Laravel czyta `$_SERVER` pierwszy — i tam trzeba wymusić wartość.
+- **Weryfikuj w tym samym kontekście, w którym działa kod.** Tinker pokazywał
+  "dobrą" konfigurację, bo w ogóle nie czyta `phpunit.xml`. Jedyny rzetelny
+  dowód izolacji testów to asercja/zrzut wykonany *wewnątrz testu*.
+- Jeśli błąd izolacji oznacza utratę danych, nie wystarczy konfiguracja —
+  potrzebny jest bezpiecznik w kodzie, który głośno failuje, zanim zrobi
+  szkodę (tu: `TestCase::setUpTraits()`).
+- 18 "dziwnych" testów z [018](#018) było tym samym błędem co utrata danych,
+  tylko widzianym z innej strony. Pozostawione "niezdiagnozowane do końca"
+  czerwone testy mogą być jedynym widocznym objawem dużo groźniejszego problemu.
 
 ---
 
