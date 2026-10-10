@@ -2,8 +2,11 @@
 # ============================================================================
 #  bootstrap.sh — pierwsze zabezpieczenie świeżego VPS-a (ETAP D, Task 6)
 #
-#  Uruchamiany JEDEN raz jako root, z Maca:
-#    ssh root@<IP> 'bash -s' < tools/vps/bootstrap.sh
+#  Uruchamiany jako root, z Maca — w tle na serwerze, z logiem do pliku:
+#    ssh elastic-vps 'cat > /tmp/bootstrap.sh && nohup bash /tmp/bootstrap.sh > /var/log/bootstrap.log 2>&1 &' < tools/vps/bootstrap.sh
+#  (gdy root jest już wyłączony: User=deploy i `sudo nohup bash ...`)
+#  W tle, bo zerwane połączenie (ban, restart sshd, utrata sieci) zabijało
+#  skrypt w połowie: pierwsze `echo` do martwego terminala = SIGPIPE.
 #  Idempotentny: drugie uruchomienie niczego nie psuje.
 #
 #  Co robi i DLACZEGO:
@@ -33,6 +36,21 @@ log() { echo -e "\n\033[1m[bootstrap] $*\033[0m"; }
 [ -s /root/.ssh/authorized_keys ] || { echo "Brak /root/.ssh/authorized_keys — nie ma czego skopiować dla ${DEPLOY_USER}." >&2; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive
+
+# Jail sshd PRZED instalacją fail2ban: pakiet startuje usługę od razu,
+# z domyślną konfiguracją, i przegląda logi z ostatnich minut. Seria
+# nieudanych logowań sprzed chwili (np. weryfikacja na koncie, którego
+# jeszcze nie ma) = natychmiastowy ban i zerwane połączenie w połowie
+# skryptu (docs/RUNBOOK.md #034 — dokładnie tak się stało).
+install -d /etc/fail2ban/jail.d
+cat > /etc/fail2ban/jail.d/sshd.local <<'CONF'
+[sshd]
+enabled  = true
+backend  = systemd
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+CONF
 
 log "1/8 aktualizacje i pakiety"
 apt-get update -q
@@ -80,14 +98,6 @@ ufw allow 22/tcp
 ufw --force enable
 
 log "5/8 fail2ban"
-cat > /etc/fail2ban/jail.d/sshd.local <<'CONF'
-[sshd]
-enabled  = true
-backend  = systemd
-maxretry = 5
-findtime = 10m
-bantime  = 1h
-CONF
 systemctl enable --now fail2ban
 systemctl restart fail2ban
 
@@ -103,10 +113,13 @@ Unattended-Upgrade::Automatic-Reboot "false";
 CONF
 
 log "7/8 sysctl pod Elasticsearch"
-cat > /etc/sysctl.d/99-elasticsearch.conf <<'CONF'
-# ES mapuje pliki indeksu do pamięci (mmap). Domyślne 65530 to za mało —
-# ES w trybie produkcyjnym odmawia startu (bootstrap check).
-vm.max_map_count = 262144
+# ES mapuje pliki indeksu do pamięci (mmap) i wymaga vm.max_map_count >= 262144
+# (bootstrap check). Ubuntu 24.04 ma już domyślnie 1048576 — wtedy NIE
+# nadpisujemy: "ustaw 262144" na takim systemie OBNIŻYŁOBY limit.
+MAP_COUNT=$(sysctl -n vm.max_map_count)
+[ "${MAP_COUNT}" -lt 262144 ] && MAP_COUNT=262144
+cat > /etc/sysctl.d/99-elasticsearch.conf <<CONF
+vm.max_map_count = ${MAP_COUNT}
 # JVM wyswapowana na dysk = wielosekundowe pauzy GC i węzeł "znika" z klastra.
 vm.swappiness = 1
 CONF
@@ -123,4 +136,4 @@ fi
 
 timedatectl set-timezone Europe/Warsaw
 
-log "GOTOWE. Teraz W DRUGIEJ sesji: ssh ${DEPLOY_USER}@<IP> sudo true — dopiero potem zamknij tę."
+log "GOTOWE. Teraz W DRUGIEJ sesji: ssh -o User=${DEPLOY_USER} elastic-vps sudo true — dopiero potem zamknij tę."

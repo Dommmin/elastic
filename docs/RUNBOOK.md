@@ -1473,6 +1473,56 @@ używa CLI.
 Sonda zdrowia też jest obciążeniem i może zmienić to, co mierzy. W testach na
 gotowość lepiej czekać na sygnał od usługi (log, port) niż pytać ją w pętli.
 
+<a id="034"></a>
+## 034 — Bootstrap serwera urywa się w połowie, port 22: `Connection refused`
+
+**Objaw**
+`ssh elastic-vps 'bash -s' < tools/vps/bootstrap.sh`: log kończy się na kroku 1/8,
+a potem:
+```
+ssh: connect to host <IP> port 22: Connection refused
+```
+Po kilku minutach port wraca, ale root dostaje `Permission denied (publickey)`.
+
+**Diagnoza**
+Po odzyskaniu dostępu (jako `deploy`):
+```
+sudo zgrep -h " Ban \| Unban " /var/log/fail2ban.log*
+NOTICE [sshd] Ban   <moje IP>     17:44:26
+NOTICE [sshd] Unban <moje IP>     17:48:51
+```
+Stan serwera: `deploy` istnieje, `sshd` utwardzony (krok 3), `ufw` nieaktywny (krok 4 nie wykonany).
+
+**Przyczyna**
+Trzy rzeczy naraz:
+1. Tuż przed bootstrapem uruchomiłem czerwoną fazę `verify.sh hardening`. Każde
+   z ~13 sprawdzeń logowało się jako `deploy`, którego jeszcze nie było, więc
+   każde było nieudanym logowaniem.
+2. Krok 1 instaluje `fail2ban`. Pakiet startuje usługę od razu z domyślnym jailem
+   Ubuntu i czyta dziennik z ostatnich 10 minut: >5 porażek z jednego IP = ban.
+   Ban (REJECT) zrywa także nawiązane połączenie.
+3. Skrypt na serwerze żył dalej, ale pierwsze `echo` do martwego terminala
+   zakończyło go sygnałem SIGPIPE. Doszedł do kroku 3 (root wyłączony), dalej już nie.
+
+**Naprawa**
+- `verify.sh hardening`: po nieudanym logowaniu `deploy` przerywa zamiast próbować dalej.
+- `bootstrap.sh`: jail `sshd` zapisany przed instalacją `fail2ban`. Skrypt
+  uruchamiany w tle na serwerze (`scp` + `nohup … > /var/log/bootstrap.log`),
+  więc zerwane połączenie go nie zabija.
+- Ponowne uruchomienie (skrypt idempotentny) → `verify.sh hardening` 14/14.
+
+**Czego się nauczyłem**
+Test, który „tylko sprawdza", też ma skutki uboczne: dla fail2ban nieudane
+logowanie to atak. Długie operacje na zdalnym serwerze uruchamiaj odłączone od
+sesji SSH (nohup/tmux/systemd-run) i z logiem do pliku.
+
+Przy okazji dwie drobniejsze pułapki tego samego dnia:
+- `ssh host 'cat > plik && nohup …' < skrypt` dało **pusty plik** (0 B). Pewniej jest przez `scp`.
+- Pętla `until ssh host '! pgrep -f "bash /tmp/bootstrap.sh"'` nie kończyła się nigdy:
+  `pgrep -f` znajdował **sam siebie**, bo szukana fraza była w jego własnej linii
+  poleceń. Lepiej sprawdzać plik z logiem albo PID zapisany przy starcie.
+- Ubuntu 24.04 ma domyślnie `vm.max_map_count = 1048576`. „Ustaw 262144" by go **obniżyło**.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć

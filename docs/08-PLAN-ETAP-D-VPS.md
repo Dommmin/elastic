@@ -52,7 +52,7 @@ wyłącznie po kluczu SSH.
 |---|---|---|
 | RAM | **24 GB** (minimum 16 GB, wtedy 1 node ES) | suma `mem_limit` niżej |
 | vCPU | 4–8 | 3 JVM + PHP (build odbywa się w CI, nie na serwerze) |
-| Dysk | ≥ 150 GB NVMe | obrazy, 3× dane ES, snapshoty, backupy PG |
+| Dysk | ≥ 100 GB NVMe (pierwotnie 150 GB) | obrazy ~5 GB, dane ES/PG przy 1500 produktach — megabajty; kupiony serwer: 99 GB, wolne 91 GB — próg w `verify.sh access` obniżony do 80 GB |
 | Architektura | **x86_64** | CI buduje `linux/amd64` |
 | System | **Ubuntu 24.04 LTS** (26.04 LTS, jeśli dostawca ma i Docker oficjalnie wspiera) | repo Dockera, długie wsparcie |
 
@@ -187,7 +187,7 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
 
 - [ ] **Krok 1:** `ssh-keygen -t ed25519 -f ~/.ssh/elastic_vps_ed25519 -C "elastic-vps"` — osobny klucz, do cofnięcia bez ruszania innych. Pokazuję Ci **tylko `.pub`**.
 - [ ] **Krok 2:** `~/.ssh/config`: `Host elastic-vps` → `HostName <IP>`, `User root` (do Tasku 6), `IdentityFile`, `IdentitiesOnly yes`, `ServerAliveInterval 30`.
-- [ ] **Krok 3:** faza `access`: `ssh elastic-vps true`; `nproc ≥ 4`; `MemTotal ≥ 23 GB`; wolne na `/` ≥ 140 GB; `uname -m = x86_64`; Ubuntu.
+- [ ] **Krok 3:** faza `access`: `ssh elastic-vps true`; `nproc ≥ 4`; `MemTotal ≥ 23 GB`; wolne na `/` ≥ 80 GB; `uname -m = x86_64`; Ubuntu.
 - [ ] **Krok 4:** → FAIL (serwera jeszcze nie ma).
 - [ ] **Krok 5: Commit** `ETAP D [4/10]: verify.sh + alias SSH`
 
@@ -206,7 +206,7 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
   - `exposure` (z Maca): `nc -z -w2 <IP>` dla `80 443 5432 5601 5672 6379 8080 8443 9200 9201 9202 15672` → wszystkie zamknięte, `22` otwarty.
 - [ ] **Krok 2:** → FAIL.
 - [ ] **Krok 3:** `bootstrap.sh` (idempotentny, jako root): `apt full-upgrade`; użytkownik `deploy` z kluczem z `/root/.ssh/authorized_keys`, `sudo` bez hasła (świadomy kompromis na potrzeby automatyzacji, opisany w przewodniku); `sshd_config.d/10-hardening.conf`; **`sshd -t` przed reloadem**; `ufw default deny incoming` + `allow 22/tcp`; `fail2ban`; `unattended-upgrades` (tylko security, bez automatycznego restartu); `/etc/sysctl.d/99-elasticsearch.conf`; swap 2 GB jako bezpiecznik; strefa czasowa; `/opt/marketplace` dla `deploy`.
-- [ ] **Krok 4 (bezpiecznik):** sesja roota zostaje otwarta → w drugiej sesji `ssh deploy@… sudo true` → dopiero wtedy alias przechodzi na `User deploy`.
+- [ ] **Krok 4 (bezpiecznik):** sesja roota zostaje otwarta → w drugiej sesji `ssh -o User=deploy elastic-vps sudo true` → dopiero wtedy alias przechodzi na `User deploy`.
 - [ ] **Krok 5:** `hardening` i `exposure` → ✓.
 - [ ] **Krok 6: Commit** `ETAP D [5/10]: hardening serwera`
 
