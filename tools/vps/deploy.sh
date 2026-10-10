@@ -30,35 +30,41 @@ echo "[deploy] pliki -> ${HOST}:${DIR}"
 scp -q "${ROOT}/compose.yaml" "${ROOT}/compose.prod.yaml" "${ROOT}/.env.prod.example" \
     "${ROOT}/tools/vps/gen-env.sh" "${HOST}:${DIR}/"
 
-# shellcheck disable=SC2087  # rozwinięcie ${TAG} po stronie Maca jest celowe
-ssh "${HOST}" bash -s <<REMOTE
+# Heredoc CYTOWANY (<<'REMOTE'): nic w środku nie jest rozwijane na Macu.
+# Wcześniej był niecytowany i lokalny bash wykonywał backticki z KOMENTARZY
+# (np. `bash -s`) na Macu — wdrożenie wisiało (RUNBOOK #035). Zmienne idą
+# jawnie przez środowisko zdalnego basha.
+ssh "${HOST}" "TAG='${TAG}' DIR='${DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
 cd "${DIR}"
 chmod +x gen-env.sh
 [ -f .env ] || ./gen-env.sh .env.prod.example .env
-sed -i -E 's/^IMAGE_TAG=.*/IMAGE_TAG=${TAG}/' .env
+sed -i -E "s/^IMAGE_TAG=.*/IMAGE_TAG=${TAG}/" .env
 
 echo "[deploy] pull ${TAG:0:12}"
-docker compose pull --quiet
+docker compose pull --quiet </dev/null
 # Najpierw wszystko POZA outbox-publisherem: publisher czyta tabelę outbox,
 # więc nowa wersja może ruszyć dopiero po migracjach. Przy pierwszym
 # wdrożeniu tabeli nie ma wcale — publisher padałby, a `up --wait`
 # kończyłby się błędem, zanim migracje by się wykonały (wyszło w próbie
 # generalnej). Ta sama zasada co w każdym deployu: schemat przed kodem.
 echo "[deploy] up --wait (bez outbox-publisher)"
-docker compose up -d --wait --remove-orphans catalog-app search-consumer kibana
+docker compose up -d --wait --remove-orphans catalog-app search-consumer kibana </dev/null
 
 echo "[deploy] migracje"
-docker compose exec -T catalog-app php artisan migrate --force --no-interaction
-docker compose exec -T search-consumer php bin/console doctrine:migrations:migrate -n --allow-no-migration
+# </dev/null przy KAŻDYM exec: ten skrypt przychodzi do `bash -s` przez stdin,
+# a `docker compose exec -T` czyta stdin — bez tego połykał resztę skryptu
+# i bash kończył się po cichu po pierwszej migracji (RUNBOOK #035).
+docker compose exec -T catalog-app php artisan migrate --force --no-interaction </dev/null
+docker compose exec -T search-consumer php bin/console doctrine:migrations:migrate -n --allow-no-migration </dev/null
 
 echo "[deploy] up --wait (całość)"
-docker compose up -d --wait --remove-orphans
+docker compose up -d --wait --remove-orphans </dev/null
 
 set -a; . ./.env; set +a
-if ! curl -fsS -o /dev/null -u "elastic:\${ELASTIC_PASSWORD}" "http://localhost:\${ES_PORT}/_alias/products-search"; then
+if ! curl -fs -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" "http://localhost:${ES_PORT}/_alias/products-search"; then
   echo "[deploy] pierwszy start: indeks products-v1 + alias"
-  docker compose exec -T search-consumer php bin/console search:index:create
+  docker compose exec -T search-consumer php bin/console search:index:create </dev/null
 fi
 
 docker image prune -f >/dev/null

@@ -1523,6 +1523,45 @@ Przy okazji dwie drobniejsze pułapki tego samego dnia:
   poleceń. Lepiej sprawdzać plik z logiem albo PID zapisany przy starcie.
 - Ubuntu 24.04 ma domyślnie `vm.max_map_count = 1048576`. „Ustaw 262144" by go **obniżyło**.
 
+<a id="035"></a>
+## 035 — Zdalny skrypt przez `ssh host bash -s`: kończy się po cichu albo wisi
+
+**Objaw**
+Dwa różne objawy tego samego wzorca, `ssh host bash -s <<REMOTE … REMOTE`, w `tools/vps/deploy.sh`:
+1. Wdrożenie kończy się bez błędu zaraz po `php artisan migrate`. Nie ma migracji
+   Doctrine, nie ma `[deploy] OK`, nie startują es02, es03 ani `outbox-publisher`.
+   Ten sam objaw ma `bash -s < tools/smoke-test.sh`: zero wyjścia, zero testów.
+2. Po poprawce (1) wdrożenie wisi 10+ minut. Na serwerze nic nie działa, a na Macu:
+   ```
+   69322  bash tools/vps/deploy.sh …
+   69338   └ bash tools/vps/deploy.sh …
+   69340      └ bash -s           ← LOKALNIE, nie na serwerze
+   ```
+
+**Diagnoza**
+(1) Ręczne `docker compose exec -T search-consumer … doctrine:migrations:migrate`
+działa, więc winny jest skrypt, a nie migracja. (2) `ps -o pid,ppid` na Macu pokazał
+lokalny `bash -s` jako dziecko podpowłoki deploy.sh.
+
+**Przyczyna**
+1. Skrypt trafia do zdalnego basha **przez stdin**. `docker compose exec -T` też
+   czyta stdin, więc połknął resztę skryptu. Bash nie miał już czego czytać i zakończył
+   się kodem 0.
+2. Heredoc był **niecytowany** (`<<REMOTE`), więc lokalny bash rozwijał w nim
+   `$(…)` i backticki, **także w komentarzach**. Komentarz z tekstem `` `bash -s` ``
+   uruchomił `bash -s` na Macu, który czekał na wejście. Wcześniejszy komentarz
+   z `` `up --wait` `` też się „wykonywał" (tyle że `up` nie istnieje, więc błąd zginął w logu).
+
+**Naprawa**
+- `</dev/null` przy każdym `docker compose exec`/`pull`/`up` w skrypcie zdalnym.
+- Heredoc cytowany `<<'REMOTE'`, a zmienne jawnie: `ssh host "TAG='…' DIR='…' bash -s" <<'REMOTE'`.
+- Skrypty z `docker compose exec` (smoke) kopiowane na serwer `scp` i uruchamiane z pliku.
+
+**Czego się nauczyłem**
+Heredoc do zdalnej powłoki zawsze cytuj (`<<'EOF'`), a dane przekazuj jawnie.
+Jeśli skrypt idzie przez stdin, każda komenda w środku czytająca stdin (`docker exec -i/-T`,
+`ssh`, `read`, `mysql`) musi dostać `</dev/null`.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć

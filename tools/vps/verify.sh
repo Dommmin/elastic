@@ -10,6 +10,7 @@
 #    hardening  deploy+klucz, root/hasła wyłączone, ufw, fail2ban, sysctl (Task 6)
 #    exposure   z internetu otwarty TYLKO port 22 (skan z Maca)    (Task 6+)
 #    docker     Engine z oficjalnego repo, Compose >= 2.24, rotacja logów (Task 7)
+#    stack      wdrożony stack: bez kodu na serwerze, ES green, smoke, eval, E2E (Task 8)
 #    all        wszystkie fazy po kolei
 #
 #  Serwer: alias SSH `elastic-vps` (~/.ssh/config). Tag obrazów: TAG=<sha>
@@ -131,14 +132,69 @@ phase_docker() {
   check "dysk / zajęty < 80%" "tak" "$([ -n "${used}" ] && [ "${used}" -lt 80 ] && echo tak || echo "nie (${used:-?}%)")"
 }
 
+# ---------------------------------------------------------------- stack -----
+# Komendy w /opt/marketplace: COMPOSE_FILE/COMPOSE_PROFILES są w .env serwera.
+on_app() { remote "cd /opt/marketplace && $*"; }
+es() { on_app 'set -a && . ./.env && set +a && curl -fsS -u "elastic:${ELASTIC_PASSWORD}" "http://localhost:${ES_PORT}'"$1"'"'; }
+
+phase_stack() {
+  echo -e "\n${BLD}  stack — ${HOST}:/opt/marketplace${NC}"
+  check "brak kodu na serwerze (.git, apps/)" "brak" "$(on_app 'test -e .git -o -e apps && echo JEST || echo brak')"
+  local tag; tag="$(on_app "grep '^IMAGE_TAG=' .env | cut -d= -f2")"
+  check "obrazy własne = ghcr.io/dommmin/elastic-*:${tag:0:12}" "0" \
+    "$(on_app "docker compose images --format json" | python3 -c '
+import json, sys
+tag = sys.argv[1]
+raw = sys.stdin.read().strip()
+rows = json.loads(raw) if raw.startswith("[") else [json.loads(l) for l in raw.splitlines() if l.strip()]
+own = [r for r in rows if "elastic-" in r.get("Repository", "")]
+bad = [r for r in own if not (r["Repository"].startswith("ghcr.io/dommmin/elastic-") and r["Tag"] == tag)]
+print(len(bad) if own else "brak obrazów")' "${tag}")"
+
+  local health; health="$(es /_cluster/health)"
+  check "klaster ES: green" "green" "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["status"])' "${health}" 2>/dev/null)"
+  check "klaster ES: 3 nody" "3" "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["number_of_nodes"])' "${health}" 2>/dev/null)"
+  check "kontenery: zero unhealthy/restarting" "0" \
+    "$(on_app "docker compose ps --format '{{.Service}} {{.Status}}'" | grep -cE 'unhealthy|Restarting')"
+  local mem; mem="$(remote "free -m | awk '/Mem:/ {printf \"%d\", \$3*100/\$2}'")"
+  check "RAM zajęty < 80%" "tak" "$([ -n "${mem}" ] && [ "${mem}" -lt 80 ] && echo tak || echo "nie (${mem:-?}%)")"
+
+  # Z PLIKU, nie przez stdin (`bash -s < smoke-test.sh`): `docker compose
+  # exec -T` w środku czyta stdin i połyka resztę skryptu (RUNBOOK #035).
+  scp -q "${ROOT}/tools/smoke-test.sh" "${HOST}:/tmp/smoke-test.sh"
+  local smoke; smoke="$(on_app 'set -a && . ./.env && set +a && bash /tmp/smoke-test.sh' 2>&1)"
+  check "smoke-test.sh: wszystkie testy" "1" "$(grep -c 'Wszystkie testy przeszły' <<<"${smoke}")"
+
+  local count; count="$(es /products-search/_count | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null)"
+  check "products-search: 1500 dokumentów" "1500" "${count}"
+  local eval; eval="$(on_app 'docker compose exec -T catalog-app php artisan search:eval' 2>&1)"
+  check "eval: zapytania o konkretny produkt = 1.000" "2" \
+    "$(grep -cE '^\| (Wyman-Howell Laptop Ultra 14"|Bailey Ltd Smartfon Nova 128GB) +\| 1\.000' <<<"${eval}")"
+  local mean; mean="$(grep -oE 'nDCG@10: [0-9.]+' <<<"${eval}" | awk '{print $2}')"
+  check "eval: średnie nDCG@10 >= 0.80 (${mean:-?})" "tak" "$(python3 -c 'import sys; print("tak" if float(sys.argv[1]) >= 0.80 else "nie")' "${mean:-0}" 2>/dev/null)"
+
+  # E2E ścieżką użytkownika (RUNBOOK #031): zmiana w catalog -> outbox ->
+  # outbox-publisher -> RabbitMQ -> search-consumer -> ES. Cena losowa, żeby
+  # nie trafić w wartość z poprzedniego przebiegu.
+  local price=$(( (RANDOM % 90000) + 10000 )) pid t0 waited=""
+  pid="$(on_app "docker compose exec -T catalog-app php artisan tinker --execute '\$o = App\\Models\\Offer::query()->orderBy(\"id\")->first(); \$o->updateWithOutbox([\"price_cents\" => ${price}]); echo \$o->product_id;'" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)"
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le 10 ]; do
+    if es "/products-search/_doc/${pid:-0}" 2>/dev/null | grep -q "${price}"; then waited=$(( $(date +%s) - t0 )); break; fi
+    sleep 1
+  done
+  check "E2E: zmiana ceny w ES w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
+}
+
 case "${1:-}" in
   images) phase_images ;;
   access)    phase_access ;;
   hardening) phase_hardening ;;
   exposure)  phase_exposure ;;
   docker)    phase_docker ;;
-  all)       phase_images; phase_access; phase_hardening; phase_exposure; phase_docker ;;
-  *) echo "użycie: $0 {images|access|hardening|exposure|docker|all}" >&2; exit 2 ;;
+  stack)     phase_stack ;;
+  all)       phase_images; phase_access; phase_hardening; phase_exposure; phase_docker; phase_stack ;;
+  *) echo "użycie: $0 {images|access|hardening|exposure|docker|stack|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"
