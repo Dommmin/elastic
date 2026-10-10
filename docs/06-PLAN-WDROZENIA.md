@@ -348,8 +348,8 @@ platformę danych".
 
 Żeby projekt się nie rozlał:
 
-- ❌ **Kubernetes / deploy produkcyjny** — wszystko lokalnie w Dockerze. Inny temat.
-- ❌ **CI/CD** — poza jednym testem kontraktowym; nie jest celem.
+- ~~❌ **Kubernetes / deploy produkcyjny**~~ → **ETAP D** ([`08-PLAN-ETAP-D-VPS.md`](08-PLAN-ETAP-D-VPS.md)): VPS z Compose zrobiony, k3s jako faza D2.
+- ~~❌ **CI/CD**~~ → w ETAPIE D tylko CI obrazów (build → test sekretów → GHCR); deploy ręczny jedną komendą.
 - ❌ **Płatności, realny checkout** — koszyk kończy się na walidacji stanu; nie budujemy sklepu.
 - ❌ **Kafka** — RabbitMQ wystarczy do nauki eventingu; różnice omówimy teoretycznie.
 - ❌ **Debezium / CDC** — omówimy jako wariant, nie wdrażamy (dodałoby Kafka Connect).

@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Stan (2026-10-10):** D1 zrobione na serwerze — `make vps-verify faza=all` 63/63,
+> restart 187 s, rollback i odtwarzanie przećwiczone. Przewodnik:
+> [`docs/blog/etap-d-vps.md`](blog/etap-d-vps.md). Do DoD brakuje tylko sekcji
+> „Twoja kolej” z przewodnika (Twoje samodzielne wdrożenie i rollback). D2 (k3s) — osobny plan.
+
 **Cel:** cały stack (klaster ES 3-nodowy, Kibana, Postgres, Redis, RabbitMQ, catalog, search-consumer)
 działa na prywatnym VPS-ie, dostępny **tylko dla właściciela**, z weryfikacją każdego kroku i przewodnikiem
 „jak to zrobiłem i jak to działa".

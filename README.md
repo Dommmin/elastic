@@ -70,6 +70,7 @@ Wszystkie komendy: `make help`
 | 5 | Symfony 8 + Messenger | ✅ |
 | 6 | Model domenowy + Transactional Outbox + konsument + mapowanie ES | ✅ zweryfikowane end-to-end na żywym stacku |
 | 7 | Wyszukiwarka: `ProductSearchService`, facety, autocomplete, UI Vue/Inertia | ✅ zweryfikowane end-to-end na żywym stacku |
+| D | Wdrożenie na VPS: obrazy z GHCR (CI), Compose, tunel SSH, backupy, rollback | ✅ zweryfikowane na serwerze (`make vps-verify` 63/63 + restart) — [przewodnik](docs/blog/etap-d-vps.md) |
 | 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:
@@ -103,6 +104,16 @@ Wszystkie komendy: `make help`
 > Do zrobienia ręcznie: lista kontrolna w przeglądarce (sekcja "Twoja
 > kolej" w przewodniku). Świadomie poza zakresem: ~50 zapytań kontrolnych
 > zamiast 13, SSR (ETAP 7b) — oba jako zadania domowe w przewodniku.
+
+> **ETAP D zweryfikowany na prawdziwym serwerze** (Ubuntu 24.04, 4 vCPU,
+> 24 GB): na serwerze nie ma kodu ani gita — tylko obrazy
+> `ghcr.io/dommmin/elastic-*:<SHA>` budowane przez GitHub Actions, 2 pliki
+> compose i `.env` z sekretami wygenerowanymi na miejscu. Z internetu otwarty
+> wyłącznie port 22; UI przez `make vps-tunnel`. Wdrożenie i rollback:
+> `make prod-deploy [tag=<SHA>]`. Backupy ES (SLM) i PG (systemd) z
+> przećwiczonym odtwarzaniem; restart serwera: wszystko wstaje samo w ~3 min.
+> Plan: [08-PLAN-ETAP-D-VPS](docs/08-PLAN-ETAP-D-VPS.md), błędy:
+> [RUNBOOK #028–035](docs/RUNBOOK.md#028).
 
 ---
 

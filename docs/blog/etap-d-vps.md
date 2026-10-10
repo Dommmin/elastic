@@ -6,9 +6,10 @@ własnym serwerze, dostępny tylko dla Ciebie. Bez `git pull` na serwerze:
 kod jedzie w obrazach przez rejestr, a serwer tylko je uruchamia. Razem
 z każdym błędem, który wyszedł po drodze, i z tym, jak go znaleźć.*
 
-> **Stan przewodnika:** Faza 0 (wszystko, co da się zrobić przed zakupem
-> serwera) — gotowa i sprawdzona. Faza 1 (serwer) — dopisywana w trakcie
-> wdrożenia. Plan: [`docs/08-PLAN-ETAP-D-VPS.md`](../08-PLAN-ETAP-D-VPS.md).
+> **Stan:** Faza 0 (przed zakupem) i Faza 1 (serwer) zrobione i sprawdzone
+> na prawdziwym VPS: `make vps-verify faza=all` → **63/63**, restart serwera →
+> wszystko samo w 187 s. Plan: [`docs/08-PLAN-ETAP-D-VPS.md`](../08-PLAN-ETAP-D-VPS.md).
+> Faza D2 (k3s) — osobny plan.
 
 ---
 
@@ -23,7 +24,15 @@ z każdym błędem, który wyszedł po drodze, i z tym, jak go znaleźć.*
 7. [Krok 5 — CI: GitHub Actions buduje, testuje, publikuje](#krok-5--ci-github-actions-buduje-testuje-publikuje)
 8. [Krok 6 — Klucz SSH i weryfikacja z Maca](#krok-6--klucz-ssh-i-weryfikacja-z-maca)
 9. [Czego nie widać w testach: trzy odkrycia](#czego-nie-widać-w-testach-trzy-odkrycia)
-10. [Faza 1 — serwer](#faza-1--serwer) *(w trakcie)*
+10. [Krok 7 — Pierwsze wejście i zabezpieczenie systemu](#krok-7--pierwsze-wejście-i-zabezpieczenie-systemu)
+11. [Krok 8 — Docker](#krok-8--docker)
+12. [Krok 9 — Pierwsze wdrożenie](#krok-9--pierwsze-wdrożenie)
+13. [Krok 10 — Tunel SSH: aplikacja tylko dla Ciebie](#krok-10--tunel-ssh-aplikacja-tylko-dla-ciebie)
+14. [Krok 11 — Nowa wersja i rollback](#krok-11--nowa-wersja-i-rollback)
+15. [Krok 12 — Backupy i odtwarzanie](#krok-12--backupy-i-odtwarzanie)
+16. [Krok 13 — Restart serwera](#krok-13--restart-serwera)
+17. [Ściąga: codzienna obsługa](#ściąga-codzienna-obsługa)
+18. [Twoja kolej](#twoja-kolej)
 
 ---
 
@@ -477,7 +486,329 @@ i znikają w `purge`, zamiast trafić do handlera jako śmieci.
 
 ---
 
-## Faza 1 — serwer
+## Krok 7 — Pierwsze wejście i zabezpieczenie systemu
 
-*Dopisywane w trakcie wdrożenia: zakup, zabezpieczenie systemu, Docker,
-pierwsze wdrożenie, tunel SSH, rollback, backupy, restart.*
+Serwer: Ubuntu 24.04.4, 4 vCPU, 24 GB RAM, 99 GB dysku. Klucz publiczny
+dodany do `/root/.ssh/authorized_keys` (`ssh-copy-id`). Alias w `~/.ssh/config`:
+
+```
+Host elastic-vps
+    HostName <IP>
+    User deploy                 # na początku: root
+    IdentityFile ~/.ssh/elastic_vps_ed25519
+    IdentitiesOnly yes          # nie próbuj innych kluczy (każda próba = "nieudane logowanie")
+```
+
+```bash
+make vps-verify faza=access      # SSH, CPU, RAM, dysk, x86_64, Ubuntu → 6/6
+```
+
+Dysk 99 GB zamiast planowanych 150: przy 1500 produktach dane to megabajty,
+obrazy ~7 GB. Próg w weryfikacji obniżony do 80 GB wolnego — świadomie, z zapisem w planie.
+
+### Bootstrap: 8 kroków
+
+`tools/vps/bootstrap.sh` (idempotentny): aktualizacje → użytkownik `deploy`
+z kluczem i `sudo` → `sshd` tylko z kluczy, bez roota → `ufw` (tylko 22/tcp)
+→ `fail2ban` → automatyczne łatki bezpieczeństwa (bez automatycznego
+restartu) → sysctl pod ES → swap → strefa czasowa.
+
+**Uruchamiaj w tle na serwerze, z logiem do pliku**:
+
+```bash
+scp tools/vps/bootstrap.sh elastic-vps:/tmp/
+ssh elastic-vps 'sudo -n sh -c "nohup bash /tmp/bootstrap.sh > /var/log/bootstrap.log 2>&1 < /dev/null &"'
+```
+
+Dlaczego tak, a nie `ssh … 'bash -s' < bootstrap.sh` — bo tak właśnie zrobiłem
+za pierwszym razem i **zbanowałem sam siebie** (RUNBOOK #034):
+
+1. Przed bootstrapem uruchomiłem czerwoną fazę `verify.sh hardening`. ~13
+   sprawdzeń logowało się jako `deploy`, którego jeszcze nie było → 13
+   nieudanych logowań w dzienniku.
+2. Krok 1 instaluje `fail2ban`. Pakiet startuje usługę od razu, czyta dziennik
+   z ostatnich 10 minut: >5 porażek z jednego IP → **ban**. Ban zrywa też
+   nawiązane połączenie.
+3. Skrypt żył chwilę dalej, ale pierwsze `echo` do martwego terminala = SIGPIPE.
+   Doszedł do kroku 3: root wyłączony, firewall jeszcze nie.
+
+Objaw: `ssh: connect to host … port 22: Connection refused`. Diagnoza po 4
+minutach (domyślny ban Ubuntu to 10 min, wpadliśmy w końcówkę):
+
+```bash
+ssh -o User=deploy elastic-vps 'sudo zgrep -h " Ban \| Unban " /var/log/fail2ban.log*'
+# NOTICE [sshd] Ban   <IP>    17:44:26
+# NOTICE [sshd] Unban <IP>    17:48:51
+```
+
+Lekcje, które weszły do skryptów: weryfikacja przerywa po pierwszym nieudanym
+logowaniu, jail `sshd` jest zapisany *przed* instalacją fail2ban, długie
+operacje idą przez `nohup`. I ogólna: **test, który „tylko sprawdza", też ma
+skutki uboczne** — dla fail2ban nieudane logowanie to atak.
+
+Dwa drobiazgi z tej samej rundy:
+- Ubuntu 24.04 ma domyślnie `vm.max_map_count = 1048576`. „Ustaw 262144" by go
+  *obniżyło* — skrypt podnosi tylko, gdy jest mniej.
+- Po `full-upgrade` (201 pakietów, w tym jądro) — `/var/run/reboot-required`.
+  Restart od razu, póki nic nie działa: SSH wrócił po 27 s, zabezpieczenia bez zmian.
+
+```bash
+make vps-verify faza=hardening   # deploy+klucz, root odrzucony, sshd, ufw, fail2ban, sysctl → 14/14
+make vps-verify faza=exposure    # skan Z ZEWNĄTRZ: otwarty tylko 22 → 15/15
+```
+
+`exposure` skanuje porty **z Maca**, a nie przez `ss -tlnp` na serwerze. Docker
+publikuje porty własnymi regułami iptables, z pominięciem ufw — lista reguł
+ufw może być idealna, a port i tak otwarty. Liczy się tylko to, co widać z sieci.
+Dlatego ta faza jest powtarzana po każdym kolejnym kroku.
+
+---
+
+## Krok 8 — Docker
+
+```bash
+scp tools/vps/install-docker.sh elastic-vps:/tmp/ && ssh elastic-vps 'sudo -n bash /tmp/install-docker.sh'
+make vps-verify faza=docker      # → 7/7
+```
+
+Z oficjalnego repo `download.docker.com` (Engine 29.9, Compose 5.6), nie
+`apt install docker.io` — nakładka potrzebuje Compose ≥ 2.24. W `daemon.json`:
+
+- **rotacja logów** (`max-size: 10m`, `max-file: 3`) — domyślnie logi kontenerów
+  rosną bez limitu i potrafią zapchać dysk;
+- **`live-restore`** — restart samego demona Dockera (np. przy aktualizacji)
+  nie zabija kontenerów, więc klaster ES nie przechodzi restartu.
+
+---
+
+## Krok 9 — Pierwsze wdrożenie
+
+```bash
+make prod-deploy                 # tag = ostatni udany build CI
+```
+
+Co robi `tools/vps/deploy.sh`: `scp` plików compose (+ szablon `.env`, skrypty
+backupu) → na serwerze: `.env` z `gen-env.sh` (tylko pierwszy raz) i
+`IMAGE_TAG=<sha>` → `docker compose pull` → `up --wait` **bez** outbox-publishera
+→ migracje → `up --wait` całości → indeks i alias (tylko gdy ich nie ma) →
+konfiguracja backupów → `docker image prune`.
+
+Kolejność „schemat przed kodem": publisher czyta tabelę `outbox`, więc nowa
+wersja może ruszyć dopiero po migracjach. Przy pierwszym wdrożeniu tabeli nie
+ma wcale — publisher by padał, a `up --wait` przerwałby skrypt przed migracjami
+(to wyszło w próbie generalnej, więc było naprawione przed serwerem).
+
+### Dwa błędy w samym skrypcie wdrożenia (RUNBOOK #035)
+
+Skrypt zdalny idzie heredokiem: `ssh host bash -s <<REMOTE … REMOTE`.
+
+**Błąd 1 — wdrożenie kończy się po cichu po pierwszej migracji.** Skrypt
+trafia do zdalnego basha *przez stdin*. `docker compose exec -T` też czyta
+stdin — więc połknął resztę skryptu. Bash nie miał czego czytać i zakończył
+się kodem 0. Bez błędu, bez es02 i es03, bez outbox-publishera. Naprawa:
+`</dev/null` przy każdym `exec`.
+
+**Błąd 2 — wdrożenie wisi 10 minut, na serwerze nic się nie dzieje.**
+```
+bash tools/vps/deploy.sh …
+ └ bash tools/vps/deploy.sh …
+    └ bash -s            ← NA MACU
+```
+Heredoc był niecytowany (`<<REMOTE`), więc **lokalny** bash rozwijał w nim
+backticki — także w *komentarzach*. Komentarz „`` `bash -s` `` przez stdin"
+uruchomił `bash -s` na Macu, który czekał na wejście. Naprawa: `<<'REMOTE'`
+(nic nie jest rozwijane lokalnie) i zmienne przekazane jawnie:
+
+```bash
+ssh "${HOST}" "TAG='${TAG}' DIR='${DIR}' bash -s" <<'REMOTE'
+```
+
+Zasada: **heredoc do zdalnej powłoki zawsze cytuj.** Ten sam problem dotyczył
+`smoke-test.sh` puszczanego przez stdin — teraz jest kopiowany i uruchamiany z pliku.
+
+Wynik:
+
+```bash
+make vps-verify faza=stack
+#  ✓ brak kodu na serwerze (.git, apps/)
+#  ✓ obrazy własne = ghcr.io/dommmin/elastic-*:fc6e16d…
+#  ✓ klaster ES: green, 3 nody
+#  ✓ smoke-test.sh: wszystkie testy (25)
+#  ✓ products-search: 1500 dokumentów
+#  ✓ eval: zapytania o konkretny produkt = 1.000, średnia 0.841
+#  ✓ E2E: zmiana ceny w ES w <= 10 s (3 s)
+#  PASS=11 FAIL=0
+```
+
+RAM: 9,9 z 24 GB (ES 2,2–2,6 GB na node, Kibana 1,1 GB, reszta razem < 0,4 GB).
+
+---
+
+## Krok 10 — Tunel SSH: aplikacja tylko dla Ciebie
+
+Na serwerze wszystkie usługi słuchają na `127.0.0.1` — z internetu ich nie ma.
+Tunel SSH przenosi port z serwera na Twój Mac, szyfrowany tym samym kanałem co SSH:
+
+```
+Mac localhost:28080 ══ SSH (port 22) ══▶ serwer 127.0.0.1:8080 (catalog)
+Mac localhost:25601 ══════════════════▶ serwer 127.0.0.1:5601 (Kibana)
+Mac localhost:26672 ══════════════════▶ serwer 127.0.0.1:15672 (RabbitMQ UI)
+```
+
+```bash
+make vps-tunnel                       # Ctrl+C zamyka tunel
+make vps-secret k=ELASTIC_PASSWORD    # hasło do Kibany (użytkownik: elastic)
+make vps-secret k=RABBITMQ_PASSWORD   # hasło do RabbitMQ UI (użytkownik: marketplace)
+```
+
+Porty lokalne to 2xxxx, bo 18080 zajmuje lokalny stack dev, a 25672 — RabbitMQ
+innego projektu. `ExitOnForwardFailure yes` w `~/.ssh/config`: jeśli port jest
+zajęty, tunel nie wstaje po cichu bez tego portu, tylko kończy się błędem.
+
+Dlaczego tunel, a nie publiczny port z hasłem: każdy publiczny port to
+powierzchnia ataku (skanery znajdą Kibanę w ciągu godzin). Tunel nie wystawia
+niczego nowego — korzysta z SSH, które i tak jest otwarte i chronione kluczem.
+
+**Pułapka w panelu RabbitMQ:** kolejka `search.product.sync` pokazuje
+**0 konsumentów**, choć search-consumer działa i przetwarza zdarzenia. Symfony
+Messenger czyta kolejkę przez `basic.get` w pętli, a nie `basic.consume` — więc
+RabbitMQ nie widzi zarejestrowanego konsumenta. To nie awaria; sprawdzaj
+`make prod-logs s=search-consumer`.
+
+---
+
+## Krok 11 — Nowa wersja i rollback
+
+Do ćwiczenia potrzebna była widoczna zmiana — i od razu coś użytecznego:
+nagłówek `X-App-Version` z SHA commita, z którego zbudowano obraz (CI:
+`--build-arg APP_VERSION=${{ github.sha }}`, Caddy: `header X-App-Version {$APP_VERSION}`).
+
+```bash
+git push                                     # CI: 4,3 min z cache
+make prod-deploy                             # nowa wersja
+curl -sI localhost:28080/up | grep -i x-app-version
+# X-App-Version: e0589c621c46…
+
+make prod-deploy tag=fc6e16d485ebcd76f692dc8faf1f6d3278615a25   # ROLLBACK
+# (brak nagłówka — stary obraz go nie miał)
+
+make prod-deploy                             # z powrotem na nową
+```
+
+Każde przejście trwało ~3,5 minuty. Wąskie gardło: tag obejmuje **wszystkie 5
+obrazów**, więc zmiana tylko w catalog podmienia też obraz ES → restart całego
+klastra. Kierunek usprawnienia: osobne wersjonowanie obrazów infrastruktury
+(ES, Postgres, RabbitMQ zmieniają się rzadko) i aplikacji (catalog, search).
+
+---
+
+## Krok 12 — Backupy i odtwarzanie
+
+Backup, którego nie odtworzyłeś, jest hipotezą. Oba przećwiczone.
+
+| | Elasticsearch | Postgres |
+|---|---|---|
+| Mechanizm | snapshot do repozytorium `fs-backup` (`/snapshots`) | `pg_dump -Fc` obu baz |
+| Harmonogram | polityka SLM `nightly`, 01:00 UTC | timer systemd, 03:30 |
+| Retencja | 7 dni (min. 1, maks. 7) | 7 dni (`find -mtime +7 -delete`) |
+| Gdzie skonfigurowane | `deploy.sh` (PUT idempotentne) | `infra/systemd/*`, instalowane przez `deploy.sh` |
+| Kopia poza serwerem | `make vps-backup-pull` → `~/backups/elastic-vps/` | to samo |
+
+Repozytorium `fs` działa, bo 3 nody są na jednym serwerze i dzielą wolumen
+`/snapshots`. Przy nodach na różnych maszynach potrzebny byłby NFS albo S3 —
+każdy node zapisuje swoje shardy do tego samego repozytorium.
+
+### Ćwiczenie: usunięty indeks
+
+```
+1. eval przed: 0.841
+2. zatrzymaj search-consumer i outbox-publisher        ← ważne, patrz niżej
+3. DELETE products-v1          → wyszukiwarka: HTTP 500
+4. POST _snapshot/fs-backup/<snapshot>/_restore
+   {"indices":"products-v1","include_aliases":true,"include_global_state":false}
+5. 1500 dokumentów, alias products-search → products-v1
+6. start konsumentów; eval po: 0.841 (identyczny), wyszukiwarka: HTTP 200
+```
+
+Krok 2 nie jest kosmetyką: gdyby w trakcie przyszło zdarzenie, zapis do
+nieistniejącego aliasu `products-search` **utworzyłby nowy indeks o tej nazwie**
+z automatycznym mapowaniem — i odtworzenie aliasu by się z nim zderzyło.
+
+Druga obserwacja: bez indeksu wyszukiwarka zwraca 500. Do rozważenia
+(ETAP 9): łagodna degradacja — komunikat „wyszukiwanie chwilowo niedostępne".
+
+### Ćwiczenie: dump Postgresa
+
+`pg_restore` najnowszego dumpu do osobnej bazy `catalog_restore_test`, porównanie
+liczby wierszy z produkcją: `products` 1500/1500, `offers` 4517/4517, `brands`,
+`sellers`, `outbox` — wszystkie zgodne. Baza testowa usunięta.
+
+```bash
+make vps-verify faza=backup      # repozytorium, SLM, snapshot < 26 h, timer, dumpy < 26 h → 5/5
+```
+
+---
+
+## Krok 13 — Restart serwera
+
+Najważniejszy test odporności: prąd zgasł o 3 w nocy. Po starcie nikt nie
+wpisze `docker compose up` — wszystko musi wstać samo (`restart: unless-stopped`),
+a klaster złożyć się z 3 nodów, mimo że żaden nie jest „pierwszy" (RUNBOOK #021).
+
+```bash
+make vps-verify faza=reboot      # UWAGA: naprawdę restartuje serwer
+#  eval przed restartem: 0.841
+#  ✓ po restarcie: ES green, 3 nody, wszystko healthy w <= 5 min (187 s)
+#  ✓ uptime serwera < 10 min (restart naprawdę był)
+#  ✓ eval identyczny jak przed restartem (0.841 -> 0.841)
+#  ✓ smoke po restarcie
+```
+
+„Eval identyczny" jest tu mocnym testem, bo ten sam indeks = te same segmenty =
+ta sama kolejność remisów. Na świeżym seedzie ta liczba skacze (RUNBOOK #032),
+po restarcie — nie ma prawa.
+
+Na koniec:
+
+```bash
+make vps-verify faza=all         # images, access, hardening, exposure, docker, stack, backup
+#  PASS=63 FAIL=0
+```
+
+---
+
+## Ściąga: codzienna obsługa
+
+| Chcę… | Komenda |
+|---|---|
+| zobaczyć aplikację / Kibanę / RabbitMQ | `make vps-tunnel` → localhost:28080 / 25601 / 26672 |
+| hasło z serwera | `make vps-secret k=ELASTIC_PASSWORD` |
+| wdrożyć to, co jest na main | `git push` → poczekaj na CI → `make prod-deploy` |
+| cofnąć wersję | `make prod-deploy tag=<starszy SHA>` (lista: GitHub → Actions → images) |
+| stan kontenerów / logi | `make prod-ps`, `make prod-logs s=catalog-app` |
+| sprawdzić, czy wszystko gra | `make vps-verify` |
+| ściągnąć backupy na Maca | `make vps-backup-pull` |
+| wejść na serwer | `ssh elastic-vps` (tylko `deploy`, tylko kluczem) |
+| przed pushem zmian w Dockerfile'ach | `make prod-check` (obrazy z czystego klonu + nakładka) |
+
+---
+
+## Twoja kolej
+
+Etap jest skończony, gdy **sam** zrobisz z tego przewodnika:
+
+1. `make vps-tunnel`, zaloguj się do Kibany (`make vps-secret k=ELASTIC_PASSWORD`)
+   i znajdź w *Stack Management → Snapshot and Restore* politykę `nightly`
+   i snapshot z dzisiaj.
+2. Rollback i powrót: `make prod-deploy tag=fc6e16d485ebcd76f692dc8faf1f6d3278615a25`,
+   sprawdź `curl -sI localhost:28080/up` (nagłówka nie ma), potem `make prod-deploy`.
+3. `make vps-verify` — powinno być 63/63.
+
+Pytania kontrolne (odpowiedz własnymi słowami):
+
+- Dlaczego na serwerze nie ma `git pull`? Co dokładnie by się zepsuło przy rollbacku?
+- Dlaczego `config:cache` w Dockerfile to błąd, a `route:cache` nie?
+- Port 9200 jest na liście reguł ufw jako zablokowany. Czy to wystarczy, żeby
+  był niedostępny z internetu? Jak to sprawdzić?
+- Co się stanie, jeśli podczas odtwarzania indeksu konsument dostanie zdarzenie?
+- Dlaczego `verify.sh` po nieudanym logowaniu przerywa, zamiast sprawdzać dalej?

@@ -169,3 +169,26 @@ Mierzone przez `_rank_eval` na zestawie ~50 zapytań kontrolnych.
 | czas pełnego reindeksu | | |
 
 **Wniosek:**
+
+---
+
+## 9. ETAP D — VPS (2026-10-10)
+
+Serwer: Ubuntu 24.04, 4 vCPU, 24 GB RAM, 99 GB NVMe. Stack: 3 nody ES
+(heap 1500m, limit 3g), Kibana, Postgres, Redis, RabbitMQ, catalog,
+outbox-publisher, search-consumer. Obrazy z GHCR, tag = SHA commita.
+
+| Pomiar | Wartość | Uwagi |
+|---|---|---|
+| CI: build 5 obrazów + test + push (zimny cache) | 10,5 min | pierwszy przebieg |
+| CI: to samo z cache GHA (zmiana w catalog) | 4,3 min | |
+| pierwsze wdrożenie (pull ~7 GB + start + migracje) | ~4,5 min | |
+| wdrożenie / rollback innego tagu | ~3,5 min | nowy tag = też nowy obraz ES → restart całego klastra; do usprawnienia (wersjonować osobno obrazy infrastruktury i aplikacji) |
+| restart serwera → ES green 3/3 + wszystko healthy | 187 s | `verify.sh reboot` |
+| zmiana ceny w catalog → widoczna w ES | 1–3 s | outbox-publisher → RabbitMQ → search-consumer |
+| `/search?q=…` na serwerze (50 zapytań, 5 fraz) | p50 106 ms, p95 191 ms, max 637 ms | cała odpowiedź Inertii, bez sieci/tunelu |
+| snapshot SLM (52 indeksy) | 1,6 s | |
+| `pg_dump -Fc` catalog / searchsvc | 377 KB / 31 KB | |
+| RAM zajęty (cały stack) | 9,9 / 24 GB (41%) | ES 2,2–2,6 GB/node, Kibana 1,1 GB, reszta < 0,4 GB |
+| dysk | 12 / 99 GB | obrazy 7 GB |
+| `search:eval` (świeży seed) | 0.841 | identyczny przed/po restarcie i po restore; patrz RUNBOOK #032 |
