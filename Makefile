@@ -219,3 +219,39 @@ urls: ## Wypisz adresy usług
 	@echo "  Postgres        localhost:$(POSTGRES_PORT)"
 	@echo "  Redis           localhost:$(REDIS_PORT)"
 	@echo ""
+
+## VPS (ETAP D — docs/08-PLAN-ETAP-D-VPS.md)
+.PHONY: vps-verify
+vps-verify: ## Weryfikacja ETAPU D z Maca (make vps-verify faza=images|access|all)
+	@bash tools/vps/verify.sh $(or $(faza),all)
+
+.PHONY: prod-check
+prod-check: ## Obrazy prod z czystego klonu + nakładka compose.prod (przed pushem)
+	@bash tools/vps/prod-image-check.sh
+	@bash tools/vps/compose-prod-check.sh
+
+# Komendy na serwerze — przez SSH, w /opt/marketplace. COMPOSE_FILE
+# i COMPOSE_PROFILES są w .env serwera, więc `docker compose` wystarcza.
+VPS      ?= elastic-vps
+VPS_DC   := ssh $(VPS) cd /opt/marketplace '&&' docker compose
+
+.PHONY: prod-deploy
+prod-deploy: ## Wdróż wersję na VPS (make prod-deploy tag=<SHA>); rollback = starszy SHA
+	@test -n "$(tag)" || (echo "Podaj tag: make prod-deploy tag=\$$(git rev-parse origin/main)"; exit 1)
+	@bash tools/vps/deploy.sh $(tag)
+
+.PHONY: prod-ps
+prod-ps: ## Stan kontenerów na VPS
+	@$(VPS_DC) ps --format "'table {{.Service}}\t{{.Image}}\t{{.Status}}'"
+
+.PHONY: prod-logs
+prod-logs: ## Logi na VPS (make prod-logs s=catalog-app)
+	@$(VPS_DC) logs --tail 100 $(s)
+
+.PHONY: prod-seed
+prod-seed: ## Seed katalogu na VPS (make prod-seed n=1500)
+	@$(VPS_DC) exec -T catalog-app php artisan marketplace:seed --n=$(or $(n),1500)
+
+.PHONY: prod-eval
+prod-eval: ## nDCG@10 na VPS
+	@$(VPS_DC) exec -T catalog-app php artisan search:eval
