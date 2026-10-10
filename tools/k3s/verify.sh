@@ -8,6 +8,7 @@
 #    cluster    k3s Ready, wersja, bez Traefika/ServiceLB, API przez tunel,
 #               kubectl z Maca przez tunel, DNS i Service z poda   (Task 1)
 #    exposure   z internetu tylko 22/tcp — także porty k8s         (Task 1+)
+#    eck        operator ECK 3.5.0 działa, CRD zarejestrowane        (Task 2)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -86,11 +87,25 @@ phase_exposure() {
   done
 }
 
+# ------------------------------------------------------------------ eck -----
+phase_eck() {
+  tunnel_up
+  echo -e "\n${BLD}  eck — operator Elastica${NC}"
+  check "CRD elasticsearches.elasticsearch.k8s.elastic.co" "1" \
+    "$(k get crd elasticsearches.elasticsearch.k8s.elastic.co -o name | wc -l | tr -d ' ')"
+  check "CRD kibanas.kibana.k8s.elastic.co" "1" "$(k get crd kibanas.kibana.k8s.elastic.co -o name | wc -l | tr -d ' ')"
+  check "operator: elastic-operator-0 Running" "Running" "$(k get pod elastic-operator-0 -n elastic-system -o jsonpath='{.status.phase}')"
+  check "operator: wersja 3.5.0" "docker.elastic.co/eck/eck-operator:3.5.0" \
+    "$(k get sts elastic-operator -n elastic-system -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  check "operator: zero restartów" "0" "$(k get pod elastic-operator-0 -n elastic-system -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
-  all)      phase_cluster; phase_exposure ;;
-  *) echo "użycie: $0 {cluster|exposure|all}" >&2; exit 2 ;;
+  eck)      phase_eck ;;
+  all)      phase_cluster; phase_exposure; phase_eck ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"
