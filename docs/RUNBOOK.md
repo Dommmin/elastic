@@ -1317,6 +1317,162 @@ purge'a), ale na prawdziwej DLQ to utrata dowodów. Payload dla porządku:
 
 ---
 
+<a id="028"></a>
+## 028 — Obraz prod czyta `DB_CONNECTION=sqlite`, choć compose podaje `pgsql`
+
+**Objaw**
+Brak błędu w czasie buildu i startu. Test `tools/vps/prod-image-check.sh`:
+`catalog: DB_CONNECTION z env po config:cache (oczekiwano: pgsql, otrzymano: sqlite)`.
+Na serwerze aplikacja pisałaby do pliku SQLite w kontenerze, który znika przy każdym wdrożeniu.
+
+**Diagnoza**
+`php -r 'echo (require "bootstrap/cache/config.php")["database"]["default"];'`
+w kontenerze zwraca `sqlite`, mimo `-e DB_CONNECTION=pgsql`.
+
+**Przyczyna**
+`php artisan config:cache` było w `RUN` Dockerfile'a. W buildzie nie ma zmiennych
+z compose, więc `env()` zwracało wartości domyślne, a te zamrażały się w cache.
+Gdy `bootstrap/cache/config.php` istnieje, Laravel w ogóle nie woła `env()`.
+
+**Naprawa**
+`config:cache` przeniesione do `infra/php/catalog-entrypoint.sh` (start kontenera).
+`route:cache` i `view:cache` zostały w buildzie, bo nie zależą od środowiska.
+
+**Czego się nauczyłem**
+Cache budowany z env nie może powstać w buildzie obrazu. Pytanie kontrolne przy
+każdym `RUN`: czy wynik zależy od czegoś, co poznam dopiero w runtime?
+
+<a id="029"></a>
+## 029 — `npm run build` pada w czystym klonie (`exit code: 1`), lokalnie działa
+
+**Objaw**
+```
+infra/php/catalog.Dockerfile: RUN npm run build
+ERROR: failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+```
+
+**Diagnoza**
+Build z `git clone` do katalogu tymczasowego (`prod-image-check.sh`), a nie
+z katalogu roboczego. `vite.config.ts` → plugin `wayfinder`.
+
+**Przyczyna**
+`@laravel/vite-plugin-wayfinder` woła `php artisan wayfinder:generate` także przy
+buildzie produkcyjnym. Etap `assets` był na `node:alpine`, czyli bez PHP, vendor
+i kodu. Lokalnie problem był niewidoczny, bo Vite zawsze chodził w kontenerze z PHP.
+Dodatkowo `composer install --no-scripts` pomija `package:discover`, przez co
+Laravel nie widzi komendy z paczki.
+
+**Naprawa**
+`assets` dziedziczy z etapu `vite` (base + Node) i dostaje `COPY --from=vendor /app`.
+W `vendor` jest jawne `php artisan package:discover`.
+
+**Czego się nauczyłem**
+Build produkcyjny testuj zawsze z czystego klonu. Lokalny katalog roboczy ma pliki,
+których CI nigdy nie zobaczy.
+
+<a id="030"></a>
+## 030 — Symfony `cache:warmup` w buildzie: `Environment variable not found`
+
+**Objaw**
+```
+Environment variable not found: "DATABASE_URL".
+Environment variable not found: "DEFAULT_URI".
+```
+Wcześniej to samo maskował lokalny `apps/search/.env`, który kopiował się do
+obrazu (brak `.dockerignore`).
+
+**Diagnoza**
+Build z czystego klonu i `grep -rn "env(" apps/search/config`, żeby zobaczyć listę
+wszystkich zmiennych.
+
+**Przyczyna**
+Kompilacja kontenera DI sprawdza, czy zmienne z `%env()%` istnieją (wartości
+rozwiązuje w runtime). Do tego `Dotenv::bootEnv()` rzuca wyjątek bez pliku `.env`.
+
+**Naprawa**
+`RUN --mount=type=bind,source=infra/php/search.build.env,...` z atrapami tylko na
+czas `cache:warmup`, plus `touch .env`. Nic z tego nie zostaje w obrazie.
+
+**Czego się nauczyłem**
+`ENV` w Dockerfile zostaje w obrazie na zawsze. Wartość potrzebna tylko na czas
+buildu idzie przez `--mount` albo prefiks w tej samej linii `RUN`.
+
+<a id="031"></a>
+## 031 — Zmiana ceny nigdy nie dociera do ES (outbox bez przekaźnika)
+
+**Objaw**
+Wykryte w próbie generalnej ETAPU D. Po
+`Offer::updateWithOutbox(['price_cents' => ...])` wiersz w `outbox` ma
+`published_at = NULL` na zawsze, a w ES jest stara cena.
+
+**Diagnoza**
+`grep -rn "outbox:publish" compose.yaml Makefile apps/catalog`: komendę woła tylko
+`SeedMarketplaceCommand` (na końcu seedu). Żadna usługa compose jej nie uruchamia.
+
+**Przyczyna**
+Dane w ETAPACH 6–7 szły zawsze przez `marketplace:seed`, który sam opróżnia
+outbox. Normalna ścieżka „zmiana → zdarzenie" nie miała przekaźnika.
+
+**Naprawa**
+Usługa `outbox-publisher` (profil `apps`): obraz catalog,
+`php artisan outbox:publish --loop`. `FOR UPDATE SKIP LOCKED` pozwala na
+równoległą pracę z seedem. Zmierzone: zmiana ceny widoczna w ES po ~1 s.
+
+**Czego się nauczyłem**
+Test end-to-end ma iść ścieżką użytkownika (zmiana w aplikacji), a nie ścieżką
+narzędzia (seed). Narzędzie potrafi po cichu wykonać pracę, której system nie robi.
+
+<a id="032"></a>
+## 032 — `nDCG@10` skacze 0.84–0.89 na tych samych danych
+
+**Objaw**
+`search:eval` po świeżym seedzie i indeksie: 0.851, 0.856, 0.842, 0.889.
+Baseline w POMIARACH: 0.967.
+
+**Diagnoza**
+`_search?q=name:telefon`: wszystkie smartfony mają identyczny `_score` (2.583).
+`queries.yaml` ocenia 10 z kilkudziesięciu remisujących dokumentów, a kolumna
+„Nieocenione w top-k” jest > 0.
+
+**Przyczyna**
+Remis `_score` rozstrzyga wewnętrzny doc id Lucene, zależny od momentów refreshu
+i merge'ów segmentów. 0.967 zmierzono na lokalnej bazie z 6019 produktami (wielokrotny
+seed bez `--fresh`), czyli na stanie, którego nie da się odtworzyć.
+
+**Naprawa**
+ETAP D używa kryterium „eval OK" (≥ 0.80 + zapytania o konkretny produkt = 1.000),
+a po restarcie i snapshocie sprawdza wynik identyczny jak przed. Deterministyczny
+harness (ocena całych grup remisów) to osobne zadanie.
+
+**Czego się nauczyłem**
+Zanim liczba stanie się kryterium przyjęcia, zmierz ją 3 razy od zera. Metryka
+z rozrzutem nie jest testem regresji.
+
+<a id="033"></a>
+## 033 — RabbitMQ: kontener ginie, gdy test pyta go o zdrowie w trakcie bootu
+
+**Objaw**
+`docker exec <rabbitmq> rabbitmq-diagnostics -q check_running` w pętli zaraz po
+`docker run`: po kilkudziesięciu sekundach `Error response from daemon: container ... is not running`.
+Ten sam obraz uruchomiony bez pętli działa poprawnie.
+
+**Diagnoza**
+`docker logs` + start bez odpytywania: użytkownik i kolejki tworzą się poprawnie,
+`rabbitmqctl authenticate_user` → `Success`.
+
+**Przyczyna**
+CLI RabbitMQ (`rabbitmq-diagnostics`) uruchamiane w trakcie bootu node'a, przed
+ustaleniem ciasteczka Erlanga i startem dystrybucji, kolidowało ze startem. Dokładny
+mechanizm nie został ustalony: wystarczyło przestać pytać za wcześnie.
+
+**Naprawa**
+Test czeka na linię `Server startup complete` w `docker logs` i dopiero wtedy
+używa CLI.
+
+**Czego się nauczyłem**
+Sonda zdrowia też jest obciążeniem i może zmienić to, co mierzy. W testach na
+gotowość lepiej czekać na sygnał od usługi (log, port) niż pytać ją w pętli.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć
