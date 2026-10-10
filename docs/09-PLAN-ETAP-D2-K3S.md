@@ -41,7 +41,7 @@ blue-green obok Compose).
 | K-3 | **ECK** dla ES + Kibany | operator robi to, co w D1 robiły `es-init` + `es-setup` + healthchecki: certy, hasła, rolling restart | ES jako ręczny StatefulSet (dużo kodu, mało nauki o tym, jak się to robi naprawdę) |
 | K-4 | Postgres, RabbitMQ, Redis jako **zwykłe StatefulSety** z obrazami z D1 | żeby zobaczyć „gołe" prymitywy: StatefulSet, PVC, headless Service, probe'y; operator już mamy w ES | CloudNativePG / RabbitMQ Cluster Operator — świetne, ale drugi i trzeci operator nie uczą niczego nowego |
 | K-5 | **Kustomize**, bez Helma | `kubectl apply -k`, tag obrazów w jednym miejscu (`images:`); widać czysty YAML | Helm — warstwa szablonów zasłania to, czego się uczysz |
-| K-6 | k3s **bez Traefika i ServiceLB** (`--disable traefik,servicelb`), API na `127.0.0.1` | nic nie słucha publicznie; dostęp tak jak w D1 — przez SSH | Ingress + publiczny port (D1 uzasadniło, dlaczego nie) |
+| K-6 | k3s **bez Traefika i ServiceLB** (`--disable traefik,servicelb`); API na interfejsie węzła, **z internetu zamknięte przez ufw** | nic nie słucha publicznie; dostęp tak jak w D1 — przez SSH. ~~API tylko na `127.0.0.1`~~ — błąd planu: pody łączą się z API przez Service DNAT-owany na adres węzła, więc API na loopbacku = CoreDNS i ECK bez API (RUNBOOK #036) | Ingress + publiczny port (D1 uzasadniło, dlaczego nie) |
 | K-7 | Sekrety: **`Secret` tworzony na serwerze z istniejącego `/opt/marketplace/.env`** | te same hasła w obu stackach = migracja danych bez zmiany haseł; nic w gicie | Sealed Secrets / SOPS — osobny temat |
 | K-8 | Migracje i indeks jako **`Job`**, pg-backup jako **`CronJob`** | k8s-owe odpowiedniki „kroku w deploy.sh" i timera systemd | init containers (migracja przy każdym starcie poda) |
 | K-9 | Na czas blue-green ES w k3s: `heap 1g / limit 2g`; po przełączeniu `1500m / 3g` | oba stacki naraz ≈ 18–19 GB z 24 | — |
@@ -95,9 +95,9 @@ Każdy task najpierw dopisuje fazę (czerwona), potem ją zazielenia.
 
 ### Task 1: k3s na serwerze + dostęp z Maca
 
-- [ ] **Faza `cluster`** (czerwona): node `Ready`; wersja `v1.36.5+k3s1`; Traefik i ServiceLB nieobecne; API słucha tylko na `127.0.0.1:6443`; `kubectl` z Maca przez tunel działa; pod testowy rozwiązuje DNS `kubernetes.default` i łączy się z Service'em; StorageClass `local-path` domyślna.
+- [ ] **Faza `cluster`** (czerwona): node `Ready`; wersja `v1.36.5+k3s1`; Traefik i ServiceLB nieobecne; API słucha (6443, z zewnątrz zamknięte — `exposure`); `kubectl` z Maca przez tunel działa; pod testowy rozwiązuje DNS `kubernetes.default` i łączy się z Service'em; StorageClass `local-path` domyślna.
 - [ ] **Faza `exposure`**: jak w D1 + `6443 10250 30000 32767` zamknięte z zewnątrz.
-- [ ] `tools/k3s/install-k3s.sh`: `INSTALL_K3S_VERSION=v1.36.5+k3s1`, `--disable traefik --disable servicelb`, `--bind-address 127.0.0.1`, `--write-kubeconfig-mode 600`, kubeconfig dla `deploy`; ufw: `allow from 10.42.0.0/16`, `allow from 10.43.0.0/16` (ruch wewnątrz klastra, nie z internetu).
+- [ ] `tools/k3s/install-k3s.sh`: `INSTALL_K3S_VERSION=v1.36.5+k3s1`, `--disable traefik --disable servicelb`, `--write-kubeconfig-mode 600`, kubeconfig dla `deploy`; ufw: `allow from 10.42.0.0/16`, `allow from 10.43.0.0/16` (ruch wewnątrz klastra, nie z internetu).
 - [ ] Mac: `Host elastic-vps-k8s` z `LocalForward 26443 127.0.0.1:6443`; kubeconfig `~/.kube/elastic-vps.yaml` z `server: https://127.0.0.1:26443`; `kubectl` ≥ 1.35 (skew ±1 do serwera 1.36 — obecny 1.33 za stary: **Twoja zgoda na `brew install kubernetes-cli`**).
 - [ ] `cluster` + `exposure` → ✓, Compose (D1) dalej `verify.sh stack` ✓. **Commit** `ETAP D2 [1/9]`.
 

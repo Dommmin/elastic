@@ -1562,6 +1562,36 @@ Heredoc do zdalnej powłoki zawsze cytuj (`<<'EOF'`), a dane przekazuj jawnie.
 Jeśli skrypt idzie przez stdin, każda komenda w środku czytająca stdin (`docker exec -i/-T`,
 `ssh`, `read`, `mysql`) musi dostać `</dev/null`.
 
+<a id="036"></a>
+## 036 — Plan: „API k3s tylko na 127.0.0.1" — złapane przed wdrożeniem
+
+**Objaw**
+Brak — błąd w planie (`docs/09-PLAN-ETAP-D2-K3S.md`, decyzja K-6), wyłapany
+przy pisaniu `install-k3s.sh`. Gdyby wszedł: CoreDNS, operator ECK i każdy pod
+rozmawiający z API wisiałyby na `dial tcp 10.43.0.1:443: connect: connection refused`.
+
+**Diagnoza**
+Rozpisanie drogi pakietu: pod → Service `kubernetes.default` (ClusterIP
+`10.43.0.1:443`) → kube-proxy DNAT na **endpoint** = `advertise-address` węzła
+`:6443` → apiserver. Endpoint wskazuje adres węzła, a nie loopback.
+
+**Przyczyna**
+`--bind-address 127.0.0.1` sprawiłoby, że apiserver słucha tylko na loopbacku
+hosta. Ustawienie też `--advertise-address 127.0.0.1` nie pomaga: po DNAT na
+`127.0.0.1` pakiet trafia na loopback **network namespace'u poda**, a nie hosta.
+
+**Naprawa**
+API słucha na interfejsie węzła. Z internetu 6443 zamyka ufw (apiserver to
+proces hosta, więc łańcuch INPUT go obejmuje, inaczej niż porty publikowane
+przez Docker). Dostęp z Maca: tunel SSH `LocalForward 26443 127.0.0.1:6443`.
+`verify.sh exposure` skanuje 6443 z zewnątrz. ufw: `allow from 10.42.0.0/16`
+i `10.43.0.0/16`, czyli ruch z podów do hosta, nie z internetu.
+
+**Czego się nauczyłem**
+„Słuchaj tylko na localhost" to dobra zasada dla usług, z których korzysta sam
+host. Dla usług, z którymi łączą się kontenery albo pody, „localhost" oznacza
+coś innego po każdej stronie granicy network namespace'u.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć

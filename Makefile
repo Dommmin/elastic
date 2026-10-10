@@ -273,3 +273,20 @@ vps-backup-pull: ## Skopiuj backupy z VPS na Maca (~/backups/elastic-vps): dumpy
 	rsync -az --delete --rsync-path="sudo -n rsync" \
 	  elastic-vps:/var/lib/docker/volumes/marketplace_es-snapshots/_data/ ~/backups/elastic-vps/es-snapshots/
 	@du -sh ~/backups/elastic-vps/*
+
+## k3s (ETAP D2 — docs/09-PLAN-ETAP-D2-K3S.md)
+# kubectl z Homebrew (1.37): ten z /usr/local/bin (1.33) jest za stary dla k3s 1.36.
+KUBECTL_VPS := /opt/homebrew/bin/kubectl --kubeconfig $(HOME)/.kube/elastic-vps.yaml
+
+.PHONY: k3s-verify
+k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all)
+	@bash tools/k3s/verify.sh $(or $(faza),all)
+
+.PHONY: k3s-tunnel
+k3s-tunnel: ## Tunel do API k3s w tle (localhost:26443); potem: make k3s k="get pods -A"
+	@nc -z 127.0.0.1 26443 2>/dev/null && echo "tunel już działa" || ssh -fN elastic-vps-k8s
+	@echo "  export KUBECONFIG=~/.kube/elastic-vps.yaml   # dla kubectl/k9s w terminalu"
+
+.PHONY: k3s
+k3s: ## kubectl na klastrze VPS (make k3s k="get pods -n marketplace")
+	@$(KUBECTL_VPS) $(k)
