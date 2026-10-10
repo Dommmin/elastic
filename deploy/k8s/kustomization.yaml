@@ -18,6 +18,7 @@ resources:
   - catalog.yaml
   - search-consumer.yaml
   - jobs/migrate.yaml
+  - backup.yaml
 
 configurations:
   - kustomizeconfig.yaml

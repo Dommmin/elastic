@@ -1,0 +1,68 @@
+# ============================================================================
+#  pg-backup jako CronJob (ETAP D2, Task 8) — odpowiednik timera systemd z D1
+#  (infra/systemd/marketplace-pg-backup.*).
+#
+#  Różnice względem systemd:
+#    - harmonogram i strefa czasowa w manifeście (timeZone), nie na hoście;
+#    - concurrencyPolicy: Forbid = dwa dumpy nigdy naraz (systemd: oneshot);
+#    - historia przebiegów: kubectl get jobs -l app=pg-backup; logi każdego
+#      przebiegu zostają w podzie (systemd: journalctl -u ...).
+#  Dumpy lądują na dysku HOSTA (hostPath), żeby `make vps-backup-pull`
+#  ściągał je tak samo jak w D1. Na wielu węzłach: PVC na NFS/S3.
+# ============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+spec:
+  schedule: "30 3 * * *"
+  timeZone: Europe/Warsaw
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: pg-backup
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pg-dump
+              # Nasz obraz Postgresa: pg_dump w tej samej wersji co serwer.
+              image: ghcr.io/dommmin/elastic-postgres:placeholder
+              command:
+                - sh
+                - -c
+                - |
+                  set -e
+                  STAMP=$(date +%F-%H%M)
+                  for db in "$CATALOG_DB" "$SEARCHSVC_DB"; do
+                    pg_dump -h postgres -U "$POSTGRES_USER" -Fc "$db" > "/backups/$db-$STAMP.dump.tmp"
+                    mv "/backups/$db-$STAMP.dump.tmp" "/backups/$db-$STAMP.dump"
+                  done
+                  find /backups -name '*.dump' -mtime +7 -delete
+                  ls -la /backups
+              env:
+                - name: TZ
+                  value: Europe/Warsaw
+                - name: POSTGRES_USER
+                  valueFrom: { configMapKeyRef: { name: marketplace-config, key: POSTGRES_USER } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: marketplace-secrets, key: POSTGRES_PASSWORD } }
+                - name: CATALOG_DB
+                  valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB } }
+                - name: SEARCHSVC_DB
+                  valueFrom: { configMapKeyRef: { name: marketplace-config, key: SEARCHSVC_DB } }
+              resources:
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: backups
+              hostPath:
+                path: /var/backups/marketplace-k8s
+                type: DirectoryOrCreate

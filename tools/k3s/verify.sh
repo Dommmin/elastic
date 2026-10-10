@@ -14,6 +14,7 @@
 #    data       Postgres, RabbitMQ, Redis: gotowe, hasła, trwałość PVC (Task 5)
 #    apps       Deploymenty, Job migracji, /up + X-App-Version, indeks (Task 6)
 #    stack      parytet z D1: dane = Compose, eval, E2E zmiana ceny    (Task 7)
+#    backup     repo + SLM w ECK, snapshot świeży, CronJob pg-backup   (Task 8)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -50,7 +51,20 @@ tunnel_up() {
 # Tunel potrafi paść w trakcie długiej weryfikacji (np. pod obciążeniem
 # serwera) — wtedy każde `kubectl` zwraca pusto, a test wygląda na błąd
 # danych. Przed każdym wywołaniem: jeśli portu nie ma, wznów tunel.
-k() { nc -z 127.0.0.1 26443 2>/dev/null || tunnel_up; "${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" --request-timeout=15s "$@" 2>/dev/null; }
+# Przy błędzie: świeży tunel i jedna ponowna próba. Bez tego przejściowy
+# "TLS handshake timeout" (4 vCPU pod obciążeniem 6 JVM-ów) dawał pusty
+# wynik, który wyglądał jak błąd danych.
+k() {
+  local out rc attempt
+  for attempt in 1 2; do
+    nc -z 127.0.0.1 26443 2>/dev/null || tunnel_up
+    out="$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" --request-timeout=20s "$@" 2>/dev/null)"; rc=$?
+    [ "${rc}" -eq 0 ] && break
+    [ "${attempt}" -eq 1 ] && { pkill -f "ssh .*-fN elastic-vps-k8s" 2>/dev/null; sleep 1; tunnel_up; }
+  done
+  [ -n "${out}" ] && printf '%s\n' "${out}"
+  return "${rc}"
+}
 
 # -------------------------------------------------------------- cluster -----
 phase_cluster() {
@@ -255,6 +269,26 @@ phase_stack() {
   check "E2E: zmiana ceny w ES k8s w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
 }
 
+# --------------------------------------------------------------- backup -----
+phase_backup() {
+  tunnel_up
+  echo -e "\n${BLD}  backup — w Kubernetesie${NC}"
+  check "ES k8s: repozytorium fs-backup" "/snapshots/fs-backup" \
+    "$(es_k8s elastic '/_snapshot/fs-backup' | python3 -c 'import json,sys; print(json.load(sys.stdin)["fs-backup"]["settings"]["location"])' 2>/dev/null)"
+  check "ES k8s: ostatni snapshot SLM udany i < 26 h" "tak" "$(es_k8s elastic '/_slm/policy/nightly' | python3 -c '
+import json, sys, time
+p = json.load(sys.stdin)["nightly"]
+ok = p.get("last_success", {}).get("time", 0) / 1000
+bad = p.get("last_failure", {}).get("time", 0) / 1000
+print("tak" if ok and ok > bad and time.time() - ok < 26 * 3600 else "nie")' 2>/dev/null)"
+  check "CronJob pg-backup: 30 3 * * * Europe/Warsaw" "30 3 * * * Europe/Warsaw" \
+    "$(k get cronjob pg-backup -n marketplace -o jsonpath='{.spec.schedule} {.spec.timeZone}')"
+  check "ostatni Job pg-backup: Complete" "True" \
+    "$(k get jobs -n marketplace -l app=pg-backup --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || k get jobs -n marketplace --sort-by=.metadata.creationTimestamp -o jsonpath='{range .items[*]}{.metadata.name} {.status.conditions[?(@.type=="Complete")].status}{"\n"}{end}' | awk '/pg-backup/ {s=$2} END {print s}')"
+  check "dumpy obu baz < 26 h w /var/backups/marketplace-k8s" "2" \
+    "$(remote "find /var/backups/marketplace-k8s -name '*.dump' -mmin -1560 -size +1k | sed -E 's|.*/||; s/-[0-9]{4}-.*//' | sort -u | wc -l" | tr -d ' ')"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
@@ -264,8 +298,9 @@ case "${1:-}" in
   data)     phase_data ;;
   apps)     phase_apps ;;
   stack)    phase_stack ;;
-  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|all}" >&2; exit 2 ;;
+  backup)   phase_backup ;;
+  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack; phase_backup ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

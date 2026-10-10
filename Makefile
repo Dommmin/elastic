@@ -272,6 +272,10 @@ vps-backup-pull: ## Skopiuj backupy z VPS na Maca (~/backups/elastic-vps): dumpy
 	rsync -az --delete elastic-vps:/var/backups/marketplace/ ~/backups/elastic-vps/pg/
 	rsync -az --delete --rsync-path="sudo -n rsync" \
 	  elastic-vps:/var/lib/docker/volumes/marketplace_es-snapshots/_data/ ~/backups/elastic-vps/es-snapshots/
+	@mkdir -p ~/backups/elastic-vps/k8s-pg ~/backups/elastic-vps/k8s-es-snapshots
+	rsync -az --delete --rsync-path="sudo -n rsync" elastic-vps:/var/backups/marketplace-k8s/ ~/backups/elastic-vps/k8s-pg/
+	rsync -az --delete --rsync-path="sudo -n rsync" \
+	  "elastic-vps:/var/lib/rancher/k3s/storage/*_marketplace_es-snapshots/fs-backup/" ~/backups/elastic-vps/k8s-es-snapshots/
 	@du -sh ~/backups/elastic-vps/*
 
 ## k3s (ETAP D2 — docs/09-PLAN-ETAP-D2-K3S.md)

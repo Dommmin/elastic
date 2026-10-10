@@ -55,6 +55,25 @@ spec:
               valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
             - name: ELASTICSEARCH_PASSWORD
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+        # Backup ES jako kod (jak w deploy.sh D1): repozytorium fs + polityka
+        # SLM. PUT jest idempotentny — przy każdym wdrożeniu ten sam stan.
+        - name: es-backup-config
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              put() { curl -fsS -o /dev/null -u "elastic:$ELASTIC_PASSWORD" -X PUT -H 'Content-Type: application/json' "$ELASTICSEARCH_HOST$1" -d "$2"; }
+              put /_snapshot/fs-backup '{"type":"fs","settings":{"location":"/snapshots/fs-backup","compress":true}}'
+              # SLM liczy czas w UTC: 01:00 UTC = 03:00 czasu polskiego latem.
+              put /_slm/policy/nightly '{"schedule":"0 0 1 * * ?","name":"<nightly-{now/d}>","repository":"fs-backup","config":{"indices":["*"],"include_global_state":true},"retention":{"expire_after":"7d","min_count":1,"max_count":7}}'
+              echo "backup ES: repozytorium fs-backup + SLM nightly"
+          envFrom:
+            - configMapRef: { name: marketplace-config }
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-es-elastic-user, key: elastic } }
       containers:
         - name: search-index
           image: ghcr.io/dommmin/elastic-search:placeholder
