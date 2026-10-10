@@ -366,6 +366,17 @@ nie zostaje wypchnięte.
   Tag `v7` można przepisać, commit nie.
 - `persist-credentials: false`, czyli token nie zostaje na dysku runnera.
 
+Pierwszy przebieg: **10,5 min** (bez cache), wszystkie kroki zielone.
+Paczki w GHCR od razu wyszły **publiczne**: etykieta
+`org.opencontainers.image.source=https://github.com/Dommmin/elastic` łączy
+je z publicznym repo, a GHCR przejmuje jego widoczność.
+
+**Uwaga na tagi:** obrazy powstają tylko dla commitów, które zmieniają
+`apps/`, `infra/` itd. (filtr `paths`). Commit z samą dokumentacją nie ma
+obrazów, więc „HEAD z main" nie jest poprawnym tagiem do wdrożenia.
+`tools/vps/latest-image-tag.sh` pyta GitHuba o SHA ostatniego *udanego*
+buildu i z niego korzystają `make prod-deploy` oraz `verify.sh`.
+
 Tag obrazu to **pełny SHA commita**: jednoznacznie mówi, jaki kod jest
 w środku. `main` to ruchoma etykieta „ostatni build", wygodna, ale do
 wdrożeń używamy SHA.

@@ -39,7 +39,7 @@ CI ogranicza się do budowania i publikowania obrazów. Po DoD D1 aktualizujemy 
 | Ty (tylko Ty możesz) | Claude |
 |---|---|
 | Zgoda na `git push` (Task 3) | Faza 0: obrazy prod, compose.prod, workflow CI — lokalnie, przed zakupem |
-| Ustawienie paczek GHCR na **Public** (GitHub → Packages) | Zabezpieczenie systemu, Docker, wdrożenie (przez SSH) |
+| — | Zabezpieczenie systemu, Docker, wdrożenie (przez SSH) |
 | Zakup serwera, wklejenie **publicznego** klucza SSH, podanie IP | Weryfikacja po każdym kroku (`verify.sh`) z wynikiem w czacie |
 | Zatwierdzanie komend | Przewodnik, RUNBOOK, POMIARY |
 
@@ -105,7 +105,7 @@ wyłącznie po kluczu SSH.
 | `.env.prod.example`, `tools/vps/gen-env.sh` (nowe) | Szablon `.env` (profil 24 GB, `__GENERATE__`) i generator sekretów |
 | `.github/workflows/images.yml` (nowy) | Build 5 obrazów amd64 → `prod-image-check` → push do GHCR |
 | `tools/vps/verify.sh` (nowy) | `verify.sh <faza>` z Maca; ✓/✗; `exit 1` przy błędzie |
-| `tools/vps/bootstrap.sh`, `install-docker.sh`, `infra/docker/daemon.json` (nowe) | Hardening i Docker na serwerze |
+| `tools/vps/bootstrap.sh`, `install-docker.sh` (nowe, `daemon.json` w środku), `deploy.sh`, `latest-image-tag.sh` | Hardening, Docker, wdrożenie; tag = ostatni udany build CI |
 | `infra/systemd/marketplace-pg-backup.{service,timer}` (nowe) | Codzienny `pg_dump`, retencja 7 dni |
 | `Makefile` (zmiana) | `prod-deploy`, `prod-ps`, `prod-logs`, `prod-seed`, `prod-eval`, `vps-verify`, `vps-tunnel`, `vps-backup-pull` |
 | `docs/blog/etap-d-vps.md` + RUNBOOK, POMIARY, README, `06-PLAN` | Dokumentacja (DoD) |
@@ -179,7 +179,7 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
 - [ ] **Krok 2:** → FAIL (obrazów jeszcze nie ma).
 - [ ] **Krok 3:** `.github/workflows/images.yml`: trigger `push` na `main` (ścieżki `apps/**`, `infra/**`, `tests/relevance/**`, `.dockerignore`, workflow) + `workflow_dispatch`; `permissions: contents: read, packages: write`; akcje przypięte do SHA (skill `github-actions-hardening`); wersje wczytane z `.env.example`; macierz 5 obrazów; `docker/build-push-action` z `platforms: linux/amd64`, cache `type=gha`, tagi `<sha>` i `main`; przed pushem `prod-image-check.sh`.
 - [ ] **Krok 4 (Ty):** zgoda na `git push origin main`.
-- [ ] **Krok 5 (Ty):** po pierwszym przebiegu: GitHub → Packages → każda z 5 paczek → *Change visibility* → **Public**.
+- [x] **Krok 5:** ~~ustawienie paczek na Public~~ — niepotrzebne: z etykietą `org.opencontainers.image.source` GHCR nadał paczkom widoczność publicznego repo (sprawdzone anonimowym `docker manifest inspect`).
 - [ ] **Krok 6:** `verify.sh images` → ✓. Czas builda (zimny i z cache) → POMIARY.
 - [ ] **Krok 7: Commit** `ETAP D [3/10]: CI buduje obrazy do GHCR`
 
@@ -291,7 +291,7 @@ Ryzyko: k3s + ECK zajmuje ~1–1,5 GB więcej → przy 24 GB ES może zejść do
 | Część | Czas |
 |---|---|
 | Faza 0 (Task 1–4) | 1–1,5 dnia, **przed** zakupem |
-| Task 5 (Ty) | 15 min + ustawienie paczek na Public |
+| Task 5 (Ty) | 15 min |
 | Task 6–9 | ~0,5 dnia |
 | Task 10–11 | 0,5–1 dnia |
 | D2 | 2–4 dni |

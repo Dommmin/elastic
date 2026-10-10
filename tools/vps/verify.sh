@@ -10,7 +10,7 @@
 #    all        wszystkie fazy po kolei
 #
 #  Serwer: alias SSH `elastic-vps` (~/.ssh/config). Tag obrazów: TAG=<sha>
-#  (domyślnie HEAD z origin/main).
+#  (domyślnie ostatni udany build CI — tools/vps/latest-image-tag.sh).
 # ============================================================================
 set -uo pipefail
 
@@ -39,19 +39,23 @@ remote() { ssh -o BatchMode=yes -o ConnectTimeout=10 "${HOST}" "$@" 2>/dev/null;
 
 # --------------------------------------------------------------- images -----
 phase_images() {
-  local tag="${TAG:-$(git -C "${ROOT}" rev-parse origin/main 2>/dev/null)}"
+  local tag="${TAG:-$("${ROOT}/tools/vps/latest-image-tag.sh" 2>/dev/null)}"
   echo -e "\n${BLD}  images — ${REGISTRY}/elastic-*:${tag:0:12}${NC}"
   # Pusty DOCKER_CONFIG = brak zalogowania. Jeśli obraz da się pobrać tak,
   # to da się go pobrać na serwerze bez żadnego tokenu (= paczka publiczna).
   local anon; anon="$(mktemp -d)"
   for name in "${IMAGES[@]}"; do
     local platforms
-    platforms=$(DOCKER_CONFIG="${anon}" docker manifest inspect "${REGISTRY}/elastic-${name}:${tag}" 2>/dev/null \
+    # -v zwraca deskryptor z platformą — także dla pojedynczego manifestu
+    # (docker push obrazu z jedną architekturą nie tworzy listy manifestów).
+    platforms=$(DOCKER_CONFIG="${anon}" docker manifest inspect -v "${REGISTRY}/elastic-${name}:${tag}" 2>/dev/null \
       | python3 -c '
 import json, sys
-m = json.load(sys.stdin)
-ps = [f"{x["platform"]["os"]}/{x["platform"]["architecture"]}" for x in m.get("manifests", []) if x.get("platform", {}).get("os") != "unknown"]
-print(",".join(ps) if ps else "linux/amd64?")' 2>/dev/null)
+d = json.load(sys.stdin)
+d = d if isinstance(d, list) else [d]
+ps = sorted({f"{x["Descriptor"]["platform"]["os"]}/{x["Descriptor"]["platform"]["architecture"]}" for x in d
+             if x["Descriptor"].get("platform", {}).get("os") not in (None, "unknown")})
+print(",".join(ps))' 2>/dev/null)
     check "elastic-${name}: publiczny, linux/amd64" "linux/amd64" "${platforms:-niedostępny}"
   done
   rm -rf "${anon}"

@@ -236,9 +236,8 @@ VPS      ?= elastic-vps
 VPS_DC   := ssh $(VPS) cd /opt/marketplace '&&' docker compose
 
 .PHONY: prod-deploy
-prod-deploy: ## Wdróż wersję na VPS (make prod-deploy tag=<SHA>); rollback = starszy SHA
-	@test -n "$(tag)" || (echo "Podaj tag: make prod-deploy tag=\$$(git rev-parse origin/main)"; exit 1)
-	@bash tools/vps/deploy.sh $(tag)
+prod-deploy: ## Wdróż na VPS: ostatni build CI albo tag=<SHA>; rollback = starszy SHA
+	@bash tools/vps/deploy.sh $(or $(tag),$(shell bash tools/vps/latest-image-tag.sh))
 
 .PHONY: prod-ps
 prod-ps: ## Stan kontenerów na VPS
