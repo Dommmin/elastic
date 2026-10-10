@@ -9,6 +9,7 @@
 #    access     serwer osiągalny, sprzęt zgodny z wymaganiami (Task 4-5)
 #    hardening  deploy+klucz, root/hasła wyłączone, ufw, fail2ban, sysctl (Task 6)
 #    exposure   z internetu otwarty TYLKO port 22 (skan z Maca)    (Task 6+)
+#    docker     Engine z oficjalnego repo, Compose >= 2.24, rotacja logów (Task 7)
 #    all        wszystkie fazy po kolei
 #
 #  Serwer: alias SSH `elastic-vps` (~/.ssh/config). Tag obrazów: TAG=<sha>
@@ -115,13 +116,29 @@ phase_exposure() {
   done
 }
 
+# --------------------------------------------------------------- docker -----
+phase_docker() {
+  echo -e "\n${BLD}  docker — ${HOST}${NC}"
+  check "docker bez sudo (deploy w grupie docker)" "0" "$(remote docker info >/dev/null; echo $?)"
+  check "Engine z download.docker.com (nie docker.io)" "1" "$(remote "apt-cache policy docker-ce | grep -c 'download.docker.com' | head -1" | awk '{print ($1>0)?1:0}')"
+  # Compose >= 2.24: tagi !reset/!override w compose.prod.yaml
+  check "Compose >= 2.24" "tak" "$(remote docker compose version --short | python3 -c 'import sys; v=[int(x) for x in sys.stdin.read().strip().lstrip("v").split(".")[:2]]; print("tak" if v>=[2,24] else "nie: %s" % v)' 2>/dev/null)"
+  check "logi: json-file z max-size=10m, max-file=3" "json-file 10m 3" \
+    "$(remote "docker info --format '{{.LoggingDriver}}'; jq -r '.\"log-opts\".\"max-size\", .\"log-opts\".\"max-file\"' /etc/docker/daemon.json" | tr '\n' ' ' | sed 's/ $//')"
+  check "live-restore" "true" "$(remote docker info --format '{{.LiveRestoreEnabled}}')"
+  check "hello-world" "0" "$(remote docker run --rm hello-world >/dev/null; echo $?)"
+  local used; used="$(remote "df --output=pcent / | tail -1 | tr -dc 0-9")"
+  check "dysk / zajęty < 80%" "tak" "$([ -n "${used}" ] && [ "${used}" -lt 80 ] && echo tak || echo "nie (${used:-?}%)")"
+}
+
 case "${1:-}" in
   images) phase_images ;;
   access)    phase_access ;;
   hardening) phase_hardening ;;
   exposure)  phase_exposure ;;
-  all)       phase_images; phase_access; phase_hardening; phase_exposure ;;
-  *) echo "użycie: $0 {images|access|hardening|exposure|all}" >&2; exit 2 ;;
+  docker)    phase_docker ;;
+  all)       phase_images; phase_access; phase_hardening; phase_exposure; phase_docker ;;
+  *) echo "użycie: $0 {images|access|hardening|exposure|docker|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

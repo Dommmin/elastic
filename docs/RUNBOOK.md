@@ -1517,7 +1517,7 @@ logowanie to atak. Długie operacje na zdalnym serwerze uruchamiaj odłączone o
 sesji SSH (nohup/tmux/systemd-run) i z logiem do pliku.
 
 Przy okazji dwie drobniejsze pułapki tego samego dnia:
-- `ssh host 'cat > plik && nohup …' < skrypt` dało **pusty plik** (0 B). Pewniej jest przez `scp`.
+- `ssh host 'cat > plik && nohup … &' < skrypt` dało **pusty plik** (0 B): końcowe `&` wysyła w tło całą listę `a && b`, razem z `cat`, a proces w tle w nieinteraktywnej powłoce dostaje stdin z `/dev/null`. Pewniej jest przez `scp`.
 - Pętla `until ssh host '! pgrep -f "bash /tmp/bootstrap.sh"'` nie kończyła się nigdy:
   `pgrep -f` znajdował **sam siebie**, bo szukana fraza była w jego własnej linii
   poleceń. Lepiej sprawdzać plik z logiem albo PID zapisany przy starcie.
