@@ -265,3 +265,11 @@ vps-tunnel: ## Tunel SSH do UI na VPS: catalog :28080, Kibana :25601, RabbitMQ :
 .PHONY: vps-secret
 vps-secret: ## Pokaż jeden sekret z .env serwera (make vps-secret k=ELASTIC_PASSWORD)
 	@ssh elastic-vps "grep '^$(k)=' /opt/marketplace/.env | cut -d= -f2-"
+
+.PHONY: vps-backup-pull
+vps-backup-pull: ## Skopiuj backupy z VPS na Maca (~/backups/elastic-vps): dumpy PG + snapshoty ES
+	@mkdir -p ~/backups/elastic-vps/pg ~/backups/elastic-vps/es-snapshots
+	rsync -az --delete elastic-vps:/var/backups/marketplace/ ~/backups/elastic-vps/pg/
+	rsync -az --delete --rsync-path="sudo -n rsync" \
+	  elastic-vps:/var/lib/docker/volumes/marketplace_es-snapshots/_data/ ~/backups/elastic-vps/es-snapshots/
+	@du -sh ~/backups/elastic-vps/*

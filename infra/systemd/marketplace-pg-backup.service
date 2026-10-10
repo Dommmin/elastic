@@ -1,0 +1,10 @@
+# ETAP D — dump baz Postgresa (infra/systemd/pg-backup.sh)
+[Unit]
+Description=Marketplace: pg_dump baz catalog i searchsvc
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+ExecStart=/opt/marketplace/pg-backup.sh

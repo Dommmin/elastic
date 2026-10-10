@@ -28,7 +28,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 echo "[deploy] pliki -> ${HOST}:${DIR}"
 scp -q "${ROOT}/compose.yaml" "${ROOT}/compose.prod.yaml" "${ROOT}/.env.prod.example" \
-    "${ROOT}/tools/vps/gen-env.sh" "${HOST}:${DIR}/"
+    "${ROOT}/tools/vps/gen-env.sh" "${ROOT}/infra/systemd/pg-backup.sh" \
+    "${ROOT}/infra/systemd/marketplace-pg-backup.service" \
+    "${ROOT}/infra/systemd/marketplace-pg-backup.timer" "${HOST}:${DIR}/"
 
 # Heredoc CYTOWANY (<<'REMOTE'): nic w środku nie jest rozwijane na Macu.
 # Wcześniej był niecytowany i lokalny bash wykonywał backticki z KOMENTARZY
@@ -66,6 +68,33 @@ if ! curl -fs -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" "http://localhost:${
   echo "[deploy] pierwszy start: indeks products-v1 + alias"
   docker compose exec -T search-consumer php bin/console search:index:create </dev/null
 fi
+
+# --- backupy: konfiguracja w repo, instalowana przy każdym wdrożeniu --------
+# Wszystko idempotentne (PUT nadpisuje tym samym, install/enable bez zmian).
+echo "[deploy] backup ES: repozytorium fs + polityka SLM nightly"
+es_put() {
+  curl -fs -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" -X PUT \
+    -H 'Content-Type: application/json' "http://localhost:${ES_PORT}$1" -d "$2"
+}
+# /snapshots = wolumen es-snapshots, wspólny dla 3 nodów (path.repo).
+# Przy nodach na RÓŻNYCH maszynach to musiałby być NFS/S3 — każdy node
+# pisze swoje shardy do tego samego repozytorium.
+es_put /_snapshot/fs-backup '{"type":"fs","settings":{"location":"/snapshots","compress":true}}'
+# Harmonogram SLM jest w UTC: 01:00 UTC = 03:00 czasu polskiego latem.
+es_put /_slm/policy/nightly '{
+  "schedule": "0 0 1 * * ?",
+  "name": "<nightly-{now/d}>",
+  "repository": "fs-backup",
+  "config": { "indices": ["*"], "include_global_state": true },
+  "retention": { "expire_after": "7d", "min_count": 1, "max_count": 7 }
+}'
+
+echo "[deploy] backup PG: timer systemd (03:30)"
+chmod +x pg-backup.sh
+sudo -n install -d -o deploy -g deploy -m 750 /var/backups/marketplace
+sudo -n install -m 644 marketplace-pg-backup.service marketplace-pg-backup.timer /etc/systemd/system/
+sudo -n systemctl daemon-reload
+sudo -n systemctl enable --now marketplace-pg-backup.timer >/dev/null 2>&1
 
 docker image prune -f >/dev/null
 echo "[deploy] OK — działa wersja ${TAG:0:12}"

@@ -1,0 +1,12 @@
+# ETAP D — codziennie 03:30 (czas serwera: Europe/Warsaw), pół godziny po
+# snapshocie ES (SLM, 03:00). Persistent: jeśli serwer był wyłączony
+# o 03:30, dump wykona się zaraz po starcie, zamiast przepaść.
+[Unit]
+Description=Marketplace: codzienny pg_dump
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

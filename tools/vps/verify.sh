@@ -11,6 +11,9 @@
 #    exposure   z internetu otwarty TYLKO port 22 (skan z Maca)    (Task 6+)
 #    docker     Engine z oficjalnego repo, Compose >= 2.24, rotacja logów (Task 7)
 #    stack      wdrożony stack: bez kodu na serwerze, ES green, smoke, eval, E2E (Task 8)
+#    backup     snapshot ES (SLM) i dump PG świeże, timer aktywny          (Task 10)
+#    reboot     RESTARTUJE serwer i sprawdza, że wszystko wstaje samo       (Task 10)
+#               — tylko jawnie, NIE wchodzi w `all`
 #    all        wszystkie fazy po kolei
 #
 #  Serwer: alias SSH `elastic-vps` (~/.ssh/config). Tag obrazów: TAG=<sha>
@@ -186,6 +189,51 @@ print(len(bad) if own else "brak obrazów")' "${tag}")"
   check "E2E: zmiana ceny w ES w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
 }
 
+# --------------------------------------------------------------- backup -----
+eval_mean() { on_app 'docker compose exec -T catalog-app php artisan search:eval </dev/null' 2>/dev/null | grep -oE 'nDCG@10: [0-9.]+' | awk '{print $2}'; }
+
+phase_backup() {
+  echo -e "\n${BLD}  backup — ${HOST}${NC}"
+  check "ES: repozytorium fs-backup" "fs" "$(es /_snapshot/fs-backup | python3 -c 'import json,sys; print(json.load(sys.stdin)["fs-backup"]["type"])' 2>/dev/null)"
+  local slm; slm="$(es /_slm/policy/nightly 2>/dev/null)"
+  check "ES: polityka SLM nightly" "nightly" "$(python3 -c 'import json,sys; print(list(json.loads(sys.argv[1]))[0])' "${slm}" 2>/dev/null)"
+  check "ES: ostatni snapshot SLM udany i < 26 h" "tak" "$(python3 -c '
+import json, sys, time
+p = json.loads(sys.argv[1])["nightly"]
+ok = p.get("last_success", {}).get("time", 0) / 1000
+bad = p.get("last_failure", {}).get("time", 0) / 1000
+print("tak" if ok and ok > bad and time.time() - ok < 26 * 3600 else "nie")' "${slm}" 2>/dev/null)"
+  check "PG: timer marketplace-pg-backup aktywny" "active" "$(remote systemctl is-active marketplace-pg-backup.timer)"
+  check "PG: dumpy obu baz < 26 h" "2" "$(remote "find /var/backups/marketplace -name '*.dump' -mmin -1560 -size +1k | sed -E 's/-[0-9]{4}-.*//' | sort -u | wc -l" | tr -d ' ')"
+}
+
+# --------------------------------------------------------------- reboot -----
+# Najważniejszy test odporności: wyłączenie prądu w środku nocy. Po starcie
+# nikt nie wpisze `docker compose up` — wszystko musi wstać samo
+# (restart: unless-stopped), a klaster ES złożyć się z 3 nodów (RUNBOOK #021).
+phase_reboot() {
+  echo -e "\n${BLD}  reboot — ${HOST} (restart serwera!)${NC}"
+  local before after t0 up=""
+  before="$(eval_mean)"
+  echo -e "  ${DIM}eval przed restartem: ${before:-?}${NC}"
+  remote 'sudo -n systemctl reboot' || true
+  sleep 20
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le 300 ]; do
+    if [ "$(es /_cluster/health 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d["number_of_nodes"])' 2>/dev/null)" = "green 3" ] \
+       && [ "$(on_app "docker compose ps --format '{{.Status}}'" 2>/dev/null | grep -cvE '\(healthy\)')" = "0" ]; then
+      up=$(( $(date +%s) - t0 + 20 )); break
+    fi
+    sleep 5
+  done
+  check "po restarcie: ES green, 3 nody, wszystko healthy w <= 5 min (${up:-timeout} s)" "tak" "$([ -n "${up}" ] && echo tak || echo nie)"
+  check "uptime serwera < 10 min (restart naprawdę był)" "tak" "$(remote "awk '{print (\$1<600)?\"tak\":\"nie\"}' /proc/uptime")"
+  after="$(eval_mean)"
+  check "eval identyczny jak przed restartem (${before:-?} -> ${after:-?})" "${before:-brak}" "${after:-brak}"
+  scp -q "${ROOT}/tools/smoke-test.sh" "${HOST}:/tmp/smoke-test.sh"
+  check "smoke po restarcie" "1" "$(on_app 'set -a && . ./.env && set +a && bash /tmp/smoke-test.sh' 2>&1 | grep -c 'Wszystkie testy przeszły')"
+}
+
 case "${1:-}" in
   images) phase_images ;;
   access)    phase_access ;;
@@ -193,8 +241,10 @@ case "${1:-}" in
   exposure)  phase_exposure ;;
   docker)    phase_docker ;;
   stack)     phase_stack ;;
-  all)       phase_images; phase_access; phase_hardening; phase_exposure; phase_docker; phase_stack ;;
-  *) echo "użycie: $0 {images|access|hardening|exposure|docker|stack|all}" >&2; exit 2 ;;
+  backup)    phase_backup ;;
+  reboot)    phase_reboot ;;
+  all)       phase_images; phase_access; phase_hardening; phase_exposure; phase_docker; phase_stack; phase_backup ;;
+  *) echo "użycie: $0 {images|access|hardening|exposure|docker|stack|backup|reboot|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

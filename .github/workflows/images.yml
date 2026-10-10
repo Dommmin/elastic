@@ -22,6 +22,7 @@ on:
     paths:
       - apps/**
       - infra/**
+      - '!infra/systemd/**'   # jednostki hosta, nie wchodzą do obrazów
       - tests/relevance/**
       - .dockerignore
       - .env.example
