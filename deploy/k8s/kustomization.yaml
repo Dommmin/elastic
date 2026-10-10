@@ -1,0 +1,40 @@
+# ============================================================================
+#  Kustomize: `kubectl apply -k deploy/k8s` (ETAP D2)
+#
+#  Tag obrazów jest w JEDNYM miejscu (images: niżej). tools/k3s/deploy.sh
+#  podmienia go w kopii tymczasowej (`kustomize edit set image`), więc w repo
+#  zostaje ostatnia wersja referencyjna, a na klastrze — ta wdrożona.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: marketplace
+
+resources:
+  - namespace.yaml
+
+secretGenerator:
+  # Role nie są tajne, ale ECK przyjmuje je tylko z Secretu. Bez hasha
+  # w nazwie: Kustomize nie zna pól CRD Elastica i nie poprawiłby
+  # odwołania `auth.roles[].secretName` do nazwy z sufiksem.
+  - name: es-app-roles
+    files:
+      - roles.yml=es-roles.yml
+    options:
+      disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: marketplace-config
+    envs:
+      - config.env
+
+images:
+  - name: ghcr.io/dommmin/elastic-elasticsearch
+    newTag: e0589c621c463b284b962beeebb3f1a101977187
+  - name: ghcr.io/dommmin/elastic-postgres
+    newTag: e0589c621c463b284b962beeebb3f1a101977187
+  - name: ghcr.io/dommmin/elastic-rabbitmq
+    newTag: e0589c621c463b284b962beeebb3f1a101977187
+  - name: ghcr.io/dommmin/elastic-catalog
+    newTag: e0589c621c463b284b962beeebb3f1a101977187
+  - name: ghcr.io/dommmin/elastic-search
+    newTag: e0589c621c463b284b962beeebb3f1a101977187

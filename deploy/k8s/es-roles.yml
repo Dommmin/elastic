@@ -1,0 +1,21 @@
+# ============================================================================
+#  Role aplikacji w Elasticsearchu (ETAP D2) — przeniesione 1:1 z
+#  infra/elasticsearch/setup-security.sh (D1 tworzył je przez API).
+#  ECK wgrywa je jako file realm roles: zmiana tego pliku + apply = nowe
+#  uprawnienia, bez ręcznego curl-a.
+# ============================================================================
+
+# D-03: Laravel nigdy nie pisze do Elasticsearcha. Ta rola to egzekwuje.
+catalog_app:
+  cluster: ["monitor"]
+  indices:
+    - names: ["products-*", "offers-*", "seller-360*", "search-stats-*"]
+      privileges: ["read", "view_index_metadata"]
+
+# Jedyny serwis, który pisze do ES; zarządza też szablonami i ILM,
+# bo mapowania są kodem (01-INFRASTRUKTURA.md).
+search_service:
+  cluster: ["monitor", "manage_index_templates", "manage_ilm", "manage_pipeline"]
+  indices:
+    - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "logs-app-*"]
+      privileges: ["all"]

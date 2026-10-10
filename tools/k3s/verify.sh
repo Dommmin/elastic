@@ -9,6 +9,7 @@
 #               kubectl z Maca przez tunel, DNS i Service z poda   (Task 1)
 #    exposure   z internetu tylko 22/tcp — także porty k8s         (Task 1+)
 #    eck        operator ECK 3.5.0 działa, CRD zarejestrowane        (Task 2)
+#    config     Secrety i ConfigMap w namespace marketplace          (Task 3)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -100,12 +101,33 @@ phase_eck() {
   check "operator: zero restartów" "0" "$(k get pod elastic-operator-0 -n elastic-system -o jsonpath='{.status.containerStatuses[0].restartCount}')"
 }
 
+# --------------------------------------------------------------- config -----
+# Sprawdzamy KLUCZE, nigdy wartości — sekrety nie lądują w terminalu.
+secret_keys() { k get secret "$1" -n marketplace -o go-template='{{range $k, $v := .data}}{{$k}} {{end}}' | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' ' | sed 's/ $//'; }
+phase_config() {
+  tunnel_up
+  echo -e "\n${BLD}  config — Secrety i ConfigMap${NC}"
+  check "Secret marketplace-secrets: 11 kluczy" \
+    "CATALOG_APP_KEY CATALOG_DB_PASSWORD DATABASE_URL ES_CATALOG_PASSWORD ES_SEARCHSVC_PASSWORD MESSENGER_TRANSPORT_DSN POSTGRES_PASSWORD RABBITMQ_PASSWORD REDIS_PASSWORD SEARCHSVC_DB_PASSWORD SEARCH_APP_SECRET" \
+    "$(secret_keys marketplace-secrets)"
+  check "Secret marketplace-es-elastic-user: elastic" "elastic" "$(secret_keys marketplace-es-elastic-user)"
+  check "Secret es-user-catalog: basic-auth + roles" "password roles username" "$(secret_keys es-user-catalog)"
+  check "Secret es-user-searchsvc: basic-auth + roles" "password roles username" "$(secret_keys es-user-searchsvc)"
+  check "Secret es-app-roles: roles.yml" "roles.yml" "$(secret_keys es-app-roles)"
+  check "ConfigMap marketplace-config-<hash>" "1" "$(k get cm -n marketplace -o name | grep -c 'marketplace-config-')"
+  check "kustomize build bez błędów" "0" "$("${KUBECTL_BIN}" kustomize "${ROOT}/deploy/k8s" >/dev/null 2>&1; echo $?)"
+  # Hasło `elastic` w k8s = to z .env serwera (K-7): porównanie skrótów
+  # SHA-256 po stronie serwera — wartość nie opuszcza serwera.
+  check "hasło elastic = to samo co w D1" "tak" "$(remote 'cd /opt/marketplace && a=$(grep ^ELASTIC_PASSWORD= .env | cut -d= -f2- | tr -d "\\n" | sha256sum); b=$(kubectl -n marketplace get secret marketplace-es-elastic-user -o jsonpath={.data.elastic} | base64 -d | sha256sum); [ "$a" = "$b" ] && echo tak || echo nie')"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
   eck)      phase_eck ;;
-  all)      phase_cluster; phase_exposure; phase_eck ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|all}" >&2; exit 2 ;;
+  config)   phase_config ;;
+  all)      phase_cluster; phase_exposure; phase_eck; phase_config ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

@@ -33,7 +33,12 @@ cat > /etc/rancher/k3s/config.yaml <<'CONF'
 disable:
   - traefik
   - servicelb
-write-kubeconfig-mode: "0600"
+# kubeconfig admina czytelny dla grupy deploy: `kubectl` na serwerze to
+# dowiązanie do k3s, które czyta /etc/rancher/k3s/k3s.yaml i IGNORUJE
+# ~/.kube/config (chyba że ustawisz KUBECONFIG) — przy 0600 dla roota
+# deploy dostawał "permission denied".
+write-kubeconfig-mode: "0640"
+write-kubeconfig-group: deploy
 # Strefa czasowa kontrolera nie ma znaczenia — CronJob dostaje własne
 # `timeZone` w manifeście (pg-backup: Europe/Warsaw).
 CONF
@@ -44,7 +49,8 @@ ufw allow from 10.43.0.0/16 to any comment 'k3s services' >/dev/null
 
 log "3/4 k3s ${K3S_VERSION}"
 if k3s --version 2>/dev/null | grep -q "${K3S_VERSION}"; then
-  log "    już zainstalowany — pomijam"
+  log "    już zainstalowany — restart, żeby wczytać config.yaml"
+  systemctl restart k3s
 else
   curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - server
 fi
