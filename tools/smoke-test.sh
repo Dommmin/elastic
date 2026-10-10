@@ -144,6 +144,14 @@ wait_for_depth() { # wait_for_depth <kolejka> <oczekiwana wartość> [sekundy]
   echo "$got"
 }
 
+# Działający search-consumer (profil `apps`) zabiera wiadomość z kolejki, zanim
+# zdążymy policzyć jej głębokość — test widział 0 zamiast 1 i padał, choć
+# routing był poprawny (wyścig, nie błąd brokera). Na czas testu zatrzymujemy
+# konsumenta; `stop` (nie `pause`) — niepotwierdzone wiadomości wracają do
+# kolejki i znikają w purge poniżej, zamiast trafić do handlera jako śmieci.
+CONSUMER_WAS_RUNNING=$(docker compose ps --status running -q search-consumer 2>/dev/null)
+[ -n "${CONSUMER_WAS_RUNNING}" ] && docker compose stop search-consumer >/dev/null 2>&1
+
 docker compose exec -T rabbitmq rabbitmqctl purge_queue search.product.sync >/dev/null 2>&1
 wait_for_depth search.product.sync 0 >/dev/null
 
@@ -167,6 +175,7 @@ check "Routing 'user.searched' -> analytics (nie do produktów)" "1" \
 # sprzątanie
 docker compose exec -T rabbitmq rabbitmqctl purge_queue search.product.sync >/dev/null 2>&1
 docker compose exec -T rabbitmq rabbitmqctl purge_queue search.analytics.ingest >/dev/null 2>&1
+[ -n "${CONSUMER_WAS_RUNNING}" ] && docker compose start search-consumer >/dev/null 2>&1
 
 # ------------------------------------------------------------------ KIBANA --
 echo -e "\n  ${BLD}ETAP 2 — Kibana${NC}"
