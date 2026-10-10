@@ -235,8 +235,8 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
 
 ### Task 9: Dostęp tylko dla Ciebie — tunel SSH
 
-- [ ] **Krok 1:** `Host elastic-vps-tunnel` z `LocalForward`: `18080 → 127.0.0.1:8080` (catalog), `15601 → 5601` (Kibana), `25672 → 15672` (RabbitMQ UI). Porty lokalne są przesunięte, żeby nie kolidowały z lokalnym stackiem ani z igrit.
-- [ ] **Krok 2:** `make vps-tunnel` → w przeglądarce: wyszukiwarka zwraca wyniki i facety; Kibana loguje użytkownikiem `elastic`; RabbitMQ UI pokazuje `search.product.sync` z konsumentem. Sprawdzam w przeglądarce aplikacji i robię zrzuty do przewodnika.
+- [x] **Krok 1:** `Host elastic-vps-tunnel` z `LocalForward`: `28080 → 127.0.0.1:8080` (catalog), `25601 → 5601` (Kibana), `26672 → 15672` (RabbitMQ UI). Pierwotne 18080 i 25672 okazały się zajęte lokalnie (stack dev, RabbitMQ innego projektu).
+- [x] **Krok 2:** `make vps-tunnel` → wyszukiwarka w przeglądarce: „telefon” 132 wyniki (139 ms), filtr marki 10 wyników (49 ms). Kibana (`elastic`) i RabbitMQ sprawdzone przez API — w przeglądarce logujesz się sam (prawdziwe hasła, `make vps-secret`). RabbitMQ pokazuje **0 konsumentów** mimo działającego search-consumer: Symfony Messenger czyta kolejkę przez `basic.get` w pętli, nie `basic.consume`.
 - [ ] **Krok 3:** `exposure` dalej ✓.
 - [ ] **Krok 4: Commit** `ETAP D [8/10]: tunel SSH do UI`
 

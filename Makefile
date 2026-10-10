@@ -254,3 +254,14 @@ prod-seed: ## Seed katalogu na VPS (make prod-seed n=1500)
 .PHONY: prod-eval
 prod-eval: ## nDCG@10 na VPS
 	@$(VPS_DC) exec -T catalog-app php artisan search:eval
+
+.PHONY: vps-tunnel
+vps-tunnel: ## Tunel SSH do UI na VPS: catalog :28080, Kibana :25601, RabbitMQ :26672 (Ctrl+C kończy)
+	@echo "  Catalog   http://localhost:28080/search"
+	@echo "  Kibana    http://localhost:25601   (elastic / hasło: make vps-secret k=ELASTIC_PASSWORD)"
+	@echo "  RabbitMQ  http://localhost:26672   (marketplace / hasło: make vps-secret k=RABBITMQ_PASSWORD)"
+	@ssh -N elastic-vps-tunnel
+
+.PHONY: vps-secret
+vps-secret: ## Pokaż jeden sekret z .env serwera (make vps-secret k=ELASTIC_PASSWORD)
+	@ssh elastic-vps "grep '^$(k)=' /opt/marketplace/.env | cut -d= -f2-"
