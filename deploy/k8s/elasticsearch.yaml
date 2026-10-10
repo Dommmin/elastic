@@ -45,16 +45,17 @@ spec:
           containers:
             - name: elasticsearch
               env:
-                # Na czas blue-green (oba stacki naraz): 1g/2g. Po przełączeniu
-                # 1500m/3g — decyzja K-9 w planie.
+                # Heap = 50% limitu kontenera (reszta: cache plików Lucene).
+                # Docelowo 1500m/3g; na czas blue-green (oba stacki naraz)
+                # było 1g/2g — decyzja K-9 w planie.
                 - name: ES_JAVA_OPTS
-                  value: "-Xms1g -Xmx1g"
+                  value: "-Xms1500m -Xmx1500m"
               resources:
                 requests:
-                  memory: 2Gi
+                  memory: 3Gi
                   cpu: 250m
                 limits:
-                  memory: 2Gi
+                  memory: 3Gi
               volumeMounts:
                 - name: es-snapshots
                   mountPath: /snapshots

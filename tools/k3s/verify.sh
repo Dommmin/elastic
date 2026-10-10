@@ -15,6 +15,8 @@
 #    apps       Deploymenty, Job migracji, /up + X-App-Version, indeks (Task 6)
 #    stack      parytet z D1: dane = Compose, eval, E2E zmiana ceny    (Task 7)
 #    backup     repo + SLM w ECK, snapshot świeży, CronJob pg-backup   (Task 8)
+#    reboot     RESTARTUJE serwer: k3s i cały namespace wstają same     (Task 9)
+#               — tylko jawnie, NIE wchodzi w `all`
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -157,8 +159,10 @@ phase_es() {
   check "Elasticsearch: health green" "green" "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.health}')"
   check "Elasticsearch: 3 nody dostępne" "3" "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.availableNodes}')"
   check "Elasticsearch: wersja 9.5.1" "9.5.1" "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.version}')"
-  local want; want="$(awk '/elastic-elasticsearch/{getline; print $2}' "${ROOT}/deploy/k8s/kustomization.yaml")"
-  check "pody ES na obrazie z GHCR (tag z kustomization)" "3" \
+  # Tag WDROŻONY (z Deploymentu catalog-app), nie ten z repo: deploy.sh
+  # podmienia tag w kopii manifestów, a w repo zostaje wersja referencyjna.
+  local want; want="$(k get deploy catalog-app -n marketplace -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')"
+  check "pody ES na obrazie z GHCR (ten sam tag co aplikacje)" "3" \
     "$(k get pods -n marketplace -l elasticsearch.k8s.elastic.co/cluster-name=marketplace -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}' | grep -c "elastic-elasticsearch:${want}")"
   local plugins; plugins="$(es_k8s elastic '/_cat/plugins?h=component')"
   check "plugin analysis-stempel na 3 nodach" "3" "$(grep -c analysis-stempel <<<"${plugins}")"
@@ -208,6 +212,19 @@ phase_data() {
   check "postgres: dane przeżyły usunięcie poda" "${marker}" \
     "$(kx postgres-0 "psql -U \"\$POSTGRES_USER\" -d postgres -tAc \"select v from _verify where v='${marker}'\"")"
   kx postgres-0 'psql -U "$POSTGRES_USER" -d postgres -qc "drop table _verify"' >/dev/null
+
+  # Skutek uboczny tego testu = prawdziwa mini-awaria: headless Service bez
+  # gotowego poda nie ma rekordu DNS, więc aplikacje dostają "could not
+  # translate host name postgres", padają i są restartowane przez kubelet
+  # (z narastającym back-offem). Mierzymy, po ilu sekundach wszystko wraca.
+  local t0 back=""; t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le 300 ]; do
+    if [ "$(k get deploy -n marketplace -l app.kubernetes.io/component=app -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}' | grep -c True)" = "3" ]; then
+      back=$(( $(date +%s) - t0 )); break
+    fi
+    sleep 5
+  done
+  check "aplikacje same wróciły po restarcie bazy (${back:-timeout} s)" "tak" "$([ -n "${back}" ] && echo tak || echo nie)"
 }
 
 # ----------------------------------------------------------------- apps -----
@@ -250,12 +267,20 @@ pg_counts_compose() { remote "cd /opt/marketplace && docker compose exec -T post
 phase_stack() {
   tunnel_up
   echo -e "\n${BLD}  stack — parytet z D1 (Compose)${NC}"
-  local c; c="$(pg_counts_compose)"
-  check "Postgres: products/offers/brands/sellers = Compose (${c})" "${c:-brak}" "$(pg_counts_k8s)"
+  # Przed przełączeniem porównujemy z Compose; po przełączeniu (Compose
+  # zatrzymany) — z wartościami z migracji: liczby nie mogą spaść.
+  local compose_up; compose_up="$(remote 'docker ps -q --filter label=com.docker.compose.project=marketplace --filter label=com.docker.compose.service=postgres | wc -l' | tr -d ' ')"
+  local c; [ "${compose_up}" = "1" ] && c="$(pg_counts_compose)"
+  if [ -n "${c}" ]; then
+    check "Postgres: products/offers/brands/sellers = Compose (${c})" "${c}" "$(pg_counts_k8s)"
+  else
+    check "Postgres: co najmniej 1500 4517 24 60 (Compose zatrzymany)" "tak" \
+      "$(pg_counts_k8s | awk '{print ($1>=1500 && $2>=4517 && $3>=24 && $4>=60) ? "tak" : "nie: " $0}')"
+  fi
   check "ES: products-search 1500 dokumentów" "1500" \
     "$(es_k8s elastic '/products-search/_count' | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null)"
-  local ek ec; ek="$(eval_k8s)"; ec="$(eval_compose)"
-  check "eval k8s = eval Compose (${ec:-?})" "${ec:-brak}" "${ek:-brak}"
+  local ek ec; ek="$(eval_k8s)"; [ "${compose_up}" = "1" ] && ec="$(eval_compose)"
+  [ -n "${ec}" ] && check "eval k8s = eval Compose (${ec})" "${ec}" "${ek:-brak}"
   check "eval OK (>= 0.80)" "tak" "$(python3 -c 'import sys; print("tak" if float(sys.argv[1]) >= 0.80 else "nie")' "${ek:-0}" 2>/dev/null)"
   # E2E ścieżką użytkownika (RUNBOOK #031): catalog -> outbox -> publisher ->
   # RabbitMQ -> consumer -> ES. Wszystko w k8s.
@@ -289,6 +314,31 @@ print("tak" if ok and ok > bad and time.time() - ok < 26 * 3600 else "nie")' 2>/
     "$(remote "find /var/backups/marketplace-k8s -name '*.dump' -mmin -1560 -size +1k | sed -E 's|.*/||; s/-[0-9]{4}-.*//' | sort -u | wc -l" | tr -d ' ')"
 }
 
+# --------------------------------------------------------------- reboot -----
+phase_reboot() {
+  tunnel_up
+  echo -e "\n${BLD}  reboot — ${HOST} (restart serwera!)${NC}"
+  local before after t0 up=""
+  before="$(eval_k8s)"
+  echo -e "  ${DIM}eval przed restartem: ${before:-?}${NC}"
+  remote 'sudo -n systemctl reboot' || true
+  pkill -f "ssh .*-fN elastic-vps-k8s" 2>/dev/null
+  sleep 30
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le 900 ]; do
+    if [ "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.health} {.status.availableNodes}')" = "green 3" ] \
+       && [ "$(k get deploy -n marketplace -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}' | grep -c True)" = "4" ]; then
+      up=$(( $(date +%s) - t0 + 30 )); break
+    fi
+    sleep 10
+  done
+  check "po restarcie: ES green 3/3 + 4 Deploymenty Available (${up:-timeout} s)" "tak" "$([ -n "${up}" ] && echo tak || echo nie)"
+  check "uptime serwera < 20 min (restart naprawdę był)" "tak" "$(remote "awk '{print (\$1<1200)?\"tak\":\"nie\"}' /proc/uptime")"
+  check "Compose (D1) NIE wstał (stop przeżywa restart)" "0" "$(remote 'docker ps -q --filter label=com.docker.compose.project=marketplace | wc -l' | tr -d ' ')"
+  after="$(eval_k8s)"
+  check "eval identyczny jak przed restartem (${before:-?} -> ${after:-?})" "${before:-brak}" "${after:-brak}"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
@@ -299,8 +349,9 @@ case "${1:-}" in
   apps)     phase_apps ;;
   stack)    phase_stack ;;
   backup)   phase_backup ;;
+  reboot)   phase_reboot ;;
   all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack; phase_backup ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|all}" >&2; exit 2 ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|reboot|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"
