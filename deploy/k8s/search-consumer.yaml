@@ -1,0 +1,48 @@
+# ============================================================================
+#  search-consumer (Symfony Messenger) — ETAP D2, Task 6
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-consumer
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search-consumer
+  template:
+    metadata:
+      labels:
+        app: search-consumer
+    spec:
+      containers:
+        - name: consumer
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            # `env` wygrywa z `envFrom`: ConfigMap ma APP_ENV=production
+            # (konwencja Laravela), Symfony chce `prod`.
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -f messenger:consume"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 512Mi }

@@ -290,3 +290,7 @@ k3s-tunnel: ## Tunel do API k3s w tle (localhost:26443); potem: make k3s k="get 
 .PHONY: k3s
 k3s: ## kubectl na klastrze VPS (make k3s k="get pods -n marketplace")
 	@$(KUBECTL_VPS) $(k)
+
+.PHONY: k3s-deploy
+k3s-deploy: ## Wdróż na k3s: ostatni build CI albo tag=<SHA> (infra -> Job migrate -> aplikacje)
+	@bash tools/k3s/deploy.sh $(tag)

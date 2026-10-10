@@ -1,0 +1,72 @@
+# ============================================================================
+#  Job migracji (ETAP D2, Task 6) — odpowiednik kroku "migracje" z deploy.sh D1
+#
+#  initContainers wykonują się PO KOLEI (zwykłe kontenery Poda — równolegle):
+#    1. catalog: php artisan migrate
+#    2. search:  doctrine:migrations:migrate
+#    3. search:  indeks products-v1 + alias — tylko gdy aliasu jeszcze nie ma
+#  Job jest niezmienny: nowy tag obrazu = usuń stary Job i utwórz nowy
+#  (tools/k3s/deploy.sh). Etykieta component: migrate — nakładany osobno.
+# ============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels:
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: catalog-migrate
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          command: ["php", "artisan", "migrate", "--force", "--no-interaction"]
+          envFrom:
+            - configMapRef: { name: marketplace-config }
+          env:
+            - name: APP_KEY
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
+            - name: DB_DATABASE
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB } }
+            - name: DB_USERNAME
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_DB_PASSWORD } }
+        - name: search-migrate
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["php", "bin/console", "doctrine:migrations:migrate", "-n", "--allow-no-migration"]
+          envFrom:
+            - configMapRef: { name: marketplace-config }
+          env: &search-env
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+      containers:
+        - name: search-index
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command:
+            - sh
+            - -c
+            - |
+              if curl -fs -o /dev/null -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" "$ELASTICSEARCH_HOST/_alias/products-search"; then
+                echo "alias products-search istnieje — pomijam tworzenie indeksu"
+              else
+                php bin/console search:index:create
+              fi
+          envFrom:
+            - configMapRef: { name: marketplace-config }
+          env: *search-env

@@ -1,0 +1,127 @@
+# ============================================================================
+#  catalog (Laravel) + outbox-publisher (ETAP D2, Task 6)
+#  Ten sam obraz, dwie role — jak w compose (catalog-app + outbox-publisher).
+#
+#  Etykieta app.kubernetes.io/component: app — tools/k3s/deploy.sh nakłada
+#  te obiekty DOPIERO po zakończeniu Joba migracji (schemat przed kodem).
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  # Nazwa MUSI być `catalog-app`: Caddyfile w obrazie ma blok
+  # `http://catalog-app` dla wewnętrznego API projekcji (search -> catalog).
+  name: catalog-app
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  selector:
+    app: catalog-app
+  ports:
+    - name: http
+      port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-app
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: catalog-app
+  template:
+    metadata:
+      labels:
+        app: catalog-app
+    spec:
+      containers:
+        - name: catalog
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            - name: APP_KEY
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
+            - name: DB_DATABASE
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB } }
+            - name: DB_USERNAME
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_DB_PASSWORD } }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
+            - name: RABBITMQ_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: RABBITMQ_PASSWORD } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_CATALOG_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_CATALOG_PASSWORD } }
+          ports:
+            - containerPort: 80
+          # /up = liveness Laravela (bez zależności) — ten sam wybór co
+          # w healthchecku compose; /health (z zależnościami) świadomie nie.
+          readinessProbe:
+            httpGet: { path: /up, port: 80 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /up, port: 80 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests: { memory: 128Mi, cpu: 100m }
+            limits: { memory: 512Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox-publisher
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outbox-publisher
+  template:
+    metadata:
+      labels:
+        app: outbox-publisher
+    spec:
+      containers:
+        - name: publisher
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          args: ["php", "artisan", "outbox:publish", "--loop"]
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          # Te same zmienne co catalog-app (kotwice YAML nie działają między
+          # dokumentami rozdzielonymi `---`, więc lista jest powtórzona).
+          env:
+            - name: APP_KEY
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
+            - name: DB_DATABASE
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB } }
+            - name: DB_USERNAME
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_DB_PASSWORD } }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
+            - name: RABBITMQ_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: RABBITMQ_PASSWORD } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_CATALOG_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_CATALOG_PASSWORD } }
+          # PID 1 to proces artisan — sprawdzamy, że to wciąż on (jak w compose).
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "grep -q 'outbox:publish' /proc/1/cmdline"]
+            periodSeconds: 30
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 256Mi }

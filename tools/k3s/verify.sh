@@ -12,6 +12,7 @@
 #    config     Secrety i ConfigMap w namespace marketplace          (Task 3)
 #    es         ECK: ES green 3 nody, pluginy, role aplikacji, Kibana  (Task 4)
 #    data       Postgres, RabbitMQ, Redis: gotowe, hasła, trwałość PVC (Task 5)
+#    apps       Deploymenty, Job migracji, /up + X-App-Version, indeks (Task 6)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -191,6 +192,35 @@ phase_data() {
   kx postgres-0 'psql -U "$POSTGRES_USER" -d postgres -qc "drop table _verify"' >/dev/null
 }
 
+# ----------------------------------------------------------------- apps -----
+# Dostęp do catalog-app z Maca: `kubectl port-forward` przez tunel do API —
+# k8s-owy odpowiednik `LocalForward` z D1, bez dotykania serwera.
+pf_start() { # pf_start <svc> <port-lokalny> <port-svc>
+  nc -z 127.0.0.1 "$2" 2>/dev/null && return 0
+  ( k port-forward -n marketplace "svc/$1" "$2:$3" >/dev/null 2>&1 & )
+  for _ in $(seq 1 15); do nc -z 127.0.0.1 "$2" 2>/dev/null && return 0; sleep 1; done
+  return 1
+}
+phase_apps() {
+  tunnel_up
+  echo -e "\n${BLD}  apps — aplikacje w k8s${NC}"
+  local tag; tag="$(k get deploy catalog-app -n marketplace -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')"
+  for d in catalog-app outbox-publisher search-consumer; do
+    check "Deployment ${d}: Available" "True" \
+      "$(k get deploy "${d}" -n marketplace -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')"
+  done
+  check "Job migrate: Complete" "True" "$(k get job migrate -n marketplace -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')"
+  check "wszystkie aplikacje na tym samym tagu" "1" \
+    "$(k get deploy -n marketplace -l app.kubernetes.io/component=app -o jsonpath='{range .items[*]}{.spec.template.spec.containers[0].image}{"\n"}{end}' | sed 's/.*://' | sort -u | wc -l | tr -d ' ')"
+  check "port-forward svc/catalog-app -> localhost:38080" "0" "$(pf_start catalog-app 38080 80; echo $?)"
+  check "GET /up: 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38080/up)"
+  check "X-App-Version = tag wdrożenia" "${tag}" "$(curl -sI http://127.0.0.1:38080/up | awk -F': ' 'tolower($1)=="x-app-version" {print $2}' | tr -d '\r')"
+  check "alias products-search istnieje (indeks z Joba)" "200" \
+    "$(es_k8s elastic '/_alias/products-search' >/dev/null; remote "cd /opt/marketplace && set -a && . ./.env && set +a && IP=\$(kubectl -n marketplace get svc marketplace-es-http -o jsonpath='{.spec.clusterIP}') && curl -s -o /dev/null -w '%{http_code}' -u elastic:\"\$ELASTIC_PASSWORD\" http://\$IP:9200/_alias/products-search")"
+  check "search-consumer: zero restartów" "0" \
+    "$(k get pods -n marketplace -l app=search-consumer -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
@@ -198,8 +228,9 @@ case "${1:-}" in
   config)   phase_config ;;
   es)       phase_es ;;
   data)     phase_data ;;
-  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|all}" >&2; exit 2 ;;
+  apps)     phase_apps ;;
+  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

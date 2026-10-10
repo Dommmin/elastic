@@ -1633,6 +1633,45 @@ małej maszynie i blue-green:
 CPU i I/O, a orkiestrator (ECK, compose) chętnie startuje wszystko naraz.
 Brak OOM w `journalctl -k` szybko odróżnia „zabrakło pamięci” od „zabrakło CPU/I/O”.
 
+<a id="038"></a>
+## 038 — Rolling restart ES przez ECK: klaster przechodzi przez RED, a deploy nie czeka
+
+**Objaw**
+`make k3s-deploy` z nowym tagiem (nowy obraz ES). Skrypt melduje „OK", a w tym
+samym czasie:
+```
+  1s: yellow ApplyingChanges  zaktualizowane=1/3
+113s: red    ApplyingChanges  zaktualizowane=2/3     ← RED
+306s: green  Ready            zaktualizowane=3/3
+statefulset.apps/marketplace-es-default  2/3         ← w podsumowaniu deployu
+```
+
+**Diagnoza**
+1. Pętla obserwująca `.status.health`, `.status.phase` i `updatedReplicas` co 10 s.
+2. `grep number_of_replicas infra/elasticsearch/mappings/products-v1.json` → `0`.
+
+**Przyczyna**
+1. **RED:** ECK restartuje węzły po jednym i czeka na zdrowie klastra, ale
+   `products-v1` ma **0 replik**. Węzeł z jedynym shardem leży, więc ten indeks
+   jest niedostępny, a klaster RED. Rolling restart chroni tylko dane z replikami.
+   W D1 (restart całego klastra naraz) było tak samo, tylko krócej i mniej widocznie.
+2. **Deploy nie czekał:** krok „czekaj na green" dostał green z *poprzedniego*
+   stanu, bo ECK jeszcze nie zaczął zmian. Aplikacje wdrażały się w trakcie
+   rolling restartu.
+
+**Naprawa**
+- `deploy.sh`: czeka, aż `observedGeneration == generation` (operator przetworzył
+  nową spec), `phase == Ready` i `health == green`.
+- Repliki: decyzja do podjęcia na poziomie projektu (mapowanie jest wspólne
+  dla dev i prod). Na 3 nodach `number_of_replicas: 1` daje dostępność w trakcie
+  restartu kosztem 2x miejsca i wolniejszego indeksowania. Przewodnik D2 ma to
+  jako ćwiczenie.
+
+**Czego się nauczyłem**
+„Czekaj na stan X" działa tylko wtedy, gdy wiesz, że system już *zaczął*
+dochodzić do nowego stanu. Przy operatorach: `observedGeneration`. A „rolling
+restart bez przestojów" to obietnica dla danych z replikami, nie dla wszystkich.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć
