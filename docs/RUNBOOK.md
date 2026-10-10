@@ -96,6 +96,7 @@
 | [093](#093) | chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1` (spoiler) | k3s / chaos | G4 |
 | [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler) | k3s / chaos | G4 |
 | [095](#095) | `chaos-undo` nie zadziałał — blokada `chaos-lock` zostaje, produkcja zepsuta | k3s / chaos | G4 |
+| [096](#096) | `search:eval` deterministyczny: reguły zamiast ręcznych ID-ków (dług z #032) | Elasticsearch | 7 |
 
 ---
 
@@ -1513,7 +1514,7 @@ seed bez `--fresh`), czyli na stanie, którego nie da się odtworzyć.
 **Naprawa**
 ETAP D używa kryterium „eval OK" (≥ 0.80 + zapytania o konkretny produkt = 1.000),
 a po restarcie i snapshocie sprawdza wynik identyczny jak przed. Deterministyczny
-harness (ocena całych grup remisów) to osobne zadanie.
+harness (ocena całych grup remisów) — zrobiony w [#096](#096).
 
 **Czego się nauczyłem**
 Zanim liczba stanie się kryterium przyjęcia, zmierz ją 3 razy od zera. Metryka
@@ -4392,6 +4393,60 @@ kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
 **Czego się nauczyłem**
 Bezpiecznik musi żyć w klastrze: w teście z martwym tunelem Job sam przywrócił politykę
 i zdjął blokadę. Ręczne usunięcie blokady dopiero po ręcznej naprawie stanu, nigdy przed.
+
+---
+
+<a id="096"></a>
+## 096 — `search:eval` deterministyczny: reguły zamiast ręcznych ID-ków
+
+> ETAP 7 (dług z #032). Naprawa z 2026-10-10, scalona i zmierzona ponownie 2026-11-10.
+
+**Objaw**
+Ciąg dalszy [#032](#032). Po świeżym `marketplace:seed --n=1500 --fresh`
+i `search:index:create --force` ten sam `queries.yaml` dawał 0.822, 0.842,
+0.851, 0.856, 0.889 — przy identycznych danych w Postgresie.
+
+**Diagnoza**
+Grupy remisu `_score` dla każdego zapytania (`size: 200`, grupowanie po
+`_score`):
+```text
+smartfon / telefon / komórka   8.8425 x53   (wszystkie „Smartfon … 128GB/Pro”)
+Orn PLC                       20.7787 x54   (wszystkie produkty marki)
+słuchawki bezprzewodowe        7.4728 x64   (nauszne RAZEM z bezprzewodowymi)
+```
+Ręczna lista oceniała 10–15 dokumentów z każdej takiej grupy. Który z 53
+remisujących smartfonów trafi do top-10, zależy od wewnętrznego doc id
+Lucene (kolejność przyjścia wiadomości z kolejki, refreshe, merge'e) — inny
+przy każdym świeżym indeksie. `słuchawki bezprzewodowe` remisuje z nausznymi
+celowo: `synonyms.txt` ma `słuchawki bezprzewodowe => słuchawki`.
+
+**Przyczyna**
+nDCG@k jest deterministyczne tylko wtedy, gdy każda grupa remisu `_score`,
+która styka się z top-k, ma JEDNĄ ocenę dla wszystkich członków — także tych
+tuż za pozycją k, bo mogą zamienić się miejscami z tymi przed nią. Ręcznie
+wybrane ID-ki łamią to z definicji.
+
+**Naprawa**
+1. `queries.yaml`: `relevant` to reguły (`category`, `brand`, `name`,
+   `name_contains`, `id`), nie ID-ki. `search:eval` rozwija je z bazy katalogu
+   (`App\Services\Search\RelevanceJudgments` — prawda z Postgresa, nie z ES,
+   który oceniamy). Reguła bez trafień przerywa ewaluację.
+2. Strażnik w `search:eval`: dla każdego zapytania pobiera k-ty wynik, potem
+   wszystko z `min_score` = jego `_score` (cała graniczna grupa remisu, także
+   za pozycją k) i sprawdza, czy w każdej grupie ocena jest jedna. Jeśli nie —
+   kolumna „Remis z różnymi ocenami” = `TAK`, komunikat i `exit 1`. Na starym
+   `queries.yaml` zgłasza 11 z 13 zapytań.
+3. `ProductSearchService` bez zmian — nie dokładamy tie-breakera pod test.
+
+Weryfikacja (3 × od zera: `search:index:create --force` → `marketplace:seed
+--n=1500 --fresh` → czekanie na pustą kolejkę `search.product.sync` →
+`search:eval`): 1.000 / 1.000 / 1.000, żadnego `TAK`.
+
+**Czego się nauczyłem**
+Etykiety trafności muszą być funkcją dokumentu (kategoria, marka, nazwa), nie
+listą wybranych przykładów — inaczej metryka mierzy kolejność remisów, nie
+trafność. I warunek determinizmu da się SPRAWDZIĆ automatycznie (grupy remisu
+z różnymi ocenami), zamiast liczyć na to, że ktoś zauważy rozrzut.
 
 ---
 

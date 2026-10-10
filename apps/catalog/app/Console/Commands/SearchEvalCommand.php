@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\ProductSearchService;
+use App\Services\Search\RelevanceJudgments;
 use App\Services\Search\SearchCriteria;
 use Elastic\Elasticsearch\Client;
 use Illuminate\Console\Command;
@@ -34,6 +35,12 @@ class SearchEvalCommand extends Command
      */
     private const QUERIES_PATH = '/tests/relevance/queries.yaml';
 
+    /**
+     * Górna granica grupy remisu sprawdzanej przez `hasMixedGradeTie()` —
+     * na seedzie 1500 największa grupa ma kilkadziesiąt dokumentów.
+     */
+    private const TIE_CHECK_MAX_HITS = 1_000;
+
     protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k}';
 
     protected $description = 'Liczy nDCG@k na zestawie zapytań kontrolnych (_rank_eval) tym samym query template co ProductSearchService';
@@ -41,6 +48,7 @@ class SearchEvalCommand extends Command
     public function __construct(
         private readonly Client $client,
         private readonly ProductSearchService $searchService,
+        private readonly RelevanceJudgments $judgments,
     ) {
         parent::__construct();
     }
@@ -72,9 +80,71 @@ class SearchEvalCommand extends Command
             ],
         ])->asArray();
 
-        $this->renderResults($queries, $response, $k);
+        $unstable = array_map(
+            fn (array $request) => $this->hasMixedGradeTie($request, $k),
+            $requests,
+        );
 
-        return $response['failures'] === [] ? self::SUCCESS : self::FAILURE;
+        $this->renderResults($queries, $response, $unstable, $k);
+
+        return $response['failures'] === [] && ! in_array(true, $unstable, true)
+            ? self::SUCCESS
+            : self::FAILURE;
+    }
+
+    /**
+     * Strażnik determinizmu (docs/RUNBOOK.md #096): czy w top-k jest grupa
+     * remisu `_score`, w której dokumenty mają RÓŻNE oceny? Kolejność
+     * remisów rozstrzyga wewnętrzny doc id Lucene (zależny od refreshy
+     * i merge'ów), więc taka grupa daje nDCG zmieniające się między
+     * świeżymi indeksami na tych samych danych.
+     *
+     * Wszystkie grupy o `_score` WYŻSZYM niż k-ty wynik mieszczą się
+     * w top-k w całości; jedyna grupa, która może wystawać poza k, to ta
+     * z wynikiem RÓWNYM k-temu — stąd drugie zapytanie z `min_score`, które
+     * zwraca ją całą (także członków spoza top-k, mogących się zamienić
+     * miejscami z tymi w środku).
+     *
+     * @param  array{request: array{query: array<string, mixed>}, ratings: array<int, array{_id: string, rating: int}>}  $request
+     */
+    private function hasMixedGradeTie(array $request, int $k): bool
+    {
+        $query = $request['request']['query'];
+        $grades = array_column($request['ratings'], 'rating', '_id');
+
+        $top = $this->client->search([
+            'index' => self::ALIAS,
+            'body' => ['query' => $query, 'size' => $k, '_source' => false],
+        ])->asArray()['hits']['hits'];
+
+        if ($top === []) {
+            return false;
+        }
+
+        $tied = $this->client->search([
+            'index' => self::ALIAS,
+            'body' => [
+                'query' => $query,
+                'min_score' => end($top)['_score'],
+                'size' => self::TIE_CHECK_MAX_HITS,
+                '_source' => false,
+            ],
+        ])->asArray()['hits']['hits'];
+
+        $gradesByScore = [];
+
+        foreach ($tied as $hit) {
+            // Klucz jako string: identyczny float32 z ES serializuje się identycznie.
+            $gradesByScore[(string) $hit['_score']][$grades[$hit['_id']] ?? 0] = true;
+        }
+
+        foreach ($gradesByScore as $distinctGrades) {
+            if (count($distinctGrades) > 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -97,7 +167,12 @@ class SearchEvalCommand extends Command
     }
 
     /**
-     * @param  array{query: string, relevant: array<int, array{id: string|int, grade: int}>}  $entry
+     * `relevant` to REGUŁY (kategoria, marka, nazwa...), nie ręczna lista
+     * ID-ków — rozwija je `RelevanceJudgments` na podstawie bazy katalogu.
+     * Dzięki temu cała grupa remisu `_score` ma tę samą ocenę i wynik nie
+     * zależy od kolejności remisów w Lucene (docs/RUNBOOK.md #096).
+     *
+     * @param  array{query: string, relevant: array<int, array<string, mixed>>}  $entry
      * @return array<string, mixed>
      */
     private function toRankEvalRequest(array $entry, int $index, int $k, string $physicalIndex): array
@@ -105,6 +180,7 @@ class SearchEvalCommand extends Command
         $criteria = SearchCriteria::fromRequest(
             Request::create('/search', 'GET', ['q' => $entry['query'], 'per_page' => $k]),
         );
+        $ratings = $this->judgments->resolve($entry['relevant']);
 
         return [
             'id' => "q{$index}",
@@ -113,21 +189,24 @@ class SearchEvalCommand extends Command
                 'size' => $k,
             ],
             'ratings' => array_map(
-                static fn (array $r) => [
+                // array_keys() oddaje numeryczne klucze jako int — `_id` w ES to string.
+                static fn (int|string $id, int $grade) => [
                     '_index' => $physicalIndex,
-                    '_id' => (string) $r['id'],
-                    'rating' => (int) $r['grade'],
+                    '_id' => (string) $id,
+                    'rating' => $grade,
                 ],
-                $entry['relevant'],
+                array_keys($ratings),
+                $ratings,
             ),
         ];
     }
 
     /**
-     * @param  array<int, array{query: string, relevant: array<int, array{id: string|int, grade: int}>}>  $queries
+     * @param  array<int, array{query: string, relevant: array<int, array<string, mixed>>}>  $queries
      * @param  array<string, mixed>  $response
+     * @param  array<int, bool>  $unstable
      */
-    private function renderResults(array $queries, array $response, int $k): void
+    private function renderResults(array $queries, array $response, array $unstable, int $k): void
     {
         $rows = [];
 
@@ -138,10 +217,11 @@ class SearchEvalCommand extends Command
                 $entry['query'],
                 $detail !== null ? number_format((float) $detail['metric_score'], 3) : 'BŁĄD',
                 $detail !== null ? count($detail['unrated_docs'] ?? []) : '-',
+                $unstable[$i] ? 'TAK' : '-',
             ];
         }
 
-        $this->table(['Zapytanie', "nDCG@{$k}", 'Nieocenione w top-k'], $rows);
+        $this->table(['Zapytanie', "nDCG@{$k}", 'Nieocenione w top-k', 'Remis z różnymi ocenami'], $rows);
         $this->newLine();
         $this->info(sprintf(
             'Średnie nDCG@%d: %.3f (na %d zapytaniach)',
@@ -149,6 +229,11 @@ class SearchEvalCommand extends Command
             (float) $response['metric_score'],
             count($queries),
         ));
+
+        if (in_array(true, $unstable, true)) {
+            $this->error('Wynik NIEDETERMINISTYCZNY: w top-k jest remis `_score` między dokumentami o różnych ocenach — '
+                .'kolejność rozstrzyga Lucene, nie trafność. Popraw reguły w queries.yaml tak, żeby cała grupa remisu miała tę samą ocenę (RUNBOOK #096).');
+        }
 
         if ($response['failures'] !== []) {
             $this->error('Błędy _rank_eval: '.json_encode($response['failures'], JSON_PRETTY_PRINT));
