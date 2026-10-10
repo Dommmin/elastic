@@ -1,0 +1,161 @@
+# ============================================================================
+#  Obrazy produkcyjne -> GHCR (ETAP D, docs/08-PLAN-ETAP-D-VPS.md, Task 3)
+#
+#  "Zbuduj raz, uruchamiaj wszędzie": serwer nie ma kodu ani gita — pobiera
+#  gotowe obrazy z ghcr.io/dommmin/elastic-*:<SHA commita>.
+#
+#  Kolejność ma znaczenie: build -> prod-image-check -> push. Obrazy są
+#  PUBLICZNE, więc test "zero sekretów w obrazie" musi przejść, ZANIM
+#  cokolwiek trafi do rejestru. Czerwony test = nic nie jest wypychane.
+#
+#  Bezpieczeństwo workflow:
+#    - wyzwalacze tylko push na main i ręczny — brak danych od osób z zewnątrz
+#      (żadnego pull_request_target, żadnego ${{ github.event.* }} w run:)
+#    - token: domyślnie nic, job dostaje tylko contents:read + packages:write
+#    - akcje przypięte do pełnego SHA (tag można przepisać, commit — nie)
+# ============================================================================
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/**
+      - infra/**
+      - tests/relevance/**
+      - .dockerignore
+      - .env.example
+      - tools/vps/prod-image-check.sh
+      - .github/workflows/images.yml
+  workflow_dispatch:
+
+permissions: {}
+
+# Dwa pushe jeden po drugim: drugi czeka, nie przerywa pierwszego —
+# przerwany build mógłby zostawić w rejestrze niekompletny zestaw tagów.
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/dommmin
+
+jobs:
+  build-check-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Wersje z .env.example — jedno źródło prawdy dla lokalnego dev i CI.
+      # Tylko linie *_VERSION=, plik pochodzi z repo (zaufany).
+      - name: Wersje z .env.example
+        run: grep -E '^[A-Z]+_VERSION=[0-9A-Za-z.]+$' .env.example >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- build (load: true = obraz w lokalnym dockerze runnera, BEZ pushu) ---
+      - name: Build elasticsearch
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: infra/elasticsearch
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-elasticsearch:${{ github.sha }}
+          build-args: ES_VERSION=${{ env.ES_VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
+          cache-from: type=gha,scope=elasticsearch
+          cache-to: type=gha,scope=elasticsearch,mode=max
+
+      - name: Build postgres
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: infra/postgres
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-postgres:${{ github.sha }}
+          build-args: POSTGRES_VERSION=${{ env.POSTGRES_VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
+          cache-from: type=gha,scope=postgres
+          cache-to: type=gha,scope=postgres,mode=max
+
+      - name: Build rabbitmq
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: infra/rabbitmq
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-rabbitmq:${{ github.sha }}
+          build-args: RABBITMQ_VERSION=${{ env.RABBITMQ_VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
+          cache-from: type=gha,scope=rabbitmq
+          cache-to: type=gha,scope=rabbitmq,mode=max
+
+      - name: Build catalog
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: infra/php/catalog.Dockerfile
+          target: prod
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-catalog:${{ github.sha }}
+          build-args: |
+            FRANKENPHP_VERSION=${{ env.FRANKENPHP_VERSION }}
+            PHP_VERSION=${{ env.PHP_VERSION }}
+            NODE_VERSION=${{ env.NODE_VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
+          cache-from: type=gha,scope=catalog
+          cache-to: type=gha,scope=catalog,mode=max
+
+      - name: Build search
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: infra/php/search.Dockerfile
+          target: prod
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-search:${{ github.sha }}
+          build-args: |
+            FRANKENPHP_VERSION=${{ env.FRANKENPHP_VERSION }}
+            PHP_VERSION=${{ env.PHP_VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
+          cache-from: type=gha,scope=search
+          cache-to: type=gha,scope=search,mode=max
+
+      # --- bramka: ten sam test co lokalnie, na właśnie zbudowanych obrazach ---
+      - name: prod-image-check
+        env:
+          IMAGE_PREFIX: ${{ env.REGISTRY }}/elastic-
+          IMAGE_TAG: ${{ github.sha }}
+        run: tools/vps/prod-image-check.sh --no-build
+
+      # --- push dopiero po zielonym teście: tag <SHA> + ruchomy tag main ------
+      - name: Push do GHCR
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          for name in elasticsearch postgres rabbitmq catalog search; do
+            image="${REGISTRY}/elastic-${name}"
+            docker push "${image}:${SHA}"
+            docker tag "${image}:${SHA}" "${image}:main"
+            docker push "${image}:main"
+          done
+          {
+            echo "### Obrazy opublikowane"
+            echo ""
+            echo "Wdrożenie: \`make prod-deploy tag=${SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
