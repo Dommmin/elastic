@@ -1,0 +1,134 @@
+# ============================================================================
+#  Nakładka PRODUKCYJNA (ETAP D) — uruchamiana na serwerze RAZEM z compose.yaml:
+#
+#    docker compose -f compose.yaml -f compose.prod.yaml \
+#      --profile cluster --profile apps up -d
+#
+#  Co zmienia względem lokalnego dev:
+#    - obrazy z rejestru (GHCR), tag = SHA commita  -> serwer niczego nie buduje
+#    - zero bind-mountów z repo                      -> na serwerze nie ma repo
+#    - sekrety i klucze z .env (gen-env.sh)          -> nic stałego w plikach
+#    - bez Vite, bez trybu debug, logi na stderr
+#
+#  `!reset` / `!override` (Compose >= 2.24): w nakładce listy i mapy domyślnie
+#  się SCALAJĄ z compose.yaml — a my chcemy bind-mounty USUNĄĆ, nie dopisać.
+#  !override = "zastąp całą wartość", !reset = "jakby jej nigdy nie było".
+# ============================================================================
+
+services:
+
+  # --- Elasticsearch: obraz z pluginami + analysis/ + skrypty w środku -------
+  es-init:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-elasticsearch:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    volumes: !override
+      - es-certs:/certs
+      - es-snapshots:/snapshots
+
+  es01:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-elasticsearch:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    volumes: !override
+      - es01-data:/usr/share/elasticsearch/data
+      - es-snapshots:/snapshots
+      - es-certs:/usr/share/elasticsearch/config/certs:ro
+
+  es02:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-elasticsearch:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    volumes: !override
+      - es02-data:/usr/share/elasticsearch/data
+      - es-snapshots:/snapshots
+      - es-certs:/usr/share/elasticsearch/config/certs:ro
+
+  es03:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-elasticsearch:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    volumes: !override
+      - es03-data:/usr/share/elasticsearch/data
+      - es-snapshots:/snapshots
+      - es-certs:/usr/share/elasticsearch/config/certs:ro
+
+  es-setup:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-elasticsearch:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    volumes: !reset []
+
+  kibana:
+    environment:
+      # W compose.yaml są stałe "…_local_…_key" — wygodne lokalnie, ale znane
+      # każdemu, kto czyta repo. Na serwerze: losowe z gen-env.sh.
+      XPACK_SECURITY_ENCRYPTIONKEY: ${KIBANA_SECURITY_KEY:?}
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: ${KIBANA_SAVEDOBJECTS_KEY:?}
+      XPACK_REPORTING_ENCRYPTIONKEY: ${KIBANA_REPORTING_KEY:?}
+
+  # --- dane ------------------------------------------------------------------
+  postgres:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-postgres:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    volumes: !override
+      - pg-data:/var/lib/postgresql
+
+  rabbitmq:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-rabbitmq:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    environment:
+      # Czyta je infra/rabbitmq/entrypoint.sh, żeby policzyć hash hasła przy
+      # starcie (definitions.json z hashem nie może leżeć w publicznym obrazie).
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+    volumes: !override
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  # --- aplikacje -------------------------------------------------------------
+  catalog-app:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      # ":80" = Caddy słucha zwykłego HTTP na każdej nazwie hosta. Bez domeny
+      # nie ma komu wystawić certyfikatu, a ruch i tak idzie szyfrowanym
+      # tunelem SSH (docs/08-PLAN-ETAP-D-VPS.md, Task 9).
+      SERVER_NAME: ":80"
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${CATALOG_APP_KEY:?}
+      # Adres widziany w przeglądarce przez tunel: localhost:18080 -> serwer:8080
+      APP_URL: http://localhost:18080
+      LOG_CHANNEL: stderr
+      LOG_LEVEL: info
+      VITE_DEV_SERVER: !reset null
+    volumes: !override
+      - caddy-data:/data
+      - caddy-config:/config
+    # HEALTHCHECK z obrazu woła https://$SERVER_NAME — przy ":80" to nie ma
+    # sensu. Tu: zwykłe HTTP na wbudowany endpoint liveness Laravela.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/up -o /dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  outbox-publisher:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${CATALOG_APP_KEY:?}
+      LOG_CHANNEL: stderr
+    volumes: !reset []
+
+  search-consumer:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      APP_ENV: prod
+      APP_SECRET: ${SEARCH_APP_SECRET:?}
+      MAILER_DSN: null://null
+      DEFAULT_URI: http://localhost
+    volumes: !reset []
+
+  # Vite (HMR) to narzędzie deweloperskie — w prod assety są w obrazie catalog.
+  # Profil, którego nikt nie włącza = usługa nigdy nie startuje.
+  # !override, bo listy z nakładki się SCALAJĄ: samo `[dev-only]` dawało
+  # [apps, dev-only] — i Vite dalej startował z profilem `apps`.
+  catalog-vite:
+    profiles: !override [dev-only]

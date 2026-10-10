@@ -73,7 +73,9 @@ wyłącznie po kluczu SSH.
 - SSH wyłącznie kluczem; `PermitRootLogin no`, `PasswordAuthentication no`.
 - Katalog na serwerze: `/opt/marketplace`, właściciel `deploy`. Brak `.git` i `apps/` na serwerze.
 - Po restarcie serwera wszystko wstaje samo, klaster ES `green`.
-- Test przyjęcia: `nDCG@10 = 0.967` (seed deterministyczny, `fake()->seed(42)`), ta sama liczba co w `POMIARY.md`.
+- Test trafności (**kryterium „eval OK”**): 1500 dokumentów w `products-search`; oba zapytania o konkretny produkt (`grade: 3`) = `1.000`; średnie `nDCG@10 ≥ 0.80`.
+  **Nie** `= 0.967`: próba generalna (Task 2) pokazała, że na świeżym seedzie wynik waha się 0.84–0.89 — remisy `_score` rozstrzyga wewnętrzna kolejność dokumentów w Lucene, a `queries.yaml` ocenia tylko część remisujących dokumentów. 0.967 było zmierzone na lokalnej bazie z 6019 produktami i nie da się go odtworzyć. Naprawa harnessu = osobne zadanie (nie ETAP D).
+  Po restarcie i po odtworzeniu snapshotu wynik ma być **identyczny jak przed** (ten sam indeks = te same segmenty = ta sama kolejność).
 - Lokalny dev (`make up-apps`, `make smoke`, `make eval`) działa jak przed etapem.
 - DoD etapu: commity + przewodnik krok po kroku w `docs/blog/etap-d-vps.md`.
 
@@ -152,7 +154,7 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
   - Postgres: nowy Dockerfile z `COPY init/`;
   - RabbitMQ: `COPY` conf, `enabled_plugins`, `definitions.template.json`; `entrypoint.sh` liczy hash **tym samym algorytmem co `tools/render-rabbitmq-definitions.py`** (4 bajty soli + sha256, base64; `openssl` i `base64` są w obrazie — sprawdzone), zapisuje `/etc/rabbitmq/definitions.json`, potem `exec docker-entrypoint.sh rabbitmq-server`.
 - [ ] **Krok 4:** `prod-image-check.sh` → wszystkie ✓.
-- [ ] **Krok 5:** lokalny dev bez regresji: `make up-apps && make smoke && make eval` → smoke zielony, `0.967`.
+- [ ] **Krok 5:** lokalny dev bez regresji: `make up-apps && make smoke && make eval` → smoke zielony, eval OK.
 - [ ] **Krok 6: Commit** `ETAP D [1/10]: samowystarczalne obrazy prod bez sekretów`
 
 ### Task 2: `compose.prod.yaml` i sekrety
@@ -223,7 +225,7 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
   - `docker compose images` → wszystkie obrazy własne z `ghcr.io/dommmin/elastic-*:<IMAGE_TAG>`;
   - `_cat/nodes` → 3 nody, `_cluster/health` → `green`;
   - `tools/smoke-test.sh` przez `ssh elastic-vps 'cd /opt/marketplace && set -a && . ./.env && set +a && COMPOSE_FILE=compose.yaml:compose.prod.yaml bash -s' < tools/smoke-test.sh` → `FAIL=0`;
-  - `make prod-eval` → `nDCG@10 = 0.967`;
+  - `make prod-eval` → eval OK (wartość zapisana jako punkt odniesienia dla Tasku 10);
   - end-to-end: zmiana ceny produktu w catalog → po ≤ 10 s nowa cena w ES (outbox → RabbitMQ → search-consumer → ES);
   - brak kontenerów `unhealthy`/`restarting`; suma `MemUsage` < 80% RAM.
 - [ ] **Krok 2:** → FAIL.
@@ -242,11 +244,11 @@ Obrazy `prod` nigdy nie były uruchamiane. Analiza pokazała problemy, które wy
 
 - [ ] **Krok 1:** fazy `backup` i `reboot`:
   - `backup`: repozytorium snapshotów `fs` (`/snapshots`), polityka SLM `nightly`, ostatni snapshot `SUCCESS`; timer `marketplace-pg-backup` aktywny; dump < 26 h w `/var/backups/marketplace/`.
-  - `reboot`: `sudo reboot` → po ≤ 5 min `green`, 3 nody, smoke ✓, `eval = 0.967`.
+  - `reboot`: `sudo reboot` → po ≤ 5 min `green`, 3 nody, smoke ✓, eval **identyczny** jak przed restartem.
 - [ ] **Krok 2:** → FAIL.
 - [ ] **Krok 3: Cykl wersji:** drobna widoczna zmiana (np. tekst w UI) → push → CI → `make prod-deploy tag=<nowy>` → zmiana widoczna przez tunel → `make prod-deploy tag=<stary>` (rollback) → zmiany nie ma → powrót na nowy tag.
 - [ ] **Krok 4:** SLM (03:00, retencja 7), timer `pg_dump -Fc` (03:30, retencja 7 dni), `make vps-backup-pull` (rsync na Maca — kopia poza serwerem).
-- [ ] **Krok 5: Odtwarzanie:** usuwam `products-v1` → restore ze snapshotu → `eval = 0.967`; `pg_restore` dumpu do bazy testowej → liczba produktów zgodna.
+- [ ] **Krok 5: Odtwarzanie:** usuwam `products-v1` → restore ze snapshotu → eval **identyczny** jak przed usunięciem; `pg_restore` dumpu do bazy testowej → liczba produktów zgodna.
 - [ ] **Krok 6: Restart:** `verify.sh reboot` → ✓. Każdy problem (np. powrót #021) → diagnoza + wpis w RUNBOOK.
 - [ ] **Krok 7: Commit** `ETAP D [9/10]: rollback, backupy, test restartu`
 
@@ -276,7 +278,7 @@ przeniesione). D1 jest punktem odniesienia.
 | D2.3 | Postgres (CloudNativePG) i RabbitMQ (Cluster Operator) albo `StatefulSet` dla porównania | StatefulSet, PVC, operatorzy |
 | D2.4 | catalog i search-consumer jako `Deployment`, `Secret`/`ConfigMap`, probe'y z healthchecków | liveness/readiness vs healthcheck Compose |
 | D2.5 | Migracja danych: snapshot ES → restore w ECK; `pg_dump` → restore | migracja bez utraty danych |
-| D2.6 | `verify.sh` w wariancie `kubectl` (`0.967`, reboot, exposure) | parytet między platformami |
+| D2.6 | `verify.sh` w wariancie `kubectl` (eval OK, reboot, exposure) | parytet między platformami |
 | D2.7 (opc.) | **GitOps**: Argo CD pobiera manifesty z gita, CI zmienia tylko tag obrazu | skąd git w Kubernetesie — manifesty, nie kod |
 | D2.8 | Porównanie w POMIARACH: narzut RAM k3s, czas wdrożenia, zachowanie po restarcie | kiedy K8s ma sens |
 

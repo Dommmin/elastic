@@ -393,6 +393,55 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # Przekaźnik outboxu: tabela `outbox` (catalog) -> RabbitMQ, w pętli.
+  # Bez niego zdarzenia publikował tylko `marketplace:seed` na końcu seedu —
+  # zmiana ceny w catalog leżała w outboksie i NIGDY nie docierała do ES
+  # (znalezione przy przygotowaniu ETAPU D). Ten sam obraz co catalog-app,
+  # inny proces — klasyczny wzorzec "jeden obraz, wiele ról".
+  outbox-publisher:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/catalog.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+        NODE_VERSION: ${NODE_VERSION}
+    command: ["php", "artisan", "outbox:publish", "--loop"]
+    environment:
+      APP_ENV: ${APP_ENV}
+      APP_DEBUG: ${APP_DEBUG}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: ${CATALOG_DB}
+      DB_USERNAME: ${CATALOG_DB_USER}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_CLIENT: phpredis
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+    volumes:
+      - ./apps/catalog:/app
+    # HEALTHCHECK z obrazu catalog pyta Caddy'ego po HTTPS — tu Caddy nie
+    # działa. Proces artisan jest PID 1: sprawdzamy, że to wciąż on.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q 'outbox:publish' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      catalog-app: { condition: service_healthy }
+    mem_limit: 256m
+    networks: [marketplace]
+    restart: unless-stopped
+
   search-consumer:
     profiles: [apps]
     build:

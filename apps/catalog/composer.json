@@ -19,7 +19,8 @@
         "laravel/octane": "^2.19",
         "laravel/tinker": "^3.0",
         "laravel/wayfinder": "^0.1.14",
-        "php-amqplib/php-amqplib": "^3.7"
+        "php-amqplib/php-amqplib": "^3.7",
+        "symfony/yaml": "^8.1"
     },
     "require-dev": {
         "larastan/larastan": "^3.9",
