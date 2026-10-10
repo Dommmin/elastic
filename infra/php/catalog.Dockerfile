@@ -138,6 +138,12 @@ RUN npm ci && npm run build
 # ---------------------------------------------------------------- prod ------
 FROM base AS prod
 
+# SHA commita, z którego zbudowano obraz (CI: --build-arg APP_VERSION=<sha>).
+# Trafia do nagłówka X-App-Version (Caddyfile) — po wdrożeniu i rollbacku
+# widać z zewnątrz, która wersja faktycznie odpowiada.
+ARG APP_VERSION=unknown
+ENV APP_VERSION=${APP_VERSION}
+
 ENV APP_ENV=production \
     # W produkcji PHP nie sprawdza dat plików — kod jest niezmienny w obrazie.
     # To jedna z najtańszych optymalizacji, jakie istnieją.

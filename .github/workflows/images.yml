@@ -116,6 +116,7 @@ jobs:
             FRANKENPHP_VERSION=${{ env.FRANKENPHP_VERSION }}
             PHP_VERSION=${{ env.PHP_VERSION }}
             NODE_VERSION=${{ env.NODE_VERSION }}
+            APP_VERSION=${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
           cache-from: type=gha,scope=catalog
           cache-to: type=gha,scope=catalog,mode=max

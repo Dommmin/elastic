@@ -31,6 +31,10 @@
 
 	encode zstd gzip
 
+	# Która wersja odpowiada? SHA commita wbudowany w obraz prod (ETAP D).
+	# W dev zmiennej nie ma — wtedy "dev". `curl -sI .../up | grep -i x-app-version`
+	header X-App-Version {$APP_VERSION:dev}
+
 	# --- Vite dev server (HMR) --------------------------------------------
 	# W dev assety serwuje Vite, nie Caddy. Bez tego proxy w przeglądarce
 	# musiałbyś żonglować dwoma portami, a HMR przez WebSocket by nie działał.
