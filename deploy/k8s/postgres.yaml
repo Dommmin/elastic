@@ -1,0 +1,100 @@
+# ============================================================================
+#  Postgres jako StatefulSet (ETAP D2, Task 5) — odpowiednik usługi `postgres`
+#  z compose.yaml. Obraz z D1 (skrypt tworzący bazy catalog i searchsvc).
+#
+#  StatefulSet, nie Deployment, bo:
+#    - stała nazwa poda (postgres-0) i stała tożsamość po restarcie;
+#    - volumeClaimTemplates: PVC przypięty do TEGO poda (data-postgres-0),
+#      przeżywa usunięcie poda — odpowiednik nazwanego wolumenu pg-data.
+#  Headless Service (clusterIP: None): DNS `postgres` wskazuje wprost na pod,
+#  bez wirtualnego IP — dla baz to typowe (połączenia są długie, LB zbędny).
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: ghcr.io/dommmin/elastic-postgres:placeholder
+          # Te same parametry co w compose.yaml.
+          args:
+            - postgres
+            - -c
+            - shared_buffers=512MB
+            - -c
+            - max_connections=200
+            - -c
+            - log_min_duration_statement=500
+          env:
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: POSTGRES_PASSWORD } }
+            # Czyta je skrypt init z obrazu (01-databases.sh).
+            - name: CATALOG_DB
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB } }
+            - name: CATALOG_DB_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB_USER } }
+            - name: CATALOG_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_DB_PASSWORD } }
+            - name: SEARCHSVC_DB
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: SEARCHSVC_DB } }
+            - name: SEARCHSVC_DB_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: SEARCHSVC_DB_USER } }
+            - name: SEARCHSVC_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCHSVC_DB_PASSWORD } }
+          ports:
+            - containerPort: 5432
+          # healthcheck z compose -> readiness (czy kierować ruch) i liveness
+          # (czy zrestartować). W compose był JEDEN healthcheck do obu celów.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 6
+          resources:
+            requests: { memory: 512Mi, cpu: 100m }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            # Postgres 18: punkt montowania /var/lib/postgresql (komentarz w compose.yaml)
+            - name: data
+              mountPath: /var/lib/postgresql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

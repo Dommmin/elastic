@@ -12,6 +12,9 @@ namespace: marketplace
 resources:
   - namespace.yaml
   - elasticsearch.yaml
+  - postgres.yaml
+  - rabbitmq.yaml
+  - redis.yaml
 
 configurations:
   - kustomizeconfig.yaml

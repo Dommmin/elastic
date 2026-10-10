@@ -11,6 +11,7 @@
 #    eck        operator ECK 3.5.0 działa, CRD zarejestrowane        (Task 2)
 #    config     Secrety i ConfigMap w namespace marketplace          (Task 3)
 #    es         ECK: ES green 3 nody, pluginy, role aplikacji, Kibana  (Task 4)
+#    data       Postgres, RabbitMQ, Redis: gotowe, hasła, trwałość PVC (Task 5)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -158,14 +159,47 @@ phase_es() {
   check "Kibana: health green" "green" "$(k get kibana marketplace -n marketplace -o jsonpath='{.status.health}')"
 }
 
+# ----------------------------------------------------------------- data -----
+kx() { k exec -n marketplace "$1" -- sh -c "$2"; }   # hasła czytane w kontenerze z jego env
+phase_data() {
+  tunnel_up
+  echo -e "\n${BLD}  data — StatefulSety${NC}"
+  for sts in postgres rabbitmq redis; do
+    check "StatefulSet ${sts}: 1/1 gotowy" "1" "$(k get sts "${sts}" -n marketplace -o jsonpath='{.status.readyReplicas}')"
+    check "PVC data-${sts}-0: Bound" "Bound" "$(k get pvc "data-${sts}-0" -n marketplace -o jsonpath='{.status.phase}')"
+  done
+  check "postgres: bazy catalog i searchsvc (skrypt init z obrazu)" "catalog searchsvc" \
+    "$(kx postgres-0 'psql -U "$POSTGRES_USER" -tAc "select datname from pg_database where datname in ('"'"'catalog'"'"','"'"'searchsvc'"'"') order by 1"' | tr '\n' ' ' | sed 's/ $//')"
+  check "postgres: catalog loguje się swoim hasłem" "1" \
+    "$(kx postgres-0 'PGPASSWORD="$CATALOG_DB_PASSWORD" psql -h 127.0.0.1 -U "$CATALOG_DB_USER" -d "$CATALOG_DB" -tAc "select 1"')"
+  check "rabbitmq: logowanie hasłem z Secretu" "0" \
+    "$(kx rabbitmq-0 'rabbitmqctl authenticate_user "$RABBITMQ_USER" "$RABBITMQ_PASSWORD" >/dev/null 2>&1; echo $?')"
+  check "rabbitmq: kolejka search.product.sync (topologia z obrazu)" "1" \
+    "$(kx rabbitmq-0 'rabbitmqctl list_queues name -q 2>/dev/null' | grep -c '^search.product.sync$')"
+  check "rabbitmq: stała nazwa node'a" "rabbit@rabbitmq-0" "$(kx rabbitmq-0 "rabbitmqctl -q eval 'node().' 2>/dev/null" | tr -d \"\'\ )"
+  check "redis: PING z hasłem" "PONG" "$(kx redis-0 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping')"
+
+  # Trwałość: zapis -> usunięcie POD-a -> StatefulSet tworzy go od nowa z TYM
+  # SAMYM PVC -> zapis nadal jest. W compose odpowiednik: `docker compose rm`
+  # + `up` (nazwany wolumen przeżywa), tu kontroler robi to sam.
+  local marker="verify-$(date +%s)"
+  kx postgres-0 "psql -U \"\$POSTGRES_USER\" -d postgres -qc \"create table if not exists _verify(v text); insert into _verify values ('${marker}')\"" >/dev/null
+  k delete pod postgres-0 -n marketplace --wait=true >/dev/null
+  k wait pod/postgres-0 -n marketplace --for=condition=Ready --timeout=180s >/dev/null
+  check "postgres: dane przeżyły usunięcie poda" "${marker}" \
+    "$(kx postgres-0 "psql -U \"\$POSTGRES_USER\" -d postgres -tAc \"select v from _verify where v='${marker}'\"")"
+  kx postgres-0 'psql -U "$POSTGRES_USER" -d postgres -qc "drop table _verify"' >/dev/null
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
   eck)      phase_eck ;;
   config)   phase_config ;;
   es)       phase_es ;;
-  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|all}" >&2; exit 2 ;;
+  data)     phase_data ;;
+  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

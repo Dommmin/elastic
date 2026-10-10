@@ -1,0 +1,76 @@
+# ============================================================================
+#  RabbitMQ jako StatefulSet (ETAP D2, Task 5). Obraz z D1: topologia
+#  w środku, hash hasła liczony przy starcie (infra/rabbitmq/entrypoint.sh).
+#
+#  Nazwa node'a RabbitMQ zależy od hostname. W compose trzeba było jawnie
+#  ustawić `hostname: rabbitmq` (inaczej po restarcie node zmieniał nazwę
+#  i gubił trwałe kolejki). StatefulSet daje stały hostname `rabbitmq-0`
+#  za darmo — to dokładnie ten problem, dla którego StatefulSet powstał.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+spec:
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+    - name: management
+      port: 15672
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: ghcr.io/dommmin/elastic-rabbitmq:placeholder
+          env:
+            - name: RABBITMQ_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: RABBITMQ_USER } }
+            - name: RABBITMQ_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: RABBITMQ_PASSWORD } }
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          # Sonda TCP, NIE `rabbitmq-diagnostics`: wołanie CLI w trakcie bootu
+          # node'a potrafiło położyć kontener (RUNBOOK #033). Port AMQP
+          # otwiera się dopiero po wczytaniu definicji (kolejki istnieją).
+          readinessProbe:
+            tcpSocket: { port: 5672 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 5672 }
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { memory: 256Mi, cpu: 100m }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi
