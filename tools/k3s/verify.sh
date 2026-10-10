@@ -13,6 +13,7 @@
 #    es         ECK: ES green 3 nody, pluginy, role aplikacji, Kibana  (Task 4)
 #    data       Postgres, RabbitMQ, Redis: gotowe, hasła, trwałość PVC (Task 5)
 #    apps       Deploymenty, Job migracji, /up + X-App-Version, indeks (Task 6)
+#    stack      parytet z D1: dane = Compose, eval, E2E zmiana ceny    (Task 7)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -46,7 +47,10 @@ tunnel_up() {
   for _ in 1 2 3 4 5; do nc -z 127.0.0.1 26443 2>/dev/null && return 0; sleep 1; done
   return 1
 }
-k() { "${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" --request-timeout=15s "$@" 2>/dev/null; }
+# Tunel potrafi paść w trakcie długiej weryfikacji (np. pod obciążeniem
+# serwera) — wtedy każde `kubectl` zwraca pusto, a test wygląda na błąd
+# danych. Przed każdym wywołaniem: jeśli portu nie ma, wznów tunel.
+k() { nc -z 127.0.0.1 26443 2>/dev/null || tunnel_up; "${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" --request-timeout=15s "$@" 2>/dev/null; }
 
 # -------------------------------------------------------------- cluster -----
 phase_cluster() {
@@ -221,6 +225,36 @@ phase_apps() {
     "$(k get pods -n marketplace -l app=search-consumer -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')"
 }
 
+# ---------------------------------------------------------------- stack -----
+eval_k8s()     { k exec -n marketplace deploy/catalog-app -- php artisan search:eval 2>/dev/null | grep -oE 'nDCG@10: [0-9.]+' | awk '{print $2}'; }
+eval_compose() { remote 'cd /opt/marketplace && docker compose exec -T catalog-app php artisan search:eval </dev/null 2>/dev/null' | grep -oE 'nDCG@10: [0-9.]+' | awk '{print $2}'; }
+# concat_ws(chr(32), …) zamiast ' ' — bez apostrofów, które rozjeżdżały się
+# w trzech warstwach cytowania (Mac -> ssh/kubectl -> sh -c -> psql).
+PG_COUNTS_SQL='select concat_ws(chr(32), (select count(*) from products), (select count(*) from offers), (select count(*) from brands), (select count(*) from sellers))'
+pg_counts_k8s()     { kx postgres-0 "psql -U \"\$POSTGRES_USER\" -d catalog -tAc \"${PG_COUNTS_SQL}\""; }
+pg_counts_compose() { remote "cd /opt/marketplace && docker compose exec -T postgres psql -U postgres -d catalog -tAc \"${PG_COUNTS_SQL}\" </dev/null"; }
+phase_stack() {
+  tunnel_up
+  echo -e "\n${BLD}  stack — parytet z D1 (Compose)${NC}"
+  local c; c="$(pg_counts_compose)"
+  check "Postgres: products/offers/brands/sellers = Compose (${c})" "${c:-brak}" "$(pg_counts_k8s)"
+  check "ES: products-search 1500 dokumentów" "1500" \
+    "$(es_k8s elastic '/products-search/_count' | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null)"
+  local ek ec; ek="$(eval_k8s)"; ec="$(eval_compose)"
+  check "eval k8s = eval Compose (${ec:-?})" "${ec:-brak}" "${ek:-brak}"
+  check "eval OK (>= 0.80)" "tak" "$(python3 -c 'import sys; print("tak" if float(sys.argv[1]) >= 0.80 else "nie")' "${ek:-0}" 2>/dev/null)"
+  # E2E ścieżką użytkownika (RUNBOOK #031): catalog -> outbox -> publisher ->
+  # RabbitMQ -> consumer -> ES. Wszystko w k8s.
+  local price=$(( (RANDOM % 90000) + 10000 )) pid t0 waited=""
+  pid="$(k exec -n marketplace deploy/catalog-app -- php artisan tinker --execute "\$o = App\\Models\\Offer::query()->orderBy(\"id\")->first(); \$o->updateWithOutbox([\"price_cents\" => ${price}]); echo \$o->product_id;" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)"
+  t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le 10 ]; do
+    if es_k8s elastic "/products-search/_doc/${pid:-0}" | grep -q "${price}"; then waited=$(( $(date +%s) - t0 )); break; fi
+    sleep 1
+  done
+  check "E2E: zmiana ceny w ES k8s w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
@@ -229,8 +263,9 @@ case "${1:-}" in
   es)       phase_es ;;
   data)     phase_data ;;
   apps)     phase_apps ;;
-  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|all}" >&2; exit 2 ;;
+  stack)    phase_stack ;;
+  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"
