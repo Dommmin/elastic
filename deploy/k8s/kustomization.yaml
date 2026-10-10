@@ -11,6 +11,10 @@ namespace: marketplace
 
 resources:
   - namespace.yaml
+  - elasticsearch.yaml
+
+configurations:
+  - kustomizeconfig.yaml
 
 secretGenerator:
   # Role nie są tajne, ale ECK przyjmuje je tylko z Secretu. Bez hasha

@@ -1592,6 +1592,47 @@ i `10.43.0.0/16`, czyli ruch z podów do hosta, nie z internetu.
 host. Dla usług, z którymi łączą się kontenery albo pody, „localhost" oznacza
 coś innego po każdej stronie granicy network namespace'u.
 
+<a id="037"></a>
+## 037 — Po `kubectl apply` ES + Kibany serwer „znika” na ~25 minut (bez OOM)
+
+**Objaw**
+Chwilę po utworzeniu `Elasticsearch` (3 nody) i `Kibany` przez ECK, obok
+działającego stacku D1 (Compose, też 3 nody ES):
+```
+Unable to connect to the server: net/http: TLS handshake timeout
+ssh elastic-vps …  →  Timeout, server not responding
+```
+Ping 50 ms, `nc -z <IP> 22` → otwarty, ale sesja SSH nie startuje.
+
+**Diagnoza**
+Po ~25 minutach SSH wrócił:
+```
+load average: 2.56   Mem: used 16812 / 23943, available 7130
+journalctl -k | grep -i oom   → nic
+kubectl get elasticsearch     → green 3/3, Kibana green, restartów 0
+docker compose ps             → wszystko healthy
+```
+
+**Przyczyna**
+To nie był brak pamięci (zero OOM), tylko burza startowa: 4 vCPU, a naraz
+startowały 3 nowe JVM-y ES (każda kompiluje JIT, ładuje pluginy, robi recovery
+shardów) i Kibana (Node.js budujący bundle), obok 3 działających JVM-ów D1.
+Do tego zapis na lokalny dysk (nowe PVC). sshd i apiserver k3s nie dostawały CPU
+i I/O na czas, więc nie zdążały z handshake'ami.
+
+**Naprawa**
+Nic nie trzeba było naprawiać, system się ustabilizował. Na przyszłość, przy
+małej maszynie i blue-green:
+- startuj ES i Kibanę osobno (najpierw `Elasticsearch`, Kibana po `green`);
+- na czas startu zmniejsz `count` albo poczekaj z drugim stackiem;
+- w pętlach czekających na klaster ustawiaj **limit czasu i sprawdzaj SSH
+  bez tunelu**, bo zawieszone API wygląda tak samo jak zerwany tunel.
+
+**Czego się nauczyłem**
+„Mieści się w RAM” nie znaczy „wystartuje bezboleśnie”. Start JVM-a to szczyt
+CPU i I/O, a orkiestrator (ECK, compose) chętnie startuje wszystko naraz.
+Brak OOM w `journalctl -k` szybko odróżnia „zabrakło pamięci” od „zabrakło CPU/I/O”.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć

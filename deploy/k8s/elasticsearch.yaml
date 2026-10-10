@@ -1,0 +1,116 @@
+# ============================================================================
+#  Elasticsearch + Kibana przez operator ECK (ETAP D2, Task 4)
+#
+#  Co w D1 robiły RĘCZNIE kolejne kontenery compose, tu robi operator:
+#    es-init (certyfikaty TLS transportu)   -> ECK generuje i rotuje certy
+#    es-setup (hasła, role, użytkownicy)    -> Secrety + auth.roles/fileRealm
+#    es01/es02/es03 + discovery + bootstrap -> nodeSets.count: 3
+#    healthcheck + RUNBOOK #021 (deadlock)  -> ECK zna kolejność startu
+#  Zmiana czegokolwiek w spec = ECK robi ROLLING RESTART node po node'zie,
+#  czekając na green/yellow między krokami. W D1 restart = cały klaster naraz.
+# ============================================================================
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: marketplace
+spec:
+  version: 9.5.1
+  # Obraz z D1 (pluginy stempel + icu, analysis/ w środku). Tag ustawia
+  # Kustomize (images: w kustomization.yaml + kustomizeconfig.yaml).
+  image: ghcr.io/dommmin/elastic-elasticsearch:placeholder
+
+  # HTTP bez TLS — parytet z D1 (aplikacje mówią http://…:9200). Transport
+  # node<->node ECK i tak szyfruje zawsze.
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: true
+
+  auth:
+    roles:
+      - secretName: es-app-roles
+    fileRealm:
+      - secretName: es-user-catalog
+      - secretName: es-user-searchsvc
+
+  nodeSets:
+    - name: default
+      count: 3
+      config:
+        path.repo: ["/snapshots"]
+        # Jak w D1: ILM sprawdza polityki co 10 s (domyślnie 10 min).
+        indices.lifecycle.poll_interval: 10s
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              env:
+                # Na czas blue-green (oba stacki naraz): 1g/2g. Po przełączeniu
+                # 1500m/3g — decyzja K-9 w planie.
+                - name: ES_JAVA_OPTS
+                  value: "-Xms1g -Xmx1g"
+              resources:
+                requests:
+                  memory: 2Gi
+                  cpu: 250m
+                limits:
+                  memory: 2Gi
+              volumeMounts:
+                - name: es-snapshots
+                  mountPath: /snapshots
+          volumes:
+            # Jeden wolumen snapshotów dla 3 podów: ReadWriteOnce znaczy
+            # "jeden WĘZEŁ", nie "jeden pod" — na 1 serwerze to działa.
+            # Przy węzłach na różnych maszynach: NFS albo S3 (repository-s3).
+            - name: es-snapshots
+              persistentVolumeClaim:
+                claimName: es-snapshots
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data   # nazwa wymagana przez ECK
+          spec:
+            accessModes: [ReadWriteOnce]
+            storageClassName: local-path
+            resources:
+              requests:
+                storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: es-snapshots
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: marketplace
+spec:
+  version: 9.5.1
+  count: 1
+  # Kibana loguje się do ES kontem serwisowym, które ECK tworzy i trzyma
+  # w Secrecie sam — w D1 hasło kibana_system ustawiał es-setup.
+  elasticsearchRef:
+    name: marketplace
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: true
+  podTemplate:
+    spec:
+      containers:
+        - name: kibana
+          env:
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1024"
+          resources:
+            requests:
+              memory: 1536Mi
+              cpu: 200m
+            limits:
+              memory: 1536Mi

@@ -10,6 +10,7 @@
 #    exposure   z internetu tylko 22/tcp — także porty k8s         (Task 1+)
 #    eck        operator ECK 3.5.0 działa, CRD zarejestrowane        (Task 2)
 #    config     Secrety i ConfigMap w namespace marketplace          (Task 3)
+#    es         ECK: ES green 3 nody, pluginy, role aplikacji, Kibana  (Task 4)
 #    all        wszystkie fazy (bez reboot)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
@@ -121,13 +122,50 @@ phase_config() {
   check "hasło elastic = to samo co w D1" "tak" "$(remote 'cd /opt/marketplace && a=$(grep ^ELASTIC_PASSWORD= .env | cut -d= -f2- | tr -d "\\n" | sha256sum); b=$(kubectl -n marketplace get secret marketplace-es-elastic-user -o jsonpath={.data.elastic} | base64 -d | sha256sum); [ "$a" = "$b" ] && echo tak || echo nie')"
 }
 
+# ------------------------------------------------------------------- es -----
+# Zapytania do ES w k8s wykonujemy NA SERWERZE, przez ClusterIP Service'u
+# (host widzi sieć usług przez kube-proxy). Hasła czytane z .env na miejscu.
+es_k8s() { # es_k8s <user: elastic|catalog|searchsvc> <ścieżka> [metoda] [body]
+  remote "cd /opt/marketplace && set -a && . ./.env && set +a && \
+    case '$1' in elastic) P=\$ELASTIC_PASSWORD ;; catalog) P=\$ES_CATALOG_PASSWORD ;; searchsvc) P=\$ES_SEARCHSVC_PASSWORD ;; esac; \
+    IP=\$(kubectl -n marketplace get svc marketplace-es-http -o jsonpath='{.spec.clusterIP}'); \
+    curl -s -u '$1':\"\$P\" -X ${3:-GET} -H 'Content-Type: application/json' \"http://\$IP:9200$2\" ${4:+-d '$4'}"
+}
+phase_es() {
+  tunnel_up
+  echo -e "\n${BLD}  es — Elasticsearch i Kibana przez ECK${NC}"
+  check "Elasticsearch: health green" "green" "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.health}')"
+  check "Elasticsearch: 3 nody dostępne" "3" "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.availableNodes}')"
+  check "Elasticsearch: wersja 9.5.1" "9.5.1" "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.version}')"
+  local want; want="$(awk '/elastic-elasticsearch/{getline; print $2}' "${ROOT}/deploy/k8s/kustomization.yaml")"
+  check "pody ES na obrazie z GHCR (tag z kustomization)" "3" \
+    "$(k get pods -n marketplace -l elasticsearch.k8s.elastic.co/cluster-name=marketplace -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}' | grep -c "elastic-elasticsearch:${want}")"
+  local plugins; plugins="$(es_k8s elastic '/_cat/plugins?h=component')"
+  check "plugin analysis-stempel na 3 nodach" "3" "$(grep -c analysis-stempel <<<"${plugins}")"
+  check "plugin analysis-icu na 3 nodach" "3" "$(grep -c analysis-icu <<<"${plugins}")"
+  check "analizator polski: butów -> but" "but" \
+    "$(es_k8s elastic '/_analyze' POST '{"analyzer":"polish","text":"butów"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["tokens"][0]["token"])' 2>/dev/null)"
+  check "hasło elastic z D1 działa" "elastic" "$(es_k8s elastic '/_security/_authenticate' | python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])' 2>/dev/null)"
+  check "user catalog: rola catalog_app (file realm)" "catalog_app" \
+    "$(es_k8s catalog '/_security/_authenticate' | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["roles"]))' 2>/dev/null)"
+  # D-03: Laravel nie pisze do ES — próba utworzenia indeksu MUSI dostać 403.
+  check "user catalog: zapis zabroniony (403)" "403" \
+    "$(es_k8s catalog '/products-zakaz-test' PUT | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status"))' 2>/dev/null)"
+  check "user searchsvc: rola search_service" "search_service" \
+    "$(es_k8s searchsvc '/_security/_authenticate' | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["roles"]))' 2>/dev/null)"
+  check "repozytorium snapshotów: /snapshots zapisywalne (verify)" "3" \
+    "$(es_k8s elastic '/_snapshot/verify-tmp' PUT '{"type":"fs","settings":{"location":"/snapshots/verify-tmp"}}' >/dev/null; es_k8s elastic '/_snapshot/verify-tmp/_verify' POST | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["nodes"]))' 2>/dev/null; es_k8s elastic '/_snapshot/verify-tmp' DELETE >/dev/null)"
+  check "Kibana: health green" "green" "$(k get kibana marketplace -n marketplace -o jsonpath='{.status.health}')"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   exposure) phase_exposure ;;
   eck)      phase_eck ;;
   config)   phase_config ;;
-  all)      phase_cluster; phase_exposure; phase_eck; phase_config ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|all}" >&2; exit 2 ;;
+  es)       phase_es ;;
+  all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"
