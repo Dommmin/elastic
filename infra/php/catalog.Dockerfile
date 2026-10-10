@@ -106,24 +106,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 CMD ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
 
-# ------------------------------------------------------- assets (prod) ------
-FROM node:${NODE_VERSION}-alpine AS assets
-
-WORKDIR /app
-# Najpierw manifesty — warstwa z zależnościami cache'uje się, dopóki się nie zmienią.
-COPY apps/catalog/package*.json ./
-RUN npm ci
-COPY apps/catalog/ ./
-RUN npm run build
-
 # ------------------------------------------------------ vendor (prod) -------
+# Kod + zależności BEZ dev. Pierwsze w kolejności, bo potrzebuje go build
+# assetów (patrz niżej).
 FROM base AS vendor
 
 WORKDIR /app
+# Najpierw manifesty — warstwa z zależnościami cache'uje się, dopóki się nie zmienią.
 COPY apps/catalog/composer.json apps/catalog/composer.lock ./
 RUN composer install \
       --no-dev --no-scripts --no-autoloader \
       --prefer-dist --no-interaction
+COPY apps/catalog/ ./
+# `package:discover` normalnie odpala composer (post-autoload-dump), ale
+# --no-scripts go wyłącza. Bez niego Laravel nie zna providerów z paczek —
+# m.in. komendy `wayfinder:generate`, której potrzebuje build assetów.
+RUN composer dump-autoload --optimize --classmap-authoritative \
+ && php artisan package:discover --ansi
+
+# ------------------------------------------------------- assets (prod) ------
+# NIE node:alpine (tak było — i build padał na czystym klonie): plugin
+# @laravel/vite-plugin-wayfinder przy `npm run build` też woła
+# `php artisan wayfinder:generate`, więc potrzebny jest PHP + vendor/ +
+# kod aplikacji. Lokalnie "działało", bo `npm run build` szło na hoście,
+# gdzie PHP i vendor/ są. Etap `vite` = base + Node, dokładnie to, czego trzeba.
+FROM vite AS assets
+
+COPY --from=vendor /app /app
+RUN npm ci && npm run build
 
 # ---------------------------------------------------------------- prod ------
 FROM base AS prod
@@ -134,14 +144,17 @@ ENV APP_ENV=production \
     PHP_OPCACHE_VALIDATE_TIMESTAMPS=0
 
 COPY infra/caddy/Caddyfile /etc/frankenphp/Caddyfile
-COPY --from=vendor /app/vendor ./vendor
-COPY apps/catalog/ ./
+COPY --from=vendor /app /app
 COPY --from=assets /app/public/build ./public/build
+# Zapytania kontrolne dla `search:eval` — lokalnie montowane z repo.
+COPY tests/relevance /tests/relevance
+COPY --chmod=0755 infra/php/catalog-entrypoint.sh /usr/local/bin/catalog-entrypoint.sh
 
-RUN composer dump-autoload --optimize --classmap-authoritative \
- && php artisan config:cache \
- && php artisan route:cache \
+# route:cache i view:cache NIE zależą od zmiennych środowiskowych — mogą
+# powstać w buildzie. config:cache — NIE (patrz catalog-entrypoint.sh).
+RUN php artisan route:cache \
  && php artisan view:cache \
  && chown -R www-data:www-data storage bootstrap/cache
 
+ENTRYPOINT ["catalog-entrypoint.sh"]
 CMD ["frankenphp", "run", "--config", "/etc/frankenphp/Caddyfile"]

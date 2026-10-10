@@ -19,3 +19,12 @@ FROM docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION}
 #   (ważne dla polskich znaków: ą, ć, ę, ł, ń, ó, ś, ź, ż).
 RUN elasticsearch-plugin install --batch analysis-stempel \
  && elasticsearch-plugin install --batch analysis-icu
+
+# --- konfiguracja WBUDOWANA w obraz (ETAP D) --------------------------------
+# Lokalnie compose montuje te pliki z repo (bind-mount przykrywa to, co jest
+# w obrazie — edycja synonimów działa bez rebuildu). Na serwerze repo NIE MA:
+# obraz przychodzi z rejestru i musi mieć wszystko w sobie. Ścieżki są
+# identyczne jak punkty montowania w compose.yaml — dlatego oba tryby działają
+# bez żadnych warunków.
+COPY --chown=1000:0 analysis/ /usr/share/elasticsearch/config/analysis/
+COPY --chmod=0755 init-storage.sh setup-security.sh /usr/local/bin/

@@ -1,0 +1,38 @@
+# ============================================================================
+#  Co NIE trafia do kontekstu buildu (kontekst `.` — catalog i search)
+#
+#  Bez tego pliku `COPY apps/catalog/ ./` wklejał do obrazu wszystko, co leży
+#  lokalnie: .env z hasłami, vendor/ i node_modules/ zbudowane pod macOS.
+#  Obrazy idą do PUBLICZNEGO rejestru (GHCR) — sekret w warstwie obrazu jest
+#  do wyciągnięcia przez każdego, nawet jeśli późniejsza warstwa go "usuwa".
+# ============================================================================
+
+# --- sekrety (każdy wariant .env poza plikami szablonów) ---
+**/.env
+**/.env.local
+**/.env.*.local
+**/.env.prod
+.env.prod.example
+
+# --- zależności i artefakty budowane w obrazie, nie kopiowane z hosta ---
+**/vendor
+**/node_modules
+apps/*/public/build
+apps/*/public/hot
+apps/*/var
+apps/*/storage/logs/*
+apps/*/storage/framework/cache/*
+apps/*/storage/framework/sessions/*
+apps/*/storage/framework/views/*
+apps/*/bootstrap/cache/*.php
+apps/*/.phpunit.result.cache
+infra/rabbitmq/definitions.json
+
+# --- niepotrzebne w obrazie ---
+.git
+.github
+.claude
+.remember
+docs
+tools
+**/.DS_Store

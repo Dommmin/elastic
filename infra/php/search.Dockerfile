@@ -64,8 +64,23 @@ ENV APP_ENV=prod \
 COPY apps/search/composer.json apps/search/composer.lock ./
 RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction
 COPY apps/search/ ./
-RUN composer dump-autoload --optimize --classmap-authoritative \
- && php bin/console cache:warmup
+# Mapowanie indeksu dla `search:index:create` — lokalnie montowane z repo.
+COPY infra/elasticsearch/mappings /infra/elasticsearch/mappings
+# Pusty .env: Symfony (Dotenv::bootEnv) RZUCA wyjątkiem, gdy pliku nie ma,
+# a apps/search/.env jest gitignorowany — w czystym klonie (CI) go nie ma.
+# Wszystkie wartości przychodzą ze zmiennych środowiskowych z compose;
+# "Real environment variables win over .env files" (komentarz w samym .env).
+#
+# cache:warmup kompiluje kontener DI i wymaga, żeby zmienne z %env()%
+# ISTNIAŁY (np. Doctrine `resolve:DATABASE_URL`, routing `DEFAULT_URI`).
+# Atrapy z search.build.env są montowane TYLKO na czas tej komendy —
+# nic nie zostaje w obrazie. Prawdziwe wartości przychodzą w runtime:
+# %env()% jest rozwiązywane przy starcie, nie zamrażane w cache
+# (inaczej niż config:cache w Laravelu — patrz catalog-entrypoint.sh).
+RUN --mount=type=bind,source=infra/php/search.build.env,target=/tmp/build.env \
+    touch .env \
+ && composer dump-autoload --optimize --classmap-authoritative \
+ && (set -a && . /tmp/build.env && set +a && php bin/console cache:warmup)
 
 # "product_sync", NIE "sync" — patrz messenger.yaml (kolizja z wbudowanym
 # pseudo-transportem synchronicznym Symfony).
