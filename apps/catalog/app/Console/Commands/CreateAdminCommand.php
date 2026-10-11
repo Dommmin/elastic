@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\User;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -15,7 +16,10 @@ use Illuminate\Support\Str;
  * hasło ma wyjść dokładnie raz na stdout i nigdzie więcej (ani plik, ani log).
  * Komenda nadaje `is_admin` (Gate `panel`). `email_verified_at` ustawiamy
  * wyłącznie przy zakładaniu konta: istniejącemu, niezweryfikowanemu kontu nie
- * wolno przy okazji potwierdzać cudzego adresu.
+ * wolno przy okazji potwierdzać cudzego adresu — komenda w ogóle odmawia
+ * takiemu kontu (mógł je założyć ktoś obcy przez rejestrację). Przy
+ * podniesieniu istniejącego, zweryfikowanego konta unieważniamy sesje i
+ * remember_token, żeby zmiana hasła faktycznie wylogowała dotychczasowe logowania.
  */
 class CreateAdminCommand extends Command
 {
@@ -42,9 +46,26 @@ class CreateAdminCommand extends Command
             $user->name = Str::before($email, '@');
             $user->email_verified_at = now();
         }
+        if (! $nowe && $user->email_verified_at === null) {
+            $this->error("Konto {$email} istnieje i nie ma potwierdzonego adresu — odmawiam nadania uprawnień administratora.");
+
+            return self::FAILURE;
+        }
+
         $user->password = $password; // cast 'hashed' haszuje
         $user->is_admin = true; // przypisanie, nie fill — flaga nie jest mass-assignable
-        $user->save();
+
+        DB::transaction(function () use ($user, $nowe) {
+            if (! $nowe) {
+                $user->setRememberToken(Str::random(60));
+                // Tylko driver 'database' trzyma sesje w tabeli z user_id; przy
+                // plikach/redisie nie da się ich wybiórczo usunąć po użytkowniku.
+                if (config('session.driver') === 'database') {
+                    DB::table(config('session.table', 'sessions'))->where('user_id', $user->id)->delete();
+                }
+            }
+            $user->save();
+        });
 
         $this->info($nowe
             ? 'Utworzono konto administratora: '.$email

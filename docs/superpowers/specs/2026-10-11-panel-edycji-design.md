@@ -96,8 +96,12 @@ wariantu 1 i powód, żeby nie brać `microtime()` z PHP.
 - Komenda `php artisan marketplace:admin {email}`:
   - konta nie ma → tworzy je z losowym hasłem (20 znaków), ustawia
     `email_verified_at` i `is_admin`;
-  - konto jest → generuje nowe hasło i nadaje `is_admin`, nie ruszając
-    `email_verified_at`.
+  - konto jest i ma potwierdzony adres → generuje nowe hasło, nadaje
+    `is_admin` oraz usuwa jego sesje (driver `database`) i zmienia
+    `remember_token`, żeby dotychczasowe logowania przestały działać;
+  - konto jest, ale bez potwierdzonego adresu → odmowa (błąd, exit 1, zero
+    zmian): mogło je założyć ktoś obcy przez rejestrację na adres operatora,
+    a nadanie admina przejęłoby uprawnienia.
   - Hasło wypisuje raz na stdout i nigdzie go nie zapisuje.
 - Makefile: `make admin email=...` (Compose) i `make k3s-admin email=...`
   (`kubectl exec deploy/catalog-app`).
