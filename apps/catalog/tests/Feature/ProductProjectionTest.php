@@ -71,3 +71,30 @@ test('produkt bez aktywnych ofert ma in_stock=false i price_min=null', function 
 test('nieistniejący produkt zwraca 404', function () {
     $this->getJson('/api/internal/products/999999/projection')->assertNotFound();
 });
+
+test('projekcja zawiera projected_at_us jako int', function () {
+    $product = Product::factory()->create();
+
+    $json = $this->getJson("/api/internal/products/{$product->id}/projection")
+        ->assertOk()
+        ->json();
+
+    expect($json['projected_at_us'])->toBeInt()->toBeGreaterThan(1_700_000_000_000_000);
+});
+
+test('dwa kolejne odczyty dają rosnące projected_at_us', function () {
+    $product = Product::factory()->create();
+
+    $first = $this->getJson("/api/internal/products/{$product->id}/projection")->json('projected_at_us');
+    $second = $this->getJson("/api/internal/products/{$product->id}/projection")->json('projected_at_us');
+
+    expect($second)->toBeGreaterThan($first);
+});
+
+test('brak produktu: 404 z projected_at_us', function () {
+    $json = $this->getJson('/api/internal/products/999999/projection')
+        ->assertNotFound()
+        ->json();
+
+    expect($json['projected_at_us'])->toBeInt()->toBeGreaterThan(1_700_000_000_000_000);
+});

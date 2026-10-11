@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Internal;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
+use App\Support\DatabaseClock;
 use Illuminate\Http\JsonResponse;
 
 /**
@@ -23,12 +24,26 @@ use Illuminate\Http\JsonResponse;
  */
 class ProductProjectionController extends Controller
 {
-    public function show(int $id): JsonResponse
+    public function show(int $id, DatabaseClock $clock): JsonResponse
     {
+        // Czas MUSI być zmierzony przed odczytem danych produktu. Postgres
+        // działa w READ COMMITTED: zapis, który zatwierdzi się po tym pomiarze,
+        // mógł nie trafić do odczytu, ale jego projekcja dostanie późniejszy
+        // czas i nadpisze tę wersję w ES. Pomiar po odczycie mógłby oznaczyć
+        // starsze dane nowszą wersją i zablokować aktualizację.
+        $projectedAtUs = $clock->nowMicros();
+
         $product = Product::with(['brand', 'category', 'activeOffers.seller'])
             ->withCount('reviews')
             ->withAvg('reviews', 'rating')
-            ->findOrFail($id);
+            ->find($id);
+
+        // Ciało 404 też niesie czas: search-service używa go jako wersji
+        // przy usuwaniu dokumentu z ES, więc spóźnione usunięcie nie skasuje
+        // nowszego dokumentu.
+        if ($product === null) {
+            return response()->json(['projected_at_us' => $projectedAtUs], 404);
+        }
 
         $offers = $product->activeOffers;
 
@@ -39,6 +54,7 @@ class ProductProjectionController extends Controller
         // wybuchnie od razu, tylko któregoś dnia da dziwny wynik w agregacji.
         return response()->json([
             'id' => $product->id,
+            'projected_at_us' => $projectedAtUs,
             'version' => $product->version,
             'name' => $product->name,
             'description' => $product->description,
