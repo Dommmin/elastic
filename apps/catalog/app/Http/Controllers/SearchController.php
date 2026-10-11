@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Category;
+use App\Services\CategoryLabels;
 use App\Services\ProductSearchService;
 use App\Services\Search\SearchCriteria;
 use App\Services\Search\SearchResult;
@@ -81,20 +81,10 @@ class SearchController extends Controller
             return $facets;
         }
 
-        $ids = collect($buckets)
-            ->flatMap(fn (array $bucket): array => explode('.', (string) $bucket['key']))
-            ->unique()
-            ->values();
+        $labels = CategoryLabels::forPaths(array_map(fn (array $bucket): string => (string) $bucket['key'], $buckets));
 
-        $names = Category::query()->whereIn('id', $ids)->pluck('name', 'id');
-
-        $facets['category'] = array_map(function (array $bucket) use ($names): array {
-            $segments = explode('.', (string) $bucket['key']);
-            $resolved = array_map(fn (string $id): ?string => $names[$id] ?? null, $segments);
-
-            $bucket['label'] = in_array(null, $resolved, true)
-                ? (string) $bucket['key']
-                : implode(' › ', $resolved);
+        $facets['category'] = array_map(function (array $bucket) use ($labels): array {
+            $bucket['label'] = $labels[(string) $bucket['key']];
 
             return $bucket;
         }, $buckets);
