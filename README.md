@@ -56,6 +56,7 @@ Wszystkie komendy: `make help`
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
 | [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
 | [blog/rabbitmq-podglad.md](docs/blog/rabbitmq-podglad.md) | jak podejrzeć RabbitMQ w akcji: panel, DLQ, eksperyment zmiana ceny → kolejka → ES |
+| [blog/panel-edycji.md](docs/blog/panel-edycji.md) | panel edycji katalogu `/panel`: zmiana z przeglądarki przez outbox, droga zdarzenia na żywo, naprawa kolizji wersji w ES |
 
 ---
 

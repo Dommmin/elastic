@@ -58,34 +58,47 @@ Z terminala (tylko Compose): `make mq-get q=search.product.sync.dlq` ma
 
 ## Eksperyment 1: zmiana ceny przechodzi przez kolejkę (lokalnie)
 
-Aplikacja nie ma panelu edycji, więc zmianę robimy przez tinker. Metoda
-`updateWithOutbox` zapisuje zdarzenie do outboxu w tej samej transakcji.
+Zmianę robimy w panelu edycji katalogu (przewodnik:
+[panel-edycji.md](panel-edycji.md)). Panel zapisuje ją przez
+`updateWithOutbox`, czyli zdarzenie trafia do outboxu w tej samej transakcji,
+dokładnie jak w produkcji.
 
-1. W drugim terminalu podglądaj consumer:
+1. Jednorazowo załóż konto do panelu (hasło wypisze się raz):
+   ```bash
+   make admin email=ty@example.com
+   ```
+2. W drugim terminalu podglądaj consumer:
    ```bash
    docker compose logs -f search-consumer
    ```
-2. Zapamiętaj starą cenę i ją zmień:
-   ```bash
-   docker compose exec catalog-app php artisan tinker --execute 'echo App\Models\Offer::find(1)->price_cents;'
-   docker compose exec catalog-app php artisan tinker --execute 'App\Models\Offer::find(1)->updateWithOutbox(["price_cents" => 1999]);'
-   ```
-3. W ciągu 1–2 sekund w logach consumera pojawi się:
+3. Otwórz https://catalog.localhost:8443/panel/products, zaloguj się, wpisz
+   `1` w wyszukiwanie i wejdź w produkt 1. Zapamiętaj cenę dowolnej oferty
+   (najlepiej nie pierwszej) i zmień ją na `19,99` → „Zapisz”.
+4. Pod ofertami, w sekcji „Droga zdarzenia”, pojawi się `offer.price_changed`.
+   Lampki zapalają się po kolei: *zapisane* → *opublikowane* (outbox-publisher
+   wysłał do RabbitMQ) → *w ES* (consumer zaindeksował), zwykle w 1–2 s.
+   W logach consumera:
    ```
    [messenger] Received message App\Message\IntegrationEvent
-   [app] Zaindeksowano produkt. ["product_id" => "1","event_type" => "offer.price_changed","sequence" => 2]
+   [app] Zaindeksowano produkt. ["product_id" => "1","event_type" => "offer.price_changed","sequence" => 2,"doc_version" => 1791730685612428]
    ... was handled successfully (acknowledging to transport)
    ```
-4. Wyszukiwarka widzi już nową cenę (`price_min` = 1999, czyli 19,99 zł):
+   `sequence` to licznik tej jednej oferty, `doc_version` to wersja dokumentu
+   w ES (czas odczytu projekcji w µs). Dlaczego to dwie różne liczby, opisuje
+   przewodnik po panelu.
+5. Wyszukiwarka widzi już nową cenę (`price_min` = 1999, czyli 19,99 zł),
+   o ile to teraz najtańsza oferta produktu:
    ```bash
    curl -sk "https://catalog.localhost:8443/api/search?q=Batz-Beer%20Ultra%20Boost&per_page=1"
    ```
-5. Przywróć starą cenę tą samą komendą z punktu 2. To kolejne zdarzenie,
-   które też przejdzie przez kolejkę.
+6. Przywróć starą cenę w panelu. To kolejne zdarzenie, które też przejdzie
+   przez kolejkę.
 
-Tak wyglądało to przy pisaniu przewodnika: oferta 1 miała 477888, po zmianie
-API zwróciło `price_min: 1999`, a po przywróceniu `87080`. To najtańsza
-z pozostałych ofert tego produktu, bo oferta 1 nie była najtańsza.
+Bez przeglądarki to samo zrobisz jedną linijką w tinkerze:
+
+```bash
+docker compose exec catalog-app php artisan tinker --execute 'App\Models\Offer::find(4)->updateWithOutbox(["price_cents" => 1999]);'
+```
 
 ## Eksperyment 2: zatrzymany consumer, kolejka rośnie
 
@@ -93,10 +106,19 @@ Tu widać, po co jest kolejka: catalog działa dalej, a zdarzenia czekają.
 
 ```bash
 docker compose stop search-consumer
-# zmień cenę 2-3 razy (jak wyżej) i odśwież panel: Queues → search.product.sync → Ready rośnie
-docker compose start search-consumer
-# Ready spada do 0, a ES dogania stan z Postgresa
 ```
+
+Zmień w panelu cenę 2–3 razy. W drodze zdarzenia nowe wiersze stoją na
+*opublikowane*, strona odpytuje co sekundę, a porównanie „Postgres a dokument
+w ES” pokazuje „Najniższa cena (różni się)”. W panelu RabbitMQ:
+Queues → `search.product.sync` → *Ready* rośnie (albo `make mq-status`).
+
+```bash
+docker compose start search-consumer
+```
+
+*Ready* spada do 0, lampki *w ES* się zapalają, odpytywanie staje, a ceny
+w porównaniu się zgadzają.
 
 ## Na serwerze (k3s)
 
@@ -124,4 +146,5 @@ bajtów, więc to raczej ręczne testy z wcześniejszych etapów (np.
    i zobacz, czy ląduje w DLQ. W panelu znajdź nagłówek `x-death`.
 2. W eksperymencie 2 zmień cenę tej samej oferty 3 razy przy zatrzymanym
    consumerze. W ES powinna wylądować ostatnia cena. Dlaczego kolejność się
-   nie psuje? (podpowiedź: `sequence` w logu i `version` w payloadzie)
+   nie psuje? (podpowiedź: consumer nie bierze ceny z wiadomości, tylko
+   pobiera aktualną projekcję, a `doc_version` w logu to chwila jej odczytu)
