@@ -3,8 +3,12 @@
 namespace App\Http\Controllers\Panel;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Panel\UpdateProductRequest;
+use App\Models\Brand;
+use App\Models\Category;
 use App\Models\Product;
 use App\Services\CategoryLabels;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -46,5 +50,43 @@ class ProductController extends Controller
             'products' => $products,
             'filters' => ['q' => $q],
         ]);
+    }
+
+    public function edit(Product $product): Response
+    {
+        $subcategories = Category::query()->whereNotNull('parent_id')->get(['id', 'path']);
+        $labels = CategoryLabels::forPaths($subcategories->pluck('path')->filter()->all());
+
+        $categories = $subcategories
+            ->map(fn (Category $category): array => [
+                'id' => $category->id,
+                'label' => $labels[$category->path] ?? (string) $category->path,
+            ])
+            ->sortBy('label', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values();
+
+        return Inertia::render('panel/ProductEdit', [
+            'product' => $product->only(['id', 'name', 'brand_id', 'category_id', 'version']),
+            'brands' => Brand::query()->orderBy('name')->get(['id', 'name']),
+            'categories' => $categories,
+        ]);
+    }
+
+    public function update(UpdateProductRequest $request, Product $product): RedirectResponse
+    {
+        $validated = $request->validated();
+
+        // `updateWithOutbox` zawsze zapisuje zdarzenie i podbija wersję, więc
+        // zapis bez zmian (np. dwuklik) odsiewamy tutaj, nie wypychając do ES pustych zdarzeń.
+        if (! $product->fill($validated)->isDirty()) {
+            Inertia::flash('status', 'Bez zmian');
+
+            return back();
+        }
+
+        $product->updateWithOutbox($validated, 'product.updated');
+        Inertia::flash('status', 'Zapisano, zdarzenie w drodze');
+
+        return back();
     }
 }

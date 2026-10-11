@@ -19,6 +19,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
 // bez potwierdzania e-maila. Kolejne zadania dokładają trasy do tej grupy.
 Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group(function () {
     Route::get('products', [ProductController::class, 'index'])->name('products.index');
+    Route::get('products/{product}', [ProductController::class, 'edit'])->name('products.edit');
+    Route::put('products/{product}', [ProductController::class, 'update'])->name('products.update');
 });
 
 require __DIR__.'/settings.php';

@@ -3,7 +3,7 @@ import { Head, Link, router } from '@inertiajs/vue3';
 import { ref, watch } from 'vue';
 import { Input } from '@/components/ui/input';
 import { formatPriceCents } from '@/lib/currency';
-import { index } from '@/routes/panel/products';
+import { edit, index } from '@/routes/panel/products';
 
 defineOptions({
     layout: {
@@ -104,7 +104,14 @@ watch(q, (value) => {
                         <td class="px-3 py-2 text-muted-foreground">
                             {{ product.id }}
                         </td>
-                        <td class="px-3 py-2">{{ product.name }}</td>
+                        <td class="px-3 py-2">
+                            <Link
+                                :href="edit(product.id).url"
+                                class="font-medium hover:underline"
+                            >
+                                {{ product.name }}
+                            </Link>
+                        </td>
                         <td class="px-3 py-2">{{ product.brand }}</td>
                         <td class="px-3 py-2">{{ product.category_label }}</td>
                         <td class="px-3 py-2 text-right">
