@@ -197,6 +197,10 @@ admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); has
 eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
 	$(DC) exec catalog-app php artisan search:eval
 
+.PHONY: reproject
+reproject: ## Przelicz wszystkie dokumenty products-search z projekcji (jednorazowo po Panel [2/8])
+	$(DC) exec search-consumer php bin/console search:reproject
+
 ## Bazy danych
 .PHONY: psql
 psql: ## Konsola Postgresa (make psql db=catalog)
@@ -309,6 +313,11 @@ k3s-mq-status: ## Kolejki RabbitMQ na k3s: głębokość i konsumenci (Messenger
 	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
 	@$(KUBECTL_VPS) -n marketplace exec rabbitmq-0 -- rabbitmqctl list_queues \
 		name type messages messages_ready messages_unacknowledged consumers
+
+.PHONY: k3s-reproject
+k3s-reproject: ## Przelicz wszystkie dokumenty products-search na k3s (jednorazowo po wdrożeniu Panel [2/8])
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@$(KUBECTL_VPS) -n marketplace exec deploy/search-consumer -- php bin/console search:reproject
 
 .PHONY: k3s-admin
 k3s-admin: ## Konto do panelu /panel na k3s (make k3s-admin email=ty@example.com); hasło wypisane raz

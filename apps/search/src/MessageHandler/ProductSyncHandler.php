@@ -4,9 +4,8 @@ namespace App\MessageHandler;
 
 use App\Message\IntegrationEvent;
 use App\Repository\ProcessedEventRepository;
-use App\Service\CatalogProjectionClient;
-use App\Service\ElasticsearchIndexer;
 use App\Service\IndexOutcome;
+use App\Service\ProductSynchronizer;
 use App\Service\ProjectionUnavailableException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -26,8 +25,7 @@ final class ProductSyncHandler
 {
     public function __construct(
         private readonly ProcessedEventRepository $processedEvents,
-        private readonly CatalogProjectionClient $catalogClient,
-        private readonly ElasticsearchIndexer $indexer,
+        private readonly ProductSynchronizer $synchronizer,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -85,7 +83,7 @@ final class ProductSyncHandler
     private function syncProduct(string $productId, IntegrationEvent $event): void
     {
         try {
-            $projection = $this->catalogClient->fetchProductProjection($productId);
+            $result = $this->synchronizer->sync($productId);
         } catch (ProjectionUnavailableException $e) {
             // Laravel odpowiedziało 5xx/timeout albo bez projected_at_us —
             // PRZEJŚCIOWE, ma sens ponowić; wersji dokumentu nie zgadujemy.
@@ -94,17 +92,7 @@ final class ProductSyncHandler
             throw new RecoverableMessageHandlingException($e->getMessage(), previous: $e, forceRetry: false);
         }
 
-        // Wersja dokumentu = czas odczytu projekcji, NIE $event->sequence
-        // (licznik jednego agregatu — patrz docblock ElasticsearchIndexer).
-        if ($projection->exists()) {
-            $outcome = $this->indexer->indexProduct($projection->data, $projection->projectedAtUs);
-        } else {
-            // Produkt nie istnieje: product.deleted albo zniknął między
-            // zdarzeniem a przetworzeniem (np. usunięty tuż po offer.updated).
-            $outcome = $this->indexer->deleteProduct($productId, $projection->projectedAtUs);
-        }
-
-        $this->logOutcome($outcome, $productId, $event, $projection->projectedAtUs);
+        $this->logOutcome($result->outcome, $productId, $event, $result->docVersion);
     }
 
     private function logOutcome(IndexOutcome $outcome, string $productId, IntegrationEvent $event, int $docVersion): void

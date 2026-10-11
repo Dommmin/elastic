@@ -76,7 +76,15 @@ zdarzeniu pobiera pełną, aktualną projekcję. O tym, czy dokument jest
 
 **Zgodność z danymi:** obecne `_version` w ES to małe liczby (1–3),
 a czas w µs to ok. 1.79e15. Pierwsze zdarzenie po wdrożeniu nadpisze
-każdy dokument. Reindeks nie jest potrzebny.
+dokument, ale tylko ten, którego produkt dostał zdarzenie — reszta zostaje
+z `_version` 1–3. Zapisom to nie szkodzi, za to droga zdarzenia w panelu
+(`_version >= occurred_at` w µs) uznałaby takie produkty za „nie w ES”
+i odpytywała bez końca. Dlatego po wdrożeniu jednorazowo
+`make k3s-reproject` (lokalnie `make reproject`): komenda
+`search:reproject` przechodzi po wszystkich `_id` w aliasie i zapisuje
+każdy produkt z projekcji z `version = projected_at_us`. Pełny reindeks
+do nowego indeksu nie jest potrzebny. (Poprawione po końcowym przeglądzie:
+pierwotnie było tu „reindeks nie jest potrzebny” bez tego kroku.)
 
 **Ryzyko, które przyjmujemy:** dwa catalog-app z różnymi zegarami.
 Zegar jest jeden, Postgresa, bo pomiar idzie przez bazę. To zaleta

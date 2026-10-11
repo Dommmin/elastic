@@ -220,15 +220,16 @@ Ponowienie za chwilę trafi już w nowy catalog.
 
 ### Search: jedna ścieżka dla zapisu i usunięcia
 
-`apps/search/src/MessageHandler/ProductSyncHandler.php`:
+`apps/search/src/Service/ProductSynchronizer.php` (woła go
+`ProductSyncHandler`):
 
 ```php
 // Wersja dokumentu = czas odczytu projekcji, NIE $event->sequence
 if ($projection->exists()) {
-    $outcome = $this->indexer->indexProduct($projection->data, $projection->projectedAtUs);
-} else {
-    $outcome = $this->indexer->deleteProduct($productId, $projection->projectedAtUs);
+    return new ProductSyncResult($this->indexer->indexProduct($projection->data, $projection->projectedAtUs), /* … */);
 }
+
+return new ProductSyncResult($this->indexer->deleteProduct($productId, $projection->projectedAtUs), /* … */);
 ```
 
 Wcześniej `product.deleted` miał osobną gałąź, która kasowała dokument bez
@@ -245,11 +246,52 @@ błędem mapowania:
 unset($document['id'], $document['version'], $document['projected_at_us']);
 ```
 
-### Reindeks niepotrzebny
+### Jednorazowe przeliczenie wersji: `search:reproject`
 
 Stare `_version` w ES to 1–3. Nowe to mikrosekundy od epoki, ok. 1,79·10¹⁵.
-Pierwsze zdarzenie po wdrożeniu nadpisze każdy dokument, bo nowa wersja jest
-większa o kilkanaście rzędów wielkości.
+Pierwsze zdarzenie po wdrożeniu nadpisze dokument, bo nowa wersja jest
+większa o kilkanaście rzędów wielkości. Ale tylko dokument produktu, który
+to zdarzenie dostał. Produkt, którego nikt nie ruszył, zostaje z `_version` 1.
+Zapisom to nie przeszkadza. Przeszkadza drodze zdarzenia z kroku 6: porównuje
+`_version` z `occurred_at` w µs, więc taki produkt wisi jako „nie w ES”,
+a strona odpytuje co sekundę bez końca.
+
+Pełny reindeks do nowego indeksu tu nie jest potrzebny, wystarczy przepisać
+każdy dokument z aktualną wersją. Robi to komenda
+`apps/search/src/Command/ReprojectCommand.php`:
+
+```bash
+make reproject          # lokalnie (Compose)
+make k3s-reproject      # na k3s, raz po wdrożeniu tej zmiany
+```
+
+Przechodzi scrollem po wszystkich `_id` w aliasie `products-search`
+(`_source: false`, paczki po 500). Dla każdego pobiera projekcję i robi
+dokładnie to, co handler kolejki. Ta decyzja siedzi w jednej klasie,
+`ProductSynchronizer`, której używają oba:
+
+```php
+if ($projection->exists()) {
+    return new ProductSyncResult(
+        $this->indexer->indexProduct($projection->data, $projection->projectedAtUs),
+        deleted: false,
+        docVersion: $projection->projectedAtUs,
+    );
+}
+```
+
+Niedostępna projekcja jednego produktu liczy się jako błąd, a komenda idzie
+dalej. Na końcu wypisuje podsumowanie:
+
+```
+ [OK] Zaindeksowano: 1500, nieaktualne (409): 0, usunięte: 0, błędy: 0
+```
+
+Przy błędach kod wyjścia ≠ 0. Komendę można wtedy po prostu puścić
+jeszcze raz. Wolno ją uruchomić przy działającym consumerze: wyścig
+rozstrzyga ES, a starszy odczyt dostaje 409 i trafia do „nieaktualne”.
+Test: `apps/search/tests/Integration/Command/ReprojectCommandTest.php`
+(dokument z `_version` 1 dostaje wersję z projekcji, a produkt z 404 znika).
 
 ### Test regresyjny na żywym ES
 
@@ -642,6 +684,9 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
   cd apps/catalog && php artisan test --compact      # część testów ES jest pomijana bez klastra
   docker compose exec -T search-consumer vendor/bin/phpunit   # z katalogu głównego repo
   ```
+- [ ] **Wersje dokumentów:** `make reproject` → `błędy: 0`. Potem
+  `_version` produktu, którego nie edytowałeś (np. 500), to 16 cyfr, nie 1
+  (curl z punktu „Wersja dokumentu wprost” niżej, z `_doc/500`).
 - [ ] **Konto:** `make admin email=ty@example.com`. Zapisz hasło od razu,
   drugi raz się nie pokaże (kolejne wywołanie wygeneruje nowe).
 - [ ] **Bez uprawnień:** zaloguj się kontem z `/register` (albo bez logowania)
@@ -688,6 +733,8 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
 - [ ] `make k3s-deploy tag=<SHA commita>` → na końcu „OK — działa wersja …”.
   Job `migrate` stosuje migracje (`is_admin`, `occurred_at` w µs) przed
   aplikacjami.
+- [ ] `make k3s-reproject` (jednorazowo po wdrożeniu tej zmiany) →
+  `Zaindeksowano: ~1500, …, błędy: 0`.
 - [ ] `make k3s-verify` → `FAIL=0`.
 - [ ] `make k3s-admin email=ty@example.com`: konto zakładasz sam, żeby
   hasło nie szło przez czat ani logi.
@@ -770,7 +817,9 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
 | `apps/search/src/Service/ProductProjection.php` | wynik projekcji: dane albo brak + `projectedAtUs` |
 | `apps/search/src/Service/CatalogProjectionClient.php` | brak `projected_at_us` → ponowienie |
 | `apps/search/src/Service/ElasticsearchIndexer.php` | zapis i usunięcie z `version = projected_at_us` |
-| `apps/search/src/MessageHandler/ProductSyncHandler.php` | jedna ścieżka index/delete, log z `doc_version` |
+| `apps/search/src/Service/ProductSynchronizer.php` | jedna ścieżka index/delete, wspólna dla handlera i komendy |
+| `apps/search/src/MessageHandler/ProductSyncHandler.php` | idempotencja, ponowienie, log z `doc_version` |
+| `apps/search/src/Command/ReprojectCommand.php` | `search:reproject`, `make reproject`, `make k3s-reproject` |
 | `apps/search/tests/Integration/ElasticsearchIndexerVersioningTest.php` | regresja na żywym ES |
 | `apps/catalog/app/Console/Commands/CreateAdminCommand.php` | `marketplace:admin`, `make admin`, `make k3s-admin` |
 | `apps/catalog/app/Providers/AppServiceProvider.php` | Gate `panel` |

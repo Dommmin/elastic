@@ -9,6 +9,7 @@ use App\Service\CatalogProjectionClient;
 use App\Service\ElasticsearchIndexer;
 use App\Service\IndexOutcome;
 use App\Service\ProductProjection;
+use App\Service\ProductSynchronizer;
 use App\Service\ProjectionUnavailableException;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -33,7 +34,11 @@ final class ProductSyncHandlerTest extends TestCase
 
         $this->catalogClient = $this->createMock(CatalogProjectionClient::class);
         $this->indexer = $this->createMock(ElasticsearchIndexer::class);
-        $this->handler = new ProductSyncHandler($processedEvents, $this->catalogClient, $this->indexer, new NullLogger());
+        $this->handler = new ProductSyncHandler(
+            $processedEvents,
+            new ProductSynchronizer($this->catalogClient, $this->indexer),
+            new NullLogger(),
+        );
     }
 
     public function test_zmiana_ceny_oferty_indeksuje_z_wersja_rowna_czasowi_odczytu(): void

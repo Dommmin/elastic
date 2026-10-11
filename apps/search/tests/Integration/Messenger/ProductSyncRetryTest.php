@@ -9,6 +9,7 @@ use App\Messenger\ExternalJsonEnvelopeSerializer;
 use App\Repository\ProcessedEventRepository;
 use App\Service\CatalogProjectionClient;
 use App\Service\ElasticsearchIndexer;
+use App\Service\ProductSynchronizer;
 use Elastic\Elasticsearch\ClientBuilder;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -257,8 +258,10 @@ final class ProductSyncRetryTest extends TestCase
             // Port 9 (discard) na localhost: natychmiastowe "connection
             // refused" -> TransportException -> ProjectionUnavailableException,
             // dokładnie ta gałąź co "Idle timeout" przy make seed.
-            new CatalogProjectionClient('http://127.0.0.1:9'),
-            new ElasticsearchIndexer(ClientBuilder::create()->build()),
+            new ProductSynchronizer(
+                new CatalogProjectionClient('http://127.0.0.1:9'),
+                new ElasticsearchIndexer(ClientBuilder::create()->build()),
+            ),
             new NullLogger(),
         );
     }
