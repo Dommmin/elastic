@@ -59,13 +59,10 @@ final class ProductSyncHandler
             return;
         }
 
-        if ($event->type === 'product.deleted') {
-            $this->deleteFromIndex($productId, $event);
-
-            return;
-        }
-
-        $this->reindexProduct($productId, $event);
+        // Także product.deleted idzie przez projekcję: o usunięciu decyduje
+        // 404 z catalogu, a jego ciało niesie wersję (czas odczytu). Gdyby
+        // produkt w międzyczasie wrócił, świeższy odczyt i tak wygra.
+        $this->syncProduct($productId, $event);
     }
 
     /**
@@ -85,44 +82,37 @@ final class ProductSyncHandler
         };
     }
 
-    private function reindexProduct(string $productId, IntegrationEvent $event): void
+    private function syncProduct(string $productId, IntegrationEvent $event): void
     {
         try {
             $projection = $this->catalogClient->fetchProductProjection($productId);
         } catch (ProjectionUnavailableException $e) {
-            // Laravel odpowiedziało 5xx/timeout — PRZEJŚCIOWE, ma sens ponowić.
+            // Laravel odpowiedziało 5xx/timeout albo bez projected_at_us —
+            // PRZEJŚCIOWE, ma sens ponowić; wersji dokumentu nie zgadujemy.
             // forceRetry: false (RUNBOOK #027) — domyślne true w Symfony 8
             // każe ponawiać BEZ LIMITU, ignorując retry_strategy.max_retries.
             throw new RecoverableMessageHandlingException($e->getMessage(), previous: $e, forceRetry: false);
         }
 
-        if ($projection === null) {
-            // Produkt zniknął między zdarzeniem a przetworzeniem (np. usunięty
-            // tuż po evencie offer.updated) — usuwamy z indeksu zamiast
-            // próbować indeksować coś, czego już nie ma.
-            $this->deleteFromIndex($productId, $event);
-
-            return;
+        // Wersja dokumentu = czas odczytu projekcji, NIE $event->sequence
+        // (licznik jednego agregatu — patrz docblock ElasticsearchIndexer).
+        if ($projection->exists()) {
+            $outcome = $this->indexer->indexProduct($projection->data, $projection->projectedAtUs);
+        } else {
+            // Produkt nie istnieje: product.deleted albo zniknął między
+            // zdarzeniem a przetworzeniem (np. usunięty tuż po offer.updated).
+            $outcome = $this->indexer->deleteProduct($productId, $projection->projectedAtUs);
         }
 
-        $outcome = $this->indexer->indexProduct($projection, $event->sequence);
-
-        $this->logOutcome($outcome, $productId, $event);
+        $this->logOutcome($outcome, $productId, $event, $projection->projectedAtUs);
     }
 
-    private function deleteFromIndex(string $productId, IntegrationEvent $event): void
-    {
-        $outcome = $this->indexer->deleteProduct($productId, $event->sequence);
-
-        $this->logOutcome($outcome, $productId, $event);
-    }
-
-    private function logOutcome(IndexOutcome $outcome, string $productId, IntegrationEvent $event): void
+    private function logOutcome(IndexOutcome $outcome, string $productId, IntegrationEvent $event, int $docVersion): void
     {
         match ($outcome) {
             IndexOutcome::Indexed => $this->logger->info(
                 'Zaindeksowano produkt.',
-                ['product_id' => $productId, 'event_type' => $event->type, 'sequence' => $event->sequence],
+                ['product_id' => $productId, 'event_type' => $event->type, 'sequence' => $event->sequence, 'doc_version' => $docVersion],
             ),
             // 409/404 z external versioning to SUKCES mechanizmu, nie błąd —
             // docs/05-SPOJNOSC-DANYCH.md, sekcja 3, [5]. Log na poziomie
@@ -131,7 +121,7 @@ final class ProductSyncHandler
             // dokładnie tak, jak powinno.
             IndexOutcome::Stale => $this->logger->debug(
                 'Pominięto nieaktualne zdarzenie (nowsza wersja już zaindeksowana).',
-                ['product_id' => $productId, 'event_type' => $event->type, 'sequence' => $event->sequence],
+                ['product_id' => $productId, 'event_type' => $event->type, 'sequence' => $event->sequence, 'doc_version' => $docVersion],
             ),
         };
     }
