@@ -10,6 +10,14 @@ class Outbox extends Model
 
     protected $table = 'outbox';
 
+    /**
+     * Mikrosekundy zamiast domyślnych pełnych sekund: krok „w ES” w drodze
+     * zdarzenia porównuje `occurred_at` w µs z `_version` dokumentu
+     * (`projected_at_us`). Ucięte do sekundy zapalałoby się nawet do sekundy
+     * za wcześnie, dla projekcji sprzed zdarzenia.
+     */
+    protected $dateFormat = 'Y-m-d H:i:s.u';
+
     protected $fillable = [
         'event_id',
         'aggregate_type',

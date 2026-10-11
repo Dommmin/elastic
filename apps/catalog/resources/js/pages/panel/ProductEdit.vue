@@ -2,6 +2,7 @@
 import { Head, useForm, usePage } from '@inertiajs/vue3';
 import { computed } from 'vue';
 import InputError from '@/components/InputError.vue';
+import EventTrace from '@/components/panel/EventTrace.vue';
 import OfferRow from '@/components/panel/OfferRow.vue';
 import type { PanelOffer } from '@/components/panel/OfferRow.vue';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -16,6 +17,7 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { index, update } from '@/routes/panel/products';
+import type { Trace } from '@/types';
 
 type Product = {
     id: number;
@@ -30,6 +32,7 @@ const props = defineProps<{
     brands: { id: number; name: string }[];
     categories: { id: number; label: string }[];
     offers: PanelOffer[];
+    trace: Trace;
 }>();
 
 defineOptions({
@@ -133,5 +136,7 @@ function submit() {
                 />
             </ul>
         </section>
+
+        <EventTrace :trace="trace" />
     </div>
 </template>

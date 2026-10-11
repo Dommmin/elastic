@@ -9,8 +9,10 @@ use App\Models\Category;
 use App\Models\Offer;
 use App\Models\Product;
 use App\Services\CategoryLabels;
+use App\Services\Panel\EventTrace;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -53,24 +55,16 @@ class ProductController extends Controller
         ]);
     }
 
-    public function edit(Product $product): Response
+    public function edit(Product $product, EventTrace $eventTrace): Response
     {
-        $subcategories = Category::query()->whereNotNull('parent_id')->get(['id', 'path']);
-        $labels = CategoryLabels::forPaths($subcategories->pluck('path')->filter()->all());
-
-        $categories = $subcategories
-            ->map(fn (Category $category): array => [
-                'id' => $category->id,
-                'label' => $labels[$category->path] ?? (string) $category->path,
-            ])
-            ->sortBy('label', SORT_NATURAL | SORT_FLAG_CASE)
-            ->values();
-
+        // Wszystko poza `product` jako closure: polling drogi zdarzenia robi co
+        // sekundę partial reload `only: ['trace']` i nie powinien przy tym
+        // liczyć kategorii, marek ani ofert.
         return Inertia::render('panel/ProductEdit', [
             'product' => $product->only(['id', 'name', 'brand_id', 'category_id', 'version']),
-            'brands' => Brand::query()->orderBy('name')->get(['id', 'name']),
-            'categories' => $categories,
-            'offers' => $product->offers()
+            'brands' => fn () => Brand::query()->orderBy('name')->get(['id', 'name']),
+            'categories' => fn () => $this->subcategoryOptions(),
+            'offers' => fn () => $product->offers()
                 ->with('seller:id,name')
                 ->orderBy('id')
                 ->get()
@@ -83,7 +77,26 @@ class ProductController extends Controller
                     'version' => $offer->version,
                 ])
                 ->all(),
+            'trace' => fn () => $eventTrace->forProduct($product),
         ]);
+    }
+
+    /**
+     * @return Collection<int, array{id: int, label: string}>
+     */
+    private function subcategoryOptions(): Collection
+    {
+        $subcategories = Category::query()->whereNotNull('parent_id')->get(['id', 'path']);
+        $labels = CategoryLabels::forPaths($subcategories->pluck('path')->filter()->all());
+
+        return $subcategories
+            ->map(fn (Category $category): array => [
+                'id' => $category->id,
+                'label' => $labels[$category->path] ?? (string) $category->path,
+            ])
+            ->sortBy('label', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values()
+            ->toBase();
     }
 
     public function update(UpdateProductRequest $request, Product $product): RedirectResponse
