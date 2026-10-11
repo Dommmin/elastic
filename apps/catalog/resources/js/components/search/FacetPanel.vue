@@ -9,7 +9,7 @@ import {
     formatPriceCents,
     zlotyFromCents,
 } from '@/lib/currency';
-import type { Facets, SearchFilters } from '@/types/search';
+import type { FacetBucket, Facets, SearchFilters } from '@/types/search';
 
 /**
  * Facety jako "filtered aggregations" (App\Services\ProductSearchService::
@@ -30,6 +30,22 @@ const emit = defineEmits<{
 
 const SLIDER_MAX_ZLOTY = 10_000;
 
+// Zamiast scrolla w wąskiej kolumnie (pasek przykrywał liczniki) — krótka
+// lista + "Pokaż wszystkie". Zaznaczona marka spoza top N zostaje widoczna,
+// żeby nie dało się "zgubić" aktywnego filtra po zwinięciu.
+const BRANDS_COLLAPSED = 8;
+const showAllBrands = ref(false);
+
+const visibleBrands = computed(() =>
+    showAllBrands.value
+        ? props.facets.brand
+        : props.facets.brand.filter(
+              (bucket, index) =>
+                  index < BRANDS_COLLAPSED ||
+                  props.filters.brand.includes(String(bucket.key)),
+          ),
+);
+
 function toggleBrand(brand: string) {
     const next = props.filters.brand.includes(brand)
         ? props.filters.brand.filter((b) => b !== brand)
@@ -41,6 +57,33 @@ function toggleBrand(brand: string) {
 function toggleCategory(path: string) {
     emit('change', { category: props.filters.category === path ? null : path });
 }
+
+// Produkty w indeksie mają ścieżkę LIŚCIA ("5.6"), a filtr to `term`
+// na całej ścieżce — więc klikalne są tylko podkategorie. Dział ("Odzież")
+// jest samym nagłówkiem grupy; etykiety i kolejność robi SearchController.
+const categoryGroups = computed(() => {
+    const groups: {
+        name: string;
+        buckets: { bucket: FacetBucket; name: string }[];
+    }[] = [];
+
+    for (const bucket of props.facets.category) {
+        const [root, ...rest] = (bucket.label ?? String(bucket.key)).split(
+            ' › ',
+        );
+        const name = rest.length ? rest.join(' › ') : root;
+        const groupName = rest.length ? root : '';
+        const last = groups.at(-1);
+
+        if (last && last.name === groupName) {
+            last.buckets.push({ bucket, name });
+        } else {
+            groups.push({ name: groupName, buckets: [{ bucket, name }] });
+        }
+    }
+
+    return groups;
+});
 
 function onInStockChange(checked: boolean) {
     emit('change', { in_stock: checked ? true : null });
@@ -152,9 +195,9 @@ function clearAll() {
 
         <div v-if="facets.brand.length">
             <h3 class="mb-3 text-sm font-semibold">Marka</h3>
-            <div class="flex max-h-64 flex-col gap-2 overflow-y-auto">
+            <div class="flex flex-col gap-2">
                 <div
-                    v-for="bucket in facets.brand"
+                    v-for="bucket in visibleBrands"
                     :key="bucket.key"
                     class="flex items-center gap-2"
                 >
@@ -173,39 +216,66 @@ function clearAll() {
                     >
                         {{ bucket.key }}
                     </Label>
-                    <span class="text-xs text-muted-foreground">{{
+                    <span class="text-xs text-muted-foreground tabular-nums">{{
                         bucket.count
                     }}</span>
                 </div>
             </div>
+            <button
+                v-if="facets.brand.length > BRANDS_COLLAPSED"
+                type="button"
+                class="mt-2 text-xs text-muted-foreground underline-offset-2 hover:underline"
+                @click="showAllBrands = !showAllBrands"
+            >
+                {{
+                    showAllBrands
+                        ? 'Pokaż mniej'
+                        : `Pokaż wszystkie (${facets.brand.length})`
+                }}
+            </button>
         </div>
 
         <Separator v-if="facets.category.length" />
 
         <div v-if="facets.category.length">
             <h3 class="mb-3 text-sm font-semibold">Kategoria</h3>
-            <div class="flex flex-col gap-2">
+            <div class="flex flex-col gap-4">
                 <div
-                    v-for="bucket in facets.category"
-                    :key="bucket.key"
-                    class="flex items-center gap-2"
+                    v-for="group in categoryGroups"
+                    :key="group.name"
+                    class="flex flex-col gap-2"
                 >
-                    <Checkbox
-                        :id="`facet-category-${bucket.key}`"
-                        :model-value="filters.category === String(bucket.key)"
-                        @update:model-value="
-                            () => toggleCategory(String(bucket.key))
-                        "
-                    />
-                    <Label
-                        :for="`facet-category-${bucket.key}`"
-                        class="flex-1 text-sm font-normal"
+                    <p
+                        v-if="group.name"
+                        class="text-xs font-medium tracking-wide text-muted-foreground uppercase"
                     >
-                        {{ bucket.key }}
-                    </Label>
-                    <span class="text-xs text-muted-foreground">{{
-                        bucket.count
-                    }}</span>
+                        {{ group.name }}
+                    </p>
+                    <div
+                        v-for="{ bucket, name } in group.buckets"
+                        :key="bucket.key"
+                        class="flex items-center gap-2"
+                    >
+                        <Checkbox
+                            :id="`facet-category-${bucket.key}`"
+                            :model-value="
+                                filters.category === String(bucket.key)
+                            "
+                            @update:model-value="
+                                () => toggleCategory(String(bucket.key))
+                            "
+                        />
+                        <Label
+                            :for="`facet-category-${bucket.key}`"
+                            class="flex-1 text-sm font-normal"
+                        >
+                            {{ name }}
+                        </Label>
+                        <span
+                            class="text-xs text-muted-foreground tabular-nums"
+                            >{{ bucket.count }}</span
+                        >
+                    </div>
                 </div>
             </div>
         </div>

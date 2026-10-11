@@ -1323,6 +1323,35 @@ Każde z nich da się zrobić w jeden wieczór i zmierzyć `make eval`.
 
 ---
 
+## Poprawki po etapie: czytelniejsze facety
+
+Trzy rzeczy wyszły dopiero przy klikaniu w gotowy panel:
+
+1. **Kategoria pokazywała liczby.** ES ma w `category.path` same ID
+   (`5.6`). To dobry klucz filtra, ale ludzie nie czytają ID. Nazwy żyją
+   w Postgresie katalogu, więc `SearchController::labelCategoryFacets()`
+   dokleja `label` („Odzież › Buty do biegania”) jednym zapytaniem
+   `whereIn` o wszystkie ID z bucketów. Klucz filtra się nie zmienia. Panel
+   grupuje podkategorie pod nagłówkiem działu. Dział nie jest klikalny,
+   bo produkty mają ścieżkę liścia, a filtr to `term` na całej ścieżce:
+   kliknięcie „Odzież” (`5`) dałoby 0 wyników.
+2. **Przy „Marka” scroll przykrywał liczniki.** Pasek przewijania
+   w wąskiej kolumnie wchodził na liczby. Teraz widać 8 marek i przycisk
+   „Pokaż wszystkie (20)”. Marka zaznaczona spoza top 8 zostaje widoczna
+   po zwinięciu, żeby nie zgubić aktywnego filtra.
+3. **Gość widział czarną stronę.** `/search` jest publiczne, ale sidebar
+   ze startera renderował `NavUser` z `auth.user = null`. Błąd renderu
+   wywalał całą aplikację Vue. Teraz `NavUser` renderuje się tylko po
+   zalogowaniu.
+
+Jak sprawdzić: `php artisan test --compact tests/Feature/SearchCategoryFacetLabelsTest.php`
+(etykiety, kolejność, fallback na ścieżkę dla nieznanej kategorii),
+a w przeglądarce kliknij podkategorię. Liczba wyników musi się zgadzać
+z licznikiem przy niej (np. Buty do biegania: 133 i 133).
+
+Jak podejrzeć, co dzieje się w kolejce między katalogiem a ES:
+[Jak podejrzeć RabbitMQ w akcji](rabbitmq-podglad.md).
+
 ## Mapa plików
 
 ```

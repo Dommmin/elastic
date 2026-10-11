@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Category;
 use App\Services\ProductSearchService;
 use App\Services\Search\SearchCriteria;
 use App\Services\Search\SearchResult;
@@ -57,10 +58,55 @@ class SearchController extends Controller
                 wrapper: 'data',
                 metadata: fn () => self::cursorMetadata($criteria->cursor, $search()->nextCursor),
             )->matchOn('data.id'),
-            'facets' => fn () => $search()->facets,
+            'facets' => fn () => self::labelCategoryFacets($search()->facets),
             'filters' => $criteria->toArray(),
             'priceHistogram' => Inertia::defer(fn () => $service->priceHistogram($criteria)),
         ]);
+    }
+
+    /**
+     * ES zna tylko `category.path` ("3.17") — to klucz filtra i tak ma zostać.
+     * Nazwy żyją w Postgresie katalogu, więc doklejamy `label` ("Sport › Bieganie")
+     * jednym zapytaniem o wszystkie ID z widocznych bucketów. Brak kategorii
+     * w bazie (np. usunięta, a indeks jeszcze nie przeliczony) → zostaje ścieżka.
+     *
+     * @param  array<string, mixed>  $facets
+     * @return array<string, mixed>
+     */
+    private static function labelCategoryFacets(array $facets): array
+    {
+        $buckets = $facets['category'] ?? [];
+
+        if ($buckets === []) {
+            return $facets;
+        }
+
+        $ids = collect($buckets)
+            ->flatMap(fn (array $bucket): array => explode('.', (string) $bucket['key']))
+            ->unique()
+            ->values();
+
+        $names = Category::query()->whereIn('id', $ids)->pluck('name', 'id');
+
+        $facets['category'] = array_map(function (array $bucket) use ($names): array {
+            $segments = explode('.', (string) $bucket['key']);
+            $resolved = array_map(fn (string $id): ?string => $names[$id] ?? null, $segments);
+
+            $bucket['label'] = in_array(null, $resolved, true)
+                ? (string) $bucket['key']
+                : implode(' › ', $resolved);
+
+            return $bucket;
+        }, $buckets);
+
+        // Po etykiecie, nie po liczności — podkategorie jednego działu muszą
+        // stać obok siebie, bo UI grupuje je pod nagłówkiem działu.
+        // Separator \x01 zamiast " › ", żeby "Sport X" nie wcisnął się między
+        // "Sport" a jego podkategorie (spacja sortuje się przed "›").
+        $sortKey = fn (array $bucket): string => str_replace(' › ', "\x01", $bucket['label']);
+        usort($facets['category'], fn (array $a, array $b): int => strcmp($sortKey($a), $sortKey($b)));
+
+        return $facets;
     }
 
     /**

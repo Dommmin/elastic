@@ -31,6 +31,8 @@ export interface FacetBucket {
     from: number | null;
     to: number | null;
     count: number;
+    /** Tylko facet `category`: nazwy ze ścieżki, np. "Sport › Bieganie" (SearchController). */
+    label?: string;
 }
 
 export interface Facets {

@@ -59,7 +59,8 @@ const footerNavItems: NavItem[] = [
 
         <SidebarFooter>
             <NavFooter :items="footerNavItems" />
-            <NavUser />
+            <!-- /search jest publiczne — gość nie ma `auth.user`, a NavUser go wymaga. -->
+            <NavUser v-if="$page.props.auth.user" />
         </SidebarFooter>
     </Sidebar>
     <slot />
