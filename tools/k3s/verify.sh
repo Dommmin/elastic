@@ -33,6 +33,11 @@ KUBECTL_BIN="${KUBECTL:-/opt/homebrew/bin/kubectl}"
 KUBECONFIG_VPS="${KUBECONFIG_VPS:-$HOME/.kube/elastic-vps.yaml}"
 RED='\033[0;31m'; GRN='\033[0;32m'; BLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 PASS=0; FAIL=0
+# pf_start zostawiał port-forward na 38080 po skończeniu skryptu, a to ten sam
+# port co `make k3s-ui` ("address already in use"). Sprzątamy przy wyjściu.
+# Wzorzec to kolejność argumentów z pf_start ("port-forward -n ..."), więc
+# forward z działającego `make k3s-ui` ("-n ... port-forward") zostaje.
+trap 'pkill -f "port-forward -n marketplace svc/" 2>/dev/null || true' EXIT
 
 check() { # check <opis> <oczekiwane> <otrzymane>
   if [ "$2" = "$3" ]; then
