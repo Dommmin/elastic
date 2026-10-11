@@ -162,11 +162,6 @@ print(len(bad) if own else "brak obrazów")' "${tag}")"
   local mem; mem="$(remote "free -m | awk '/Mem:/ {printf \"%d\", \$3*100/\$2}'")"
   check "RAM zajęty < 80%" "tak" "$([ -n "${mem}" ] && [ "${mem}" -lt 80 ] && echo tak || echo "nie (${mem:-?}%)")"
 
-  # Z PLIKU, nie przez stdin (`bash -s < smoke-test.sh`): `docker compose
-  # exec -T` w środku czyta stdin i połyka resztę skryptu (RUNBOOK #035).
-  scp -q "${ROOT}/tools/smoke-test.sh" "${HOST}:/tmp/smoke-test.sh"
-  local smoke; smoke="$(on_app 'set -a && . ./.env && set +a && bash /tmp/smoke-test.sh' 2>&1)"
-  check "smoke-test.sh: wszystkie testy" "1" "$(grep -c 'Wszystkie testy przeszły' <<<"${smoke}")"
 
   local count; count="$(es /products-search/_count | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null)"
   check "products-search: 1500 dokumentów" "1500" "${count}"
@@ -187,6 +182,14 @@ print(len(bad) if own else "brak obrazów")' "${tag}")"
     sleep 1
   done
   check "E2E: zmiana ceny w ES w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
+
+  # Smoke NA KOŃCU: zatrzymuje i wznawia search-consumer (test routingu),
+  # więc E2E uruchomione zaraz po nim trafiało na konsumenta w trakcie startu.
+  # Z PLIKU, nie przez stdin (`bash -s < smoke-test.sh`): `docker compose
+  # exec -T` w środku czyta stdin i połyka resztę skryptu (RUNBOOK #035).
+  scp -q "${ROOT}/tools/smoke-test.sh" "${HOST}:/tmp/smoke-test.sh"
+  local smoke; smoke="$(on_app 'set -a && . ./.env && set +a && bash /tmp/smoke-test.sh' 2>&1)"
+  check "smoke-test.sh: wszystkie testy" "1" "$(grep -c 'Wszystkie testy przeszły' <<<"${smoke}")"
 }
 
 # --------------------------------------------------------------- backup -----

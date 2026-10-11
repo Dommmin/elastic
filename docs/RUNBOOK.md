@@ -1672,6 +1672,59 @@ statefulset.apps/marketplace-es-default  2/3         ← w podsumowaniu deployu
 dochodzić do nowego stanu. Przy operatorach: `observedGeneration`. A „rolling
 restart bez przestojów" to obietnica dla danych z replikami, nie dla wszystkich.
 
+<a id="039"></a>
+## 039 — Po restarcie serwera ECK mówi „green 3”, a aplikacja: `No alive nodes`
+
+**Objaw**
+`verify.sh reboot` zaliczył „ES green 3/3 po 115 s”, ale chwilę później:
+```
+production.ERROR: No alive nodes. All the 1 nodes seem to be down.
+kubectl get endpoints marketplace-es-http   →  ENDPOINTS: (puste)
+kubectl get pods                            →  marketplace-es-default-*  0/1  Running  1 (41s ago)
+kubectl get elasticsearch                   →  green  3  Ready
+```
+
+**Diagnoza**
+Porównanie trzech źródeł prawdy: status zasobu `Elasticsearch` (operator),
+`Ready` podów (kubelet) i endpointy Service'u (to, przez co faktycznie łączy
+się aplikacja). Tylko pierwsze mówiło „gotowe”.
+
+**Przyczyna**
+Po restarcie węzła operator ECK jeszcze nie przeliczył stanu klastra i pokazywał
+**ostatni znany status** (green sprzed restartu). Pody ES dopiero startowały,
+nie były Ready, więc Service nie miał endpointów.
+
+**Naprawa**
+Test restartu wymaga: `health: green` **i** 3 pody ES `Ready` **i** 4 Deploymenty
+`Available`. Prawdziwy czas z historii warunków (`lastTransitionTime` dla `Ready`):
+ES 3/3 po 141 s, całość po 178 s.
+
+**Czego się nauczyłem**
+Status zasobu operatora to *raport* operatora, a nie obserwacja na żywo. Po
+każdym zdarzeniu, które mogło go zdezaktualizować (restart węzła, przerwa
+w działaniu operatora), sprawdzaj warstwę niżej: pody, endpointy, a na końcu
+prawdziwe zapytanie.
+
+### Ta sama noc: weryfikacja, która wisiała zamiast padać
+
+Pięć różnych przyczyn i ten sam objaw (`verify.sh` stoi bez końca, bez błędu):
+1. `kubectl exec` przez tunel wisiał na **zestawianiu strumienia**. `timeout 60`
+   w podzie i `--request-timeout` tego nie obejmują. Rozwiązanie: limit po stronie Maca.
+2. macOS nie ma `timeout`, więc powstało własne `with_timeout`. Pierwsza wersja
+   strażnika `( sleep N; kill ) &` dziedziczyła stdout podstawienia `$(…)`, przez
+   co bash czekał na `$(…)` pełne N sekund **przy każdym wywołaniu**.
+   Naprawa: strażnik pisze do `/dev/null`.
+3. `curl` do ES bez `-m` wisiał bez końca. Teraz `-m 30`.
+4. `ssh -fN` (tunel) bez `ConnectTimeout` w trakcie bootu serwera: TCP już
+   przyjmuje połączenia, a sshd jeszcze nie odpowiada.
+5. `kubectl run -i --rm` uruchamiany w tle nie ma terminala do podłączenia,
+   więc wisiał do limitu i był ponawiany. Faza trwała ~10 min zamiast 9 s.
+   Teraz: create → wait → logs → delete.
+
+Zasada: **każde wywołanie sieciowe w automatyzacji ma mieć limit czasu**, a każdy
+mechanizm limitu czasu trzeba przetestować na szybkim przypadku. Strażnik z pkt 2
+„działał”, tylko spowalniał wszystko do swojego limitu.
+
 ## Notatka — czytanie `_explain` (ETAP 7)
 
 Nie każdy wpis w tym dokumencie musi być błędem — DoD ETAP 7 wymaga umieć

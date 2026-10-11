@@ -46,7 +46,9 @@ server_ip() { ssh -G "${HOST}" | awk '/^hostname / {print $2}'; }
 
 tunnel_up() {
   nc -z 127.0.0.1 26443 2>/dev/null && return 0
-  ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -fN elastic-vps-k8s 2>/dev/null
+  # ConnectTimeout: w trakcie bootu serwera TCP już przyjmuje połączenie, a sshd
+  # jeszcze nie — bez limitu `ssh -f` wisiał minutami i blokował pętlę czekania.
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -o ExitOnForwardFailure=yes -fN elastic-vps-k8s 2>/dev/null
   for _ in 1 2 3 4 5; do nc -z 127.0.0.1 26443 2>/dev/null && return 0; sleep 1; done
   return 1
 }
@@ -56,11 +58,25 @@ tunnel_up() {
 # Przy błędzie: świeży tunel i jedna ponowna próba. Bez tego przejściowy
 # "TLS handshake timeout" (4 vCPU pod obciążeniem 6 JVM-ów) dawał pusty
 # wynik, który wyglądał jak błąd danych.
+# macOS nie ma `timeout`. `kubectl exec` przez tunel potrafił zawisnąć na
+# ZESTAWIANIU strumienia (zanim komenda trafiła do poda) — `timeout` w podzie
+# i --request-timeout tego nie łapią. Limit po stronie Maca: zabij po N s.
+with_timeout() { # with_timeout <sekundy> <komenda...>
+  local secs="$1"; shift
+  "$@" & local pid=$!
+  # Strażnik MUSI pisać do /dev/null: inaczej dziedziczy stdout podstawienia
+  # $(…), a bash czeka z $(…), aż WSZYSCY piszący zamkną to wyjście — każde
+  # wywołanie trwało wtedy pełne ${secs} sekund (sleep żył dalej).
+  ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) >/dev/null 2>&1 & local watchdog=$!
+  wait "${pid}" 2>/dev/null; local rc=$?
+  kill "${watchdog}" 2>/dev/null; wait "${watchdog}" 2>/dev/null
+  return "${rc}"
+}
 k() {
   local out rc attempt
   for attempt in 1 2; do
     nc -z 127.0.0.1 26443 2>/dev/null || tunnel_up
-    out="$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" --request-timeout=20s "$@" 2>/dev/null)"; rc=$?
+    out="$(with_timeout 120 "${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" --request-timeout=20s "$@" 2>/dev/null)"; rc=$?
     [ "${rc}" -eq 0 ] && break
     [ "${attempt}" -eq 1 ] && { pkill -f "ssh .*-fN elastic-vps-k8s" 2>/dev/null; sleep 1; tunnel_up; }
   done
@@ -90,9 +106,16 @@ phase_cluster() {
     "$(k get sc -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')"
   # Pod -> DNS -> Service: przy ufw `default deny` bez zezwolenia dla sieci
   # podów (10.42/16) i usług (10.43/16) to potrafi cicho nie działać.
+  # Bez `kubectl run -i --rm`: w tle (with_timeout) nie ma terminala do
+  # podłączenia, więc -i wisiało do limitu i było ponawiane (~10 min fazy).
+  # Utwórz -> poczekaj na koniec -> logi -> usuń.
   local out
-  out="$(k run verify-net --rm -i --restart=Never --image=busybox:1.37 --command -- \
-        sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null && echo DNS_OK; wget -q -T 5 --no-check-certificate -O /dev/null https://kubernetes.default.svc 2>&1; echo HTTP_RC=$?' 2>&1)"
+  k delete pod verify-net -n default --ignore-not-found --wait=true >/dev/null
+  k run verify-net -n default --restart=Never --image=busybox:1.37 --command -- \
+    sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null && echo DNS_OK; wget -q -T 5 --no-check-certificate -O /dev/null https://kubernetes.default.svc 2>&1; echo HTTP_RC=$?' >/dev/null
+  k wait pod/verify-net -n default --for=jsonpath='{.status.phase}'=Succeeded --timeout=90s >/dev/null
+  out="$(k logs verify-net -n default)"
+  k delete pod verify-net -n default --wait=false >/dev/null
   # `kubectl run -i` potrafi wypisać wyjście 2x (attach + logi) — liczy się "jest".
   check "pod: DNS (kubernetes.default)" "1" "$(grep -q DNS_OK <<<"${out}" && echo 1 || echo 0)"
   # 401/403 bez tokenu to OK — liczy się, że połączenie do Service'u doszło.
@@ -121,7 +144,10 @@ phase_eck() {
   check "operator: elastic-operator-0 Running" "Running" "$(k get pod elastic-operator-0 -n elastic-system -o jsonpath='{.status.phase}')"
   check "operator: wersja 3.5.0" "docker.elastic.co/eck/eck-operator:3.5.0" \
     "$(k get sts elastic-operator -n elastic-system -o jsonpath='{.spec.template.spec.containers[0].image}')"
-  check "operator: zero restartów" "0" "$(k get pod elastic-operator-0 -n elastic-system -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+  # Restarty same w sobie nie są błędem (restart serwera = restart poda);
+  # błędem jest pętla restartów albo brak gotowości.
+  check "operator: Ready, bez CrashLoopBackOff" "True" \
+    "$(k get pod elastic-operator-0 -n elastic-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{.status.containerStatuses[0].state.waiting.reason}')"
 }
 
 # --------------------------------------------------------------- config -----
@@ -151,7 +177,7 @@ es_k8s() { # es_k8s <user: elastic|catalog|searchsvc> <ścieżka> [metoda] [body
   remote "cd /opt/marketplace && set -a && . ./.env && set +a && \
     case '$1' in elastic) P=\$ELASTIC_PASSWORD ;; catalog) P=\$ES_CATALOG_PASSWORD ;; searchsvc) P=\$ES_SEARCHSVC_PASSWORD ;; esac; \
     IP=\$(kubectl -n marketplace get svc marketplace-es-http -o jsonpath='{.spec.clusterIP}'); \
-    curl -s -u '$1':\"\$P\" -X ${3:-GET} -H 'Content-Type: application/json' \"http://\$IP:9200$2\" ${4:+-d '$4'}"
+    curl -s -m 30 -u '$1':\"\$P\" -X ${3:-GET} -H 'Content-Type: application/json' \"http://\$IP:9200$2\" ${4:+-d '$4'}"
 }
 phase_es() {
   tunnel_up
@@ -183,7 +209,10 @@ phase_es() {
 }
 
 # ----------------------------------------------------------------- data -----
-kx() { k exec -n marketplace "$1" -- sh -c "$2"; }   # hasła czytane w kontenerze z jego env
+# Hasła czytane w kontenerze z jego env. `timeout 60` W PODZIE: `--request-timeout`
+# nie obejmuje strumieniowego `exec`, a np. `rabbitmqctl` zaraz po restarcie
+# node'a potrafił wisieć 15+ minut i blokował całą weryfikację.
+kx() { k exec -n marketplace "$1" -- timeout 60 sh -c "$2"; }
 phase_data() {
   tunnel_up
   echo -e "\n${BLD}  data — StatefulSety${NC}"
@@ -232,7 +261,7 @@ phase_data() {
 # k8s-owy odpowiednik `LocalForward` z D1, bez dotykania serwera.
 pf_start() { # pf_start <svc> <port-lokalny> <port-svc>
   nc -z 127.0.0.1 "$2" 2>/dev/null && return 0
-  ( k port-forward -n marketplace "svc/$1" "$2:$3" >/dev/null 2>&1 & )
+  ( "${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" port-forward -n marketplace "svc/$1" "$2:$3" >/dev/null 2>&1 & )
   for _ in $(seq 1 15); do nc -z 127.0.0.1 "$2" 2>/dev/null && return 0; sleep 1; done
   return 1
 }
@@ -252,8 +281,8 @@ phase_apps() {
   check "X-App-Version = tag wdrożenia" "${tag}" "$(curl -sI http://127.0.0.1:38080/up | awk -F': ' 'tolower($1)=="x-app-version" {print $2}' | tr -d '\r')"
   check "alias products-search istnieje (indeks z Joba)" "200" \
     "$(es_k8s elastic '/_alias/products-search' >/dev/null; remote "cd /opt/marketplace && set -a && . ./.env && set +a && IP=\$(kubectl -n marketplace get svc marketplace-es-http -o jsonpath='{.spec.clusterIP}') && curl -s -o /dev/null -w '%{http_code}' -u elastic:\"\$ELASTIC_PASSWORD\" http://\$IP:9200/_alias/products-search")"
-  check "search-consumer: zero restartów" "0" \
-    "$(k get pods -n marketplace -l app=search-consumer -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')"
+  check "search-consumer: Ready, bez CrashLoopBackOff" "True" \
+    "$(k get pods -n marketplace -l app=search-consumer -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}{.items[0].status.containerStatuses[0].state.waiting.reason}')"
 }
 
 # ---------------------------------------------------------------- stack -----
@@ -326,13 +355,18 @@ phase_reboot() {
   sleep 30
   t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -le 900 ]; do
-    if [ "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.health} {.status.availableNodes}')" = "green 3" ] \
+    # NIE ufamy samemu .status.health z zasobu Elasticsearch: zaraz po
+    # restarcie operator pokazuje OSTATNI ZNANY stan (green sprzed restartu),
+    # podczas gdy pody ES dopiero startują (RUNBOOK #039). Liczą się pody
+    # Ready + endpointy Service'u, przez który chodzą aplikacje.
+    if [ "$(k get elasticsearch marketplace -n marketplace -o jsonpath='{.status.health}')" = "green" ] \
+       && [ "$(k get pods -n marketplace -l elasticsearch.k8s.elastic.co/cluster-name=marketplace -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -c True)" = "3" ] \
        && [ "$(k get deploy -n marketplace -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}' | grep -c True)" = "4" ]; then
       up=$(( $(date +%s) - t0 + 30 )); break
     fi
     sleep 10
   done
-  check "po restarcie: ES green 3/3 + 4 Deploymenty Available (${up:-timeout} s)" "tak" "$([ -n "${up}" ] && echo tak || echo nie)"
+  check "po restarcie: pody ES Ready 3/3, green, 4 Deploymenty Available (${up:-timeout} s)" "tak" "$([ -n "${up}" ] && echo tak || echo nie)"
   check "uptime serwera < 20 min (restart naprawdę był)" "tak" "$(remote "awk '{print (\$1<1200)?\"tak\":\"nie\"}' /proc/uptime")"
   check "Compose (D1) NIE wstał (stop przeżywa restart)" "0" "$(remote 'docker ps -q --filter label=com.docker.compose.project=marketplace | wc -l' | tr -d ' ')"
   after="$(eval_k8s)"

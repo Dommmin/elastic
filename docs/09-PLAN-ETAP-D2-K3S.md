@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Stan (2026-10-11):** wszystkie taski zrobione na serwerze — `make k3s-verify` 82/82,
+> restart serwera → całość w 178 s, migracja z D1 bez utraty danych, powrót do D1
+> przećwiczony. Na serwerze działa **k3s**; Compose (D1) zatrzymany, wolumeny zachowane.
+> Przewodnik: [`docs/blog/etap-d2-k3s.md`](blog/etap-d2-k3s.md). Do DoD brakuje sekcji
+> „Twoja kolej” z przewodnika.
+
 **Cel:** stack z D1 (te same obrazy z GHCR) działa w Kubernetesie na tym samym VPS-ie,
 przełączony z Compose bez utraty danych, z drogą powrotu. Do tego przewodnik:
 co Kubernetes daje, a co zabiera w porównaniu z Compose — na znanym systemie.

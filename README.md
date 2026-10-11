@@ -71,6 +71,7 @@ Wszystkie komendy: `make help`
 | 6 | Model domenowy + Transactional Outbox + konsument + mapowanie ES | ✅ zweryfikowane end-to-end na żywym stacku |
 | 7 | Wyszukiwarka: `ProductSearchService`, facety, autocomplete, UI Vue/Inertia | ✅ zweryfikowane end-to-end na żywym stacku |
 | D | Wdrożenie na VPS: obrazy z GHCR (CI), Compose, tunel SSH, backupy, rollback | ✅ zweryfikowane na serwerze (`make vps-verify` 63/63 + restart) — [przewodnik](docs/blog/etap-d-vps.md) |
+| D2 | Ten sam stack w k3s: ECK (ES ×3 + Kibana), StatefulSety, Job migracji, CronJob backupu; migracja z Compose | ✅ zweryfikowane na serwerze (`make k3s-verify` 82/82 + restart) — [przewodnik](docs/blog/etap-d2-k3s.md) |
 | 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:
