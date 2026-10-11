@@ -86,17 +86,22 @@ wariantu 1 i powód, żeby nie brać `microtime()` z PHP.
 
 ### Dostęp
 
-- Trasy `/panel/...` w grupie `middleware('auth')`, **bez** `verified`.
+- Trasy `/panel/...` w grupie `middleware(['auth', 'can:panel'])`, **bez** `verified`.
   Maile idą do logu (`MAIL_MAILER=log`), więc potwierdzanie adresu byłoby
   szukaniem linku w logach.
+- Flaga `users.is_admin` (boolean, domyślnie false, poza `$fillable`) i Gate
+  `panel`. Rejestracja Fortify jest otwarta, więc samo `auth` wpuściłoby do
+  edycji katalogu każdego, kto założy konto; uprawnienie nadaje tylko
+  `marketplace:admin`.
 - Komenda `php artisan marketplace:admin {email}`:
-  - konta nie ma → tworzy je z losowym hasłem (20 znaków) i ustawia
-    `email_verified_at`;
-  - konto jest → generuje nowe hasło.
+  - konta nie ma → tworzy je z losowym hasłem (20 znaków), ustawia
+    `email_verified_at` i `is_admin`;
+  - konto jest → generuje nowe hasło i nadaje `is_admin`, nie ruszając
+    `email_verified_at`.
   - Hasło wypisuje raz na stdout i nigdzie go nie zapisuje.
 - Makefile: `make admin email=...` (Compose) i `make k3s-admin email=...`
   (`kubectl exec deploy/catalog-app`).
-- Sidebar: link „Panel” widoczny tylko po zalogowaniu.
+- Sidebar: link „Panel” widoczny tylko dla `is_admin`.
 
 ### Ekrany
 
@@ -206,5 +211,5 @@ w `/search`; `docker compose stop search-consumer` → zdarzenia stoją na
 ## Poza zakresem
 
 Tworzenie i usuwanie produktów oraz ofert, reaktywacja oferty, opinie,
-role i uprawnienia (każdy zalogowany może edytować), historia zmian
+role poza jedną flagą is_admin, historia zmian
 poza outboxem.

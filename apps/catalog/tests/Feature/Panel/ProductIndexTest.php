@@ -20,13 +20,19 @@ test('gość jest przekierowany na login', function () {
     $this->get('/panel/products')->assertRedirect('/login');
 });
 
+test('zalogowany nie-admin dostaje 403', function () {
+    $this->actingAs(User::factory()->create())
+        ->get('/panel/products')
+        ->assertForbidden();
+});
+
 test('lista pokazuje produkty z etykietą kategorii i najniższą aktywną ceną', function () {
     $product = Product::factory()->create(['category_id' => subcategory()->id]);
     Offer::factory()->for($product)->create(['price_cents' => 500, 'active' => true]);
     Offer::factory()->for($product)->create(['price_cents' => 300, 'active' => true]);
     Offer::factory()->for($product)->create(['price_cents' => 100, 'active' => false]);
 
-    $this->actingAs(User::factory()->create())
+    $this->actingAs(User::factory()->admin()->create())
         ->get('/panel/products')
         ->assertInertia(fn (Assert $page) => $page
             ->component('panel/Products')
@@ -43,7 +49,7 @@ test('q liczbowe szuka po ID, tekst po nazwie bez wielkości liter', function ()
     $cat = subcategory()->id;
     $a = Product::factory()->create(['name' => 'Buty Biegowe', 'category_id' => $cat]);
     $b = Product::factory()->create(['name' => 'Kurtka', 'category_id' => $cat]);
-    $user = User::factory()->create();
+    $user = User::factory()->admin()->create();
 
     $this->actingAs($user)->get('/panel/products?q='.$b->id)
         ->assertInertia(fn (Assert $page) => $page->has('products.data', 1)->where('products.data.0.id', $b->id));
@@ -55,6 +61,6 @@ test('q liczbowe szuka po ID, tekst po nazwie bez wielkości liter', function ()
 test('25 na stronę', function () {
     Product::factory()->count(30)->create(['category_id' => subcategory()->id]);
 
-    $this->actingAs(User::factory()->create())->get('/panel/products')
+    $this->actingAs(User::factory()->admin()->create())->get('/panel/products')
         ->assertInertia(fn (Assert $page) => $page->has('products.data', 25));
 });

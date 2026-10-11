@@ -12,13 +12,15 @@ function hasloZWyjscia(string $output): string
     return $m[1] ?? '';
 }
 
-test('tworzy konto z potwierdzonym mailem', function () {
+test('tworzy konto administratora z potwierdzonym mailem', function () {
     $this->artisan('marketplace:admin', ['email' => 'a@b.pl'])
+        ->expectsOutputToContain('Utworzono konto administratora: a@b.pl')
         ->expectsOutputToContain('Hasło:')
         ->assertExitCode(0);
 
     $user = User::where('email', 'a@b.pl')->firstOrFail();
     expect($user->hasVerifiedEmail())->toBeTrue()
+        ->and($user->is_admin)->toBeTrue()
         ->and($user->name)->toBe('a');
 });
 
@@ -34,6 +36,22 @@ test('drugie wywołanie zmienia hasło', function () {
         ->and(Hash::check($stare, $user->password))->toBeFalse()
         ->and(Hash::check($nowe, $user->password))->toBeTrue()
         ->and(User::count())->toBe(1);
+});
+
+test('istniejące niezweryfikowane konto dostaje uprawnienia i nowe hasło, ale zostaje niezweryfikowane', function () {
+    // Nadanie uprawnień nie może przy okazji potwierdzać cudzego adresu.
+    $user = User::factory()->unverified()->create(['email' => 'x@y.pl']);
+    $stare = $user->password;
+
+    $this->artisan('marketplace:admin', ['email' => 'x@y.pl'])
+        ->expectsOutputToContain('Zmieniono hasło i nadano uprawnienia administratora: x@y.pl')
+        ->expectsOutputToContain('Hasło:')
+        ->assertExitCode(0);
+
+    $user->refresh();
+    expect($user->is_admin)->toBeTrue()
+        ->and($user->email_verified_at)->toBeNull()
+        ->and($user->password)->not->toBe($stare);
 });
 
 test('niepoprawny email', function () {

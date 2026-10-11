@@ -14,9 +14,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::inertia('dashboard', 'Dashboard')->name('dashboard');
 });
 
-// Panel edycji katalogu. Bez `verified` — konta zakłada `marketplace:admin`,
+// Panel edycji katalogu: `can:panel` (flaga is_admin), bo rejestracja jest
+// otwarta. Bez `verified` — konta zakłada `marketplace:admin`,
 // bez potwierdzania e-maila. Kolejne zadania dokładają trasy do tej grupy.
-Route::middleware('auth')->prefix('panel')->name('panel.')->group(function () {
+Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group(function () {
     Route::get('products', [ProductController::class, 'index'])->name('products.index');
 });
 

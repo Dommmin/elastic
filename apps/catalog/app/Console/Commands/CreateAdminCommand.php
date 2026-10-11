@@ -13,8 +13,9 @@ use Illuminate\Support\Str;
  *
  * DLACZEGO komenda, a nie rejestracja: panel jest narzędziem operatora, a
  * hasło ma wyjść dokładnie raz na stdout i nigdzie więcej (ani plik, ani log).
- * `email_verified_at` ustawiamy mimo że trasy panelu nie wymagają `verified` —
- * konto nie utknie, gdyby ktoś dopiął ten middleware później.
+ * Komenda nadaje `is_admin` (Gate `panel`). `email_verified_at` ustawiamy
+ * wyłącznie przy zakładaniu konta: istniejącemu, niezweryfikowanemu kontu nie
+ * wolno przy okazji potwierdzać cudzego adresu.
  */
 class CreateAdminCommand extends Command
 {
@@ -36,12 +37,18 @@ class CreateAdminCommand extends Command
         $password = Str::password(20, symbols: false);
 
         $user = User::firstOrNew(['email' => $email]);
-        if (! $user->exists) {
+        $nowe = ! $user->exists;
+        if ($nowe) {
             $user->name = Str::before($email, '@');
+            $user->email_verified_at = now();
         }
         $user->password = $password; // cast 'hashed' haszuje
-        $user->email_verified_at ??= now();
+        $user->is_admin = true; // przypisanie, nie fill — flaga nie jest mass-assignable
         $user->save();
+
+        $this->info($nowe
+            ? 'Utworzono konto administratora: '.$email
+            : 'Zmieniono hasło i nadano uprawnienia administratora: '.$email);
 
         $this->line('Hasło: '.$password);
 

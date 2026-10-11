@@ -21,14 +21,14 @@ import type { NavItem } from '@/types';
 
 const page = usePage();
 
-// Panel wymaga logowania — gościowi nie pokazujemy linku, który odbiłby go na /login.
+// Panel jest tylko dla adminów (Gate `panel`) — innym nie pokazujemy linku, który skończyłby się 403.
 const mainNavItems = computed<NavItem[]>(() => [
     {
         title: 'Dashboard',
         href: dashboard(),
         icon: LayoutGrid,
     },
-    ...(page.props.auth.user
+    ...(page.props.auth.user?.is_admin
         ? [{ title: 'Panel', href: panelProducts(), icon: PackageSearch }]
         : []),
 ]);

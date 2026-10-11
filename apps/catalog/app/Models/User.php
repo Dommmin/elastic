@@ -23,6 +23,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string|null $two_factor_secret
  * @property string|null $two_factor_recovery_codes
  * @property Carbon|null $two_factor_confirmed_at
+ * @property bool $is_admin
  * @property string|null $remember_token
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
@@ -34,6 +35,10 @@ class User extends Authenticatable implements PasskeyUser
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable, PasskeyAuthenticatable, TwoFactorAuthenticatable;
 
+    // Świeżo utworzony model nie zna domyślnej wartości z bazy (null) — bez tego
+    // Gate `panel` dostałby null zamiast false.
+    protected $attributes = ['is_admin' => false];
+
     /**
      * Get the attributes that should be cast.
      *
@@ -44,6 +49,8 @@ class User extends Authenticatable implements PasskeyUser
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            // Poza #[Fillable] celowo: flagi nie wolno ustawić z formularza rejestracji ani profilu.
+            'is_admin' => 'boolean',
             'two_factor_confirmed_at' => 'datetime',
         ];
     }
