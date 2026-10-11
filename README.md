@@ -55,6 +55,7 @@ Wszystkie komendy: `make help`
 | [RUNBOOK](docs/RUNBOOK.md) | **przewodnik diagnostyczny — uzupełniaj po każdym błędzie** |
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
 | [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
+| [blog/rabbitmq-podglad.md](docs/blog/rabbitmq-podglad.md) | jak podejrzeć RabbitMQ w akcji: panel, DLQ, eksperyment zmiana ceny → kolejka → ES |
 
 ---
 

@@ -299,6 +299,12 @@ k3s: ## kubectl na klastrze VPS (make k3s k="get pods -n marketplace")
 k3s-deploy: ## Wdróż na k3s: ostatni build CI albo tag=<SHA> (infra -> Job migrate -> aplikacje)
 	@bash tools/k3s/deploy.sh $(tag)
 
+.PHONY: k3s-mq-status
+k3s-mq-status: ## Kolejki RabbitMQ na k3s: głębokość i konsumenci (Messenger polluje, więc consumers=0 to norma)
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@$(KUBECTL_VPS) -n marketplace exec rabbitmq-0 -- rabbitmqctl list_queues \
+		name type messages messages_ready messages_unacknowledged consumers
+
 .PHONY: k3s-ui
 k3s-ui: ## Otwórz UI z k3s na Macu: aplikacja :38080, Kibana :35601, RabbitMQ :36672 (Ctrl+C kończy)
 	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
