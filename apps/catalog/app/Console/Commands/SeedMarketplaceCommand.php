@@ -234,6 +234,9 @@ class SeedMarketplaceCommand extends Command
                 'event_type' => 'product.created',
                 'payload' => $product->attributesToArray(),
                 'sequence' => $product->version,
+                // Przez model, nie DB::table(): Outbox::$dateFormat zapisuje µs,
+                // a droga zdarzenia w panelu porównuje je z `_version` w ES.
+                // Query builder uciąłby do sekundy (test: SeedMarketplaceCommandTest).
                 'occurred_at' => now(),
             ]);
         });
