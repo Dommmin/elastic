@@ -72,10 +72,35 @@ kk "${NS[@]}" logs job/migrate --all-containers --tail=3 | sed 's/^/    /'
 # okna czekają w RabbitMQ (search.product.sync) — po to jest kolejka — i nowy
 # consumer zjada je po starcie. Gdy rollout catalogu padnie, skrypt kończy się
 # z consumerem na 0: lepiej, żeby zdarzenia czekały, niż szły do `failed`.
-# Naprawa = ponowny `make k3s-deploy` (nowym albo poprzednim tagiem).
+# Naprawa = ponowny `make k3s-deploy` (nowym albo poprzednim tagiem); każdy
+# błąd od tego miejsca kończy się komunikatem step3_fail, nigdy cichym "OK".
 echo "[k3s-deploy] 3/3 aplikacje"
 SEARCH_SEL='app.kubernetes.io/component=app,app=search-consumer'
 OTHER_APPS_SEL='app.kubernetes.io/component=app,app!=search-consumer'
+
+# Od skalowania do 0 każdy błąd w tym kroku może zostawić consumer na 0 replik:
+# wyszukiwarka stoi, zdarzenia rosną w RabbitMQ. Nie może się to skończyć
+# cichym "OK", więc każda porażka przechodzi tędy z instrukcją naprawy.
+step3_fail() {
+  echo "[k3s-deploy] BŁĄD w kroku 3/3: $1" >&2
+  echo "    search-consumer może stać na 0 replik — ES nie dostaje zmian," >&2
+  echo "    zdarzenia czekają w RabbitMQ (nic nie ginie). Naprawa (najpierw make k3s-tunnel):" >&2
+  echo "      make k3s-deploy tag=${TAG}    # albo poprzedni tag" >&2
+  echo "    Ręcznie tylko, gdy catalog-app i search-consumer mają TEN SAM obraz" >&2
+  echo "    (inaczej mieszanie wersji -> zdarzenia w \`failed\`):" >&2
+  echo "      make k3s k=\"-n marketplace get deploy catalog-app search-consumer -o wide\"" >&2
+  echo "      make k3s k=\"-n marketplace scale deploy/search-consumer --replicas=1\"" >&2
+  exit 1
+}
+# `grep -v unchanged` ma exit 1, gdy wszystko jest unchanged, a `|| true` za
+# potokiem połykało też błąd samego apply (tunel, timeout 60 s). Dlatego
+# najpierw wynik apply, potem filtr.
+apply_apps() {
+  local out
+  out="$(kk apply -f "${WORK}/rendered.yaml" -l "$1" 2>&1)" \
+    || { echo "${out}" >&2; step3_fail "kubectl apply -l '$1' nie przeszedł"; }
+  grep -v unchanged <<<"${out}" || true
+}
 
 if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
   echo "    search-consumer -> 0 replik (zdarzenia czekają w RabbitMQ)"
@@ -88,12 +113,23 @@ if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
     || { echo "[k3s-deploy] pody search-consumer nie zniknęły w 2 min" >&2; exit 1; }
 fi
 
-kk apply -f "${WORK}/rendered.yaml" -l "${OTHER_APPS_SEL}" | grep -v unchanged || true
-for d in catalog-app outbox-publisher; do kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s; done
+apply_apps "${OTHER_APPS_SEL}"
+for d in catalog-app outbox-publisher; do
+  kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s || step3_fail "rollout ${d} nie skończył się"
+done
 
 # Manifest ma `replicas: 1`, więc apply przywraca consumer (już nowy obraz).
-kk apply -f "${WORK}/rendered.yaml" -l "${SEARCH_SEL}" | grep -v unchanged || true
-kk "${NS[@]}" rollout status deploy/search-consumer --timeout=300s
+apply_apps "${SEARCH_SEL}"
+kk "${NS[@]}" rollout status deploy/search-consumer --timeout=300s \
+  || step3_fail "rollout search-consumer nie skończył się"
+# `rollout status` uznaje Deployment z 0 replik za wdrożony — sprawdzamy wprost,
+# że consumer naprawdę działa w liczbie replik z manifestu.
+state="$(kk "${NS[@]}" get deploy/search-consumer \
+  -o jsonpath='{.spec.replicas} {.status.readyReplicas}')" \
+  || step3_fail "nie da się odczytać stanu search-consumer"
+read -r want ready <<<"${state}"
+[ "${want:-0}" -ge 1 ] && [ "${ready:-0}" = "${want}" ] \
+  || step3_fail "search-consumer gotowy ${ready:-0}/${want:-0} (manifest: replicas >= 1)"
 
 echo "[k3s-deploy] OK — działa wersja ${TAG:0:12}"
 kk "${NS[@]}" get deploy,sts -o wide | awk '{print $1, $2, $NF}' | column -t

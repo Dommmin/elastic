@@ -743,6 +743,11 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
   strict` odrzuca `projected_at_us` w `_source`), nowy consumer ze starym
   catalogiem wyczerpałby ponowienia w ~7 s. W obu przypadkach zdarzenie
   trafiłoby do `failed`. Zdarzenia z tego okna czekają w RabbitMQ.
+- [ ] Jeśli krok 3/3 padnie (tunel, timeout apply, rollout), skrypt kończy
+  się „BŁĄD w kroku 3/3” i consumer może zostać na 0 replik: ES nie dostaje
+  zmian, kolejka rośnie. Naprawa: `make k3s-deploy tag=<SHA>` jeszcze raz.
+  `make k3s k="-n marketplace scale deploy/search-consumer --replicas=1"`
+  tylko wtedy, gdy `catalog-app` i `search-consumer` mają ten sam obraz.
 - [ ] **Rollback:** poniżej tej zmiany NIE wystarczy `make k3s-deploy
   tag=<stary SHA>`. Stary consumer dostanie 409 na każdym dokumencie
   (`_version` ~1,79·10¹⁵) i po cichu pominie zapis. Trzeba reindeksu do
@@ -756,6 +761,7 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
   drugiej oferty dowolnego produktu. Droga zdarzenia dochodzi do „w ES”, a
   http://localhost:38080/search pokazuje nową cenę.
 - [ ] `make k3s k="-n marketplace exec deploy/search-consumer -- php bin/console messenger:failed:show"`
+  (`make k3s` sam nie otwiera tunelu do API — wcześniej `make k3s-tunnel`)
   → brak wiadomości („No failed messages were found”). Coś tutaj = zdarzenie
   zgubione przy wdrożeniu; `messenger:failed:retry` po wyjaśnieniu przyczyny.
 - [ ] `make k3s-mq-status` → kolejki puste (`messages` 0). `consumers` 0 to
