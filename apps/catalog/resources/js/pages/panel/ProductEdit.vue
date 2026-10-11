@@ -2,6 +2,8 @@
 import { Head, useForm, usePage } from '@inertiajs/vue3';
 import { computed } from 'vue';
 import InputError from '@/components/InputError.vue';
+import OfferRow from '@/components/panel/OfferRow.vue';
+import type { PanelOffer } from '@/components/panel/OfferRow.vue';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,6 +29,7 @@ const props = defineProps<{
     product: Product;
     brands: { id: number; name: string }[];
     categories: { id: number; label: string }[];
+    offers: PanelOffer[];
 }>();
 
 defineOptions({
@@ -116,5 +119,19 @@ function submit() {
                 </Button>
             </div>
         </form>
+
+        <section class="flex flex-col gap-2">
+            <h2 class="text-lg font-semibold">Oferty</h2>
+            <p v-if="offers.length === 0" class="text-sm text-muted-foreground">
+                Produkt nie ma ofert.
+            </p>
+            <ul v-else class="flex flex-col gap-2">
+                <OfferRow
+                    v-for="offer in offers"
+                    :key="offer.id"
+                    :offer="offer"
+                />
+            </ul>
+        </section>
     </div>
 </template>

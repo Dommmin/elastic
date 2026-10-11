@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Panel\UpdateProductRequest;
 use App\Models\Brand;
 use App\Models\Category;
+use App\Models\Offer;
 use App\Models\Product;
 use App\Services\CategoryLabels;
 use Illuminate\Http\RedirectResponse;
@@ -69,6 +70,19 @@ class ProductController extends Controller
             'product' => $product->only(['id', 'name', 'brand_id', 'category_id', 'version']),
             'brands' => Brand::query()->orderBy('name')->get(['id', 'name']),
             'categories' => $categories,
+            'offers' => $product->offers()
+                ->with('seller:id,name')
+                ->orderBy('id')
+                ->get()
+                ->map(fn (Offer $offer): array => [
+                    'id' => $offer->id,
+                    'seller' => $offer->seller?->name,
+                    'price_cents' => $offer->price_cents,
+                    'stock' => $offer->stock,
+                    'active' => $offer->active,
+                    'version' => $offer->version,
+                ])
+                ->all(),
         ]);
     }
 

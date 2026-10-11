@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Panel\OfferController;
 use App\Http\Controllers\Panel\ProductController;
 use App\Http\Controllers\SearchController;
 use Illuminate\Support\Facades\Route;
@@ -21,6 +22,8 @@ Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group
     Route::get('products', [ProductController::class, 'index'])->name('products.index');
     Route::get('products/{product}', [ProductController::class, 'edit'])->name('products.edit');
     Route::put('products/{product}', [ProductController::class, 'update'])->name('products.update');
+    Route::put('offers/{offer}', [OfferController::class, 'update'])->name('offers.update');
+    Route::post('offers/{offer}/deactivate', [OfferController::class, 'deactivate'])->name('offers.deactivate');
 });
 
 require __DIR__.'/settings.php';
