@@ -216,7 +216,11 @@ private function projectedAtUs(array $body, string $productId): int
 Kiedy to się zdarza? Podczas wdrożenia, gdy nowy consumer już działa,
 a stary catalog jeszcze odpowiada. Zgadnięta wersja (np. `0` albo `time()`)
 albo przegrałaby po cichu z dokumentem, albo zablokowała przyszłe zapisy.
-Ponowienie za chwilę trafi już w nowy catalog.
+Ponowień jest kilka w ciągu ok. 7 s, potem wiadomość ląduje w transporcie
+`failed` — rollout catalogu trwa zwykle dłużej. Dlatego `make k3s-deploy`
+nie dopuszcza do tej sytuacji: na czas zmiany catalogu zatrzymuje consumer
+(szczegóły w liście kontrolnej k3s). Ten wyjątek zostaje jako bezpiecznik,
+gdyby ktoś wdrażał ręcznie.
 
 ### Search: jedna ścieżka dla zapisu i usunięcia
 
@@ -733,6 +737,16 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
 - [ ] `make k3s-deploy tag=<SHA commita>` → na końcu „OK — działa wersja …”.
   Job `migrate` stosuje migracje (`is_admin`, `occurred_at` w µs) przed
   aplikacjami.
+  Krok 3/3 najpierw skaluje `search-consumer` do 0, wdraża `catalog-app`
+  i `outbox-publisher`, czeka na ich rollout i dopiero wtedy wdraża nowy
+  consumer. Stary consumer z nowym catalogiem dostałby 400 (`dynamic:
+  strict` odrzuca `projected_at_us` w `_source`), nowy consumer ze starym
+  catalogiem wyczerpałby ponowienia w ~7 s. W obu przypadkach zdarzenie
+  trafiłoby do `failed`. Zdarzenia z tego okna czekają w RabbitMQ.
+- [ ] **Rollback:** poniżej tej zmiany NIE wystarczy `make k3s-deploy
+  tag=<stary SHA>`. Stary consumer dostanie 409 na każdym dokumencie
+  (`_version` ~1,79·10¹⁵) i po cichu pominie zapis. Trzeba reindeksu do
+  nowego indeksu i przełączenia aliasu (RUNBOOK #017).
 - [ ] `make k3s-reproject` (jednorazowo po wdrożeniu tej zmiany) →
   `Zaindeksowano: ~1500, …, błędy: 0`.
 - [ ] `make k3s-verify` → `FAIL=0`.
@@ -741,6 +755,9 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
 - [ ] `make k3s-ui`, potem http://localhost:38080/panel/products. Zmień cenę
   drugiej oferty dowolnego produktu. Droga zdarzenia dochodzi do „w ES”, a
   http://localhost:38080/search pokazuje nową cenę.
+- [ ] `make k3s k="-n marketplace exec deploy/search-consumer -- php bin/console messenger:failed:show"`
+  → brak wiadomości („No failed messages were found”). Coś tutaj = zdarzenie
+  zgubione przy wdrożeniu; `messenger:failed:retry` po wyjaśnieniu przyczyny.
 - [ ] `make k3s-mq-status` → kolejki puste (`messages` 0). `consumers` 0 to
   norma, bo Messenger pobiera wiadomości pollingiem (patrz
   [rabbitmq-podglad](rabbitmq-podglad.md)).
@@ -780,9 +797,11 @@ zrestartuj `catalog-app`, `outbox-publisher` i `search-consumer`
 - **Rollback poniżej tej zmiany.** Dokumenty w ES mają teraz `_version`
   ok. 1,79·10¹⁵. Stary `search-consumer` (wersja = `sequence`, małe liczby)
   dostawałby 409 na każdym zapisie i po cichu je pomijał. Powrót do obrazu
-  sprzed `Panel [2/8]` wymaga więc reindeksu, nie samego `k3s-deploy` ze
-  starym tagiem. W drugą stronę (nowy consumer, stary catalog bez
-  `projected_at_us`) wiadomości idą w ponowienia, nie giną.
+  sprzed `Panel [2/8]` wymaga więc reindeksu do nowego indeksu i przełączenia
+  aliasu, nie samego `k3s-deploy` ze starym tagiem (RUNBOOK #017). W drugą
+  stronę (nowy consumer, stary catalog bez `projected_at_us`) wiadomości
+  idą w ponowienia, ale po ~7 s kończą w `failed` — dlatego `k3s-deploy`
+  zatrzymuje consumer na czas rolloutu catalogu.
 
 ---
 

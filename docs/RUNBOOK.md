@@ -29,7 +29,7 @@
 | [014](#014) | Mapowanie ES: „Invalid stemmer class specified: Polish" | Elasticsearch | 6 |
 | [015](#015) | Messenger: retry wywala się na `encode()` transportu | Symfony | 6 |
 | [016](#016) | Caddy globalnie przekierowuje HTTP→HTTPS mimo jawnego portu | Caddy | 6 |
-| [017](#017) | External versioning: kolizja `sequence` między różnymi agregatami | Architektura | 6 |
+| [017](#017) | External versioning: kolizja `sequence` między różnymi agregatami — **naprawione w Panel [2/8]** | Architektura | 6 |
 | [018](#018) | `php artisan test` w kontenerze czyści prawdziwą bazę deweloperską | Testy | 6 |
 | [019](#019) | `search_after`: sort po `_id` odrzucony — fielddata wyłączone | Elasticsearch | 7 |
 | [020](#020) | `_rank_eval`: `ratings` po aliasie dają same "unrated_docs" | Elasticsearch | 7 |
@@ -640,9 +640,24 @@ dane oferty. Odrzucenie drugiego zdarzenia nie zgubiło więc żadnej
 informacji — ale to przypadek tej konkretnej kolejności zdarzeń, nie
 gwarancja.
 
-**Status: NIE naprawione, świadomie odłożone.** Udokumentowane w
-`ElasticsearchIndexer.php` i tutaj, żeby nie zaskoczyło po cichu przy
-pierwszej prawdziwej zmianie ceny na niskim numerze sekwencji.
+**Status: naprawione w Panel [2/8]** (pierwotnie: "NIE naprawione,
+świadomie odłożone"). Panel edycji pokazał, że to nie teoria: zmiana ceny
+drugiej oferty z niskim `sequence` dostawała 409 i ginęła po cichu. Wersja
+dokumentu = `projected_at_us` — chwila odczytu projekcji w µs z zegara
+Postgresa catalogu (ok. 1,79·10¹⁵), mierzona przed odczytem danych. Jeden
+zegar porządkuje zapisy ze wszystkich agregatów. Szczegóły:
+`docs/superpowers/specs/2026-10-11-panel-edycji-design.md` (część 1)
+i `docs/blog/panel-edycji.md`. Dokumenty sprzed zmiany (`_version` 1..3)
+przelicza jednorazowo `make reproject` / `make k3s-reproject`.
+
+**Zasada rollbacku (obowiązuje od Panel [2/8]).** NIE cofaj
+search-consumera poniżej tej zmiany samym `make k3s-deploy tag=<stary SHA>`.
+Stary consumer wersjonuje po `sequence` (1, 2, 3…), a w ES leży już
+`_version` ~1.79e15 — dostanie 409 na KAŻDYM dokumencie i po cichu pominie
+zapis (409 to dla niego "nieaktualne", czyli sukces). Indeks przestaje się
+zmieniać, a w logach nie ma błędu. Rollback poniżej Panel [2/8] = reindeks
+do NOWEGO indeksu (pusty, więc niskie wersje przejdą) + atomowe przełączenie
+aliasu `products-search`, dopiero potem stary obraz.
 
 **Kierunek właściwej naprawy (przyszły moduł)**
 Jeden monotoniczny licznik NA DOKUMENT, utrzymywany przez search-service

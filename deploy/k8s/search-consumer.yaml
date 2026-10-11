@@ -7,6 +7,10 @@ metadata:
   name: search-consumer
   labels:
     app.kubernetes.io/component: app
+    # Etykieta na SAMYM Deploymencie (nie tylko na podach): tools/k3s/deploy.sh
+    # wybiera po niej consumer osobno od catalogu (`apply -l`), żeby wdrożyć
+    # go dopiero po rolloucie catalog-app — patrz komentarz w kroku 3/3.
+    app: search-consumer
 spec:
   replicas: 1
   selector:

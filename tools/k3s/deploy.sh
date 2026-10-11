@@ -14,7 +14,9 @@
 #       -> czekamy na gotowość StatefulSetów i ES green
 #    2. Job `migrate` (component=migrate): usuń stary, utwórz nowy, czekaj
 #       na Complete — Job jest niezmienny, `apply` z nowym obrazem by padł
-#    3. aplikacje (component=app) -> czekamy na rollout Deploymentów
+#    3. aplikacje (component=app), w trzech ruchach:
+#       search-consumer do 0 -> catalog-app + outbox-publisher -> search-consumer
+#       (dlaczego — komentarz przy kroku 3/3)
 # ============================================================================
 set -euo pipefail
 
@@ -59,9 +61,39 @@ if ! kk "${NS[@]}" wait job/migrate --for=condition=complete --timeout=600s; the
 fi
 kk "${NS[@]}" logs job/migrate --all-containers --tail=3 | sed 's/^/    /'
 
+# Bez mieszania wersji catalog i search-consumer. Kontrakt projekcji zmienia
+# się razem z oboma (np. Panel [2/8]: pole projected_at_us), a każda
+# kombinacja stara+nowa psuje zdarzenia:
+#   - stary consumer + nowy catalog: nowe pole trafia do _source, mapowanie
+#     `dynamic: strict` odrzuca zapis (400) -> wiadomość do `failed`;
+#   - nowy consumer + stary catalog: brak pola -> ponowienia przez ~7 s
+#     (retry_strategy), a rollout catalogu trwa dłużej -> `failed`.
+# Dlatego consumer stoi, dopóki catalog nie skończy rolloutu. Zdarzenia z tego
+# okna czekają w RabbitMQ (search.product.sync) — po to jest kolejka — i nowy
+# consumer zjada je po starcie. Gdy rollout catalogu padnie, skrypt kończy się
+# z consumerem na 0: lepiej, żeby zdarzenia czekały, niż szły do `failed`.
+# Naprawa = ponowny `make k3s-deploy` (nowym albo poprzednim tagiem).
 echo "[k3s-deploy] 3/3 aplikacje"
-kk apply -f "${WORK}/rendered.yaml" -l 'app.kubernetes.io/component=app' | grep -v unchanged || true
-for d in catalog-app outbox-publisher search-consumer; do kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s; done
+SEARCH_SEL='app.kubernetes.io/component=app,app=search-consumer'
+OTHER_APPS_SEL='app.kubernetes.io/component=app,app!=search-consumer'
+
+if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
+  echo "    search-consumer -> 0 replik (zdarzenia czekają w RabbitMQ)"
+  kk "${NS[@]}" scale deploy/search-consumer --replicas=0
+  for _ in $(seq 1 60); do
+    [ -z "$(kk "${NS[@]}" get pods -l app=search-consumer -o name)" ] && break
+    sleep 2
+  done
+  [ -z "$(kk "${NS[@]}" get pods -l app=search-consumer -o name)" ] \
+    || { echo "[k3s-deploy] pody search-consumer nie zniknęły w 2 min" >&2; exit 1; }
+fi
+
+kk apply -f "${WORK}/rendered.yaml" -l "${OTHER_APPS_SEL}" | grep -v unchanged || true
+for d in catalog-app outbox-publisher; do kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s; done
+
+# Manifest ma `replicas: 1`, więc apply przywraca consumer (już nowy obraz).
+kk apply -f "${WORK}/rendered.yaml" -l "${SEARCH_SEL}" | grep -v unchanged || true
+kk "${NS[@]}" rollout status deploy/search-consumer --timeout=300s
 
 echo "[k3s-deploy] OK — działa wersja ${TAG:0:12}"
 kk "${NS[@]}" get deploy,sts -o wide | awk '{print $1, $2, $NF}' | column -t
