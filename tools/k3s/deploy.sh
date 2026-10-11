@@ -27,6 +27,18 @@ TAG="${1:-$("${ROOT}/tools/vps/latest-image-tag.sh")}"
 kk() { /opt/homebrew/bin/kubectl --kubeconfig "${HOME}/.kube/elastic-vps.yaml" --request-timeout=60s "$@"; }
 NS=(-n marketplace)
 
+# `kk apply | grep -v unchanged || true` połykało błąd samego apply (tunel,
+# timeout 60 s): `|| true` jest tam potrzebne, bo grep ma exit 1, gdy wszystko
+# jest unchanged. Dlatego najpierw wynik apply, potem filtr.
+# $1 = selektor etykiet, $2 = funkcja wołana przy błędzie (z opisem błędu).
+apply_sel() {
+  local out
+  out="$(kk apply -f "${WORK}/rendered.yaml" -l "$1" 2>&1)" \
+    || { echo "${out}" >&2; "$2" "kubectl apply -l '$1' nie przeszedł"; }
+  grep -v unchanged <<<"${out}" || true
+}
+fail() { echo "[k3s-deploy] BŁĄD: $1" >&2; exit 1; }
+
 nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
 
 # Tag w KOPII manifestów — w repo zostaje wersja referencyjna.
@@ -36,7 +48,7 @@ sed -i '' -E "s/^([[:space:]]*newTag:).*/\1 ${TAG}/" "${WORK}/kustomization.yaml
 kk kustomize "${WORK}" > "${WORK}/rendered.yaml"
 
 echo "[k3s-deploy] 1/3 infrastruktura (${TAG:0:12})"
-kk apply -f "${WORK}/rendered.yaml" -l 'app.kubernetes.io/component notin (app,migrate)' | grep -v unchanged || true
+apply_sel 'app.kubernetes.io/component notin (app,migrate)' fail
 for sts in postgres rabbitmq redis; do kk "${NS[@]}" rollout status "sts/${sts}" --timeout=300s; done
 # NIE wystarczy "health=green": zaraz po apply ECK jeszcze nie zaczął zmian,
 # więc green pochodzi z POPRZEDNIEGO stanu — i aplikacje wdrażały się w trakcie
@@ -92,15 +104,6 @@ step3_fail() {
   echo "      make k3s k=\"-n marketplace scale deploy/search-consumer --replicas=1\"" >&2
   exit 1
 }
-# `grep -v unchanged` ma exit 1, gdy wszystko jest unchanged, a `|| true` za
-# potokiem połykało też błąd samego apply (tunel, timeout 60 s). Dlatego
-# najpierw wynik apply, potem filtr.
-apply_apps() {
-  local out
-  out="$(kk apply -f "${WORK}/rendered.yaml" -l "$1" 2>&1)" \
-    || { echo "${out}" >&2; step3_fail "kubectl apply -l '$1' nie przeszedł"; }
-  grep -v unchanged <<<"${out}" || true
-}
 
 if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
   echo "    search-consumer -> 0 replik (zdarzenia czekają w RabbitMQ)"
@@ -113,13 +116,13 @@ if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
     || { echo "[k3s-deploy] pody search-consumer nie zniknęły w 2 min" >&2; exit 1; }
 fi
 
-apply_apps "${OTHER_APPS_SEL}"
+apply_sel "${OTHER_APPS_SEL}" step3_fail
 for d in catalog-app outbox-publisher; do
   kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s || step3_fail "rollout ${d} nie skończył się"
 done
 
 # Manifest ma `replicas: 1`, więc apply przywraca consumer (już nowy obraz).
-apply_apps "${SEARCH_SEL}"
+apply_sel "${SEARCH_SEL}" step3_fail
 kk "${NS[@]}" rollout status deploy/search-consumer --timeout=300s \
   || step3_fail "rollout search-consumer nie skończył się"
 # `rollout status` uznaje Deployment z 0 replik za wdrożony — sprawdzamy wprost,
