@@ -298,3 +298,18 @@ k3s: ## kubectl na klastrze VPS (make k3s k="get pods -n marketplace")
 .PHONY: k3s-deploy
 k3s-deploy: ## Wdróż na k3s: ostatni build CI albo tag=<SHA> (infra -> Job migrate -> aplikacje)
 	@bash tools/k3s/deploy.sh $(tag)
+
+.PHONY: k3s-ui
+k3s-ui: ## Otwórz UI z k3s na Macu: aplikacja :38080, Kibana :35601, RabbitMQ :36672 (Ctrl+C kończy)
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@echo ""
+	@echo "  Aplikacja  http://localhost:38080/search"
+	@echo "  Kibana     http://localhost:35601   (elastic / hasło: make vps-secret k=ELASTIC_PASSWORD)"
+	@echo "  RabbitMQ   http://localhost:36672   (marketplace / hasło: make vps-secret k=RABBITMQ_PASSWORD)"
+	@echo "  Ctrl+C zamyka."
+	@echo ""
+	@trap 'kill 0' INT TERM; \
+	  $(KUBECTL_VPS) -n marketplace port-forward svc/catalog-app 38080:80 >/dev/null & \
+	  $(KUBECTL_VPS) -n marketplace port-forward svc/marketplace-kb-http 35601:5601 >/dev/null & \
+	  $(KUBECTL_VPS) -n marketplace port-forward svc/rabbitmq 36672:15672 >/dev/null & \
+	  wait
