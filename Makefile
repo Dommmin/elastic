@@ -188,6 +188,11 @@ mq-get: ## Podejrzyj wiadomość bez usuwania (make mq-get q=search.product.sync
 seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500), realnym pipeline'em outboxu
 	$(DC) exec catalog-app php artisan marketplace:seed --n=$(or $(n),1500)
 
+.PHONY: admin
+admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); hasło wypisane raz
+	@test -n "$(email)" || { echo "Podaj email: make admin email=ty@example.com"; exit 1; }
+	$(DC) exec catalog-app php artisan marketplace:admin $(email)
+
 .PHONY: eval
 eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
 	$(DC) exec catalog-app php artisan search:eval
@@ -304,6 +309,12 @@ k3s-mq-status: ## Kolejki RabbitMQ na k3s: głębokość i konsumenci (Messenger
 	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
 	@$(KUBECTL_VPS) -n marketplace exec rabbitmq-0 -- rabbitmqctl list_queues \
 		name type messages messages_ready messages_unacknowledged consumers
+
+.PHONY: k3s-admin
+k3s-admin: ## Konto do panelu /panel na k3s (make k3s-admin email=ty@example.com); hasło wypisane raz
+	@test -n "$(email)" || { echo "Podaj email: make k3s-admin email=ty@example.com"; exit 1; }
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@$(KUBECTL_VPS) -n marketplace exec deploy/catalog-app -- php artisan marketplace:admin $(email)
 
 .PHONY: k3s-ui
 k3s-ui: ## Otwórz UI z k3s na Macu: aplikacja :38080, Kibana :35601, RabbitMQ :36672 (Ctrl+C kończy)
