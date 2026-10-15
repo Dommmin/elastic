@@ -36,8 +36,8 @@ q() { python3 -c "import json,sys; c=json.load(open('${CFG}')); $1"; }
 check "żadna usługa nie ma build:" "0" "$(q 'print(sum(1 for s in c["services"].values() if "build" in s))')"
 check "zero bind-mountów (repo nie ma na serwerze)" "0" \
   "$(q 'print(sum(1 for s in c["services"].values() for v in s.get("volumes",[]) if v.get("type")=="bind"))')"
-check "obrazy własne z ghcr.io/dommmin/elastic-*:abc123" "es-init es01 es02 es03 es-setup postgres rabbitmq catalog-app outbox-publisher search-consumer" \
-  "$(q 'print(" ".join(n for n in ["es-init","es01","es02","es03","es-setup","postgres","rabbitmq","catalog-app","outbox-publisher","search-consumer"] if c["services"][n]["image"].startswith("ghcr.io/dommmin/elastic-") and c["services"][n]["image"].endswith(":abc123")))')"
+check "obrazy własne z ghcr.io/dommmin/elastic-*:abc123" "es-init es01 es02 es03 es-setup postgres rabbitmq catalog-app outbox-publisher catalog-worker search-consumer" \
+  "$(q 'print(" ".join(n for n in ["es-init","es01","es02","es03","es-setup","postgres","rabbitmq","catalog-app","outbox-publisher","catalog-worker","search-consumer"] if c["services"][n]["image"].startswith("ghcr.io/dommmin/elastic-") and c["services"][n]["image"].endswith(":abc123")))')"
 check "catalog-vite nie startuje" "nie" "$(q 'print("tak" if "catalog-vite" in c["services"] else "nie")')"
 check "wszystkie porty tylko na 127.0.0.1" "0" \
   "$(q 'print(sum(1 for s in c["services"].values() for p in s.get("ports",[]) if p.get("host_ip")!="127.0.0.1"))')"

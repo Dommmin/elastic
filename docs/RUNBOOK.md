@@ -40,6 +40,7 @@
 | [025](#025) | Node'y ES znikają bez logu zamknięcia, restartują się w kółko | Docker | 7 |
 | [026](#026) | 18 testów Fortify pada tylko w kontenerze (419) — i testy WCIĄŻ czyściły Postgresa | Laravel / PHPUnit | 7 |
 | [027](#027) | Retry Messengera: `no exchange 'delays'` -> DLQ po 1 próbie (a pod spodem retry bez limitu) | RabbitMQ / Symfony | 7 |
+| [040](#040) | Zablokowany sprzedawca, a jego oferty wciąż w `/search` (worker polityk) | Kolejka / Portal sprzedawcy | Portal |
 
 ---
 
@@ -1739,6 +1740,53 @@ Pięć różnych przyczyn i ten sam objaw (`verify.sh` stoi bez końca, bez bł�
 Zasada: **każde wywołanie sieciowe w automatyzacji ma mieć limit czasu**, a każdy
 mechanizm limitu czasu trzeba przetestować na szybkim przypadku. Strażnik z pkt 2
 „działał”, tylko spowalniał wszystko do swojego limitu.
+
+<a id="040"></a>
+## 040 — Sprzedawca zablokowany, a jego oferty wciąż widać w `/search` (catalog-worker)
+
+**Objaw**
+Moderator zablokował sprzedawcę (status `blocked` w `sellers`), ale jego oferty
+nadal są `published` i wyszukiwarka je zwraca. Po odblokowaniu odwrotnie: oferty
+zostają `suspended`.
+
+**Diagnoza**
+```bash
+docker compose ps catalog-worker        # k8s: kubectl -n marketplace get deploy catalog-worker
+make worker-logs
+docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB \
+  -c "select id, attempts, available_at from jobs order by id"
+docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB \
+  -c "select id, failed_at, left(exception, 200) from failed_jobs order by id desc limit 5"
+```
+Job w `jobs` = worker nie nadąża albo nie działa. Pusty `jobs` i pusty
+`failed_jobs` przy niezmienionych ofertach = job nie powstał albo już się
+wykonał; sprawdź, czy sprzedawca ma teraz właściwy status (job nic nie robi,
+gdy status zdążył się zmienić).
+
+**Przyczyna**
+Polityka „zablokowany sprzedawca nie sprzedaje” jest *eventually consistent*:
+handler blokady tylko wstawia job do tabeli `jobs` w tej samej transakcji co
+zmianę statusu (albo blokada i job, albo nic), a oferty zawiesza dopiero proces
+`catalog-worker` (`queue:work database`). Bez żywego workera blokada działa tylko
+na sam status sprzedawcy.
+
+**Naprawa**
+1. Worker nie działa: `docker compose --profile apps up -d catalog-worker`
+   (k8s: `kubectl -n marketplace rollout restart deploy/catalog-worker`).
+2. Job w `failed_jobs` (po 5 próbach z backoffem 5/30/120 s): usuń przyczynę
+   widoczną w kolumnie `exception`, potem
+   `docker compose exec catalog-app php artisan queue:retry all`
+   (albo konkretne ID). Polityka jest idempotentna, więc ponowienie nie
+   dubluje zdarzeń outboxu.
+3. Job zniknął, a oferty nie: przepchnij politykę ręcznie w tinkerze:
+   `app(SellerPortal\Application\Policy\SuspendOffersOfBlockedSeller::class)->run(SellerPortal\Domain\Seller\SellerId::fromInt(ID))`
+   (po odblokowaniu analogicznie `ReinstateOffersOfUnblockedSeller`).
+
+**Czego się nauczyłem**
+Spójność ostateczna wymaga właściciela dla „ostatecznie”: bez działającego
+konsumenta kolejka jest tylko tabelą. Worker ma więc healthcheck, wpis tutaj
+i pozycję w sprawdzeniach wdrożenia. Szybkie „zablokuj → odblokuj” jest
+bezpieczne, bo job sprawdza stan sprzedawcy w chwili wykonania.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

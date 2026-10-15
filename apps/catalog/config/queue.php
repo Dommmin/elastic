@@ -41,6 +41,10 @@ return [
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
             'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+            // Polityki portalu sprzedawcy (blokada → zawieszenie ofert) wymagają,
+            // by wiersz w `jobs` powstał w TEJ SAMEJ transakcji co zmiana
+            // sprzedawcy: wyjątek wycofuje obie rzeczy. `true` odroczyłby job
+            // do commitu i zgubił tę gwarancję.
             'after_commit' => false,
         ],
 

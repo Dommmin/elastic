@@ -118,6 +118,16 @@ services:
       LOG_CHANNEL: stderr
     volumes: !reset []
 
+  catalog-worker:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${CATALOG_APP_KEY:?}
+      LOG_CHANNEL: stderr
+    volumes: !reset []
+
   search-consumer:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
     build: !reset null

@@ -89,6 +89,10 @@ ps: ## Stan kontenerów
 logs: ## Logi (make logs s=elasticsearch)
 	$(DC) logs -f --tail=200 $(s)
 
+.PHONY: worker-logs
+worker-logs: ## Logi catalog-worker (polityki blokady sprzedawcy, RUNBOOK #040)
+	$(DC) logs -f --tail=200 catalog-worker
+
 .PHONY: sh
 sh: ## Shell w kontenerze (make sh s=es01)
 	$(DC) exec $(s) bash

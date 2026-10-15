@@ -442,6 +442,52 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # Worker kolejki `database`: polityki portalu sprzedawcy (zablokowany
+  # sprzedawca -> zawieszenie jego ofert, odblokowanie -> przywrócenie).
+  # Blokada tylko WSTAWIA job do tabeli `jobs` w swojej transakcji; bez tego
+  # procesu oferty zablokowanego sprzedawcy zostają w /search (RUNBOOK #040).
+  # Ten sam obraz co catalog-app; nie potrzebuje RabbitMQ.
+  catalog-worker:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/catalog.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+        NODE_VERSION: ${NODE_VERSION}
+    command: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=5", "--max-time=3600"]
+    environment:
+      APP_ENV: ${APP_ENV}
+      APP_DEBUG: ${APP_DEBUG}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: ${CATALOG_DB}
+      DB_USERNAME: ${CATALOG_DB_USER}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_CLIENT: phpredis
+    volumes:
+      - ./apps/catalog:/app
+    # Jak w outbox-publisher: HEALTHCHECK z obrazu pyta Caddy'ego, którego tu
+    # nie ma. Proces artisan jest PID 1; --max-time kończy go co godzinę,
+    # a `restart: unless-stopped` podnosi z nowym kodem.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q 'queue:work' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres: { condition: service_healthy }
+      catalog-app: { condition: service_healthy }
+    mem_limit: 256m
+    networks: [marketplace]
+    restart: unless-stopped
+
   search-consumer:
     profiles: [apps]
     build:

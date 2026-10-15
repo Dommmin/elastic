@@ -117,7 +117,7 @@ if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
 fi
 
 apply_sel "${OTHER_APPS_SEL}" step3_fail
-for d in catalog-app outbox-publisher; do
+for d in catalog-app outbox-publisher catalog-worker; do
   kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s || step3_fail "rollout ${d} nie skończył się"
 done
 

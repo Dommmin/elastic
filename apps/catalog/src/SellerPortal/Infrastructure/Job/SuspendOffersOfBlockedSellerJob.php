@@ -1,0 +1,32 @@
+<?php
+
+namespace SellerPortal\Infrastructure\Job;
+
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Queue\Queueable;
+use SellerPortal\Application\Policy\SuspendOffersOfBlockedSeller;
+use SellerPortal\Domain\Seller\SellerId;
+
+/**
+ * Job workera: zawieś oferty zablokowanego sprzedawcy.
+ *
+ * DLACZEGO w jobie tylko `int`: payload leży w tabeli `jobs` i musi przeżyć
+ * zmiany kodu; serwis i repozytoria wyciągamy z kontenera dopiero w `handle()`.
+ * Powtórzenia są bezpieczne, bo polityka jest idempotentna.
+ */
+final class SuspendOffersOfBlockedSellerJob implements ShouldQueue
+{
+    use Queueable;
+
+    public int $tries = 5;
+
+    /** @var list<int> */
+    public array $backoff = [5, 30, 120];
+
+    public function __construct(public readonly int $sellerId) {}
+
+    public function handle(SuspendOffersOfBlockedSeller $policy): void
+    {
+        $policy->run(SellerId::fromInt($this->sellerId));
+    }
+}
