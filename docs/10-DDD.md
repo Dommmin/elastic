@@ -297,7 +297,7 @@ trzy znaczenia w trzech miejscach:
 | Kontekst | Czym jest oferta | Kod |
 |---|---|---|
 | Seller Portal (zapis) | agregat z cyklem życia, strażnikiem ceny, regułami moderacji | `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:49` |
-| Katalog (odczyt) | wiersz tabeli do pokazania i do projekcji; jedyna reguła to „widoczna” | `apps/catalog/app/Models/Offer.php:63` (scope `listed()`) |
+| Katalog (odczyt) | wiersz tabeli do pokazania i do projekcji; jedyna reguła to „widoczna” | `apps/catalog/app/Models/Offer.php:70` (scope `listed()`) |
 | Wyszukiwarka | zagnieżdżony obiekt w dokumencie produktu: cena, sprzedawca, `in_stock` | `apps/catalog/app/Http/Controllers/Internal/ProductProjectionController.php:48` (`$product->listedOffers`) |
 
 Gdybyśmy na siłę zrobili *jeden* model „Offer” dla wszystkich trzech, Eloquent
@@ -1128,7 +1128,7 @@ w których byłoby marnotrawstwem.
   idempotencja konsumenta, mapowanie ES, PIT i `search_after`. Model
   domenowy niczego tu nie upraszcza. Dobre narzędzia to testy kontraktu
   projekcji i RUNBOOK. Jedyna reguła biznesowa („która oferta jest widoczna”)
-  ma *jedną* definicję po stronie odczytu: `apps/catalog/app/Models/Offer.php:63`
+  ma *jedną* definicję po stronie odczytu: `apps/catalog/app/Models/Offer.php:70`
   (`listed()`), zgodną z `Offer::isListed()` w domenie.
 - **Tożsamość** (generic): Fortify. Własny model użytkownika byłby
   budowaniem czegoś, co każdy już ma.
