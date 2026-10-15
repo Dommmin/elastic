@@ -142,9 +142,9 @@ test('porównanie wyróżnia różną cenę', function () {
     $child = Category::factory()->create(['name' => 'Buty', 'parent_id' => $parent->id]);
     $child->update(['path' => "{$parent->id}.{$child->id}"]);
     $product = Product::factory()->create(['name' => 'But', 'category_id' => $child->id]);
-    Offer::factory()->create(['product_id' => $product->id, 'price_cents' => 300, 'stock' => 2, 'active' => true]);
-    // Nieaktywna oferta nie liczy się do ceny, jak w projekcji.
-    Offer::factory()->create(['product_id' => $product->id, 'price_cents' => 100, 'stock' => 0, 'active' => false]);
+    Offer::factory()->create(['product_id' => $product->id, 'price_cents' => 300, 'stock' => 2]);
+    // Oferta bez stanu nie jest widoczna (`listed()`) i nie liczy się do ceny, jak w projekcji.
+    Offer::factory()->create(['product_id' => $product->id, 'price_cents' => 100, 'stock' => 0]);
     readerReturns(['version' => 1, 'source' => [
         'name' => 'But',
         'category' => ['id' => (string) $child->id, 'path' => "{$parent->id}.{$child->id}"],

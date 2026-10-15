@@ -24,8 +24,8 @@ class ProductController extends Controller
 
         $products = Product::query()
             ->with(['brand:id,name', 'category:id,path'])
-            ->withCount(['offers as active_offers_count' => fn ($query) => $query->where('active', true)])
-            ->withMin(['offers as min_price_cents' => fn ($query) => $query->where('active', true)], 'price_cents')
+            ->withCount(['offers as listed_offers_count' => fn ($query) => $query->listed()])
+            ->withMin(['offers as min_price_cents' => fn ($query) => $query->listed()], 'price_cents')
             ->when($q !== '', function ($query) use ($q) {
                 // `ILIKE` nie istnieje w SQLite (testy), `lower() like` działa w obu bazach.
                 ctype_digit($q)
@@ -45,7 +45,7 @@ class ProductController extends Controller
             'name' => $product->name,
             'brand' => $product->brand?->name,
             'category_label' => $labels[$product->category?->path] ?? '',
-            'active_offers_count' => (int) $product->active_offers_count,
+            'listed_offers_count' => (int) $product->listed_offers_count,
             'min_price_cents' => $product->min_price_cents === null ? null : (int) $product->min_price_cents,
         ]);
 
@@ -65,7 +65,7 @@ class ProductController extends Controller
             'brands' => fn () => Brand::query()->orderBy('name')->get(['id', 'name']),
             'categories' => fn () => $this->subcategoryOptions(),
             'offers' => fn () => $product->offers()
-                ->with('seller:id,name')
+                ->with('seller:id,name,status')
                 ->orderBy('id')
                 ->get()
                 ->map(fn (Offer $offer): array => [
@@ -73,7 +73,8 @@ class ProductController extends Controller
                     'seller' => $offer->seller?->name,
                     'price_cents' => $offer->price_cents,
                     'stock' => $offer->stock,
-                    'active' => $offer->active,
+                    'status' => $offer->status,
+                    'seller_status' => $offer->seller?->status,
                     'version' => $offer->version,
                 ])
                 ->all(),

@@ -46,9 +46,9 @@ class Product extends Model
         return $this->hasMany(Offer::class);
     }
 
-    public function activeOffers(): HasMany
+    public function listedOffers(): HasMany
     {
-        return $this->offers()->where('active', true);
+        return $this->offers()->listed();
     }
 
     public function reviews(): HasMany

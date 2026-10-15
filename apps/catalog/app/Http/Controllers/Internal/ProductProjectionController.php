@@ -33,7 +33,7 @@ class ProductProjectionController extends Controller
         // starsze dane nowszą wersją i zablokować aktualizację.
         $projectedAtUs = $clock->nowMicros();
 
-        $product = Product::with(['brand', 'category', 'activeOffers.seller'])
+        $product = Product::with(['brand', 'category', 'listedOffers.seller'])
             ->withCount('reviews')
             ->withAvg('reviews', 'rating')
             ->find($id);
@@ -45,7 +45,7 @@ class ProductProjectionController extends Controller
             return response()->json(['projected_at_us' => $projectedAtUs], 404);
         }
 
-        $offers = $product->activeOffers;
+        $offers = $product->listedOffers;
 
         // JSON_PRESERVE_ZERO_FRACTION: bez tej flagi PHP koduje float 4.0
         // jako "4", nie "4.0". Po drugiej stronie (search-service, Symfony)

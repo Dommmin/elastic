@@ -16,7 +16,7 @@ type ProductRow = {
     name: string;
     brand: string | null;
     category_label: string;
-    active_offers_count: number;
+    listed_offers_count: number;
     min_price_cents: number | null;
 };
 
@@ -115,7 +115,7 @@ watch(q, (value) => {
                         <td class="px-3 py-2">{{ product.brand }}</td>
                         <td class="px-3 py-2">{{ product.category_label }}</td>
                         <td class="px-3 py-2 text-right">
-                            {{ product.active_offers_count }}
+                            {{ product.listed_offers_count }}
                         </td>
                         <td class="px-3 py-2 text-right">
                             {{

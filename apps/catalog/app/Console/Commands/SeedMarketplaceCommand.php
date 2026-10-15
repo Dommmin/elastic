@@ -182,6 +182,7 @@ class SeedMarketplaceCommand extends Command
      */
     private function seedSellers(): array
     {
+        // Fabryka daje `status => 'active'`: seed omija rejestrację i akceptację portalu.
         return Seller::factory()->count(60)->create()->all();
     }
 
@@ -222,7 +223,9 @@ class SeedMarketplaceCommand extends Command
                     'stock' => fake()->numberBetween(0, 50),
                     'condition' => fake()->randomElement(['new', 'used']),
                     'shipping_days' => fake()->numberBetween(1, 14),
-                    'active' => true,
+                    // Seeder to hurtowy import, nie operacja domenowa: wstawia
+                    // gotowy stan wprost, bez agregatu i zdarzeń portalu.
+                    'status' => 'published',
                 ]);
             }
 

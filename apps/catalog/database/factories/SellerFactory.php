@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\Seller;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -25,6 +26,22 @@ class SellerFactory extends Factory
             'city' => fake()->city(),
             'lat' => fake()->latitude(49, 55),
             'lon' => fake()->longitude(14, 24),
+            'status' => 'active',
         ];
+    }
+
+    public function pending(): static
+    {
+        return $this->state(['status' => 'pending']);
+    }
+
+    public function blocked(): static
+    {
+        return $this->state(['status' => 'blocked']);
+    }
+
+    public function forUser(User $user): static
+    {
+        return $this->state(['user_id' => $user->id]);
     }
 }

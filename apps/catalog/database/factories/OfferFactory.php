@@ -25,7 +25,22 @@ class OfferFactory extends Factory
             'stock' => fake()->numberBetween(0, 100),
             'condition' => fake()->randomElement(['new', 'used']),
             'shipping_days' => fake()->numberBetween(1, 14),
-            'active' => true,
+            'status' => 'published',
         ];
+    }
+
+    public function draft(): static
+    {
+        return $this->state(['status' => 'draft']);
+    }
+
+    public function withdrawn(): static
+    {
+        return $this->state(['status' => 'withdrawn']);
+    }
+
+    public function soldOut(): static
+    {
+        return $this->state(['status' => 'published', 'stock' => 0]);
     }
 }

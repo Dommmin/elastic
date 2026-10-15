@@ -100,7 +100,7 @@ class EventTrace
 
     /**
      * Strona Postgresa liczona jak w `ProductProjectionController`: tylko
-     * aktywne oferty, najniższa cena i „jakikolwiek stan > 0”.
+     * widoczne oferty (`Offer::listed()`), najniższa cena i „jakikolwiek stan > 0”.
      * Bez ES nie ma z czym porównać, więc nic nie jest wyróżnione; brak
      * dokumentu (404) to już różnica w każdym polu.
      *
@@ -110,7 +110,7 @@ class EventTrace
     private function comparison(Product $product, bool $esAvailable, ?array $source): array
     {
         $product->loadMissing('category');
-        $activeOffers = $product->activeOffers()->get(['price_cents', 'stock']);
+        $listedOffers = $product->listedOffers()->get(['price_cents', 'stock']);
 
         $postgresPath = $product->category?->path;
         $esPath = $source['category']['path'] ?? null;
@@ -119,8 +119,8 @@ class EventTrace
         $postgres = [
             'name' => $product->name,
             'category' => $postgresPath !== null ? $labels[$postgresPath] : null,
-            'price_min' => $activeOffers->isNotEmpty() ? (int) $activeOffers->min('price_cents') : null,
-            'in_stock' => $activeOffers->contains(fn ($offer) => $offer->stock > 0),
+            'price_min' => $listedOffers->isNotEmpty() ? (int) $listedOffers->min('price_cents') : null,
+            'in_stock' => $listedOffers->contains(fn ($offer) => $offer->stock > 0),
         ];
 
         $es = $source === null ? array_fill_keys(array_keys($postgres), null) : [

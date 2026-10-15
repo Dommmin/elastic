@@ -21,16 +21,15 @@ test('projekcja produktu zawiera dane potrzebne do zbudowania dokumentu ES', fun
         'product_id' => $product->id,
         'price_cents' => 249900,
         'stock' => 3,
-        'active' => true,
     ]);
 
-    // Nieaktywna oferta NIE powinna wpływać na price_min/price_max/in_stock —
+    // Wycofana oferta NIE powinna wpływać na price_min/price_max/in_stock —
     // to jest dokładnie ten filtr, który realnie widzi użytkownik wyszukiwarki.
     Offer::factory()->create([
         'product_id' => $product->id,
         'price_cents' => 1,
         'stock' => 999,
-        'active' => false,
+        'status' => 'withdrawn',
     ]);
 
     $user = User::factory()->create();
@@ -55,10 +54,10 @@ test('projekcja produktu zawiera dane potrzebne do zbudowania dokumentu ES', fun
         ->assertJsonPath('offers.0.price', 249900);
 });
 
-test('produkt bez aktywnych ofert ma in_stock=false i price_min=null', function () {
+test('produkt bez widocznych ofert ma in_stock=false i price_min=null', function () {
     $product = Product::factory()->create();
 
-    Offer::factory()->create(['product_id' => $product->id, 'active' => false]);
+    Offer::factory()->create(['product_id' => $product->id, 'status' => 'withdrawn']);
 
     $response = $this->getJson("/api/internal/products/{$product->id}/projection");
 

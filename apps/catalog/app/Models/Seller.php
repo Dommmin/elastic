@@ -20,6 +20,10 @@ class Seller extends Model
         'city',
         'lat',
         'lon',
+        'user_id',
+        'status',
+        'status_reason',
+        'status_changed_at',
     ];
 
     protected function casts(): array
@@ -29,6 +33,8 @@ class Seller extends Model
             'lat' => 'decimal:6',
             'lon' => 'decimal:6',
             'version' => 'integer',
+            'user_id' => 'integer',
+            'status_changed_at' => 'datetime',
         ];
     }
 

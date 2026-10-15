@@ -3,10 +3,11 @@
 namespace App\Models;
 
 use App\Concerns\EmitsOutboxEvents;
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Facades\DB;
 
 class Offer extends Model
 {
@@ -22,7 +23,12 @@ class Offer extends Model
         'stock',
         'condition',
         'shipping_days',
-        'active',
+        'status',
+        'suspension_kind',
+        'suspension_note',
+        'suspended_by',
+        'pending_price_cents',
+        'pending_requested_at',
     ];
 
     protected function casts(): array
@@ -31,7 +37,9 @@ class Offer extends Model
             'price_cents' => 'integer',
             'stock' => 'integer',
             'shipping_days' => 'integer',
-            'active' => 'boolean',
+            'suspended_by' => 'integer',
+            'pending_price_cents' => 'integer',
+            'pending_requested_at' => 'datetime',
             'version' => 'integer',
         ];
     }
@@ -47,38 +55,13 @@ class Offer extends Model
     }
 
     /**
-     * Aktualizacja ceny i/lub stanu magazynowego jako osobne zdarzenia
-     * domenowe. Zmiana obu naraz (np. promocja + dosprzedaż) generuje
-     * DWA wpisy w outboksie, nie jeden ogólny "offer.updated" — dzięki temu
-     * konsument (i przyszły dashboard analityczny) widzi, co się realnie
-     * stało, a nie tylko że "coś się zmieniło" (docs/02-APLIKACJE.md,
-     * katalog zdarzeń).
+     * Jedyna definicja „widoczna w wyszukiwarce” po stronie odczytu; zgodna
+     * z `Offer::isListed()` w domenie. Zastępuje dawne `where('active', true)`
+     * w projekcji, panelu produktów i śladzie zdarzenia.
      */
-    public function updateWithOutbox(array $attributes, string $defaultEventType = 'offer.updated', array $eventsByDirtyField = []): static
+    #[Scope]
+    protected function listed(Builder $query): void
     {
-        return $this->performUpdateWithOutbox($attributes, $defaultEventType, array_merge([
-            'price_cents' => 'offer.price_changed',
-            'stock' => 'offer.stock_changed',
-        ], $eventsByDirtyField));
-    }
-
-    /**
-     * Dezaktywacja jest kierunkowa (true -> false), więc nie pasuje do
-     * generycznej mapy "zmienione pole -> event" z updateWithOutbox —
-     * zmiana 'active' w drugą stronę (reaktywacja oferty) to inny fakt
-     * biznesowy, nie ma dla niej osobnego zdarzenia w katalogu i zostaje
-     * pod "offer.updated".
-     */
-    public function deactivateWithOutbox(): static
-    {
-        return DB::transaction(function () {
-            $this->active = false;
-            $this->version = $this->version + 1;
-            $this->save();
-
-            $this->recordOutboxEvent('offer.deactivated', $this->toOutboxPayload());
-
-            return $this;
-        });
+        $query->where('status', 'published')->where('stock', '>', 0);
     }
 }

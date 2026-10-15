@@ -26,11 +26,11 @@ test('zalogowany nie-admin dostaje 403', function () {
         ->assertForbidden();
 });
 
-test('lista pokazuje produkty z etykietą kategorii i najniższą aktywną ceną', function () {
+test('lista pokazuje produkty z etykietą kategorii i najniższą widoczną ceną', function () {
     $product = Product::factory()->create(['category_id' => subcategory()->id]);
-    Offer::factory()->for($product)->create(['price_cents' => 500, 'active' => true]);
-    Offer::factory()->for($product)->create(['price_cents' => 300, 'active' => true]);
-    Offer::factory()->for($product)->create(['price_cents' => 100, 'active' => false]);
+    Offer::factory()->for($product)->create(['price_cents' => 500, 'stock' => 1]);
+    Offer::factory()->for($product)->create(['price_cents' => 300, 'stock' => 1]);
+    Offer::factory()->for($product)->withdrawn()->create(['price_cents' => 100, 'stock' => 1]);
 
     $this->actingAs(User::factory()->admin()->create())
         ->get('/panel/products')
@@ -40,7 +40,7 @@ test('lista pokazuje produkty z etykietą kategorii i najniższą aktywną ceną
             ->where('products.data.0.id', $product->id)
             ->where('products.data.0.brand', $product->brand->name)
             ->where('products.data.0.category_label', 'Dział › Pod')
-            ->where('products.data.0.active_offers_count', 2)
+            ->where('products.data.0.listed_offers_count', 2)
             ->where('products.data.0.min_price_cents', 300)
             ->where('filters.q', ''));
 });

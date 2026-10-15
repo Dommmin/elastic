@@ -1,15 +1,15 @@
 <?php
 
-use App\Models\Offer;
 use App\Models\Outbox;
 use App\Models\Product;
 use App\Models\Review;
+use App\Models\Seller;
 use App\Models\User;
 
 /**
  * Weryfikuje rdzeń wzorca Transactional Outbox z docs/05-SPOJNOSC-DANYCH.md:
  * atomowość zapisu (encja + zdarzenie w jednej transakcji), granularność
- * zdarzeń (osobny event na zmienione pole u Offer) i external versioning
+ * zdarzeń (osobny event na zmienione pole) i external versioning
  * (sequence rośnie monotonicznie z każdą zmianą agregatu).
  */
 test('createWithOutbox zapisuje encję i dokładnie jedno zdarzenie w tej samej transakcji', function () {
@@ -29,44 +29,41 @@ test('createWithOutbox zapisuje encję i dokładnie jedno zdarzenie w tej samej 
         ->and($event->payload)->toHaveKey('name', 'Telefon testowy');
 });
 
-test('zmiana ceny I stanu magazynowego naraz emituje DWA osobne zdarzenia', function () {
-    $offer = Offer::factory()->create(['price_cents' => 10000, 'stock' => 5]);
+/**
+ * Mapa „zmienione pole -> zdarzenie” żyje tylko w teście: portal sprzedawcy
+ * ma własne zdarzenia, a `Seller` zostaje najprostszym modelem z traitem.
+ */
+const SELLER_EVENTS = ['name' => 'seller.renamed', 'city' => 'seller.relocated'];
 
-    $offer->updateWithOutbox(['price_cents' => 8900, 'stock' => 3], 'offer.updated');
+test('zmiana dwóch pól naraz emituje DWA osobne zdarzenia', function () {
+    $seller = Seller::factory()->create(['name' => 'Sklep A', 'city' => 'Łódź']);
+
+    $seller->updateWithOutbox(['name' => 'Sklep B', 'city' => 'Gdynia'], 'seller.updated', SELLER_EVENTS);
 
     $types = Outbox::pluck('event_type')->sort()->values()->all();
 
-    expect($types)->toBe(['offer.price_changed', 'offer.stock_changed']);
+    expect($types)->toBe(['seller.relocated', 'seller.renamed']);
 });
 
 test('zmiana pola bez dedykowanego mapowania spada do zdarzenia domyślnego', function () {
-    $offer = Offer::factory()->create(['shipping_days' => 3]);
+    $seller = Seller::factory()->create(['rating' => 3]);
 
-    $offer->updateWithOutbox(['shipping_days' => 5], 'offer.updated');
+    $seller->updateWithOutbox(['rating' => 5], 'seller.updated', SELLER_EVENTS);
 
-    expect(Outbox::pluck('event_type')->all())->toBe(['offer.updated']);
+    expect(Outbox::pluck('event_type')->all())->toBe(['seller.updated']);
 });
 
 test('sequence rośnie monotonicznie z każdą aktualizacją tego samego agregatu', function () {
-    $offer = Offer::factory()->create(['price_cents' => 10000]);
-    expect($offer->version)->toBe(1);
+    $seller = Seller::factory()->create(['name' => 'Sklep A']);
+    expect($seller->version)->toBe(1);
 
-    $offer->updateWithOutbox(['price_cents' => 9000], 'offer.updated');
-    $offer->updateWithOutbox(['price_cents' => 8000], 'offer.updated');
+    $seller->updateWithOutbox(['name' => 'Sklep B'], 'seller.updated', SELLER_EVENTS);
+    $seller->updateWithOutbox(['name' => 'Sklep C'], 'seller.updated', SELLER_EVENTS);
 
     $sequences = Outbox::orderBy('id')->pluck('sequence')->all();
 
     expect($sequences)->toBe([2, 3])
-        ->and($offer->fresh()->version)->toBe(3);
-});
-
-test('deaktywacja oferty emituje offer.deactivated i ustawia active=false', function () {
-    $offer = Offer::factory()->create(['active' => true]);
-
-    $offer->deactivateWithOutbox();
-
-    expect($offer->fresh()->active)->toBeFalse();
-    expect(Outbox::first()->event_type)->toBe('offer.deactivated');
+        ->and($seller->fresh()->version)->toBe(3);
 });
 
 test('modele create-only (Review) nie wymagają kolumny version', function () {
@@ -88,10 +85,10 @@ test('modele create-only (Review) nie wymagają kolumny version', function () {
 });
 
 test('każde zdarzenie ma unikalny event_id (ULID) — klucz idempotencji konsumenta', function () {
-    $offer = Offer::factory()->create();
+    $seller = Seller::factory()->create();
 
-    $offer->updateWithOutbox(['stock' => 1], 'offer.updated');
-    $offer->updateWithOutbox(['stock' => 2], 'offer.updated');
+    $seller->updateWithOutbox(['name' => 'Sklep B'], 'seller.updated', SELLER_EVENTS);
+    $seller->updateWithOutbox(['name' => 'Sklep C'], 'seller.updated', SELLER_EVENTS);
 
     $eventIds = Outbox::pluck('event_id');
 
