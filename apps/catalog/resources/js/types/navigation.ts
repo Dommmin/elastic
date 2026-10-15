@@ -11,4 +11,6 @@ export type NavItem = {
     href: NonNullable<InertiaLinkProps['href']>;
     icon?: LucideIcon;
     isActive?: boolean;
+    /** Licznik przy pozycji menu; 0 i brak nie są pokazywane. */
+    badge?: number;
 };

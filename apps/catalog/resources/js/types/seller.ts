@@ -75,10 +75,7 @@ export type SellerOfferDetails = {
     status: OfferStatus;
     is_sold_out: boolean;
     is_listed: boolean;
-    suspension: {
-        kind: 'moderation' | 'seller_blocked';
-        note: string | null;
-    } | null;
+    suspension: OfferSuspension | null;
     pending_price: { price_cents: number; requested_at: string } | null;
     version: number;
 };
@@ -108,4 +105,26 @@ export type ProductLookupHit = {
     name: string;
     brand: string | null;
     ean: string | null;
+};
+
+/** Akcje moderatora z `Offer::allowedActionsFor(Actor::Moderator)`. */
+export type ModeratorOfferAction =
+    'suspend' | 'reinstate' | 'approve_price_change' | 'reject_price_change';
+
+/** Powód zawieszenia oferty: ręcznie przez moderatora albo blokada sprzedawcy. */
+export type OfferSuspension = {
+    kind: 'moderation' | 'seller_blocked';
+    note: string | null;
+};
+
+/** Wiersz kolejki `panel/moderation/price-changes` (ReadModel\PriceChangeQueue). */
+export type PriceChangeQueueItem = {
+    offer_id: number;
+    product: { id: number; name: string };
+    seller: { id: number; name: string };
+    current_price_cents: number;
+    proposed_price_cents: number;
+    /** Wartość bezwzględna, zaokrąglona; kierunek wynika z porównania cen. */
+    change_percent: number;
+    requested_at: string;
 };

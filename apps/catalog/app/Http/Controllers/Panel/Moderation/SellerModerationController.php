@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Panel\Moderation;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Panel\SellerDecisionReasonRequest;
+use App\Http\Requests\Panel\ModerationReasonRequest;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -46,14 +46,14 @@ class SellerModerationController extends Controller
         return $this->done('Sprzedawca zaakceptowany');
     }
 
-    public function reject(SellerDecisionReasonRequest $request, int $seller, RejectSellerHandler $handler): RedirectResponse
+    public function reject(ModerationReasonRequest $request, int $seller, RejectSellerHandler $handler): RedirectResponse
     {
         $handler->handle(new RejectSeller($seller, $this->moderatorId($request), $request->validated('reason')));
 
         return $this->done('Zgłoszenie odrzucone');
     }
 
-    public function block(SellerDecisionReasonRequest $request, int $seller, BlockSellerHandler $handler): RedirectResponse
+    public function block(ModerationReasonRequest $request, int $seller, BlockSellerHandler $handler): RedirectResponse
     {
         $handler->handle(new BlockSeller($seller, $this->moderatorId($request), $request->validated('reason')));
 

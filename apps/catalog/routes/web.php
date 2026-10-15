@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\Panel\Moderation\OfferModerationController;
+use App\Http\Controllers\Panel\Moderation\PriceChangeModerationController;
 use App\Http\Controllers\Panel\Moderation\SellerModerationController;
 use App\Http\Controllers\Panel\ProductController;
 use App\Http\Controllers\SearchController;
@@ -63,6 +65,12 @@ Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group
     Route::post('sellers/{seller}/reject', [SellerModerationController::class, 'reject'])->whereNumber('seller')->name('sellers.reject');
     Route::post('sellers/{seller}/block', [SellerModerationController::class, 'block'])->whereNumber('seller')->name('sellers.block');
     Route::post('sellers/{seller}/unblock', [SellerModerationController::class, 'unblock'])->whereNumber('seller')->name('sellers.unblock');
+
+    Route::get('moderation/price-changes', [PriceChangeModerationController::class, 'index'])->name('moderation.price-changes');
+    Route::post('offers/{offer}/price-change/approve', [PriceChangeModerationController::class, 'approve'])->whereNumber('offer')->name('offers.price-change.approve');
+    Route::post('offers/{offer}/price-change/reject', [PriceChangeModerationController::class, 'reject'])->whereNumber('offer')->name('offers.price-change.reject');
+    Route::post('offers/{offer}/suspend', [OfferModerationController::class, 'suspend'])->whereNumber('offer')->name('offers.suspend');
+    Route::post('offers/{offer}/reinstate', [OfferModerationController::class, 'reinstate'])->whereNumber('offer')->name('offers.reinstate');
 });
 
 require __DIR__.'/settings.php';

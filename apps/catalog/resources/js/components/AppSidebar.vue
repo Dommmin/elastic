@@ -5,6 +5,7 @@ import {
     FolderGit2,
     LayoutGrid,
     PackageSearch,
+    Scale,
     Store,
     Users,
 } from '@lucide/vue';
@@ -24,6 +25,7 @@ import {
 } from '@/components/ui/sidebar';
 import { hasSellerPortal } from '@/lib/sellerStatus';
 import { dashboard } from '@/routes';
+import { priceChanges as panelPriceChanges } from '@/routes/panel/moderation';
 import { index as panelProducts } from '@/routes/panel/products';
 import { index as panelSellers } from '@/routes/panel/sellers';
 import {
@@ -63,6 +65,13 @@ const mainNavItems = computed<NavItem[]>(() => [
         ? [
               { title: 'Panel', href: panelProducts(), icon: PackageSearch },
               { title: 'Sprzedawcy', href: panelSellers(), icon: Users },
+              {
+                  title: 'Zmiany cen',
+                  href: panelPriceChanges(),
+                  icon: Scale,
+                  badge:
+                      page.props.moderation?.pending_price_changes ?? undefined,
+              },
           ]
         : []),
 ]);

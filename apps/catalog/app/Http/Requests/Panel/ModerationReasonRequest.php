@@ -6,10 +6,11 @@ use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
 /**
- * Powód odrzucenia lub blokady sprzedawcy — trafia do sprzedawcy, więc nie
- * może być pusty. Ten sam zakres pilnuje value object `Reason`.
+ * Powód decyzji moderatora (odrzucenie lub blokada sprzedawcy, odrzucenie
+ * zmiany ceny) — trafia do sprzedawcy, więc nie może być pusty. Ten sam
+ * zakres pilnuje value object `Reason`.
  */
-class SellerDecisionReasonRequest extends FormRequest
+class ModerationReasonRequest extends FormRequest
 {
     /**
      * Dostęp pilnuje już `can:panel` na grupie tras.

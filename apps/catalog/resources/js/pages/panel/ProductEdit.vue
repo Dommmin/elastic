@@ -44,6 +44,8 @@ defineOptions({
 const page = usePage();
 // Flash z `Inertia::flash` (tekst „Zapisano…” / „Bez zmian”) znika przy kolejnej nawigacji.
 const status = computed(() => page.flash.status as string | undefined);
+// Odmowa agregatu przy akcji moderatora (np. wyścig dwóch kart) wraca jako błąd `domain`.
+const domainError = computed(() => page.props.errors?.domain);
 
 const form = useForm({
     name: props.product.name,
@@ -66,6 +68,10 @@ function submit() {
                 wersja {{ product.version }}
             </span>
         </h1>
+
+        <Alert v-if="domainError" variant="destructive" role="alert">
+            <AlertDescription>{{ domainError }}</AlertDescription>
+        </Alert>
 
         <Alert v-if="status" role="status">
             <AlertDescription>{{ status }}</AlertDescription>

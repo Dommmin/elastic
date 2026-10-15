@@ -15,5 +15,5 @@ test('strona edycji produktu zwraca oferty posortowane po id', function () {
             ->has('offers', 2)
             ->where('offers.0.id', $second->id)
             ->where('offers.1.id', $first->id)
-            ->has('offers.0', fn ($o) => $o->hasAll(['id', 'seller', 'price_cents', 'stock', 'status', 'seller_status', 'version'])));
+            ->has('offers.0', fn ($o) => $o->hasAll(['id', 'seller', 'seller_status', 'price_cents', 'pending_price_cents', 'stock', 'status', 'suspension', 'allowed_actions', 'version'])));
 });

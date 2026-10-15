@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Http\CurrentSeller;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
+use SellerPortal\Infrastructure\ReadModel\PriceChangeQueue;
 
 class HandleInertiaRequests extends Middleware
 {
@@ -45,6 +46,11 @@ class HandleInertiaRequests extends Middleware
                 // przekierowaniach), jedno zapytanie dzielone z middleware `seller`.
                 'seller' => fn () => app(CurrentSeller::class)->of($request),
             ],
+            // Tylko admin: licznik przy „Zmiany cen” w menu. Closure, żeby
+            // jedno `COUNT` szło dopiero przy renderze strony.
+            'moderation' => fn (): ?array => $request->user()?->can('panel')
+                ? ['pending_price_changes' => app(PriceChangeQueue::class)->count()]
+                : null,
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];
     }

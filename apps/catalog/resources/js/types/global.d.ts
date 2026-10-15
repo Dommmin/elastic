@@ -18,6 +18,8 @@ declare module '@inertiajs/core' {
         sharedPageProps: {
             name: string;
             auth: Auth;
+            /** Tylko dla admina (`can:panel`), dla innych `null`. */
+            moderation: { pending_price_changes: number } | null;
             sidebarOpen: boolean;
             [key: string]: unknown;
         };
