@@ -31,6 +31,6 @@ final class DomainErrorMessages
         $constant = $exception::class.'::CODE';
         $code = defined($constant) ? constant($constant) : null;
 
-        return self::MESSAGES[$code] ?? self::FALLBACK;
+        return is_string($code) ? (self::MESSAGES[$code] ?? self::FALLBACK) : self::FALLBACK;
     }
 }

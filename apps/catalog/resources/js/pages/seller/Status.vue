@@ -1,18 +1,23 @@
 <script setup lang="ts">
-import { Head, usePage } from '@inertiajs/vue3';
+import { Head, Link, usePage } from '@inertiajs/vue3';
 import { computed } from 'vue';
 import BlockedBanner from '@/components/seller/BlockedBanner.vue';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
     Card,
     CardContent,
     CardDescription,
+    CardFooter,
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
 import { sellerStatusLabels, sellerStatusVariant } from '@/lib/sellerStatus';
-import { status as sellerStatus } from '@/routes/seller';
+import {
+    dashboard as sellerDashboard,
+    status as sellerStatus,
+} from '@/routes/seller';
 import type { SellerProfile } from '@/types';
 
 defineProps<{ seller: SellerProfile }>();
@@ -71,6 +76,11 @@ const domainError = computed(() => page.props.errors?.domain);
                     >
                         Powód: {{ seller.status_reason }}
                     </p>
+                    <!-- Rejected jest końcowy (SellerStatus): konto nie złoży drugiego zgłoszenia. -->
+                    <p class="text-muted-foreground">
+                        Decyzja jest ostateczna — z tego konta nie można złożyć
+                        nowego zgłoszenia.
+                    </p>
                 </template>
 
                 <template v-else-if="seller.status === 'active'">
@@ -84,6 +94,13 @@ const domainError = computed(() => page.props.errors?.domain);
                     Skontaktuj się z moderatorem, aby wyjaśnić blokadę.
                 </p>
             </CardContent>
+            <CardFooter
+                v-if="seller.status === 'active' || seller.status === 'blocked'"
+            >
+                <Button as-child variant="outline">
+                    <Link :href="sellerDashboard()">Przejdź do portalu</Link>
+                </Button>
+            </CardFooter>
         </Card>
     </div>
 </template>

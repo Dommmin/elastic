@@ -14,6 +14,7 @@ use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Seller\SellerNotFound;
 use SellerPortal\Domain\Shared\DomainException;
+use SellerPortal\Domain\Shared\InvalidValue;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -40,6 +41,14 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
+        );
+
+        // Złamana reguła biznesowa to oczekiwany błąd użytkownika (limit zmian
+        // ceny, konflikt wersji) — nie śmiecimy nim logu. `InvalidValue` zostaje
+        // zgłaszany: wartość spoza zakresu VO, która przeszła walidację
+        // formularza, to błąd w kodzie, który chcemy zobaczyć.
+        $exceptions->dontReportWhen(
+            fn (Throwable $e): bool => $e instanceof DomainException && ! $e instanceof InvalidValue,
         );
 
         // Cudza lub nieistniejąca oferta / sprzedawca → 404, nie 403: nie

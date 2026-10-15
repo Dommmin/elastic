@@ -20,3 +20,11 @@ export function sellerStatusVariant(
             return 'secondary';
     }
 }
+
+/**
+ * Wejście do portalu: aktywny i zablokowany mają pulpit (`seller.approved`
+ * ich wpuszcza), oczekujący i odrzucony widzą tylko ekran statusu.
+ */
+export function hasSellerPortal(status: SellerStatus): boolean {
+    return status === 'active' || status === 'blocked';
+}

@@ -11,9 +11,17 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
-import { sellerStatusLabels, sellerStatusVariant } from '@/lib/sellerStatus';
+import {
+    hasSellerPortal,
+    sellerStatusLabels,
+    sellerStatusVariant,
+} from '@/lib/sellerStatus';
 import { dashboard } from '@/routes';
-import { apply as sellerApply, status as sellerStatus } from '@/routes/seller';
+import {
+    apply as sellerApply,
+    dashboard as sellerDashboard,
+    status as sellerStatus,
+} from '@/routes/seller';
 
 defineOptions({
     layout: {
@@ -49,7 +57,15 @@ const seller = computed(() => page.props.auth.seller);
             </CardHeader>
             <CardFooter>
                 <Button as-child variant="outline">
-                    <Link :href="sellerStatus()">Przejdź do portalu</Link>
+                    <Link
+                        :href="
+                            hasSellerPortal(seller.status)
+                                ? sellerDashboard()
+                                : sellerStatus()
+                        "
+                    >
+                        Przejdź do portalu
+                    </Link>
                 </Button>
             </CardFooter>
         </Card>

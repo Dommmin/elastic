@@ -22,10 +22,15 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
+import { hasSellerPortal } from '@/lib/sellerStatus';
 import { dashboard } from '@/routes';
 import { index as panelProducts } from '@/routes/panel/products';
 import { index as panelSellers } from '@/routes/panel/sellers';
-import { apply as sellerApply, status as sellerStatus } from '@/routes/seller';
+import {
+    apply as sellerApply,
+    dashboard as sellerDashboard,
+    status as sellerStatus,
+} from '@/routes/seller';
 import type { NavItem } from '@/types';
 
 const page = usePage();
@@ -37,13 +42,14 @@ const mainNavItems = computed<NavItem[]>(() => [
         href: dashboard(),
         icon: LayoutGrid,
     },
-    // Pulpit `/seller` dochodzi w kolejnym kroku; do tego czasu portal to ekran statusu.
     ...(page.props.auth.user
         ? [
               page.props.auth.seller
                   ? {
                         title: 'Portal sprzedawcy',
-                        href: sellerStatus(),
+                        href: hasSellerPortal(page.props.auth.seller.status)
+                            ? sellerDashboard()
+                            : sellerStatus(),
                         icon: Store,
                     }
                   : {
