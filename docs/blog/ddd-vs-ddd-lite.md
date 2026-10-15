@@ -20,6 +20,25 @@ rekomendacja jest inna.*
 > <https://github.com/Dommmin/elastic/tree/ddd-lite-porownanie>.
 > Gałąź nie jest i nie będzie scalana: to materiał do porównania.
 > Pomiary z 2026-10-15, Herd PHP 8.5, SQLite w pamięci (`phpunit.xml`).
+>
+> **Po przeglądzie końcowym (później tego samego dnia):** gałąź
+> `ddd-lite-porownanie` pokazuje stan **sprzed** poprawek z przeglądu
+> końcowego i nie była aktualizowana. Na `portal-sprzedawcy` doszły potem:
+> wersja oferty odsyłana z każdego formularza i sprawdzana w handlerze
+> (`ExpectedVersion`), cena, którą widział moderator, w akceptacji
+> i odrzuceniu (`PendingPriceChangeMismatch`), oraz `Offer::reinstate(Seller)`
+> (moderator nie przywróci oferty zablokowanego sprzedawcy). To zmieniło
+> sygnatury komend i testy HTTP (formularze wysyłają `version`), więc
+> wspólne testy HTTP z obu gałęzi **nie są już identyczne**. Co to znaczy dla
+> porównania: liczby z tego tekstu (linie kodu, czasy testów, koszt nowej
+> reguły, miejsca obejścia) są prawdziwe dla tamtego zrzutu i porównują dwa
+> style przy tych samych regułach — dalej o to chodzi. Nie opisują
+> dzisiejszego `portal-sprzedawcy` co do linii: odwołania `plik.php:NN` do
+> tej gałęzi wskazują stan z commitu `1913e2f` (lite odgałęzia się od
+> `2277141`). Koszt tych samych poprawek w lite **nie został zmierzony**;
+> na `portal-sprzedawcy` były lokalne (agregat, handlery, Form Requesty,
+> formularze), więc nie ma powodu sądzić, że odwracają wniosek, ale to
+> hipoteza, nie pomiar.
 
 ---
 

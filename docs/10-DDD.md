@@ -208,7 +208,7 @@ Mapa ściany na kod (jedna linijka, jeden plik):
 | zdarzenie „Oferta opublikowana” | `apps/catalog/src/SellerPortal/Domain/Offer/Event/OfferPublished.php` |
 | komenda „Zmień cenę” | `apps/catalog/src/SellerPortal/Application/Offer/ChangeOfferPrice.php` + `ChangeOfferPriceHandler.php` |
 | polityka „Gdy zablokowany → zawieś” | `apps/catalog/src/SellerPortal/Application/Policy/QueueSuspensionWhenSellerBlocked.php` |
-| agregat „Oferta” | `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:49` (`final class Offer`) |
+| agregat „Oferta” | `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:50` (`final class Offer`) |
 | model odczytu „Kolejka zmian cen” | `apps/catalog/src/SellerPortal/Infrastructure/ReadModel/PriceChangeQueue.php` |
 | hot spot „rodzaj zawieszenia” | `apps/catalog/src/SellerPortal/Domain/Offer/SuspensionKind.php:10` |
 
@@ -297,7 +297,7 @@ trzy znaczenia w trzech miejscach:
 
 | Kontekst | Czym jest oferta | Kod |
 |---|---|---|
-| Seller Portal (zapis) | agregat z cyklem życia, strażnikiem ceny, regułami moderacji | `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:49` |
+| Seller Portal (zapis) | agregat z cyklem życia, strażnikiem ceny, regułami moderacji | `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:50` |
 | Katalog (odczyt) | wiersz tabeli do pokazania i do projekcji; jedyna reguła to „widoczna” | `apps/catalog/app/Models/Offer.php:70` (scope `listed()`) |
 | Wyszukiwarka | zagnieżdżony obiekt w dokumencie produktu: cena, sprzedawca, `in_stock` | `apps/catalog/app/Http/Controllers/Internal/ProductProjectionController.php:48` (`$product->listedOffers`) |
 
@@ -309,7 +309,7 @@ trzy różne pytania.
 Decyzje z tego etapu:
 - **Moderacja nie jest osobnym kontekstem.** Decyzje moderatora zmieniają stan
   tego samego agregatu `Offer` i podlegają tym samym niezmiennikom (np.
-  `approvePriceChange` wymaga oczekującej zmiany: `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:284`).
+  `approvePriceChange` wymaga oczekującej zmiany: `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:303`).
   Osobny kontekst dałby dwa modele jednej oferty do synchronizacji.
 - **Granica jest w kodzie, nie w infrastrukturze.** Osobny katalog bazowy
   `apps/catalog/src/` (PSR-4 `SellerPortal\`), żeby „to nie jest kod
@@ -570,17 +570,17 @@ zmienia jeden agregat”.
 
 **W projekcie**
 
-- `Offer`: `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:49`.
-  Konstruktor prywatny (`:54`); powstaje przez `draft` (`:73`) albo
-  `reconstitute` (`:95`, odczyt z bazy, bez zdarzeń).
-  - Przejścia: `publish` (`:117`), `changeStock` (`:140`), `changeDetails` (`:161`),
-    `suspend` (`:170`), `reinstate` (`:179`), `withdraw` (`:193`).
-  - Strażnik ceny: `changePrice` (`:219`). Kolejność sprawdzeń jest stała:
+- `Offer`: `apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:50`.
+  Konstruktor prywatny (`:55`); powstaje przez `draft` (`:74`) albo
+  `reconstitute` (`:96`, odczyt z bazy, bez zdarzeń).
+  - Przejścia: `publish` (`:118`), `changeStock` (`:141`), `changeDetails` (`:162`),
+    `suspend` (`:171`), `reinstate` (`:189`), `withdraw` (`:207`).
+  - Strażnik ceny: `changePrice` (`:233`). Kolejność sprawdzeń jest stała:
     oczekująca zmiana → limit → próg.
-  - `requireStatus` (`:449`) to jedno miejsce, które rzuca `InvalidOfferTransition`.
-  - `allowedActionsFor(Actor)` (`:327`) to jedyne źródło prawdy dla UI, które
+  - `requireStatus` (`:483`) to jedno miejsce, które rzuca `InvalidOfferTransition`.
+  - `allowedActionsFor(Actor)` (`:355`) to jedyne źródło prawdy dla UI, które
     przyciski pokazać. Frontend nie zna reguł, tylko renderuje listę.
-  - Stany pochodne: `isListed` (`:309`) i `isSoldOut` (`:314`)
+  - Stany pochodne: `isListed` (`:332`) i `isSoldOut` (`:337`)
     ([ADR-0004](adr/0004-wyprzedana-jako-stan-pochodny.md)).
 - `Seller`: `apps/catalog/src/SellerPortal/Domain/Seller/Seller.php:42`.
   Przejścia `approve`/`reject`/`block`/`unblock` (`:83`–`:117`).
@@ -592,7 +592,7 @@ zmienia jeden agregat”.
 - **Odwołanie przez ID:** `Offer` trzyma `SellerId`, nie `Seller`. Dwa
   momenty, w których oferta potrzebuje wiedzy o sprzedawcy (publikacja
   i przywrócenie), dostają go jako argument tylko do odczytu:
-  `publish(Seller $seller, …)` (`Offer.php:117`) i `reinstate(Seller $seller, …)`.
+  `publish(Seller $seller, …)` (`Offer.php:118`) i `reinstate(Seller $seller, …)`.
   **Historia z przeglądu końcowego:** pierwsza wersja `reinstate` nie brała
   sprzedawcy. Moderator widział „Przywróć” przy ofercie zawieszonej przez
   blokadę i jednym kliknięciem wracał ją do wyszukiwarki, choć konto było
@@ -612,7 +612,7 @@ zmienia jeden agregat”.
   rozmowa, którą trzeba przeprowadzić z biznesem, a nie decyzja programisty.
 - **Domena nie zna zegara:** każda metoda zmieniająca stan dostaje
   `DateTimeImmutable $now`. Dzięki temu test „szósta zmiana w 24 h rzuca PriceChangeLimitExceeded”
-  (`apps/catalog/tests/Unit/SellerPortal/Domain/OfferPriceTest.php:80`) nie
+  (`apps/catalog/tests/Unit/SellerPortal/Domain/OfferPriceTest.php:81`) nie
   czeka dobę, a granica okna jest dokładna co do sekundy.
 
 **Ćwiczenia**
@@ -620,7 +620,7 @@ zmienia jeden agregat”.
 1. Narysuj obie maszyny stanów z pamięci. Porównaj z docblockami w `Offer.php:32`
    i `Seller.php:30`.
 2. Przeczytaj tabelę z testu `allowedActionsFor zgodne z tabelą`
-   (`apps/catalog/tests/Unit/SellerPortal/Domain/OfferLifecycleTest.php:196`).
+   (`apps/catalog/tests/Unit/SellerPortal/Domain/OfferLifecycleTest.php:205`).
    Dlaczego moderator nie ma akcji na szkicu?
 3. **Zepsuj i napraw: przejście bez strażnika.**
 
@@ -763,14 +763,14 @@ wersji przy współbieżnych zapisach i rozumiesz, ile to kosztuje.
 
 - Interfejs: `apps/catalog/src/SellerPortal/Domain/Offer/OfferRepository.php:11`.
 - Implementacja na Query Builderze, bez Eloquenta ([ADR-0002](adr/0002-czysta-domena-bez-eloquenta.md)):
-  `apps/catalog/src/SellerPortal/Infrastructure/Persistence/SqlOfferRepository.php:47`.
-  - `save` (`:80`): wersja 0 → INSERT, inaczej UPDATE z warunkiem
-    `->where('version', $offer->version())` (`:98`); 0 wierszy → `ConcurrencyConflict` (`:105`).
-    W tej samej transakcji: historia cen (`savePriceChanges`, `:175`) i outbox (`:110`).
-  - `hydrate` (`:206`) nie ufa bazie: nieznany status, „zawieszona bez rodzaju
+  `apps/catalog/src/SellerPortal/Infrastructure/Persistence/SqlOfferRepository.php:54`.
+  - `save` (`:87`): wersja 0 → INSERT, inaczej UPDATE z warunkiem
+    `->where('version', $offer->version())` (`:105`); 0 wierszy → `ConcurrencyConflict` (`:112`).
+    W tej samej transakcji: historia cen (`savePriceChanges`, `:182`) i outbox (`:117`).
+  - `hydrate` (`:213`) nie ufa bazie: nieznany status, „zawieszona bez rodzaju
     zawieszenia” albo cena bez daty zgłoszenia to `UnexpectedValueException`
     z numerem oferty, a nie po cichu zepsuty agregat.
-  - `get` (`:58`) ładuje tylko zmiany cen z ostatnich 24 h, bo limit dobowy
+  - `get` (`:65`) ładuje tylko zmiany cen z ostatnich 24 h, bo limit dobowy
     nie potrzebuje starszych.
 - Wersja z formularza: `apps/catalog/src/SellerPortal/Application/ExpectedVersion.php`.
   Każda komenda z UI, która zmienia ofertę (6 sprzedawcy, 4 moderatora),
@@ -906,16 +906,19 @@ ostatecznie, ale nie gubi pracy.
 **W projekcie**
 
 - Kształt handlera:
-  `apps/catalog/src/SellerPortal/Application/Offer/ChangeOfferPriceHandler.php:28`.
-  Cztery linie w transakcji, decyzję zwraca agregat (`PriceChangeDecision`).
+  `apps/catalog/src/SellerPortal/Application/Offer/ChangeOfferPriceHandler.php:29`.
+  Pięć linii w transakcji (wczytaj z kontrolą dostępu, porównaj wersję z
+  formularza, zmień, zapisz, roześlij), decyzję zwraca agregat
+  (`PriceChangeDecision`). Porównanie wersji to jedyny `if` w handlerze i nie
+  jest regułą biznesową, tylko faktem o tym, co człowiek widział (moduł 7).
 - Porty: `apps/catalog/src/SellerPortal/Application/Port/` (`Clock`,
   `TransactionManager`, `DomainEventDispatcher`, `PolicyJobQueue`,
   `ProductCatalog`). Spinanie z implementacjami:
   `apps/catalog/app/Providers/SellerPortalServiceProvider.php:37`.
 - **Reguły dostępu:** `apps/catalog/src/SellerPortal/Application/Offer/SellerOfferAccess.php`.
-  `forUser` (`:41`) pilnuje właściciela, `forActiveSeller` (`:60`) dokłada
-  „konto aktywne”, `sellerActions` (`:83`) zawęża akcje z agregatu dla
-  zablokowanego sprzedawcy do `ACTIONS_WITHOUT_ACTIVE_SELLER` (`:28`),
+  `forUser` (`:43`) pilnuje właściciela, `forActiveSeller` (`:62`) dokłada
+  „konto aktywne”, `sellerActions` (`:85`) zawęża akcje z agregatu dla
+  zablokowanego sprzedawcy do `ACTIONS_WITHOUT_ACTIVE_SELLER` (`:30`),
   a `moderatorActions` robi to samo dla panelu: bez „Przywróć”, gdy
   sprzedawca nie może sprzedawać (`Offer::allowedActionsFor` sprzedawcy nie
   widzi, a `Offer::reinstate(Seller)` i tak by odmówił).
@@ -928,7 +931,7 @@ ostatecznie, ale nie gubi pracy.
   `SellerOfferAccess::sellerActions`, obok podziału `forUser`/`forActiveSeller`,
   który i tak już tam był. Uczciwie: `ACTIONS_WITHOUT_ACTIVE_SELLER` jest
   ręcznym lustrem tego, które handlery używają `forUser`, i nic tego nie
-  wymusza automatycznie (docblock `:74`).
+  wymusza automatycznie (docblock `:76`).
 - Błędy domeny trafiają do UI w jednym miejscu:
   `apps/catalog/bootstrap/app.php:66` (`OfferNotOwned`, `OfferNotFound`,
   `SellerNotFound` → 404, nie 403, żeby nie zdradzać istnienia cudzej oferty),
@@ -1078,8 +1081,8 @@ na ten sam wyjątek domenowy.
   `apps/catalog/database/migrations/2026_10_15_100001_add_status_to_offers_table.php:44`.
   Wycofane oferty nie blokują nowej.
 - Tłumaczenie naruszenia indeksu na `LiveOfferAlreadyExists`:
-  `apps/catalog/src/SellerPortal/Infrastructure/Persistence/SqlOfferRepository.php:113`
-  i `violatesLiveOfferIndex` (`:195`; Postgres podaje nazwę indeksu, SQLite kolumny).
+  `apps/catalog/src/SellerPortal/Infrastructure/Persistence/SqlOfferRepository.php:120`
+  i `violatesLiveOfferIndex` (`:202`; Postgres podaje nazwę indeksu, SQLite kolumny).
   Wyjątek łapany *poza* transakcją, żeby Postgres nie został w przerwanej transakcji.
 - To samo dla `sellers.user_id`. **Historia z Taska 7:** dwa równoległe
   kliknięcia „zgłoś się” mogą oba przejść `findByUserId`, a drugie dostawało
