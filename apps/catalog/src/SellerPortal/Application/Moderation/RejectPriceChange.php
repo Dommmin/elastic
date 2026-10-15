@@ -12,5 +12,9 @@ final readonly class RejectPriceChange
         public int $moderatorId,
         public int $offerId,
         public string $reason,
+        /** Zgłoszona cena, którą moderator widział w kolejce (zob. `PendingPriceChangeMismatch`). */
+        public int $expectedPriceCents,
+        /** Wersja oferty z wiersza kolejki (zob. `ExpectedVersion`). */
+        public int $expectedVersion,
     ) {}
 }

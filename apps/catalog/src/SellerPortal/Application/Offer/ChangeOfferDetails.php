@@ -13,5 +13,7 @@ final readonly class ChangeOfferDetails
         public int $offerId,
         public string $condition,
         public int $shippingDays,
+        /** Wersja oferty, którą człowiek widział, gdy wysyłał formularz (zob. `ExpectedVersion`). */
+        public int $expectedVersion,
     ) {}
 }

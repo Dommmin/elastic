@@ -31,8 +31,24 @@ defineOptions({
 });
 
 const page = usePage();
-// Odmowa agregatu (np. zgłoszenie już rozpatrzone w innej karcie) wraca jako błąd `domain`.
-const domainError = computed(() => page.props.errors?.domain);
+// Odmowa agregatu (np. zgłoszenie już rozpatrzone w innej karcie albo
+// sprzedawca zmienił zgłoszoną cenę) wraca jako błąd `domain`; brak wersji
+// lub ceny w żądaniu (stary widok) — pod własnymi kluczami.
+const domainError = computed(
+    () =>
+        page.props.errors?.domain ??
+        page.props.errors?.version ??
+        page.props.errors?.expected_price_cents,
+);
+
+// Decyzja dotyczy dokładnie tego, co widać w wierszu: zgłoszonej kwoty
+// i wersji oferty. Jeśli sprzedawca coś zmienił, serwer odmówi.
+function decisionPayload(item: PriceChangeQueueItem) {
+    return {
+        version: item.version,
+        expected_price_cents: item.proposed_price_cents,
+    };
+}
 
 const visitOptions = { preserveScroll: true } as const;
 
@@ -47,16 +63,12 @@ function isIncrease(item: PriceChangeQueueItem): boolean {
 // ID wiersza, którego akceptacja jest w toku — blokuje przycisk przed drugim POST-em.
 const approvingId = ref<number | null>(null);
 
-function approveChange(offerId: number) {
-    router.post(
-        approve(offerId).url,
-        {},
-        {
-            ...visitOptions,
-            onStart: () => (approvingId.value = offerId),
-            onFinish: () => (approvingId.value = null),
-        },
-    );
+function approveChange(item: PriceChangeQueueItem) {
+    router.post(approve(item.offer_id).url, decisionPayload(item), {
+        ...visitOptions,
+        onStart: () => (approvingId.value = item.offer_id),
+        onFinish: () => (approvingId.value = null),
+    });
 }
 
 const rejectOpen = ref(false);
@@ -77,13 +89,15 @@ function submitReject() {
         return;
     }
 
-    rejectForm.post(reject(target.offer_id).url, {
-        ...visitOptions,
-        onSuccess: () => {
-            rejectOpen.value = false;
-            rejectForm.reset();
-        },
-    });
+    rejectForm
+        .transform((data) => ({ ...data, ...decisionPayload(target) }))
+        .post(reject(target.offer_id).url, {
+            ...visitOptions,
+            onSuccess: () => {
+                rejectOpen.value = false;
+                rejectForm.reset();
+            },
+        });
 }
 </script>
 
@@ -183,7 +197,7 @@ function submitReject() {
                                 <Button
                                     size="sm"
                                     :disabled="approvingId !== null"
-                                    @click="approveChange(item.offer_id)"
+                                    @click="approveChange(item)"
                                 >
                                     Akceptuj
                                 </Button>

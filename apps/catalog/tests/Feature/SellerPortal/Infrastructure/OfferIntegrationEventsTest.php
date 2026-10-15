@@ -144,9 +144,9 @@ test('decyzje moderatora i anulowanie mapują się na właściwe zdarzenia', fun
     $repo = outboxEventsRepo();
     $offer = outboxEventsPublished(price: 10000);
     $offer->changePrice(Money::fromCents(20000), outboxEventsAt('+1 minute'));
-    $offer->approvePriceChange(ModeratorId::fromInt(4), outboxEventsAt('+2 minutes'));
+    $offer->approvePriceChange(ModeratorId::fromInt(4), Money::fromCents(20000), outboxEventsAt('+2 minutes'));
     $offer->changePrice(Money::fromCents(40000), outboxEventsAt('+3 minutes'));
-    $offer->rejectPriceChange(ModeratorId::fromInt(4), Reason::fromString('Za drogo'), outboxEventsAt('+4 minutes'));
+    $offer->rejectPriceChange(ModeratorId::fromInt(4), Money::fromCents(40000), Reason::fromString('Za drogo'), outboxEventsAt('+4 minutes'));
     $offer->changePrice(Money::fromCents(40000), outboxEventsAt('+5 minutes'));
     $offer->cancelPendingPriceChange(outboxEventsAt('+6 minutes'));
     $repo->save($offer);

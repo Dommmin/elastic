@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Seller;
 
+use App\Http\Requests\Concerns\ExpectsOfferVersion;
 use App\Http\Requests\Seller\Concerns\NormalizesPrice;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
@@ -11,6 +12,7 @@ use Illuminate\Foundation\Http\FormRequest;
  */
 class UpdateOfferPriceRequest extends FormRequest
 {
+    use ExpectsOfferVersion;
     use NormalizesPrice;
 
     public function authorize(): bool
@@ -23,7 +25,7 @@ class UpdateOfferPriceRequest extends FormRequest
      */
     public function rules(): array
     {
-        return ['price' => $this->priceRules()];
+        return [...$this->versionRules(), 'price' => $this->priceRules()];
     }
 
     /**
@@ -31,6 +33,6 @@ class UpdateOfferPriceRequest extends FormRequest
      */
     public function messages(): array
     {
-        return $this->priceMessages();
+        return [...$this->versionMessages(), ...$this->priceMessages()];
     }
 }

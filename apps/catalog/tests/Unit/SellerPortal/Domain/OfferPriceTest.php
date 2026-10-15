@@ -12,6 +12,7 @@ use SellerPortal\Domain\Offer\Offer;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\PendingPriceChange;
+use SellerPortal\Domain\Offer\PendingPriceChangeMismatch;
 use SellerPortal\Domain\Offer\PriceChangeAlreadyPending;
 use SellerPortal\Domain\Offer\PriceChangeDecision;
 use SellerPortal\Domain\Offer\PriceChangeLimitExceeded;
@@ -124,7 +125,7 @@ test('approve ustawia nową cenę, czyści pending i nie dopisuje do limitu', fu
     $offer->changePrice(Money::fromCents(20000), offerPriceNow());
     $offer->releaseEvents();
 
-    $offer->approvePriceChange(ModeratorId::fromInt(2), offerPriceNow());
+    $offer->approvePriceChange(ModeratorId::fromInt(2), Money::fromCents(20000), offerPriceNow());
 
     expect($offer->price()->cents())->toBe(20000)
         ->and($offer->pendingPriceChange())->toBeNull()
@@ -139,7 +140,7 @@ test('approve ustawia nową cenę, czyści pending i nie dopisuje do limitu', fu
 test('approve działa też na zawieszonej ofercie', function () {
     $offer = offerPriceOffer(OfferStatus::Suspended, pending: new PendingPriceChange(Money::fromCents(20000), offerPriceNow()));
 
-    $offer->approvePriceChange(ModeratorId::fromInt(2), offerPriceNow());
+    $offer->approvePriceChange(ModeratorId::fromInt(2), Money::fromCents(20000), offerPriceNow());
 
     expect($offer->price()->cents())->toBe(20000);
 });
@@ -149,7 +150,7 @@ test('reject zostawia starą cenę, czyści pending i niesie powód', function (
     $offer->changePrice(Money::fromCents(20000), offerPriceNow());
     $offer->releaseEvents();
 
-    $offer->rejectPriceChange(ModeratorId::fromInt(2), Reason::fromString('Za wysoka'), offerPriceNow());
+    $offer->rejectPriceChange(ModeratorId::fromInt(2), Money::fromCents(20000), Reason::fromString('Za wysoka'), offerPriceNow());
 
     expect($offer->price()->cents())->toBe(10000)
         ->and($offer->pendingPriceChange())->toBeNull()
@@ -161,9 +162,21 @@ test('reject zostawia starą cenę, czyści pending i niesie powód', function (
 test('approve i reject bez oczekującej zmiany rzucają NoPendingPriceChange', function () {
     $offer = offerPriceOffer();
 
-    expect(fn () => $offer->approvePriceChange(ModeratorId::fromInt(2), offerPriceNow()))->toThrow(NoPendingPriceChange::class)
-        ->and(fn () => $offer->rejectPriceChange(ModeratorId::fromInt(2), Reason::fromString('x'), offerPriceNow()))->toThrow(NoPendingPriceChange::class)
+    expect(fn () => $offer->approvePriceChange(ModeratorId::fromInt(2), Money::fromCents(20000), offerPriceNow()))->toThrow(NoPendingPriceChange::class)
+        ->and(fn () => $offer->rejectPriceChange(ModeratorId::fromInt(2), Money::fromCents(20000), Reason::fromString('x'), offerPriceNow()))->toThrow(NoPendingPriceChange::class)
         ->and(NoPendingPriceChange::CODE)->toBe('no_pending_price_change');
+});
+
+test('approve i reject innej ceny niż oczekująca rzucają PendingPriceChangeMismatch i nic nie zmieniają', function () {
+    // Moderator widział 13 100 zł, a sprzedawca w międzyczasie anulował i zgłosił 90 000 zł.
+    $offer = offerPriceOffer(pending: new PendingPriceChange(Money::fromCents(90000), offerPriceNow()));
+
+    expect(fn () => $offer->approvePriceChange(ModeratorId::fromInt(2), Money::fromCents(13100), offerPriceNow()))->toThrow(PendingPriceChangeMismatch::class)
+        ->and(fn () => $offer->rejectPriceChange(ModeratorId::fromInt(2), Money::fromCents(13100), Reason::fromString('Za wysoka'), offerPriceNow()))->toThrow(PendingPriceChangeMismatch::class)
+        ->and($offer->price()->cents())->toBe(10000)
+        ->and($offer->pendingPriceChange()->price()->cents())->toBe(90000)
+        ->and($offer->pendingEvents())->toBe([])
+        ->and(PendingPriceChangeMismatch::CODE)->toBe('pending_price_changed');
 });
 
 test('cancel tylko gdy pending, inaczej NoPendingPriceChange', function () {

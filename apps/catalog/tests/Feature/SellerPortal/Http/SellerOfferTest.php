@@ -71,7 +71,7 @@ test('sprzedawca tworzy szkic, publikuje, oferta jest listed', function () {
 
     $this->actingAs($user)
         ->from("/seller/offers/{$offer->id}")
-        ->post("/seller/offers/{$offer->id}/publish")
+        ->post("/seller/offers/{$offer->id}/publish", ['version' => 1])
         ->assertRedirect("/seller/offers/{$offer->id}")
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Oferta opublikowana');
@@ -157,12 +157,12 @@ test('cudza oferta → 404 i brak zmian', function () {
     $outboxBefore = DB::table('outbox')->count();
 
     $this->actingAs($user)->get("/seller/offers/{$foreign->id}")->assertNotFound();
-    $this->actingAs($user)->post("/seller/offers/{$foreign->id}/publish")->assertNotFound();
-    $this->actingAs($user)->put("/seller/offers/{$foreign->id}/price", ['price' => '105'])->assertNotFound();
-    $this->actingAs($user)->delete("/seller/offers/{$foreign->id}/pending-price")->assertNotFound();
-    $this->actingAs($user)->put("/seller/offers/{$foreign->id}/stock", ['stock' => 9])->assertNotFound();
-    $this->actingAs($user)->put("/seller/offers/{$foreign->id}/details", ['condition' => 'used', 'shipping_days' => 7])->assertNotFound();
-    $this->actingAs($user)->post("/seller/offers/{$foreign->id}/withdraw")->assertNotFound();
+    $this->actingAs($user)->post("/seller/offers/{$foreign->id}/publish", ['version' => 1])->assertNotFound();
+    $this->actingAs($user)->put("/seller/offers/{$foreign->id}/price", ['price' => '105', 'version' => 1])->assertNotFound();
+    $this->actingAs($user)->delete("/seller/offers/{$foreign->id}/pending-price", ['version' => 1])->assertNotFound();
+    $this->actingAs($user)->put("/seller/offers/{$foreign->id}/stock", ['stock' => 9, 'version' => 1])->assertNotFound();
+    $this->actingAs($user)->put("/seller/offers/{$foreign->id}/details", ['condition' => 'used', 'shipping_days' => 7, 'version' => 1])->assertNotFound();
+    $this->actingAs($user)->post("/seller/offers/{$foreign->id}/withdraw", ['version' => 1])->assertNotFound();
     $this->actingAs($user)->get('/seller/offers/999999')->assertNotFound();
 
     expect(DB::table('offers')->where('id', $foreign->id)->first())->toEqual($before)
@@ -210,14 +210,14 @@ test('zablokowany widzi oferty i baner, zmiana ceny → błąd domain, wycofanie
 
     $this->actingAs($user)
         ->from("/seller/offers/{$offer->id}")
-        ->put("/seller/offers/{$offer->id}/price", ['price' => '101'])
+        ->put("/seller/offers/{$offer->id}/price", ['price' => '101', 'version' => 1])
         ->assertRedirect("/seller/offers/{$offer->id}")
         ->assertSessionHasErrors(['domain' => 'Twoje konto sprzedawcy nie jest aktywne']);
     expect($offer->fresh()->price_cents)->toBe(10000);
 
     $this->actingAs($user)
         ->from("/seller/offers/{$offer->id}")
-        ->post("/seller/offers/{$offer->id}/withdraw")
+        ->post("/seller/offers/{$offer->id}/withdraw", ['version' => 1])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Oferta wycofana');
     expect($offer->fresh()->status)->toBe('withdrawn');
@@ -252,10 +252,10 @@ test('stan 0 → wyprzedana, szczegóły i anulowanie oczekującej ceny', functi
     $offer = Offer::factory()->for($seller)->create(['price_cents' => 10000, 'stock' => 3, 'condition' => 'new', 'shipping_days' => 2]);
     $show = "/seller/offers/{$offer->id}";
 
-    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 0])
+    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 0, 'version' => 1])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Stan magazynowy zapisany');
-    $this->actingAs($user)->from($show)->put("{$show}/details", ['condition' => 'used', 'shipping_days' => 7])
+    $this->actingAs($user)->from($show)->put("{$show}/details", ['condition' => 'used', 'shipping_days' => 7, 'version' => 2])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Szczegóły oferty zapisane');
 
@@ -264,7 +264,7 @@ test('stan 0 → wyprzedana, szczegóły i anulowanie oczekującej ceny', functi
         ->condition->toBe('used')
         ->shipping_days->toBe(7);
 
-    $this->actingAs($user)->from($show)->put("{$show}/price", ['price' => '200'])->assertSessionHasNoErrors();
+    $this->actingAs($user)->from($show)->put("{$show}/price", ['price' => '200', 'version' => 3])->assertSessionHasNoErrors();
 
     $this->actingAs($user)
         ->get($show)
@@ -274,7 +274,7 @@ test('stan 0 → wyprzedana, szczegóły i anulowanie oczekującej ceny', functi
             ->where('offer.pending_price.price_cents', 20000)
             ->where('allowed_actions', ['cancel_pending_price_change', 'change_stock', 'change_details', 'withdraw']));
 
-    $this->actingAs($user)->from($show)->delete("{$show}/pending-price")
+    $this->actingAs($user)->from($show)->delete("{$show}/pending-price", ['version' => 4])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Zgłoszenie zmiany ceny anulowane');
 
@@ -285,10 +285,13 @@ test('walidacja stanu i szczegółów', function () {
     [$user, $seller] = sellerOfferTestAccount();
     $offer = Offer::factory()->for($seller)->create(['stock' => 3]);
 
-    $this->actingAs($user)->put("/seller/offers/{$offer->id}/stock", ['stock' => -1])->assertSessionHasErrors('stock');
-    $this->actingAs($user)->put("/seller/offers/{$offer->id}/stock", ['stock' => 100001])->assertSessionHasErrors('stock');
-    $this->actingAs($user)->put("/seller/offers/{$offer->id}/details", ['condition' => 'broken', 'shipping_days' => 31])
+    $this->actingAs($user)->put("/seller/offers/{$offer->id}/stock", ['stock' => -1, 'version' => 1])->assertSessionHasErrors('stock');
+    $this->actingAs($user)->put("/seller/offers/{$offer->id}/stock", ['stock' => 100001, 'version' => 1])->assertSessionHasErrors('stock');
+    $this->actingAs($user)->put("/seller/offers/{$offer->id}/details", ['condition' => 'broken', 'shipping_days' => 31, 'version' => 1])
         ->assertSessionHasErrors(['condition', 'shipping_days']);
+    // Formularz bez wersji to stary albo zepsuty widok — nie zapisujemy „na ślepo”.
+    $this->actingAs($user)->put("/seller/offers/{$offer->id}/stock", ['stock' => 7])
+        ->assertSessionHasErrors(['version' => 'Brak wersji oferty — odśwież stronę.']);
 
     expect($offer->fresh()->stock)->toBe(3);
 });

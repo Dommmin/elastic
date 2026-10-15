@@ -32,12 +32,12 @@ use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 
 function offerHandlersPublish(PortalWorld $w, int $userId, OfferId $offerId): void
 {
-    (new PublishOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new PublishOffer($userId, $offerId->value()));
+    (new PublishOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new PublishOffer($userId, $offerId->value(), $w->version($offerId)));
 }
 
 function offerHandlersChangePrice(PortalWorld $w, int $userId, OfferId $offerId, int $cents): PriceChangeDecision
 {
-    return (new ChangeOfferPriceHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferPrice($userId, $offerId->value(), $cents));
+    return (new ChangeOfferPriceHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferPrice($userId, $offerId->value(), $cents, $w->version($offerId)));
 }
 
 test('szkic zapisuje ofertę i dispatchuje OfferDrafted', function () {
@@ -69,7 +69,7 @@ test('wycofana oferta nie blokuje nowego szkicu na ten sam produkt', function ()
     $w = new PortalWorld;
     $w->activeSeller(7);
     $id = $w->draft(7, productId: 1);
-    (new WithdrawOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new WithdrawOffer(7, $id->value()));
+    (new WithdrawOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new WithdrawOffer(7, $id->value(), $w->version($id)));
 
     expect($w->draft(7, productId: 1)->value())->not->toBe($id->value());
 });
@@ -131,7 +131,7 @@ test('zablokowany sprzedawca może wycofać ofertę, ale nie zmienić ceny', fun
 
     expect(fn () => offerHandlersChangePrice($w, 7, $id, 10100))->toThrow(SellerCannotSell::class);
 
-    (new WithdrawOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new WithdrawOffer(7, $id->value()));
+    (new WithdrawOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new WithdrawOffer(7, $id->value(), $w->version($id)));
 
     expect($w->offers->get($id)->status())->toBe(OfferStatus::Withdrawn);
 });
@@ -143,8 +143,8 @@ test('zablokowany sprzedawca nie opublikuje ani nie zmieni stanu i szczegółów
     (new BlockSellerHandler($w->transactions, $w->clock, $w->dispatcher, $w->sellers))->handle(new BlockSeller($sellerId->value(), 9, 'Oszustwo'));
 
     expect(fn () => offerHandlersPublish($w, 7, $id))->toThrow(SellerCannotSell::class)
-        ->and(fn () => (new ChangeOfferStockHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferStock(7, $id->value(), 9)))->toThrow(SellerCannotSell::class)
-        ->and(fn () => (new ChangeOfferDetailsHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferDetails(7, $id->value(), 'used', 5)))->toThrow(SellerCannotSell::class);
+        ->and(fn () => (new ChangeOfferStockHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferStock(7, $id->value(), 9, $w->version($id))))->toThrow(SellerCannotSell::class)
+        ->and(fn () => (new ChangeOfferDetailsHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferDetails(7, $id->value(), 'used', 5, $w->version($id))))->toThrow(SellerCannotSell::class);
 });
 
 test('ChangeOfferPrice zwraca AppliedNow dla małej zmiany i AwaitingApproval dla +50%', function () {
@@ -169,7 +169,7 @@ test('anulowanie oczekującej zmiany ceny czyści ją', function () {
     offerHandlersPublish($w, 7, $id);
     offerHandlersChangePrice($w, 7, $id, 20000);
 
-    (new CancelPendingPriceChangeHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new CancelPendingPriceChange(7, $id->value()));
+    (new CancelPendingPriceChangeHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new CancelPendingPriceChange(7, $id->value(), $w->version($id)));
 
     expect($w->offers->get($id)->pendingPriceChange())->toBeNull();
 });
@@ -179,8 +179,8 @@ test('zmiana stanu i szczegółów zapisuje się w ofercie', function () {
     $w->activeSeller(7);
     $id = $w->draft(7);
 
-    (new ChangeOfferStockHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferStock(7, $id->value(), 42));
-    (new ChangeOfferDetailsHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferDetails(7, $id->value(), 'used', 9));
+    (new ChangeOfferStockHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferStock(7, $id->value(), 42, $w->version($id)));
+    (new ChangeOfferDetailsHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferDetails(7, $id->value(), 'used', 9, $w->version($id)));
 
     $offer = $w->offers->get($id);
 
@@ -202,3 +202,24 @@ test('nieudany zapis (konflikt wersji) nie dispatchuje zdarzeń', function () {
     expect(fn () => $w->offers->save($stale))->toThrow(ConcurrencyConflict::class)
         ->and($w->dispatcher->dispatched)->toBe([]);
 });
+
+test('komenda z nieaktualną wersją (druga karta) rzuca ConcurrencyConflict i nic nie zmienia', function (Closure $command) {
+    $w = new PortalWorld;
+    $w->activeSeller(7);
+    $id = $w->draft(7);
+    offerHandlersPublish($w, 7, $id);
+    $stale = $w->version($id);
+    // Pierwsza karta zapisuje stan; druga wciąż pokazuje starą wersję.
+    (new ChangeOfferStockHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferStock(7, $id->value(), 9, $stale));
+    $before = $w->offers->get($id);
+    $w->forgetDispatched();
+
+    expect(fn () => $command($w, $id, $stale))->toThrow(ConcurrencyConflict::class)
+        ->and($w->offers->get($id))->toEqual($before)
+        ->and($w->dispatcher->dispatched)->toBe([]);
+})->with([
+    'stan' => fn (PortalWorld $w, OfferId $id, int $v) => (new ChangeOfferStockHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferStock(7, $id->value(), 1, $v)),
+    'szczegóły' => fn (PortalWorld $w, OfferId $id, int $v) => (new ChangeOfferDetailsHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferDetails(7, $id->value(), 'used', 5, $v)),
+    'cena' => fn (PortalWorld $w, OfferId $id, int $v) => (new ChangeOfferPriceHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new ChangeOfferPrice(7, $id->value(), 10100, $v)),
+    'wycofanie' => fn (PortalWorld $w, OfferId $id, int $v) => (new WithdrawOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new WithdrawOffer(7, $id->value(), $v)),
+]);

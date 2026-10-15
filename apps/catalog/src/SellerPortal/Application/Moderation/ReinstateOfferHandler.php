@@ -2,6 +2,7 @@
 
 namespace SellerPortal\Application\Moderation;
 
+use SellerPortal\Application\ExpectedVersion;
 use SellerPortal\Application\Port\Clock;
 use SellerPortal\Application\Port\DomainEventDispatcher;
 use SellerPortal\Application\Port\TransactionManager;
@@ -25,6 +26,7 @@ final readonly class ReinstateOfferHandler
     {
         $this->transactions->run(function () use ($command): void {
             $offer = $this->offers->get(OfferId::fromInt($command->offerId));
+            ExpectedVersion::check($offer, $command->expectedVersion);
             $offer->reinstate($this->clock->now());
             $this->offers->save($offer);
             $this->events->dispatch($offer->releaseEvents());

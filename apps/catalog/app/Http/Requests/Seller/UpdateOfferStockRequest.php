@@ -2,11 +2,14 @@
 
 namespace App\Http\Requests\Seller;
 
+use App\Http\Requests\Concerns\ExpectsOfferVersion;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateOfferStockRequest extends FormRequest
 {
+    use ExpectsOfferVersion;
+
     public function authorize(): bool
     {
         return true;
@@ -17,7 +20,7 @@ class UpdateOfferStockRequest extends FormRequest
      */
     public function rules(): array
     {
-        return ['stock' => ['required', 'integer', 'min:0', 'max:100000']];
+        return [...$this->versionRules(), 'stock' => ['required', 'integer', 'min:0', 'max:100000']];
     }
 
     /**
@@ -25,6 +28,6 @@ class UpdateOfferStockRequest extends FormRequest
      */
     public function messages(): array
     {
-        return OfferFieldMessages::STOCK;
+        return [...$this->versionMessages(), ...OfferFieldMessages::STOCK];
     }
 }

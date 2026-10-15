@@ -48,7 +48,7 @@ function policyJobsOffer(SellerId $seller, bool $publish): int
     $id = app(DraftOfferHandler::class)->handle(new DraftOffer($userId, Product::factory()->create()->id, 10000, 5, 'new', 3));
 
     if ($publish) {
-        app(PublishOfferHandler::class)->handle(new PublishOffer($userId, $id->value()));
+        app(PublishOfferHandler::class)->handle(new PublishOffer($userId, $id->value(), 1));
     }
 
     return $id->value();

@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Panel;
 
+use App\Http\Requests\Concerns\ExpectsOfferVersion;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
@@ -11,6 +12,8 @@ use Illuminate\Foundation\Http\FormRequest;
  */
 class SuspendOfferRequest extends FormRequest
 {
+    use ExpectsOfferVersion;
+
     /**
      * Dostęp pilnuje już `can:panel` na grupie tras.
      */
@@ -25,6 +28,7 @@ class SuspendOfferRequest extends FormRequest
     public function rules(): array
     {
         return [
+            ...$this->versionRules(),
             'note' => ['required', 'string', 'max:500'],
         ];
     }
@@ -35,6 +39,7 @@ class SuspendOfferRequest extends FormRequest
     public function messages(): array
     {
         return [
+            ...$this->versionMessages(),
             'note.required' => 'Podaj powód zawieszenia.',
             'note.string' => 'Powód musi być tekstem.',
             'note.max' => 'Powód może mieć najwyżej 500 znaków.',

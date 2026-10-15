@@ -278,12 +278,17 @@ final class Offer extends AggregateRoot
      * DLACZEGO dozwolone także w Suspended: zawieszenie nie unieważnia
      * zgłoszenia, a moderator ma prawo je rozpatrzyć (zob. `allowedActionsFor`).
      *
+     * DLACZEGO `$expectedPrice`: moderator akceptuje kwotę, którą zobaczył
+     * w kolejce. Jeśli sprzedawca w międzyczasie anulował zgłoszenie i zgłosił
+     * inne, decyzja dotyczy już czegoś innego (zob. `PendingPriceChangeMismatch`).
+     *
      * @throws InvalidOfferTransition
      * @throws NoPendingPriceChange
+     * @throws PendingPriceChangeMismatch
      */
-    public function approvePriceChange(ModeratorId $moderatorId, DateTimeImmutable $now): void
+    public function approvePriceChange(ModeratorId $moderatorId, Money $expectedPrice, DateTimeImmutable $now): void
     {
-        $pending = $this->requirePendingPriceChange(OfferAction::ApprovePriceChange);
+        $pending = $this->requirePendingPriceChange(OfferAction::ApprovePriceChange, $expectedPrice);
 
         $old = $this->price;
         $this->price = $pending->price();
@@ -292,12 +297,16 @@ final class Offer extends AggregateRoot
     }
 
     /**
+     * `$expectedPrice` z tego samego powodu co przy akceptacji: odrzucenie
+     * z powodem „za drogo” nie może trafić w zgłoszenie, którego moderator nie widział.
+     *
      * @throws InvalidOfferTransition
      * @throws NoPendingPriceChange
+     * @throws PendingPriceChangeMismatch
      */
-    public function rejectPriceChange(ModeratorId $moderatorId, Reason $reason, DateTimeImmutable $now): void
+    public function rejectPriceChange(ModeratorId $moderatorId, Money $expectedPrice, Reason $reason, DateTimeImmutable $now): void
     {
-        $pending = $this->requirePendingPriceChange(OfferAction::RejectPriceChange);
+        $pending = $this->requirePendingPriceChange(OfferAction::RejectPriceChange, $expectedPrice);
 
         $this->pendingPriceChange = null;
         $this->recordThat(new OfferPriceChangeRejected($this->id, $pending->price(), $moderatorId, $reason, $now));
@@ -436,11 +445,17 @@ final class Offer extends AggregateRoot
         return $this->version;
     }
 
-    private function requirePendingPriceChange(OfferAction $action): PendingPriceChange
+    private function requirePendingPriceChange(OfferAction $action, ?Money $expectedPrice = null): PendingPriceChange
     {
         $this->requireStatus([OfferStatus::Published, OfferStatus::Suspended], $action);
 
-        return $this->pendingPriceChange ?? throw new NoPendingPriceChange;
+        $pending = $this->pendingPriceChange ?? throw new NoPendingPriceChange;
+
+        if ($expectedPrice !== null && ! $pending->price()->equals($expectedPrice)) {
+            throw new PendingPriceChangeMismatch;
+        }
+
+        return $pending;
     }
 
     /**

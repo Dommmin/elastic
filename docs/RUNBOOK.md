@@ -1877,17 +1877,38 @@ docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB -c \
 W UI to samo widać na osi czasu oferty (`/seller/offers/<ID>`).
 
 **Przyczyna**
-Optymistyczna blokada: `SqlOfferRepository::save` robi
-`UPDATE … WHERE id = ? AND version = ?`. Między odczytem oferty a zapisem
-ktoś inny zapisał ją pierwszy (druga karta tego samego sprzedawcy, moderator
-akceptujący zmianę ceny, job polityki zawieszający oferty zablokowanego
-sprzedawcy), więc `UPDATE` trafił w 0 wierszy i repozytorium rzuciło
-`ConcurrencyConflict`. To jest **zamierzone**: zamiast po cichu nadpisać
-cudzą zmianę (lost update), drugi zapis jest odrzucany w całości, razem
-z wierszami outboxu (jedna transakcja).
+Oferta zmieniła się od chwili, w której człowiek ją zobaczył. Dwa mechanizmy
+dają ten sam wyjątek `ConcurrencyConflict` i ten sam komunikat:
+
+1. **Wersja z formularza** (najczęstszy przypadek). Każdy formularz oferty
+   (sprzedawca: publikacja, cena, anulowanie zgłoszenia, stan, szczegóły,
+   wycofanie; moderator: zawieszenie, przywrócenie, akceptacja i odrzucenie
+   ceny) odsyła `version` z wyrenderowanej strony, a handler porównuje ją
+   z wersją wczytaną teraz (`SellerPortal\Application\ExpectedVersion`).
+   Różnica = ktoś zapisał ofertę w międzyczasie: druga karta tego samego
+   sprzedawcy, moderator, job polityki zawieszający oferty zablokowanego
+   sprzedawcy. Działa niezależnie od tego, ile czasu minęło między kartami.
+2. **Blokada w repozytorium** (rzadko, wyścig w milisekundach).
+   `SqlOfferRepository::save` robi `UPDATE … WHERE id = ? AND version = ?`;
+   gdy dwa żądania wczytały tę samą wersję i zapisują naraz, drugi `UPDATE`
+   trafia w 0 wierszy.
+
+To jest **zamierzone**: zamiast po cichu nadpisać cudzą zmianę (lost update),
+drugi zapis jest odrzucany w całości, razem z wierszami outboxu (jedna
+transakcja).
+
+Pokrewny komunikat w kolejce moderatora: „Sprzedawca zmienił zgłoszoną cenę —
+odśwież kolejkę” (`PendingPriceChangeMismatch`). Moderator decyduje o kwocie,
+którą widział (`expected_price_cents`), a sprzedawca w międzyczasie anulował
+zgłoszenie i zgłosił inną. Tę regułę agregat sprawdza **przed** wersją, żeby
+moderator dostał konkretny powód. Naprawa ta sama: odśwież kolejkę i zdecyduj
+o aktualnej kwocie.
 
 **Naprawa**
 1. Pojedynczy przypadek: odśwież stronę i powtórz. To normalne zachowanie.
+   Komunikat „Brak wersji oferty — odśwież stronę” (błąd pola `version`)
+   oznacza stary widok sprzed wdrożenia albo własny skrypt/`curl` bez pola
+   `version` — odśwież stronę lub dodaj pole.
 2. Konflikt przy **każdej** próbie na tej samej ofercie: coś zmienia ją
    w kółko w tle. Sprawdź w outboxie, jakie zdarzenia przybywają, i czy
    `catalog-worker` nie mieli tego samego joba (`make worker-logs`,
@@ -1899,8 +1920,13 @@ z wierszami outboxu (jedna transakcja).
 
 **Czego się nauczyłem**
 Konflikt wersji to komunikat dla użytkownika, nie błąd serwera: ma dać 302
-z czytelnym tekstem, nigdy 500 i nigdy cichego nadpisania (test
-`PriceGuardTest` › „równoległa edycja → błąd concurrency”). Jak to zepsuć
+z czytelnym tekstem, nigdy 500 i nigdy cichego nadpisania (testy
+`PriceGuardTest` › „druga karta z nieaktualną wersją…” i „równoległa edycja →
+błąd concurrency”, `ModerationTest` › „sprzedawca anulował i zgłosił inną
+cenę…”). Pierwsza wersja portalu miała tylko blokadę w repozytorium
+i obiecywała ochronę „dwóch kart” — przegląd końcowy pokazał, że karty
+otwarte od minut nigdy się nie nakładają, więc ta obietnica nie była
+prawdziwa, dopóki formularze nie zaczęły odsyłać wersji. Jak to zepsuć
 i odtworzyć dwiema „kartami” w tinkerze: [`10-DDD.md`](10-DDD.md), moduł 7.
 
 ## Notatka — czytanie `_explain` (ETAP 7)

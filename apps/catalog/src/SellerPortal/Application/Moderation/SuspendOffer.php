@@ -12,5 +12,7 @@ final readonly class SuspendOffer
         public int $moderatorId,
         public int $offerId,
         public string $note,
+        /** Wersja oferty, którą człowiek widział, gdy wysyłał formularz (zob. `ExpectedVersion`). */
+        public int $expectedVersion,
     ) {}
 }

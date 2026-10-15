@@ -19,7 +19,7 @@ function sellerOfferAccessPublished(): array
     $w = new PortalWorld;
     $w->activeSeller(7);
     $id = $w->draft(7);
-    (new PublishOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new PublishOffer(7, $id->value()));
+    (new PublishOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new PublishOffer(7, $id->value(), $w->version($id)));
 
     [$seller, $offer] = $w->access->forUser(UserId::fromInt(7), $id);
 

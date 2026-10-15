@@ -32,7 +32,7 @@ use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 function sellerPoliciesPublished(PortalWorld $w, int $userId, int $productId): OfferId
 {
     $id = $w->draft($userId, productId: $productId);
-    (new PublishOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new PublishOffer($userId, $id->value()));
+    (new PublishOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->access, $w->offers))->handle(new PublishOffer($userId, $id->value(), $w->version($id)));
 
     return $id;
 }
@@ -111,7 +111,7 @@ test('odblokowanie przywraca tylko oferty zawieszone przez blokadę', function (
     $seller = $w->activeSeller(7);
     $byBlock = sellerPoliciesPublished($w, 7, 1);
     $byModerator = sellerPoliciesPublished($w, 7, 2);
-    (new SuspendOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers))->handle(new SuspendOffer(900, $byModerator->value(), 'Podejrzana cena'));
+    (new SuspendOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers))->handle(new SuspendOffer(900, $byModerator->value(), 'Podejrzana cena', $w->version($byModerator)));
     sellerPoliciesBlock($w, $seller);
     sellerPoliciesSuspender($w)->run($seller);
     sellerPoliciesUnblock($w, $seller);

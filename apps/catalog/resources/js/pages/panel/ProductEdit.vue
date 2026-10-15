@@ -44,8 +44,11 @@ defineOptions({
 const page = usePage();
 // Flash z `Inertia::flash` (tekst „Zapisano…” / „Bez zmian”) znika przy kolejnej nawigacji.
 const status = computed(() => page.flash.status as string | undefined);
-// Odmowa agregatu przy akcji moderatora (np. wyścig dwóch kart) wraca jako błąd `domain`.
-const domainError = computed(() => page.props.errors?.domain);
+// Odmowa agregatu przy akcji moderatora (np. oferta zmieniona od
+// wyrenderowania strony) wraca jako błąd `domain`; brak wersji w żądaniu — jako `version`.
+const domainError = computed(
+    () => page.props.errors?.domain ?? page.props.errors?.version,
+);
 
 const form = useForm({
     name: props.product.name,

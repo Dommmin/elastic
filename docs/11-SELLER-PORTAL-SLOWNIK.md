@@ -107,11 +107,12 @@ Zasady:
 | decyzja o zmianie ceny | `PriceChangeDecision` (`AppliedNow`, `AwaitingApproval`) | wynik `changePrice`: obowiązuje od razu albo czeka na moderatora |
 | zmiana ceny do akceptacji, oczekująca zmiana | `PendingPriceChange` | proponowana cena i chwila zgłoszenia. Część agregatu oferty (VO). Do decyzji obowiązuje stara cena |
 | zgłoszenie zmiany | zdarzenie `OfferPriceChangeRequested` | sprzedawca zaproponował cenę powyżej progu |
-| akceptacja / odrzucenie zmiany | `approvePriceChange(ModeratorId)` / `rejectPriceChange(ModeratorId, Reason)` | moderator rozstrzyga. Działa też na zawieszonej ofercie |
+| akceptacja / odrzucenie zmiany | `approvePriceChange(ModeratorId, Money $expectedPrice)` / `rejectPriceChange(ModeratorId, Money $expectedPrice, Reason)` | moderator rozstrzyga o kwocie, którą widział w kolejce. Działa też na zawieszonej ofercie |
 | anulowanie zgłoszenia | `cancelPendingPriceChange` | sprzedawca wycofuje własną propozycję |
 | zmiana już czeka | `PriceChangeAlreadyPending` (`price_change_pending`) | nowej zmiany nie zgłosisz, dopóki poprzednia czeka |
 | limit przekroczony | `PriceChangeLimitExceeded` (`price_change_limit`) | szósta zmiana w oknie |
 | brak oczekującej zmiany | `NoPendingPriceChange` (`no_pending_price_change`) | np. druga akceptacja tego samego zgłoszenia z dwóch kart |
+| zgłoszona cena się zmieniła | `PendingPriceChangeMismatch` (`pending_price_changed`) | moderator decyduje o innej kwocie niż ta, która czeka (sprzedawca anulował i zgłosił nową). UI: „Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę” |
 | kolejka zmian cen | `Infrastructure/ReadModel/PriceChangeQueue.php` | model odczytu moderatora: stara i nowa cena, różnica w %, sprzedawca |
 
 ## Zawieszenie
@@ -162,7 +163,8 @@ innych kontekstów (search). Tłumaczy je `Infrastructure/Persistence/OfferInteg
 | odtworzenie (rekonstytucja) | `Offer::reconstitute`, `Seller::reconstitute` | zbudowanie agregatu ze stanu w bazie, bez zdarzeń i bez reguł przejść | |
 | repozytorium | `OfferRepository`, `SellerRepository` | „kolekcja” agregatów. Interfejs w domenie, implementacja SQL w infrastrukturze (`Sql*Repository`) | `Domain/*/…Repository.php`, `Infrastructure/Persistence/` |
 | nowa tożsamość | `nextIdentity()` | ID z sekwencji bazy przed zapisem, bo agregat ma ID od urodzenia | `Infrastructure/Persistence/NextId.php` |
-| wersja, konflikt wersji | kolumna `version`, `ConcurrencyConflict` (`concurrency_conflict`) | optymistyczna blokada: ktoś zapisał ofertę między naszym odczytem a zapisem. UI: „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” | `Infrastructure/Persistence/SqlOfferRepository.php` |
+| wersja, konflikt wersji | kolumna `version`, `ConcurrencyConflict` (`concurrency_conflict`) | optymistyczna blokada: ktoś zapisał ofertę, odkąd ją widzieliśmy. Dwa sprawdzenia: wersja odesłana z formularza kontra wczytana w handlerze (karty otwarte od dawna) i `UPDATE … WHERE version = ?` w repozytorium (zapisy w tych samych milisekundach). UI: „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” | `Application/ExpectedVersion.php`, `Infrastructure/Persistence/SqlOfferRepository.php` |
+| oczekiwana wersja | pole `version` formularza, `expectedVersion` komendy | wersja oferty, którą człowiek widział na ekranie. Niesie ją każda komenda z UI zmieniająca ofertę; polityki nie | `Application/ExpectedVersion.php` |
 | niepoprawna wartość | `InvalidValue` (`invalid_value`) | VO odmówił utworzenia. Za walidacją formularza to błąd w kodzie, więc **jest** logowany | `Domain/Shared/InvalidValue.php` |
 | kod reguły | stała `CODE` każdego `DomainException` | stabilny identyfikator złamanej reguły. Tekst dla człowieka nadaje `apps/catalog/app/Http/DomainErrorMessages.php` | |
 | komenda | `DraftOffer`, `ChangeOfferPrice`, `BlockSeller`, … | prosta klasa readonly: intencja aktora | `Application/*/` |

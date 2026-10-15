@@ -2,6 +2,7 @@
 
 namespace SellerPortal\Application\Offer;
 
+use SellerPortal\Application\ExpectedVersion;
 use SellerPortal\Application\Port\Clock;
 use SellerPortal\Application\Port\DomainEventDispatcher;
 use SellerPortal\Application\Port\TransactionManager;
@@ -27,6 +28,7 @@ final readonly class WithdrawOfferHandler
     {
         $this->transactions->run(function () use ($command): void {
             [, $offer] = $this->access->forUser(UserId::fromInt($command->userId), OfferId::fromInt($command->offerId));
+            ExpectedVersion::check($offer, $command->expectedVersion);
             $offer->withdraw($this->clock->now());
             $this->offers->save($offer);
             $this->events->dispatch($offer->releaseEvents());

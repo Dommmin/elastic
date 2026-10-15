@@ -58,14 +58,18 @@ function openSuspend() {
     suspendOpen.value = true;
 }
 
+// Każda decyzja moderatora niesie wersję wyrenderowanego wiersza: jeśli
+// oferta zmieniła się w międzyczasie, serwer odpowie „odśwież stronę”.
 function submitSuspend() {
-    suspendForm.post(suspend(props.offer.id).url, {
-        ...visitOptions,
-        onSuccess: () => {
-            suspendOpen.value = false;
-            suspendForm.reset();
-        },
-    });
+    suspendForm
+        .transform((data) => ({ ...data, version: props.offer.version }))
+        .post(suspend(props.offer.id).url, {
+            ...visitOptions,
+            onSuccess: () => {
+                suspendOpen.value = false;
+                suspendForm.reset();
+            },
+        });
 }
 
 const reinstateOpen = ref(false);
@@ -74,7 +78,7 @@ const reinstating = ref(false);
 function confirmReinstate() {
     router.post(
         reinstate(props.offer.id).url,
-        {},
+        { version: props.offer.version },
         {
             ...visitOptions,
             onStart: () => (reinstating.value = true),

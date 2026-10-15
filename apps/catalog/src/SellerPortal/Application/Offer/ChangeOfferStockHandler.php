@@ -2,6 +2,7 @@
 
 namespace SellerPortal\Application\Offer;
 
+use SellerPortal\Application\ExpectedVersion;
 use SellerPortal\Application\Port\Clock;
 use SellerPortal\Application\Port\DomainEventDispatcher;
 use SellerPortal\Application\Port\TransactionManager;
@@ -28,6 +29,7 @@ final readonly class ChangeOfferStockHandler
     {
         $this->transactions->run(function () use ($command): void {
             [, $offer] = $this->access->forActiveSeller(UserId::fromInt($command->userId), OfferId::fromInt($command->offerId));
+            ExpectedVersion::check($offer, $command->expectedVersion);
             $offer->changeStock(Stock::fromInt($command->stock), $this->clock->now());
             $this->offers->save($offer);
             $this->events->dispatch($offer->releaseEvents());

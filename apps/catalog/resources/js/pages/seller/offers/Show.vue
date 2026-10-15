@@ -62,8 +62,11 @@ defineOptions({
 
 const page = usePage();
 const seller = computed(() => page.props.auth.seller);
-// Błąd reguły domeny (limit, konflikt wersji, blokada) wraca pod kluczem `domain`.
-const domainError = computed(() => page.props.errors?.domain);
+// Błąd reguły domeny (limit, konflikt wersji, blokada) wraca pod kluczem
+// `domain`; brak wersji w żądaniu (stary widok) — pod `version`.
+const domainError = computed(
+    () => page.props.errors?.domain ?? page.props.errors?.version,
+);
 
 // Przyciski powstają WYŁĄCZNIE z `allowed_actions` (domena), nie ze statusu.
 const can = (action: OfferAction) => props.allowed_actions.includes(action);
@@ -71,9 +74,18 @@ const can = (action: OfferAction) => props.allowed_actions.includes(action);
 const visitOptions = { preserveScroll: true } as const;
 const busy = ref(false);
 
+// Każda akcja odsyła wersję oferty, którą widać na stronie (`offer.version`).
+// Jeśli w innej karcie coś się zmieniło, serwer odmówi zamiast nadpisać —
+// komunikat „odśwież stronę” pokaże się w alercie `domainError`.
+const withVersion = <T extends object>(data: T) => ({
+    ...data,
+    version: props.offer.version,
+});
+
 function post(url: string, method: 'post' | 'delete' = 'post') {
     router.visit(url, {
         method,
+        data: withVersion({}),
         ...visitOptions,
         onStart: () => (busy.value = true),
         onFinish: () => (busy.value = false),
@@ -102,24 +114,32 @@ watch(
 );
 
 function submitStock() {
-    stockForm.put(stock(props.offer.id).url, visitOptions);
+    stockForm
+        .transform(withVersion)
+        .put(stock(props.offer.id).url, visitOptions);
 }
 
 function submitDetails() {
-    detailsForm.put(details(props.offer.id).url, visitOptions);
+    detailsForm
+        .transform(withVersion)
+        .put(details(props.offer.id).url, visitOptions);
 }
 
 const withdrawOpen = ref(false);
 
+const withdrawing = ref(false);
+
 function confirmWithdraw() {
-    router.post(
-        withdraw(props.offer.id).url,
-        {},
-        {
-            ...visitOptions,
-            onFinish: () => (withdrawOpen.value = false),
+    router.post(withdraw(props.offer.id).url, withVersion({}), {
+        ...visitOptions,
+        // Bez blokady drugi klik wysyłał drugi POST, który po udanym
+        // wycofaniu kończył się mylącym „Operacja niedozwolona…”.
+        onStart: () => (withdrawing.value = true),
+        onFinish: () => {
+            withdrawing.value = false;
+            withdrawOpen.value = false;
         },
-    );
+    });
 }
 
 const timeFormat = new Intl.DateTimeFormat('pl-PL', {
@@ -270,6 +290,7 @@ const timeFormat = new Intl.DateTimeFormat('pl-PL', {
             <h2 class="font-semibold">Cena</h2>
             <PriceChangeForm
                 :offer-id="offer.id"
+                :version="offer.version"
                 :current-cents="offer.price_cents"
                 :guard="price_guard"
             />
@@ -372,7 +393,11 @@ const timeFormat = new Intl.DateTimeFormat('pl-PL', {
                     <DialogClose as-child>
                         <Button variant="outline">Anuluj</Button>
                     </DialogClose>
-                    <Button variant="destructive" @click="confirmWithdraw">
+                    <Button
+                        variant="destructive"
+                        :disabled="withdrawing"
+                        @click="confirmWithdraw"
+                    >
                         Wycofaj
                     </Button>
                 </DialogFooter>

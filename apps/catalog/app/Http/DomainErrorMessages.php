@@ -20,6 +20,7 @@ final class DomainErrorMessages
         'price_change_limit' => 'Wykorzystano limit 5 zmian ceny na dobę',
         'no_pending_price_change' => 'Ta oferta nie ma już zgłoszonej zmiany ceny',
         'price_change_pending' => 'Ta oferta czeka na decyzję moderatora — anuluj zgłoszenie, aby zmienić cenę',
+        'pending_price_changed' => 'Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę',
         'concurrency_conflict' => 'Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę',
         'live_offer_exists' => 'Masz już aktywną ofertę na ten produkt',
         'offer_without_stock' => 'Nie można opublikować oferty bez towaru',

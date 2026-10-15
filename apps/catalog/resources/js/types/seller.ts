@@ -127,4 +127,6 @@ export type PriceChangeQueueItem = {
     /** Wartość bezwzględna, zaokrąglona; kierunek wynika z porównania cen. */
     change_percent: number;
     requested_at: string;
+    /** Wersja oferty — wraca z decyzją, żeby nie zatwierdzić zgłoszenia, którego moderator nie widział. */
+    version: number;
 };

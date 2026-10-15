@@ -740,6 +740,11 @@ wersji przy współbieżnych zapisach i rozumiesz, ile to kosztuje.
 3. **Optymistyczne blokowanie**: `UPDATE … WHERE id = ? AND version = ?`.
    0 zmienionych wierszy oznacza, że ktoś zapisał między naszym odczytem
    a zapisem. Zgłaszamy konflikt zamiast nadpisać cudzą zmianę (*lost update*).
+   Uwaga: „nasz odczyt” to odczyt w *tym samym żądaniu*. Człowiek widział
+   ofertę wcześniej, na wyrenderowanej stronie. Żeby ochronić **jego**
+   decyzję, formularz odsyła wersję, którą wyświetlił, a handler porównuje ją
+   z wersją wczytaną teraz. Dopiero oba sprawdzenia razem chronią przed
+   nadpisaniem z karty otwartej kwadrans temu.
 4. **Tożsamość przed zapisem**: agregat ma ID od urodzenia, bo zdarzenia
    niosą ID. Bierze się je z sekwencji bazy przed INSERT-em.
 5. **CQRS w wersji lekkiej**: zapis przez agregaty, odczyt (listy, pulpit)
@@ -758,6 +763,24 @@ wersji przy współbieżnych zapisach i rozumiesz, ile to kosztuje.
     z numerem oferty, a nie po cichu zepsuty agregat.
   - `get` (`:58`) ładuje tylko zmiany cen z ostatnich 24 h, bo limit dobowy
     nie potrzebuje starszych.
+- Wersja z formularza: `apps/catalog/src/SellerPortal/Application/ExpectedVersion.php`.
+  Każda komenda z UI, która zmienia ofertę (6 sprzedawcy, 4 moderatora),
+  niesie `expectedVersion`; handler zaraz po wczytaniu woła
+  `ExpectedVersion::check($offer, $command->expectedVersion)`. Polityki
+  (joby blokady i odblokowania) jej nie używają: działają na najświeższym
+  stanie, nikt im niczego nie wyświetlał.
+  - Akceptacja i odrzucenie zmiany ceny niosą dodatkowo kwotę, którą moderator
+    widział w kolejce. To już reguła domeny (`Offer::approvePriceChange(…,
+    Money $expectedPrice, …)` → `PendingPriceChangeMismatch`), a nie tylko
+    wersja: bez niej sprzedawca mógł anulować zgłoszenie na 131 zł, zgłosić
+    900 zł, a moderator klikający „Akceptuj” przy 131 zł wprowadzał 900 zł.
+    Handler sprawdza tę regułę **przed** wersją, żeby moderator dostał
+    konkretny powód („Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę”).
+  - **Historia z przeglądu końcowego:** pierwsza wersja miała tylko blokadę
+    w repozytorium, a docblock i RUNBOOK obiecywały ochronę „dwóch kart”. Test
+    wyścigu przechodził, bo symulował zapis w tych samych milisekundach.
+    Prawdziwe karty przeglądarki się nie nakładają: druga wczytywała świeżą
+    ofertę i nadpisywała zmianę pierwszej po cichu.
 - Tożsamość: `apps/catalog/src/SellerPortal/Infrastructure/Persistence/NextId.php:21`
   (`nextval('{tabela}_id_seq')` w Postgresie; w SQLite `MAX(id)+1`, tylko dla
   jednowątkowych testów).
@@ -807,9 +830,9 @@ wersji przy współbieżnych zapisach i rozumiesz, ile to kosztuje.
    dokumentu; jego automatycznym odpowiednikiem jest test „drugi zapis tej
    samej wersji rzuca ConcurrencyConflict”, który robi dokładnie to samo na
    SQLite. Prawdziwe dwie karty przeglądarki rzadko trafią
-   w to samo okno czasowe, bo każde żądanie wczytuje ofertę na świeżo.
-   Dlatego w tinkerze robisz to, co dzieje się przy wyścigu: dwa odczyty
-   przed dwoma zapisami.
+   w to samo okno czasowe, bo każde żądanie wczytuje ofertę na świeżo
+   (karty chroni wersja z formularza, ćwiczenie 3). Dlatego w tinkerze robisz
+   to, co dzieje się przy wyścigu: dwa odczyty przed dwoma zapisami.
 
    ```bash
    docker compose exec catalog-app php artisan tinker
@@ -831,6 +854,17 @@ wersji przy współbieżnych zapisach i rozumiesz, ile to kosztuje.
    dwa różne stany opisane tą samą wersją. Historia oferty kłamie. Cofnij:
    `git checkout -- src/SellerPortal/Infrastructure/Persistence/SqlOfferRepository.php`
    (kontener widzi pliki z tego checkoutu na żywo).
+3. **Zepsuj i napraw: druga karta.** Usuń linię
+   `ExpectedVersion::check($offer, $command->expectedVersion);` z
+   `apps/catalog/src/SellerPortal/Application/Offer/ChangeOfferStockHandler.php`.
+   Czerwone: `PriceGuardTest` › „druga karta z nieaktualną wersją → błąd
+   concurrency, stan bez zmian” (druga karta po cichu ustawia 42 sztuki)
+   i `OfferHandlersTest` › „komenda z nieaktualną wersją…” (zestaw `stan`).
+   Zielony zostaje test „równoległa edycja”: blokada w repozytorium dalej
+   działa, tylko nie widzi kart, które się nie nakładają. W przeglądarce:
+   otwórz ofertę w dwóch kartach, zapisz stan w pierwszej, potem w drugiej.
+   Z kontrolą: alert „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę”.
+   Cofnij przez `git checkout -- <plik>`.
 
 **Sprawdź się**
 - Dlaczego interfejs repozytorium leży w `Domain`, a nie w `Infrastructure`?

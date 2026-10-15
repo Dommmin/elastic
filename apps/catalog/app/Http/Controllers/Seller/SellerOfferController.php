@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Http\CurrentSeller;
+use App\Http\Requests\OfferVersionRequest;
 use App\Http\Requests\Seller\StoreOfferRequest;
 use App\Http\Requests\Seller\UpdateOfferDetailsRequest;
 use App\Http\Requests\Seller\UpdateOfferPriceRequest;
@@ -39,7 +40,7 @@ use SellerPortal\Infrastructure\ReadModel\SellerOfferList;
 /**
  * Oferty zalogowanego sprzedawcy. Zapisy idą wyłącznie przez handlery
  * warstwy aplikacji — reguły (właściciel, aktywny sprzedawca, strażnik ceny,
- * wersja) siedzą tam i w agregacie, a ich wyjątki tłumaczy `bootstrap/app.php`
+ * wersja z formularza) siedzą tam i w agregacie, a ich wyjątki tłumaczy `bootstrap/app.php`
  * (404 dla cudzej oferty, błąd `domain` dla złamanej reguły).
  */
 class SellerOfferController extends Controller
@@ -103,16 +104,16 @@ class SellerOfferController extends Controller
         ]);
     }
 
-    public function publish(Request $request, int $offer, PublishOfferHandler $handler): RedirectResponse
+    public function publish(OfferVersionRequest $request, int $offer, PublishOfferHandler $handler): RedirectResponse
     {
-        $handler->handle(new PublishOffer(self::userId($request), $offer));
+        $handler->handle(new PublishOffer(self::userId($request), $offer, $request->expectedVersion()));
 
         return self::backWithToast('Oferta opublikowana');
     }
 
     public function updatePrice(UpdateOfferPriceRequest $request, int $offer, ChangeOfferPriceHandler $handler): RedirectResponse
     {
-        $decision = $handler->handle(new ChangeOfferPrice(self::userId($request), $offer, $request->priceCents()));
+        $decision = $handler->handle(new ChangeOfferPrice(self::userId($request), $offer, $request->priceCents(), $request->expectedVersion()));
 
         return match ($decision) {
             PriceChangeDecision::AppliedNow => self::backWithToast('Cena zmieniona'),
@@ -120,16 +121,16 @@ class SellerOfferController extends Controller
         };
     }
 
-    public function cancelPendingPrice(Request $request, int $offer, CancelPendingPriceChangeHandler $handler): RedirectResponse
+    public function cancelPendingPrice(OfferVersionRequest $request, int $offer, CancelPendingPriceChangeHandler $handler): RedirectResponse
     {
-        $handler->handle(new CancelPendingPriceChange(self::userId($request), $offer));
+        $handler->handle(new CancelPendingPriceChange(self::userId($request), $offer, $request->expectedVersion()));
 
         return self::backWithToast('Zgłoszenie zmiany ceny anulowane');
     }
 
     public function updateStock(UpdateOfferStockRequest $request, int $offer, ChangeOfferStockHandler $handler): RedirectResponse
     {
-        $handler->handle(new ChangeOfferStock(self::userId($request), $offer, (int) $request->validated('stock')));
+        $handler->handle(new ChangeOfferStock(self::userId($request), $offer, (int) $request->validated('stock'), $request->expectedVersion()));
 
         return self::backWithToast('Stan magazynowy zapisany');
     }
@@ -141,14 +142,15 @@ class SellerOfferController extends Controller
             $offer,
             (string) $request->validated('condition'),
             (int) $request->validated('shipping_days'),
+            $request->expectedVersion(),
         ));
 
         return self::backWithToast('Szczegóły oferty zapisane');
     }
 
-    public function withdraw(Request $request, int $offer, WithdrawOfferHandler $handler): RedirectResponse
+    public function withdraw(OfferVersionRequest $request, int $offer, WithdrawOfferHandler $handler): RedirectResponse
     {
-        $handler->handle(new WithdrawOffer(self::userId($request), $offer));
+        $handler->handle(new WithdrawOffer(self::userId($request), $offer, $request->expectedVersion()));
 
         return self::backWithToast('Oferta wycofana');
     }

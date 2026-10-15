@@ -11,5 +11,7 @@ final readonly class ReinstateOffer
     public function __construct(
         public int $moderatorId,
         public int $offerId,
+        /** Wersja oferty, którą człowiek widział, gdy wysyłał formularz (zob. `ExpectedVersion`). */
+        public int $expectedVersion,
     ) {}
 }

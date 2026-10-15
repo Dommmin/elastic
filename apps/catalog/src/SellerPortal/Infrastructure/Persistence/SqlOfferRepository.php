@@ -35,9 +35,16 @@ use UnexpectedValueException;
  * ma prywatny konstruktor i niezmienniki, więc mapujemy go ręcznie.
  *
  * DLACZEGO optymistyczna blokada przez `UPDATE ... WHERE version = ?`:
- * dwie karty (sprzedawca i moderator) mogą zmienić tę samą ofertę naraz.
+ * dwa żądania (sprzedawca, moderator, job polityki) mogą zapisać tę samą
+ * ofertę równocześnie — między odczytem a zapisem jednego wchodzi drugi.
  * Wygrywa pierwszy zapis; drugi trafia w 0 wierszy i dostaje
  * `ConcurrencyConflict` zamiast po cichu nadpisać cudzą zmianę.
+ *
+ * To łapie tylko żądania NAKŁADAJĄCE SIĘ w czasie. Dwie karty otwarte od
+ * kwadransa się nie nakładają: druga wczytuje świeży agregat. Ten przypadek
+ * pokrywa wersja odsyłana z formularza i sprawdzana w handlerze
+ * (`SellerPortal\Application\ExpectedVersion`) — oba mechanizmy rzucają
+ * ten sam wyjątek, więc UI pokazuje ten sam komunikat.
  *
  * `save()` NIE zmienia obiektu w pamięci: po zapisie baza ma `version + 1`,
  * a agregat dalej trzyma starą wersję i zdarzenia. Wołający (handler:

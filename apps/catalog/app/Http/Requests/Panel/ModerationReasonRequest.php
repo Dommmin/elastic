@@ -6,8 +6,8 @@ use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
 /**
- * Powód decyzji moderatora (odrzucenie lub blokada sprzedawcy, odrzucenie
- * zmiany ceny) — trafia do sprzedawcy, więc nie może być pusty. Ten sam
+ * Powód decyzji moderatora o sprzedawcy (odrzucenie zgłoszenia, blokada;
+ * odrzucenie zmiany ceny ma `RejectPriceChangeRequest`) — trafia do sprzedawcy, więc nie może być pusty. Ten sam
  * zakres pilnuje value object `Reason`.
  */
 class ModerationReasonRequest extends FormRequest

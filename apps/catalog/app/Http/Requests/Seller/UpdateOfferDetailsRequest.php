@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Seller;
 
+use App\Http\Requests\Concerns\ExpectsOfferVersion;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -9,6 +10,8 @@ use SellerPortal\Domain\Offer\Condition;
 
 class UpdateOfferDetailsRequest extends FormRequest
 {
+    use ExpectsOfferVersion;
+
     public function authorize(): bool
     {
         return true;
@@ -20,6 +23,7 @@ class UpdateOfferDetailsRequest extends FormRequest
     public function rules(): array
     {
         return [
+            ...$this->versionRules(),
             'condition' => ['required', Rule::enum(Condition::class)],
             'shipping_days' => ['required', 'integer', 'min:1', 'max:30'],
         ];
@@ -30,6 +34,6 @@ class UpdateOfferDetailsRequest extends FormRequest
      */
     public function messages(): array
     {
-        return OfferFieldMessages::DETAILS;
+        return [...$this->versionMessages(), ...OfferFieldMessages::DETAILS];
     }
 }

@@ -24,7 +24,7 @@ test('+10% → „Cena zmieniona”, cena od razu w projekcji', function () {
 
     $this->actingAs($user)
         ->from("/seller/offers/{$offer->id}")
-        ->put("/seller/offers/{$offer->id}/price", ['price' => '110,00'])
+        ->put("/seller/offers/{$offer->id}/price", ['price' => '110,00', 'version' => 1])
         ->assertRedirect("/seller/offers/{$offer->id}")
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Cena zmieniona');
@@ -38,7 +38,7 @@ test('+50% → flash o akceptacji, cena w projekcji bez zmian', function () {
 
     $this->actingAs($user)
         ->from("/seller/offers/{$offer->id}")
-        ->put("/seller/offers/{$offer->id}/price", ['price' => '150'])
+        ->put("/seller/offers/{$offer->id}/price", ['price' => '150', 'version' => 1])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Zmiana o ponad 30% czeka na akceptację moderatora');
 
@@ -63,7 +63,7 @@ test('szósta zmiana w dobie → błąd „Wykorzystano limit 5 zmian ceny na do
 
     foreach ([101, 102, 103, 104, 105] as $i => $zloty) {
         Carbon::setTestNow(Carbon::parse('2026-10-15 10:00:00')->addMinutes($i));
-        $this->actingAs($user)->from($show)->put("{$show}/price", ['price' => (string) $zloty])->assertSessionHasNoErrors();
+        $this->actingAs($user)->from($show)->put("{$show}/price", ['price' => (string) $zloty, 'version' => $offer->fresh()->version])->assertSessionHasNoErrors();
     }
 
     $this->actingAs($user)
@@ -72,14 +72,14 @@ test('szósta zmiana w dobie → błąd „Wykorzystano limit 5 zmian ceny na do
 
     $this->actingAs($user)
         ->from($show)
-        ->put("{$show}/price", ['price' => '106'])
+        ->put("{$show}/price", ['price' => '106', 'version' => $offer->fresh()->version])
         ->assertRedirect($show)
         ->assertSessionHasErrors(['domain' => 'Wykorzystano limit 5 zmian ceny na dobę']);
     expect($offer->fresh()->price_cents)->toBe(10500);
 
     // Okno kroczące: po 24 h od pierwszej zmiany zwalnia się jedno miejsce.
     Carbon::setTestNow('2026-10-16 10:00:01');
-    $this->actingAs($user)->from($show)->put("{$show}/price", ['price' => '106'])->assertSessionHasNoErrors();
+    $this->actingAs($user)->from($show)->put("{$show}/price", ['price' => '106', 'version' => $offer->fresh()->version])->assertSessionHasNoErrors();
     expect($offer->fresh()->price_cents)->toBe(10600);
 
     Carbon::setTestNow();
@@ -108,10 +108,33 @@ test('równoległa edycja → błąd concurrency', function () {
 
     $this->actingAs($user)
         ->from("/seller/offers/{$offer->id}")
-        ->put("/seller/offers/{$offer->id}/stock", ['stock' => 42])
+        ->put("/seller/offers/{$offer->id}/stock", ['stock' => 42, 'version' => 1])
         ->assertRedirect("/seller/offers/{$offer->id}")
         ->assertSessionHasErrors(['domain' => 'Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę']);
 
     expect($offer->fresh()->stock)->toBe(5)
+        ->and(DB::table('outbox')->count())->toBe($outboxBefore);
+});
+
+test('druga karta z nieaktualną wersją → błąd concurrency, stan bez zmian', function () {
+    [$user, $offer] = priceGuardTestOffer();
+    $show = "/seller/offers/{$offer->id}";
+
+    // Obie karty wyrenderowały wersję 1. Pierwsza zapisuje stan…
+    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 8, 'version' => 1])->assertSessionHasNoErrors();
+    $outboxBefore = DB::table('outbox')->count();
+
+    // …a druga, kwadrans później, wysyła swój formularz. Żądania nie
+    // nakładają się w czasie, więc blokada w repozytorium nic by nie
+    // zauważyła — konflikt wykrywa dopiero wersja odesłana z formularza.
+    $this->actingAs($user)
+        ->from($show)
+        ->put("{$show}/stock", ['stock' => 42, 'version' => 1])
+        ->assertRedirect($show)
+        ->assertSessionHasErrors(['domain' => 'Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę']);
+
+    expect($offer->fresh())
+        ->stock->toBe(8)
+        ->version->toBe(2)
         ->and(DB::table('outbox')->count())->toBe($outboxBefore);
 });

@@ -63,6 +63,15 @@ final class PortalWorld
     }
 
     /**
+     * Wersja oferty „widziana na ekranie” — komendy z UI ją odsyłają
+     * (`ExpectedVersion`), a testy chcą zwykle trafić w aktualną.
+     */
+    public function version(OfferId $id): int
+    {
+        return $this->offers->get($id)->version();
+    }
+
+    /**
      * Czyści zapis zdarzeń, żeby test widział tylko to, co zrobił handler pod testem.
      */
     public function forgetDispatched(): void

@@ -12,5 +12,7 @@ final readonly class ChangeOfferPrice
         public int $userId,
         public int $offerId,
         public int $priceCents,
+        /** Wersja oferty, którą człowiek widział, gdy wysyłał formularz (zob. `ExpectedVersion`). */
+        public int $expectedVersion,
     ) {}
 }

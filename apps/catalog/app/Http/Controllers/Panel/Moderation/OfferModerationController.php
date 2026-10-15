@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Panel\Moderation;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\OfferVersionRequest;
 use App\Http\Requests\Panel\SuspendOfferRequest;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -21,14 +22,14 @@ class OfferModerationController extends Controller
 {
     public function suspend(SuspendOfferRequest $request, int $offer, SuspendOfferHandler $handler): RedirectResponse
     {
-        $handler->handle(new SuspendOffer(self::moderatorId($request), $offer, $request->validated('note')));
+        $handler->handle(new SuspendOffer(self::moderatorId($request), $offer, $request->validated('note'), $request->expectedVersion()));
 
         return self::backWithToast('Oferta zawieszona');
     }
 
-    public function reinstate(Request $request, int $offer, ReinstateOfferHandler $handler): RedirectResponse
+    public function reinstate(OfferVersionRequest $request, int $offer, ReinstateOfferHandler $handler): RedirectResponse
     {
-        $handler->handle(new ReinstateOffer(self::moderatorId($request), $offer));
+        $handler->handle(new ReinstateOffer(self::moderatorId($request), $offer, $request->expectedVersion()));
 
         return self::backWithToast('Oferta przywrócona');
     }

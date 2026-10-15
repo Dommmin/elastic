@@ -48,7 +48,7 @@ test('odblokowanie przywraca tylko zawieszone przez blokadę', function () {
     $admin = User::factory()->admin()->create();
 
     $this->actingAs($admin)
-        ->post("/panel/offers/{$byModerator->id}/suspend", ['note' => 'Podróbka'])
+        ->post("/panel/offers/{$byModerator->id}/suspend", ['note' => 'Podróbka', 'version' => 1])
         ->assertSessionHasNoErrors();
     $this->actingAs($admin)
         ->post("/panel/sellers/{$seller->id}/block", ['reason' => 'Skargi klientów'])

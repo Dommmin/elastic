@@ -55,6 +55,7 @@ test('kolejka pokazuje zgłoszenie z różnicą w %', function () {
             ->where('items.1.product.id', $newer->product_id)
             ->where('items.1.product.name', $newer->product->name)
             ->where('items.1.seller.name', 'Sklep Moderowany')
+            ->where('items.1.version', 1)
             ->has('items.1.requested_at')
             ->where('moderation.pending_price_changes', 2));
 });
@@ -76,7 +77,7 @@ test('akceptacja zmienia cenę i daje offer.price_change_approved', function () 
 
     $this->actingAs(User::factory()->admin()->create())
         ->from('/panel/moderation/price-changes')
-        ->post("/panel/offers/{$offer->id}/price-change/approve")
+        ->post("/panel/offers/{$offer->id}/price-change/approve", ['version' => 1, 'expected_price_cents' => 15000])
         ->assertRedirect('/panel/moderation/price-changes')
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Nowa cena zaakceptowana');
@@ -91,13 +92,60 @@ test('akceptacja zmienia cenę i daje offer.price_change_approved', function () 
 test('ponowna akceptacja bez oczekującej zmiany → błąd domain', function () {
     [, $offer] = moderationTestPendingOffer();
     $admin = User::factory()->admin()->create();
-    $this->actingAs($admin)->post("/panel/offers/{$offer->id}/price-change/approve")->assertSessionHasNoErrors();
+    $this->actingAs($admin)->post("/panel/offers/{$offer->id}/price-change/approve", ['version' => 1, 'expected_price_cents' => 15000])->assertSessionHasNoErrors();
 
+    // Druga karta z tą samą (już rozpatrzoną) pozycją kolejki.
     $this->actingAs($admin)
         ->from('/panel/moderation/price-changes')
-        ->post("/panel/offers/{$offer->id}/price-change/approve")
+        ->post("/panel/offers/{$offer->id}/price-change/approve", ['version' => 1, 'expected_price_cents' => 15000])
         ->assertRedirect('/panel/moderation/price-changes')
         ->assertSessionHasErrors(['domain' => 'Ta oferta nie ma już zgłoszonej zmiany ceny']);
+});
+
+test('sprzedawca anulował i zgłosił inną cenę → akceptacja starej kwoty odrzucona, cena bez zmian', function () {
+    $seller = User::factory()->create();
+    $offer = Offer::factory()->for(Seller::factory()->forUser($seller))->create(['price_cents' => 10000, 'stock' => 5]);
+    $show = "/seller/offers/{$offer->id}";
+    $admin = User::factory()->admin()->create();
+
+    // Sprzedawca zgłasza +31%, moderator otwiera kolejkę i widzi 131 zł.
+    $this->actingAs($seller)->from($show)->put("{$show}/price", ['price' => '131', 'version' => 1])->assertSessionHasNoErrors();
+    $row = $this->actingAs($admin)->get('/panel/moderation/price-changes')->viewData('page')['props']['items'][0];
+    expect($row['proposed_price_cents'])->toBe(13100);
+
+    // Zanim moderator kliknie: anulowanie (bezpłatne) i nowe zgłoszenie na 900 zł.
+    $this->actingAs($seller)->from($show)->delete("{$show}/pending-price", ['version' => $offer->fresh()->version])->assertSessionHasNoErrors();
+    $this->actingAs($seller)->from($show)->put("{$show}/price", ['price' => '900', 'version' => $offer->fresh()->version])->assertSessionHasNoErrors();
+    $outboxBefore = DB::table('outbox')->count();
+
+    foreach (['approve' => [], 'reject' => ['reason' => 'Za drogo']] as $decision => $extra) {
+        $this->actingAs($admin)
+            ->from('/panel/moderation/price-changes')
+            ->post("/panel/offers/{$offer->id}/price-change/{$decision}", [
+                ...$extra,
+                'version' => $row['version'],
+                'expected_price_cents' => $row['proposed_price_cents'],
+            ])
+            ->assertRedirect('/panel/moderation/price-changes')
+            ->assertSessionHasErrors(['domain' => 'Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę']);
+    }
+
+    expect($offer->fresh())
+        ->price_cents->toBe(10000)
+        ->pending_price_cents->toBe(90000)
+        ->and(DB::table('outbox')->count())->toBe($outboxBefore);
+    $this->getJson("/api/internal/products/{$offer->product_id}/projection")->assertJsonPath('price_min', 10000);
+});
+
+test('decyzja o cenie bez wersji lub kwoty z kolejki → błąd walidacji, nic się nie zmienia', function () {
+    [, $offer] = moderationTestPendingOffer(10000, 15000);
+
+    $this->actingAs(User::factory()->admin()->create())
+        ->from('/panel/moderation/price-changes')
+        ->post("/panel/offers/{$offer->id}/price-change/approve")
+        ->assertSessionHasErrors(['version', 'expected_price_cents']);
+
+    expect($offer->fresh()->pending_price_cents)->toBe(15000);
 });
 
 test('odrzucenie bez powodu → błąd reason', function (string $reason) {
@@ -105,7 +153,7 @@ test('odrzucenie bez powodu → błąd reason', function (string $reason) {
 
     $this->actingAs(User::factory()->admin()->create())
         ->from('/panel/moderation/price-changes')
-        ->post("/panel/offers/{$offer->id}/price-change/reject", ['reason' => $reason])
+        ->post("/panel/offers/{$offer->id}/price-change/reject", ['reason' => $reason, 'version' => 1, 'expected_price_cents' => 15000])
         ->assertRedirect('/panel/moderation/price-changes')
         ->assertSessionHasErrors('reason');
 
@@ -117,7 +165,7 @@ test('odrzucenie z powodem zostawia starą cenę', function () {
 
     $this->actingAs(User::factory()->admin()->create())
         ->from('/panel/moderation/price-changes')
-        ->post("/panel/offers/{$offer->id}/price-change/reject", ['reason' => 'Cena odbiega od rynku'])
+        ->post("/panel/offers/{$offer->id}/price-change/reject", ['reason' => 'Cena odbiega od rynku', 'version' => 1, 'expected_price_cents' => 15000])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Zmiana ceny odrzucona');
 
@@ -143,13 +191,13 @@ test('zawieszenie znika ofertę z projekcji, przywrócenie wraca', function () {
             ->where('offers.0.suspension', null)
             ->where('offers.0.allowed_actions', ['suspend']));
 
-    $this->actingAs($admin)->from($edit)->post("/panel/offers/{$offer->id}/suspend", ['note' => ''])
+    $this->actingAs($admin)->from($edit)->post("/panel/offers/{$offer->id}/suspend", ['note' => '', 'version' => 1])
         ->assertSessionHasErrors('note');
     expect($offer->fresh()->status)->toBe('published');
 
     $this->actingAs($admin)
         ->from($edit)
-        ->post("/panel/offers/{$offer->id}/suspend", ['note' => 'Podróbka'])
+        ->post("/panel/offers/{$offer->id}/suspend", ['note' => 'Podróbka', 'version' => 1])
         ->assertRedirect($edit)
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Oferta zawieszona');
@@ -170,7 +218,7 @@ test('zawieszenie znika ofertę z projekcji, przywrócenie wraca', function () {
 
     $this->actingAs($admin)
         ->from($edit)
-        ->post("/panel/offers/{$offer->id}/reinstate")
+        ->post("/panel/offers/{$offer->id}/reinstate", ['version' => 2])
         ->assertSessionHasNoErrors()
         ->assertInertiaFlash('toast.message', 'Oferta przywrócona');
 
@@ -211,10 +259,12 @@ test('sprzedawca nie może przywrócić zawieszonej (brak trasy/akcji)', functio
 test('akcja moderatora na nieistniejącej ofercie → 404', function () {
     $admin = User::factory()->admin()->create();
 
-    $this->actingAs($admin)->post('/panel/offers/999999/suspend', ['note' => 'X'])->assertNotFound();
-    $this->actingAs($admin)->post('/panel/offers/999999/reinstate')->assertNotFound();
-    $this->actingAs($admin)->post('/panel/offers/999999/price-change/approve')->assertNotFound();
-    $this->actingAs($admin)->post('/panel/offers/999999/price-change/reject', ['reason' => 'X'])->assertNotFound();
+    $decision = ['version' => 1, 'expected_price_cents' => 15000];
+
+    $this->actingAs($admin)->post('/panel/offers/999999/suspend', ['note' => 'X', 'version' => 1])->assertNotFound();
+    $this->actingAs($admin)->post('/panel/offers/999999/reinstate', ['version' => 1])->assertNotFound();
+    $this->actingAs($admin)->post('/panel/offers/999999/price-change/approve', $decision)->assertNotFound();
+    $this->actingAs($admin)->post('/panel/offers/999999/price-change/reject', ['reason' => 'X', ...$decision])->assertNotFound();
 });
 
 test('przywrócenie opublikowanej → błąd domain', function () {
@@ -222,6 +272,6 @@ test('przywrócenie opublikowanej → błąd domain', function () {
 
     $this->actingAs(User::factory()->admin()->create())
         ->from('/panel')
-        ->post("/panel/offers/{$offer->id}/reinstate")
+        ->post("/panel/offers/{$offer->id}/reinstate", ['version' => 1])
         ->assertSessionHasErrors(['domain' => 'Operacja niedozwolona w obecnym stanie']);
 });

@@ -12,6 +12,8 @@ import type { PriceGuard } from '@/types';
 
 const props = defineProps<{
     offerId: number;
+    /** Wersja oferty z wyrenderowanej strony — serwer odmówi, jeśli jest nieaktualna. */
+    version: number;
     currentCents: number;
     guard: PriceGuard;
 }>();
@@ -47,10 +49,13 @@ const changePercent = computed(() => {
 const limitReached = computed(() => props.guard.changes_left_today === 0);
 
 function submit() {
-    form.put(price(props.offerId).url, {
-        preserveScroll: true,
-        onSuccess: () => form.reset(),
-    });
+    form.transform((data) => ({ ...data, version: props.version })).put(
+        price(props.offerId).url,
+        {
+            preserveScroll: true,
+            onSuccess: () => form.reset(),
+        },
+    );
 }
 </script>
 

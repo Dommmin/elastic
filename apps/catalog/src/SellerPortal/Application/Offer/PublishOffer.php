@@ -11,5 +11,7 @@ final readonly class PublishOffer
     public function __construct(
         public int $userId,
         public int $offerId,
+        /** Wersja oferty, którą człowiek widział, gdy wysyłał formularz (zob. `ExpectedVersion`). */
+        public int $expectedVersion,
     ) {}
 }
