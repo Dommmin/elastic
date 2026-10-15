@@ -69,5 +69,7 @@ wyrazić bez walki z frameworkiem.
 - Typy kolumn trzeba sprawdzać na prawdziwym Postgresie: `timestampTz` bez
   precyzji to `timestamptz(0)`, czego SQLite nie pokaże (naprawione
   w Tasku 6, RUNBOOK [#041](../RUNBOOK.md#041)).
-- Ile dokładnie kosztuje to względem DDD-lite, zmierzy gałąź
-  `ddd-lite-porownanie` (następny krok, jeszcze nie zrobiony).
+- Ile to kosztuje względem DDD-lite: [`docs/blog/ddd-vs-ddd-lite.md`](../blog/ddd-vs-ddd-lite.md)
+  (gałąź `ddd-lite-porownanie`). Lite to połowa kodu przy tych samych testach
+  HTTP; „obejście przez `Offer::query()->update(...)`” z tabeli wyżej działa
+  w obu wersjach, bo model `App\Models\Offer` istnieje i tutaj.

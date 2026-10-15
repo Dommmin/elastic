@@ -16,9 +16,9 @@ i umieć potem powiedzieć, ile kosztował.*
 > sprawdzone ręcznie na żywym stacku z wyszukiwarką, nDCG@10 0.779 → 0.786
 > po `make reproject` ([POMIARY](../POMIARY.md)).
 > **Jeszcze nie zrobione:** wdrożenie na k3s (czeka na Twoją zgodę, bo to
-> zmiana na serwerze) oraz gałąź `ddd-lite-porownanie` z dokumentem
-> porównawczym `docs/blog/ddd-vs-ddd-lite.md` (następne zadanie). Do tego
-> czasu kryterium 7 specu (porównanie na liczbach) jest otwarte.
+> zmiana na serwerze). Porównanie z DDD-lite (kryterium 7 specu) jest
+> zrobione lokalnie: [`ddd-vs-ddd-lite.md`](ddd-vs-ddd-lite.md), gałąź
+> `ddd-lite-porownanie` czeka na wypchnięcie.
 >
 > Moduł nauki z teorią i ćwiczeniami: [`docs/10-DDD.md`](../10-DDD.md).
 > Słownik: [`docs/11-SELLER-PORTAL-SLOWNIK.md`](../11-SELLER-PORTAL-SLOWNIK.md).
@@ -651,8 +651,9 @@ Zmierzone na tym repo 2026-10-15 (`find … | wc -l`, wyniki testów z POMIARÓW
 
 Funkcjonalnie te dwie kolumny nie robią tego samego (portal ma sprzedawców,
 moderację, strażnika ceny i polityki), więc 4758 do 126 **nie** jest ceną
-DDD. Cenę DDD względem DDD-lite przy tych samych regułach pokaże dopiero
-gałąź `ddd-lite-porownanie`.
+DDD. Cenę DDD względem DDD-lite przy tych samych regułach mierzy
+[`ddd-vs-ddd-lite.md`](ddd-vs-ddd-lite.md): 4516 vs 2272 linie, ten sam koszt
+nowej reguły, dwie zmierzone dziury po stronie lite.
 
 **DDD dało:** model, który odpowiada na pytania biznesu w jednym miejscu
 („co się dzieje z ofertami po odblokowaniu?” → `ReinstateOffersOfUnblockedSeller`

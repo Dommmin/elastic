@@ -1149,10 +1149,12 @@ Dla porównania: przed tym etapem edycja ofert przez admina to był model
 Eloquenta `Offer` (84 linie, z `updateWithOutbox`) i `Panel/OfferController`
 (42 linie). Funkcjonalnie to nie to samo, bo portal ma sprzedawców,
 moderację, strażnika ceny i polityki, więc 4758 do 126 nie jest uczciwym
-porównaniem. Uczciwe porównanie tych samych reguł w stylu DDD-lite to
-osobna gałąź `ddd-lite-porownanie` i dokument `docs/blog/ddd-vs-ddd-lite.md`
-(następny krok etapu, **jeszcze nie zrobiony**). Do tego czasu traktuj
-liczby powyżej jako górną granicę kosztu, nie jako wynik porównania.
+porównaniem. Uczciwe porównanie tych samych reguł w stylu DDD-lite:
+[`docs/blog/ddd-vs-ddd-lite.md`](blog/ddd-vs-ddd-lite.md) (gałąź
+`ddd-lite-porownanie`). Wynik: lite to 2272 linie zamiast 4516 przy tych
+samych testach HTTP i tym samym koszcie nowej reguły, ale z dwiema
+zmierzonymi dziurami (brudna instancja po konflikcie wersji, niesprawdzane
+wiersze), bez testu architektury i z testami reguł ~35× wolniejszymi.
 
 **Co DDD tu dało** (też zmierzone): 130 testów domeny i aplikacji w 44 ms
 bez bazy i frameworka; każda reguła ma jedno miejsce (próg 30% to stała
