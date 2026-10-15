@@ -28,7 +28,6 @@ use SellerPortal\Application\Offer\SellerOfferAccess;
 use SellerPortal\Application\Offer\WithdrawOffer;
 use SellerPortal\Application\Offer\WithdrawOfferHandler;
 use SellerPortal\Application\Port\Clock;
-use SellerPortal\Domain\Offer\Actor;
 use SellerPortal\Domain\Offer\OfferAction;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\PriceChangeDecision;
@@ -79,9 +78,10 @@ class SellerOfferController extends Controller
 
     /**
      * DLACZEGO agregat obok modelu odczytu: przyciski powstają wyłącznie
-     * z `allowedActionsFor`, a licznik zmian ceny z tej samej polityki, którą
-     * domena stosuje przy zapisie — UI nie powiela reguł. `forUser` przy okazji
-     * pilnuje właściciela (cudza oferta → 404).
+     * z `SellerOfferAccess::sellerActions` (stan oferty + reguła dostępu
+     * aktora), a licznik zmian ceny z tej samej polityki, którą domena stosuje
+     * przy zapisie — UI nie powiela reguł. `forUser` przy okazji pilnuje
+     * właściciela (cudza oferta → 404).
      */
     public function show(
         Request $request,
@@ -92,17 +92,9 @@ class SellerOfferController extends Controller
     ): Response {
         [$seller, $aggregate] = $access->forUser(UserId::fromInt(self::userId($request)), OfferId::fromInt($offer));
 
-        $allowed = $aggregate->allowedActionsFor(Actor::Seller);
-
-        // Zablokowany sprzedawca może tylko wycofać ofertę (`SellerOfferAccess::forUser`
-        // w WithdrawOfferHandler); innych przycisków nie pokazujemy, bo i tak by odbiły.
-        if (! $seller->canSell()) {
-            $allowed = array_values(array_filter($allowed, fn (OfferAction $action): bool => $action === OfferAction::Withdraw));
-        }
-
         return Inertia::render('seller/offers/Show', [
             'offer' => $details->find($seller->id()->value(), $offer) ?? abort(404),
-            'allowed_actions' => array_map(fn (OfferAction $action): string => $action->value, $allowed),
+            'allowed_actions' => array_map(fn (OfferAction $action): string => $action->value, $access->sellerActions($seller, $aggregate)),
             'price_guard' => [
                 'threshold_percent' => PriceChangePolicy::THRESHOLD_PERCENT,
                 'changes_left_today' => PriceChangePolicy::changesLeft($aggregate->recentPriceChanges(), $clock->now()),

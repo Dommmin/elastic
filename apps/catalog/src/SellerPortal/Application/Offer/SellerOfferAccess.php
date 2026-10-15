@@ -2,7 +2,9 @@
 
 namespace SellerPortal\Application\Offer;
 
+use SellerPortal\Domain\Offer\Actor;
 use SellerPortal\Domain\Offer\Offer;
+use SellerPortal\Domain\Offer\OfferAction;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Seller\Seller;
@@ -22,6 +24,9 @@ use SellerPortal\Domain\Shared\UserId;
  */
 final readonly class SellerOfferAccess
 {
+    /** Akcje, których handlery używają `forUser` (bez wymogu aktywnego sprzedawcy). */
+    private const array ACTIONS_WITHOUT_ACTIVE_SELLER = [OfferAction::Withdraw];
+
     public function __construct(
         private SellerRepository $sellers,
         private OfferRepository $offers,
@@ -61,5 +66,31 @@ final readonly class SellerOfferAccess
         }
 
         return [$seller, $offer];
+    }
+
+    /**
+     * Akcje, które UI może zaproponować sprzedawcy przy tej ofercie.
+     *
+     * DLACZEGO tutaj, a nie w kontrolerze: to druga strona podziału
+     * `forUser` / `forActiveSeller`. Sprzedawca, który nie może sprzedawać
+     * (zablokowany), dostaje wyłącznie akcje, których handlery wołają
+     * `forUser` — dziś tylko wycofanie (`WithdrawOfferHandler`). Handler
+     * przechodzący na `forUser` musi trafić do `ACTIONS_WITHOUT_ACTIVE_SELLER`,
+     * inaczej UI ukryje akcję, którą aplikacja by przepuściła.
+     *
+     * @return list<OfferAction>
+     */
+    public function sellerActions(Seller $seller, Offer $offer): array
+    {
+        $actions = $offer->allowedActionsFor(Actor::Seller);
+
+        if ($seller->canSell()) {
+            return $actions;
+        }
+
+        return array_values(array_filter(
+            $actions,
+            static fn (OfferAction $action): bool => in_array($action, self::ACTIONS_WITHOUT_ACTIVE_SELLER, true),
+        ));
     }
 }
