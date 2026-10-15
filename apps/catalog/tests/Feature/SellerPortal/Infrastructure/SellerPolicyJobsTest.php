@@ -27,7 +27,7 @@ use SellerPortal\Infrastructure\Job\SuspendOffersOfBlockedSellerJob;
 beforeEach(function () {
     // `sync`: joby wykonują się od razu w transakcji handlera. Test atomowości
     // przełącza się na `database` sam.
-    config(['queue.default' => 'sync']);
+    config(['queue.seller_policies_connection' => 'sync']);
 });
 
 /**
@@ -89,7 +89,7 @@ test('odblokowanie kolejkuje job przywracania', function () {
 });
 
 test('wyjątek po blokadzie wycofuje i blokadę, i job', function () {
-    config(['queue.default' => 'database']);
+    config(['queue.seller_policies_connection' => 'database']);
     [$seller, $moderator] = policyJobsActiveSeller();
     app(DomainEventDispatcher::class)->listen(SellerBlocked::class, function () {
         throw new RuntimeException('awaria po kolejkowaniu');
@@ -101,8 +101,17 @@ test('wyjątek po blokadzie wycofuje i blokadę, i job', function () {
         ->and(DB::table('jobs')->count())->toBe(0);
 });
 
+test('job trafia do tabeli jobs mimo innego queue.default', function (string $default) {
+    config(['queue.default' => $default, 'queue.seller_policies_connection' => 'database']); // jak domyślnie w config/queue.php
+    [$seller, $moderator] = policyJobsActiveSeller();
+
+    policyJobsBlock($seller, $moderator);
+
+    expect(DB::table('jobs')->count())->toBe(1);
+})->with(['redis', 'sync']);
+
 test('bez wyjątku blokada zostawia w tabeli jobs dokładnie jeden job', function () {
-    config(['queue.default' => 'database']);
+    config(['queue.seller_policies_connection' => 'database']);
     [$seller, $moderator] = policyJobsActiveSeller();
 
     policyJobsBlock($seller, $moderator);

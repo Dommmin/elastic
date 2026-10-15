@@ -20,6 +20,9 @@ final class ReinstateOffersOfUnblockedSellerJob implements ShouldQueue
 
     public int $tries = 5;
 
+    /** Sprzedawca z tysiącami ofert: domyślne 60 s workera nie wystarcza (musi być < retry_after). */
+    public int $timeout = 600;
+
     /** @var list<int> */
     public array $backoff = [5, 30, 120];
 

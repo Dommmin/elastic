@@ -40,7 +40,7 @@ class SellerPortalServiceProvider extends ServiceProvider
         $this->app->bind(TransactionManager::class, LaravelTransactionManager::class);
         $this->app->bind(ProductCatalog::class, DbProductCatalog::class);
 
-        $this->app->bind(PolicyJobQueue::class, LaravelPolicyJobQueue::class);
+        $this->app->bind(PolicyJobQueue::class, fn () => new LaravelPolicyJobQueue((string) config('queue.seller_policies_connection')));
 
         // Słuchacze rejestrowani W fabryce scoped, a nie w boot(): po flushu
         // scoped instancji (Octane, `forgetScopedInstances`) fabryka biegnie

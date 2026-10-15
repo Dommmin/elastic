@@ -29,6 +29,14 @@ return [
     |
     */
 
+    /*
+    | Połączenie, na które idą joby polityk portalu sprzedawcy. Przypięte na
+    | `database` niezależnie od queue.default: tylko tabela `jobs` w tej samej
+    | bazie daje atomowość z blokadą sprzedawcy, a worker czyta wyłącznie to
+    | połączenie. Zmiana QUEUE_CONNECTION nie może tego rozpiąć.
+    */
+    'seller_policies_connection' => env('SELLER_POLICIES_QUEUE_CONNECTION', 'database'),
+
     'connections' => [
 
         'sync' => [
@@ -40,7 +48,10 @@ return [
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+            // Musi przekraczać --timeout workera (600 s) i $timeout jobów polityk:
+            // Laravel wymaga timeout < retry_after, inaczej wolny job zostałby
+            // wzięty drugi raz przez innego workera, zanim pierwszy skończy.
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 660),
             // Polityki portalu sprzedawcy (blokada → zawieszenie ofert) wymagają,
             // by wiersz w `jobs` powstał w TEJ SAMEJ transakcji co zmiana
             // sprzedawcy: wyjątek wycofuje obie rzeczy. `true` odroczyłby job

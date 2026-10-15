@@ -1778,6 +1778,10 @@ na sam status sprzedawcy.
    `docker compose exec catalog-app php artisan queue:retry all`
    (albo konkretne ID). Polityka jest idempotentna, więc ponowienie nie
    dubluje zdarzeń outboxu.
+   Objaw przekroczenia czasu (`MaxAttemptsExceeded` / timeout w `exception`):
+   sprzedawca z bardzo wieloma ofertami; job ma `timeout=600` (worker
+   `--timeout=600`, `retry_after`=660). `queue:retry all` wystarczy: job jest
+   idempotentny i kontynuuje od ofert, które jeszcze nie zmieniły stanu.
 3. Job zniknął, a oferty nie: przepchnij politykę ręcznie w tinkerze:
    `app(SellerPortal\Application\Policy\SuspendOffersOfBlockedSeller::class)->run(SellerPortal\Domain\Seller\SellerId::fromInt(ID))`
    (po odblokowaniu analogicznie `ReinstateOffersOfUnblockedSeller`).

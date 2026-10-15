@@ -457,7 +457,7 @@ services:
         FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
         PHP_VERSION: ${PHP_VERSION}
         NODE_VERSION: ${NODE_VERSION}
-    command: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=5", "--max-time=3600"]
+    command: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=5", "--max-time=3600", "--timeout=600"]
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
