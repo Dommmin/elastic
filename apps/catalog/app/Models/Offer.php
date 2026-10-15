@@ -2,16 +2,23 @@
 
 namespace App\Models;
 
-use App\Concerns\EmitsOutboxEvents;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * Wiersz oferty dla odczytu, fabryk i seedera. Zapis z regułami idzie przez
+ * agregat `SellerPortal\Domain\Offer\Offer` i `SqlOfferRepository`.
+ *
+ * DLACZEGO bez `EmitsOutboxEvents`: `updateWithOutbox()` na tym modelu
+ * zapisywałby z pominięciem agregatu, ale wysyłał zdarzenie, więc obejście
+ * wyglądałoby legalnie. `$fillable` zostaje (seeder, fabryki): zapis przez ten
+ * model nadal jest MOŻLIWY — granicę trzyma przegląd kodu, nie kompilator.
+ */
 class Offer extends Model
 {
-    use EmitsOutboxEvents;
     use HasFactory;
 
     protected $fillable = [

@@ -6,14 +6,6 @@ use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Inertia\Testing\AssertableInertia as Assert;
-use SellerPortal\Domain\Offer\Offer as OfferAggregate;
-use SellerPortal\Domain\Offer\OfferId;
-use SellerPortal\Domain\Offer\OfferRepository;
-use SellerPortal\Domain\Offer\OfferStatus;
-use SellerPortal\Domain\Offer\ProductId;
-use SellerPortal\Domain\Offer\SuspensionKind;
-use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Infrastructure\Persistence\SqlOfferRepository;
 
 /**
  * @return array{0: User, 1: Offer}
@@ -97,38 +89,21 @@ test('równoległa edycja → błąd concurrency', function () {
     [$user, $offer] = priceGuardTestOffer();
     $outboxBefore = DB::table('outbox')->count();
 
-    // Ktoś inny zapisuje ofertę między odczytem agregatu a zapisem tego żądania.
-    $this->app->bind(OfferRepository::class, fn ($app) => new class($app->make(SqlOfferRepository::class)) implements OfferRepository
-    {
-        public function __construct(private readonly SqlOfferRepository $inner) {}
-
-        public function nextIdentity(): OfferId
-        {
-            return $this->inner->nextIdentity();
+    // Ktoś inny zapisuje ofertę między odczytem a zapisem tego żądania.
+    // DLACZEGO na poziomie SQL, a nie przez podmianę repozytorium: test ma
+    // sprawdzać zachowanie HTTP niezależnie od tego, jak kod zapisuje ofertę
+    // (ten sam plik przechodzi na gałęzi `ddd-lite-porownanie`, gdzie
+    // repozytorium nie ma). Tuż przed pierwszym UPDATE-em `offers` wersja
+    // w bazie idzie o 1 w górę; flaga chroni przed rekurencją, bo sam
+    // `increment` też jest UPDATE-em `offers`.
+    $raced = false;
+    DB::beforeExecuting(function (string $query) use (&$raced, $offer): void {
+        if ($raced || ! str_starts_with(strtolower($query), 'update "offers"')) {
+            return;
         }
 
-        public function get(OfferId $id): OfferAggregate
-        {
-            $offer = $this->inner->get($id);
-            DB::table('offers')->where('id', $id->value())->increment('version');
-
-            return $offer;
-        }
-
-        public function save(OfferAggregate $offer): void
-        {
-            $this->inner->save($offer);
-        }
-
-        public function hasLiveOffer(SellerId $sellerId, ProductId $productId): bool
-        {
-            return $this->inner->hasLiveOffer($sellerId, $productId);
-        }
-
-        public function idsForSellerPolicy(SellerId $sellerId, OfferStatus $status, ?SuspensionKind $suspensionKind, int $afterId, int $limit): array
-        {
-            return $this->inner->idsForSellerPolicy($sellerId, $status, $suspensionKind, $afterId, $limit);
-        }
+        $raced = true;
+        DB::table('offers')->where('id', $offer->id)->increment('version');
     });
 
     $this->actingAs($user)
