@@ -1,5 +1,11 @@
 <?php
 
+use SellerPortal\Domain\Offer\Condition;
+use SellerPortal\Domain\Offer\OfferId;
+use SellerPortal\Domain\Offer\OfferStatus;
+use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\ShippingTime;
+use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Seller\City;
 use SellerPortal\Domain\Seller\Event\SellerApproved;
 use SellerPortal\Domain\Seller\Event\SellerBlocked;
@@ -8,11 +14,13 @@ use SellerPortal\Domain\Seller\Event\SellerRejected;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
 use SellerPortal\Domain\Seller\InvalidSellerTransition;
 use SellerPortal\Domain\Seller\Seller;
+use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
 use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\ModeratorId;
+use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
 
@@ -130,4 +138,21 @@ test('reconstitute nie emituje zdarzeń i zachowuje wersję', function () {
 
     expect($seller->pendingEvents())->toBe([])
         ->and($seller->version())->toBe(3);
+});
+
+test('draftOffer deleguje do Offer::draft dla aktywnego sprzedawcy', function () {
+    $offer = sellerFixtureIn(SellerStatus::Active)->draftOffer(
+        OfferId::fromInt(10), ProductId::fromInt(99), Money::fromCents(10000), Stock::fromInt(5),
+        Condition::New, ShippingTime::fromInt(2), sellerTestNow(),
+    );
+
+    expect($offer->sellerId()->value())->toBe(1)
+        ->and($offer->status())->toBe(OfferStatus::Draft);
+});
+
+test('draftOffer rzuca SellerCannotSell dla nieaktywnego', function () {
+    expect(fn () => sellerFixtureIn(SellerStatus::Pending)->draftOffer(
+        OfferId::fromInt(10), ProductId::fromInt(99), Money::fromCents(10000), Stock::fromInt(5),
+        Condition::New, ShippingTime::fromInt(2), sellerTestNow(),
+    ))->toThrow(SellerCannotSell::class);
 });

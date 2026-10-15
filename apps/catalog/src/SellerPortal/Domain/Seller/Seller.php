@@ -3,6 +3,12 @@
 namespace SellerPortal\Domain\Seller;
 
 use DateTimeImmutable;
+use SellerPortal\Domain\Offer\Condition;
+use SellerPortal\Domain\Offer\Offer;
+use SellerPortal\Domain\Offer\OfferId;
+use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\ShippingTime;
+use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Seller\Event\SellerApproved;
 use SellerPortal\Domain\Seller\Event\SellerBlocked;
 use SellerPortal\Domain\Seller\Event\SellerRegistered;
@@ -10,6 +16,7 @@ use SellerPortal\Domain\Seller\Event\SellerRejected;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
 use SellerPortal\Domain\Shared\AggregateRoot;
 use SellerPortal\Domain\Shared\ModeratorId;
+use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
 
@@ -116,6 +123,29 @@ final class Seller extends AggregateRoot
     public function canSell(): bool
     {
         return $this->status === SellerStatus::Active;
+    }
+
+    /**
+     * Wystawienie oferty zaczyna się u sprzedawcy, bo tylko on wie, czy wolno
+     * mu sprzedawać (`canSell`). Oferta to osobny agregat — tu ją tylko
+     * tworzymy (przez `Offer::draft`), nie przechowujemy.
+     *
+     * @throws SellerCannotSell
+     */
+    public function draftOffer(
+        OfferId $offerId,
+        ProductId $productId,
+        Money $price,
+        Stock $stock,
+        Condition $condition,
+        ShippingTime $shippingTime,
+        DateTimeImmutable $now,
+    ): Offer {
+        if (! $this->canSell()) {
+            throw new SellerCannotSell;
+        }
+
+        return Offer::draft($offerId, $this->id, $productId, $price, $stock, $condition, $shippingTime, $now);
     }
 
     public function id(): SellerId
