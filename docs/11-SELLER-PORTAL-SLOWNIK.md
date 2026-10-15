@@ -88,7 +88,7 @@ Zasady:
 | zmiana ceny | `Offer::changePrice`, `ChangeOfferPrice` | sprzedawca | w szkicu od razu; w opublikowanej przez strażnika ceny |
 | zmiana stanu | `Offer::changeStock` | sprzedawca | w opublikowanej przejście > 0 → 0 to „towar się skończył”, 0 → > 0 to „towar wrócił” |
 | zawieszenie | `Offer::suspend(SuspensionReason)` | moderator albo polityka | tylko z opublikowanej |
-| przywrócenie | `Offer::reinstate` | moderator albo polityka | z zawieszonej do opublikowanej |
+| przywrócenie | `Offer::reinstate(Seller, now)` | moderator albo polityka | z zawieszonej do opublikowanej, tylko gdy sprzedawca może sprzedawać (`SellerCannotSell`), jak przy publikacji. Panel nie pokazuje „Przywróć” przy ofercie zablokowanego sprzedawcy (`SellerOfferAccess::moderatorActions`) |
 | wycofanie | `Offer::withdraw` | sprzedawca (także zablokowany) | kasuje oczekującą zmianę ceny |
 | akcja | `OfferAction` | — | nazwa operacji, którą UI może zaproponować (`publish`, `change_price`, `cancel_pending_price_change`, `change_stock`, `change_details`, `withdraw`, `suspend`, `reinstate`, `approve_price_change`, `reject_price_change`) |
 | dozwolone akcje | `Offer::allowedActionsFor(Actor)`; dla sprzedawcy przez `SellerOfferAccess::sellerActions` | — | **jedyne** źródło przycisków w UI. Zablokowany sprzedawca dostaje z tej listy tylko `withdraw` |

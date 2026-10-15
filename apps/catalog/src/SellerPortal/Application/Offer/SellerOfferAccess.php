@@ -20,7 +20,9 @@ use SellerPortal\Domain\Shared\UserId;
  * `Offer`: to reguła dostępu AKTORA, nie stanu oferty. Wyjątek to
  * `Offer::publish(Seller)`, bo spec czyni ją warunkiem publikacji.
  * DLACZEGO `forUser` istnieje obok: zablokowany sprzedawca ma móc wycofać
- * ofertę, ale nic poza tym.
+ * ofertę, ale nic poza tym. Tu też żyje lista akcji dla moderatora
+ * (`moderatorActions`), bo ma ten sam problem: agregat oferty nie widzi
+ * stanu sprzedawcy.
  */
 final readonly class SellerOfferAccess
 {
@@ -91,6 +93,32 @@ final readonly class SellerOfferAccess
         return array_values(array_filter(
             $actions,
             static fn (OfferAction $action): bool => in_array($action, self::ACTIONS_WITHOUT_ACTIVE_SELLER, true),
+        ));
+    }
+
+    /**
+     * Akcje, które UI może zaproponować moderatorowi przy tej ofercie.
+     *
+     * DLACZEGO tutaj, obok `sellerActions`: `Offer::allowedActionsFor`
+     * widzi tylko stan oferty, a „Przywróć” zależy też od sprzedawcy —
+     * `Offer::reinstate(Seller)` odmówi, gdy konto nie może sprzedawać.
+     * Bez tego filtra panel pokazywałby przycisk, który zawsze kończy się
+     * błędem. Pozostałe akcje moderatora (zawieszenie, decyzja o cenie) nie
+     * wystawiają oferty kupującym, więc stan sprzedawcy ich nie dotyczy.
+     *
+     * @return list<OfferAction>
+     */
+    public function moderatorActions(Seller $seller, Offer $offer): array
+    {
+        $actions = $offer->allowedActionsFor(Actor::Moderator);
+
+        if ($seller->canSell()) {
+            return $actions;
+        }
+
+        return array_values(array_filter(
+            $actions,
+            static fn (OfferAction $action): bool => $action !== OfferAction::Reinstate,
         ));
     }
 }

@@ -22,7 +22,7 @@ test('każdy zmapowany CODE daje dokładny polski komunikat', function (DomainEx
     'concurrency_conflict' => [fn () => new ConcurrencyConflict, 'Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę'],
     'live_offer_exists' => [fn () => new LiveOfferAlreadyExists, 'Masz już aktywną ofertę na ten produkt'],
     'offer_without_stock' => [fn () => new OfferCannotBePublishedWithoutStock, 'Nie można opublikować oferty bez towaru'],
-    'seller_cannot_sell' => [fn () => new SellerCannotSell, 'Twoje konto sprzedawcy nie jest aktywne'],
+    'seller_cannot_sell' => [fn () => new SellerCannotSell, 'Konto sprzedawcy nie jest aktywne'],
     'seller_already_registered' => [fn () => new SellerAlreadyRegistered, 'To konto ma już profil sprzedawcy'],
     'no_pending_price_change' => [fn () => new NoPendingPriceChange, 'Ta oferta nie ma już zgłoszonej zmiany ceny'],
     'pending_price_changed' => [fn () => new PendingPriceChangeMismatch, 'Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę'],

@@ -24,7 +24,9 @@ final class DomainErrorMessages
         'concurrency_conflict' => 'Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę',
         'live_offer_exists' => 'Masz już aktywną ofertę na ten produkt',
         'offer_without_stock' => 'Nie można opublikować oferty bez towaru',
-        'seller_cannot_sell' => 'Twoje konto sprzedawcy nie jest aktywne',
+        // Bez „Twoje”: ten sam kod widzi sprzedawca (własne konto) i moderator
+        // (przywrócenie oferty zablokowanego sprzedawcy, `Offer::reinstate`).
+        'seller_cannot_sell' => 'Konto sprzedawcy nie jest aktywne',
         'seller_already_registered' => 'To konto ma już profil sprzedawcy',
     ];
 

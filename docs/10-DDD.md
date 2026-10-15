@@ -183,6 +183,7 @@ zamienił się w regułę w kodzie i w test:
 | „Do limitu 5 zmian na dobę liczą się akceptacje moderatora?” | Nie. Liczy się klikanie sprzedawcy: zmiany wprowadzone i zgłoszone. | `Offer::changePrice`, `PriceChangePolicy` |
 | „+30% to już do akceptacji czy jeszcze nie?” | Ściśle więcej niż 30% i liczone od **obecnej** ceny. | `Money::differsByMoreThanPercent` |
 | „Zablokowany sprzedawca może cokolwiek?” | Tylko wycofać ofertę. | `SellerOfferAccess::sellerActions` |
+| „Moderator może przywrócić ofertę zablokowanego sprzedawcy?” | Nie. Przywrócenie wystawia ofertę kupującym, tak jak publikacja, więc wymaga sprzedawcy, który może sprzedawać. Hot spot znaleziony dopiero w przeglądzie końcowym. | `Offer::reinstate(Seller)`, `SellerOfferAccess::moderatorActions` |
 | „Zablokuj → odblokuj w 2 sekundy: co z ofertami?” | Nic nie może zostać zawieszone. | `SuspendOffersOfBlockedSeller::run` sprawdza status w chwili wykonania |
 | „Dwie oferty tego samego sprzedawcy na ten sam produkt?” | Najwyżej jedna żywa. | moduł 9 |
 
@@ -587,9 +588,16 @@ zmienia jeden agregat”.
 - **Fabryka w agregacie:** `Seller::draftOffer` (`:135`). Reguła „tylko
   aktywny sprzedawca wystawia” należy do tego, kto zna status, więc oferta
   zaczyna się u sprzedawcy. Sprzedawca jej jednak **nie przechowuje**.
-- **Odwołanie przez ID:** `Offer` trzyma `SellerId`, nie `Seller`. Jedyny
-  moment, w którym oferta potrzebuje wiedzy o sprzedawcy (publikacja), dostaje
-  go jako argument tylko do odczytu: `publish(Seller $seller, …)` (`Offer.php:117`).
+- **Odwołanie przez ID:** `Offer` trzyma `SellerId`, nie `Seller`. Dwa
+  momenty, w których oferta potrzebuje wiedzy o sprzedawcy (publikacja
+  i przywrócenie), dostają go jako argument tylko do odczytu:
+  `publish(Seller $seller, …)` (`Offer.php:117`) i `reinstate(Seller $seller, …)`.
+  **Historia z przeglądu końcowego:** pierwsza wersja `reinstate` nie brała
+  sprzedawcy. Moderator widział „Przywróć” przy ofercie zawieszonej przez
+  blokadę i jednym kliknięciem wracał ją do wyszukiwarki, choć konto było
+  wciąż zablokowane. Lekcja: przywrócenie to też decyzja zależna od
+  sprzedawcy, jak publikacja — każde przejście, które **wystawia ofertę
+  kupującym**, musi zapytać `Seller::canSell()`.
 - **Dlaczego `Seller` nie ma kolekcji ofert** (najważniejsza decyzja w tym
   module). Kuszące, bo „blokada dotyczy ofert”. Koszty:
   1. sprzedawca z 3000 ofert to 3000 obiektów w pamięci przy *każdej*
@@ -906,7 +914,10 @@ ostatecznie, ale nie gubi pracy.
 - **Reguły dostępu:** `apps/catalog/src/SellerPortal/Application/Offer/SellerOfferAccess.php`.
   `forUser` (`:41`) pilnuje właściciela, `forActiveSeller` (`:60`) dokłada
   „konto aktywne”, `sellerActions` (`:83`) zawęża akcje z agregatu dla
-  zablokowanego sprzedawcy do `ACTIONS_WITHOUT_ACTIVE_SELLER` (`:28`).
+  zablokowanego sprzedawcy do `ACTIONS_WITHOUT_ACTIVE_SELLER` (`:28`),
+  a `moderatorActions` robi to samo dla panelu: bez „Przywróć”, gdy
+  sprzedawca nie może sprzedawać (`Offer::allowedActionsFor` sprzedawcy nie
+  widzi, a `Offer::reinstate(Seller)` i tak by odmówił).
 - **Historia z tego etapu (Task 10):** reguła „zablokowany sprzedawca może
   tylko wycofać” wylądowała najpierw w kontrolerze, przy budowaniu listy
   przycisków. Działało, testy HTTP były zielone. Przegląd kodu ją odrzucił,

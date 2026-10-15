@@ -41,7 +41,9 @@ final readonly class ReinstateOffersOfUnblockedSeller
      */
     public function run(SellerId $sellerId): int
     {
-        if ($this->sellers->get($sellerId)->status() !== SellerStatus::Active) {
+        $seller = $this->sellers->get($sellerId);
+
+        if ($seller->status() !== SellerStatus::Active) {
             return 0;
         }
 
@@ -54,14 +56,14 @@ final readonly class ReinstateOffersOfUnblockedSeller
 
                 for ($attempt = 1; ; $attempt++) {
                     try {
-                        $reinstated += $this->transactions->run(function () use ($id): int {
+                        $reinstated += $this->transactions->run(function () use ($id, $seller): int {
                             $offer = $this->offers->get($id);
 
                             if ($offer->status() !== OfferStatus::Suspended || $offer->suspension()?->kind() !== SuspensionKind::SellerBlocked) {
                                 return 0;
                             }
 
-                            $offer->reinstate($this->clock->now());
+                            $offer->reinstate($seller, $this->clock->now());
                             $this->offers->save($offer);
                             $this->events->dispatch($offer->releaseEvents());
 

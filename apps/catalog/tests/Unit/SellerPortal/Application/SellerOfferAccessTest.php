@@ -5,8 +5,10 @@ use SellerPortal\Application\Offer\PublishOfferHandler;
 use SellerPortal\Domain\Offer\Actor;
 use SellerPortal\Domain\Offer\Offer;
 use SellerPortal\Domain\Offer\OfferAction;
+use SellerPortal\Domain\Offer\SuspensionReason;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Shared\ModeratorId;
+use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
 use Tests\Unit\SellerPortal\InMemory\PortalWorld;
@@ -47,4 +49,21 @@ test('zablokowany sprzedawca z wycofaną ofertą nie ma żadnych akcji', functio
     $seller->block(ModeratorId::fromInt(900), Reason::fromString('Skargi'), $w->clock->now());
 
     expect($w->access->sellerActions($seller, $offer))->toBe([]);
+});
+
+test('moderator przy zawieszonej ofercie aktywnego sprzedawcy dostaje Przywróć', function () {
+    [$w, $seller, $offer] = sellerOfferAccessPublished();
+    $offer->suspend(SuspensionReason::byModerator(ModeratorId::fromInt(900), Reason::fromString('Podróbka')), $w->clock->now());
+
+    expect($w->access->moderatorActions($seller, $offer))->toBe([OfferAction::Reinstate])
+        ->and($w->access->moderatorActions($seller, $offer))->toBe($offer->allowedActionsFor(Actor::Moderator));
+});
+
+test('moderator nie dostaje Przywróć dla oferty zablokowanego sprzedawcy, reszta akcji zostaje', function () {
+    [$w, $seller, $offer] = sellerOfferAccessPublished();
+    $offer->changePrice(Money::fromCents(20000), $w->clock->now());
+    $offer->suspend(SuspensionReason::sellerBlocked(), $w->clock->now());
+    $seller->block(ModeratorId::fromInt(900), Reason::fromString('Skargi'), $w->clock->now());
+
+    expect($w->access->moderatorActions($seller, $offer))->toBe([OfferAction::ApprovePriceChange, OfferAction::RejectPriceChange]);
 });

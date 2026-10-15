@@ -125,6 +125,15 @@ test('publish tylko z Draft', function (OfferStatus $status) {
     expect(fn () => offerLifecycleOffer($status)->publish(offerLifecycleSeller(), offerLifecycleNow()))->toThrow(InvalidOfferTransition::class);
 })->with([OfferStatus::Published, OfferStatus::Suspended, OfferStatus::Withdrawn]);
 
+test('reinstate oferty zablokowanego sprzedawcy rzuca SellerCannotSell i nic nie zmienia', function (SellerStatus $status) {
+    $offer = offerLifecycleOffer(OfferStatus::Suspended, suspension: SuspensionReason::sellerBlocked());
+
+    expect(fn () => $offer->reinstate(offerLifecycleSeller($status), offerLifecycleNow()))->toThrow(SellerCannotSell::class)
+        ->and($offer->status())->toBe(OfferStatus::Suspended)
+        ->and($offer->suspension()->kind())->toBe(SuspensionKind::SellerBlocked)
+        ->and($offer->pendingEvents())->toBe([]);
+})->with([SellerStatus::Blocked, SellerStatus::Pending, SellerStatus::Rejected]);
+
 test('suspend tylko z Published; reinstate tylko z Suspended', function () {
     $offer = offerLifecycleOffer(OfferStatus::Published);
     $offer->suspend(offerLifecycleModeration(), offerLifecycleNow());
@@ -135,16 +144,16 @@ test('suspend tylko z Published; reinstate tylko z Suspended', function () {
         ->and($offer->pendingEvents()[0])->toBeInstanceOf(OfferSuspended::class)
         ->and(fn () => $offer->suspend(offerLifecycleModeration(), offerLifecycleNow()))->toThrow(InvalidOfferTransition::class);
 
-    $offer->reinstate(offerLifecycleNow());
+    $offer->reinstate(offerLifecycleSeller(), offerLifecycleNow());
 
     expect($offer->status())->toBe(OfferStatus::Published)
         ->and($offer->suspension())->toBeNull()
         ->and($offer->pendingEvents()[1])->toBeInstanceOf(OfferReinstated::class)
-        ->and(fn () => $offer->reinstate(offerLifecycleNow()))->toThrow(InvalidOfferTransition::class);
+        ->and(fn () => $offer->reinstate(offerLifecycleSeller(), offerLifecycleNow()))->toThrow(InvalidOfferTransition::class);
 
     foreach ([OfferStatus::Draft, OfferStatus::Withdrawn] as $status) {
         expect(fn () => offerLifecycleOffer($status)->suspend(offerLifecycleModeration(), offerLifecycleNow()))->toThrow(InvalidOfferTransition::class)
-            ->and(fn () => offerLifecycleOffer($status)->reinstate(offerLifecycleNow()))->toThrow(InvalidOfferTransition::class);
+            ->and(fn () => offerLifecycleOffer($status)->reinstate(offerLifecycleSeller(), offerLifecycleNow()))->toThrow(InvalidOfferTransition::class);
     }
 });
 

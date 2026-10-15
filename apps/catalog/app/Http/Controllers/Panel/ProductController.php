@@ -15,10 +15,11 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
-use SellerPortal\Domain\Offer\Actor;
+use SellerPortal\Application\Offer\SellerOfferAccess;
 use SellerPortal\Domain\Offer\OfferAction;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferRepository;
+use SellerPortal\Domain\Seller\SellerRepository;
 
 class ProductController extends Controller
 {
@@ -59,8 +60,13 @@ class ProductController extends Controller
         ]);
     }
 
-    public function edit(Product $product, EventTrace $eventTrace, OfferRepository $offerRepository): Response
-    {
+    public function edit(
+        Product $product,
+        EventTrace $eventTrace,
+        OfferRepository $offerRepository,
+        SellerRepository $sellerRepository,
+        SellerOfferAccess $access,
+    ): Response {
         // Wszystko poza `product` jako closure: polling drogi zdarzenia robi co
         // sekundę partial reload `only: ['trace']` i nie powinien przy tym
         // liczyć kategorii, marek ani ofert.
@@ -68,43 +74,48 @@ class ProductController extends Controller
             'product' => $product->only(['id', 'name', 'brand_id', 'category_id', 'version']),
             'brands' => fn () => Brand::query()->orderBy('name')->get(['id', 'name']),
             'categories' => fn () => $this->subcategoryOptions(),
-            'offers' => fn () => $this->offerRows($product, $offerRepository),
+            'offers' => fn () => $this->offerRows($product, $offerRepository, $sellerRepository, $access),
             'trace' => fn () => $eventTrace->forProduct($product),
         ]);
     }
 
     /**
-     * DLACZEGO agregat obok wiersza Eloquent: przyciski moderatora powstają
-     * wyłącznie z `Offer::allowedActionsFor(Actor::Moderator)`, więc UI nie
+     * DLACZEGO agregaty obok wiersza Eloquent: przyciski moderatora powstają
+     * wyłącznie z `SellerOfferAccess::moderatorActions` (stan oferty z agregatu
+     * plus stan sprzedawcy — ofert zablokowanego nie przywracamy), więc UI nie
      * powiela reguł przejść. Ofert na produkt jest kilka, odczyt per oferta
      * jest tu tańszy niż osobny model odczytu.
      *
      * @return list<array<string, mixed>>
      */
-    private function offerRows(Product $product, OfferRepository $offerRepository): array
+    private function offerRows(Product $product, OfferRepository $offerRepository, SellerRepository $sellerRepository, SellerOfferAccess $access): array
     {
         return $product->offers()
             ->with('seller:id,name,status')
             ->orderBy('id')
             ->get()
-            ->map(fn (Offer $offer): array => [
-                'id' => $offer->id,
-                'seller' => $offer->seller?->name,
-                'seller_status' => $offer->seller?->status,
-                'price_cents' => $offer->price_cents,
-                'pending_price_cents' => $offer->pending_price_cents,
-                'stock' => $offer->stock,
-                'status' => $offer->status,
-                'suspension' => $offer->suspension_kind === null ? null : [
-                    'kind' => $offer->suspension_kind,
-                    'note' => $offer->suspension_note,
-                ],
-                'allowed_actions' => array_map(
-                    fn (OfferAction $action): string => $action->value,
-                    $offerRepository->get(OfferId::fromInt($offer->id))->allowedActionsFor(Actor::Moderator),
-                ),
-                'version' => $offer->version,
-            ])
+            ->map(function (Offer $offer) use ($offerRepository, $sellerRepository, $access): array {
+                $aggregate = $offerRepository->get(OfferId::fromInt($offer->id));
+
+                return [
+                    'id' => $offer->id,
+                    'seller' => $offer->seller?->name,
+                    'seller_status' => $offer->seller?->status,
+                    'price_cents' => $offer->price_cents,
+                    'pending_price_cents' => $offer->pending_price_cents,
+                    'stock' => $offer->stock,
+                    'status' => $offer->status,
+                    'suspension' => $offer->suspension_kind === null ? null : [
+                        'kind' => $offer->suspension_kind,
+                        'note' => $offer->suspension_note,
+                    ],
+                    'allowed_actions' => array_map(
+                        fn (OfferAction $action): string => $action->value,
+                        $access->moderatorActions($sellerRepository->get($aggregate->sellerId()), $aggregate),
+                    ),
+                    'version' => $offer->version,
+                ];
+            })
             ->all();
     }
 

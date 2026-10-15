@@ -212,7 +212,7 @@ test('zablokowany widzi oferty i baner, zmiana ceny → błąd domain, wycofanie
         ->from("/seller/offers/{$offer->id}")
         ->put("/seller/offers/{$offer->id}/price", ['price' => '101', 'version' => 1])
         ->assertRedirect("/seller/offers/{$offer->id}")
-        ->assertSessionHasErrors(['domain' => 'Twoje konto sprzedawcy nie jest aktywne']);
+        ->assertSessionHasErrors(['domain' => 'Konto sprzedawcy nie jest aktywne']);
     expect($offer->fresh()->price_cents)->toBe(10000);
 
     $this->actingAs($user)
@@ -230,7 +230,7 @@ test('zablokowany nie tworzy szkicu', function () {
     $this->actingAs($user)
         ->from('/seller/offers/create')
         ->post('/seller/offers', sellerOfferTestDraftPayload($product))
-        ->assertSessionHasErrors(['domain' => 'Twoje konto sprzedawcy nie jest aktywne']);
+        ->assertSessionHasErrors(['domain' => 'Konto sprzedawcy nie jest aktywne']);
 
     expect(Offer::count())->toBe(0);
 });

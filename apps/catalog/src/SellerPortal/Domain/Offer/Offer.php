@@ -39,8 +39,9 @@ use SellerPortal\Domain\Shared\Reason;
  * zawieszeniu — a tak dwie prawdy rozjechać się nie mogą.
  *
  * DLACZEGO sprzedawca jest tylko ID: Offer i Seller to osobne agregaty,
- * które łączymy identyfikatorem. Jedyny moment, w którym oferta potrzebuje
- * wiedzy o sprzedawcy (publikacja), dostaje go jako argument `publish`.
+ * które łączymy identyfikatorem. Dwa momenty, w których oferta potrzebuje
+ * wiedzy o sprzedawcy (publikacja i przywrócenie po zawieszeniu), dostają
+ * go jako argument `publish` / `reinstate`.
  *
  * DLACZEGO `version` jest tylko odczytywana: należy do optymistycznej
  * blokady w repozytorium. Nowa oferta ma wersję 0 — po tym repozytorium
@@ -176,9 +177,22 @@ final class Offer extends AggregateRoot
         $this->recordThat(new OfferSuspended($this->id, $reason, $now));
     }
 
-    public function reinstate(DateTimeImmutable $now): void
+    /**
+     * DLACZEGO przywrócenie wymaga sprzedawcy, jak publikacja: oba przejścia
+     * wystawiają ofertę kupującym, a „zablokowany sprzedawca nie sprzedaje”.
+     * Bez tego moderator jednym kliknięciem „Przywróć” wracał do wyszukiwarki
+     * ofertę konta, które wciąż jest zablokowane.
+     *
+     * @throws InvalidOfferTransition
+     * @throws SellerCannotSell
+     */
+    public function reinstate(Seller $seller, DateTimeImmutable $now): void
     {
         $this->requireStatus([OfferStatus::Suspended], OfferAction::Reinstate);
+
+        if (! $seller->canSell()) {
+            throw new SellerCannotSell;
+        }
 
         $this->status = OfferStatus::Published;
         $this->suspension = null;
@@ -330,6 +344,11 @@ final class Offer extends AggregateRoot
      * Przyciski w interfejsie powstają z tej listy, więc reguły nie
      * rozjeżdżają się między domeną a widokiem. Kolejność = kolejność
      * przypadków `OfferAction`.
+     *
+     * Lista zna tylko stan OFERTY. Reguły zależne od sprzedawcy (zablokowany
+     * nie zmienia cen, jego ofert nie przywracamy) dokłada warstwa aplikacji
+     * (`SellerOfferAccess::sellerActions` / `moderatorActions`), bo oferta
+     * trzyma tylko ID sprzedawcy.
      *
      * @return list<OfferAction>
      */

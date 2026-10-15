@@ -145,6 +145,12 @@ function confirmReinstate() {
             </template>
             <template v-else>
                 Zawieszona przez moderatora: {{ offer.suspension.note }}
+                <template
+                    v-if="!can('reinstate') && offer.seller_status !== 'active'"
+                >
+                    Przywrócenie możliwe dopiero, gdy sprzedawca znów będzie
+                    aktywny.
+                </template>
             </template>
         </p>
 

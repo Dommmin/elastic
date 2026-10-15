@@ -16,6 +16,8 @@ use SellerPortal\Application\Offer\ChangeOfferStock;
 use SellerPortal\Application\Offer\ChangeOfferStockHandler;
 use SellerPortal\Application\Offer\PublishOffer;
 use SellerPortal\Application\Offer\PublishOfferHandler;
+use SellerPortal\Application\Seller\BlockSeller;
+use SellerPortal\Application\Seller\BlockSellerHandler;
 use SellerPortal\Domain\Offer\Event\OfferPriceChangeApproved;
 use SellerPortal\Domain\Offer\Event\OfferPriceChangeRejected;
 use SellerPortal\Domain\Offer\Event\OfferReinstated;
@@ -24,6 +26,7 @@ use SellerPortal\Domain\Offer\NoPendingPriceChange;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\PendingPriceChangeMismatch;
+use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Shared\ConcurrencyConflict;
 use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 
@@ -44,7 +47,7 @@ test('moderator zawiesza i przywraca ofertę', function () {
     (new SuspendOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers))->handle(new SuspendOffer(900, $id->value(), 'Podejrzana cena', $w->version($id)));
     expect($w->offers->get($id)->status())->toBe(OfferStatus::Suspended);
 
-    (new ReinstateOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers))->handle(new ReinstateOffer(900, $id->value(), $w->version($id)));
+    (new ReinstateOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers, $w->sellers))->handle(new ReinstateOffer(900, $id->value(), $w->version($id)));
 
     expect($w->offers->get($id)->status())->toBe(OfferStatus::Published)
         ->and($w->dispatcher->classes())->toBe([OfferSuspended::class, OfferReinstated::class]);
@@ -114,5 +117,19 @@ test('decyzja moderatora na nieaktualnej wersji rzuca ConcurrencyConflict i nic 
     expect(fn () => (new SuspendOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers))->handle(new SuspendOffer(900, $id->value(), 'Podejrzana cena', $seenVersion)))
         ->toThrow(ConcurrencyConflict::class)
         ->and($w->offers->get($id)->status())->toBe(OfferStatus::Published)
+        ->and($w->dispatcher->dispatched)->toBe([]);
+});
+
+test('moderator nie przywróci oferty zablokowanego sprzedawcy', function () {
+    $w = new PortalWorld;
+    $id = moderationHandlersPublishedOffer($w);
+    (new SuspendOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers))->handle(new SuspendOffer(900, $id->value(), 'Podejrzana cena', $w->version($id)));
+    $sellerId = $w->offers->get($id)->sellerId();
+    (new BlockSellerHandler($w->transactions, $w->clock, $w->dispatcher, $w->sellers))->handle(new BlockSeller($sellerId->value(), 900, 'Oszustwo'));
+    $w->forgetDispatched();
+
+    expect(fn () => (new ReinstateOfferHandler($w->transactions, $w->clock, $w->dispatcher, $w->offers, $w->sellers))->handle(new ReinstateOffer(900, $id->value(), $w->version($id))))
+        ->toThrow(SellerCannotSell::class)
+        ->and($w->offers->get($id)->status())->toBe(OfferStatus::Suspended)
         ->and($w->dispatcher->dispatched)->toBe([]);
 });
