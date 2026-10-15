@@ -6,9 +6,9 @@
 
 ## Kontekst
 
-Sprzedawca i kupujący mówią „oferta wyprzedana”. Na Event Stormingu
-pojawiły się zdarzenia „Towar się skończył” i „Towar wrócił”, a z nimi hot
-spot: czy „wyprzedana” to piąty status obok szkicu, opublikowanej,
+Sprzedawca i kupujący mówią „oferta wyprzedana”. Przy projektowaniu specu
+(i w rekonstrukcji Event Stormingu w module 1 `10-DDD.md`) pojawiły się
+zdarzenia „Towar się skończył” i „Towar wrócił”, a z nimi pytanie: czy „wyprzedana” to piąty status obok szkicu, opublikowanej,
 zawieszonej i wycofanej?
 
 Fakty:

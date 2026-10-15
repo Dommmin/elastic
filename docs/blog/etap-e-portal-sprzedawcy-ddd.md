@@ -71,10 +71,14 @@ To jest złożoność biznesowa, a nie techniczna, i dokładnie dla niej DDD
 powstało. Katalog produktów i wyszukiwarka zostały bez zmian w stylu, bo tam
 tej złożoności nie ma ([`10-DDD.md`](../10-DDD.md), moduł 10).
 
-Model powstał przed kodem, z Event Stormingu (zdarzenia → komendy → aktorzy
-→ polityki → hot spoty → agregaty). Cały warsztat jest rozpisany w module 1
-`10-DDD.md`. Najważniejszy wynik to trzy hot spoty, które bez warsztatu
-rozstrzygnąłby programista w ifie: „czy odblokowanie przywraca też oferty
+Model powstał przed kodem, w specu, w dialogu projektowym: pytania
+o reguły i decyzje spisywane od razu jako tekst. Event Storming się nie
+odbył. Moduł 1 `10-DDD.md` pokazuje jego **rekonstrukcję** (zdarzenia →
+komendy → aktorzy → polityki → hot spoty → agregaty), czyli to, jak zespół
+doszedłby do tego samego modelu na ścianie. Przy zamówieniach (podprojekt C)
+zrób go naprawdę, zanim powstanie spec. Najważniejsze, co spec musiał
+rozstrzygnąć, to trzy pytania, które bez tego rozstrzygnąłby programista
+w ifie: „czy odblokowanie przywraca też oferty
 zawieszone przez moderatora?” (nie: stąd `SuspensionKind`), „czy wyprzedana
 to status?” (nie: [ADR-0004](../adr/0004-wyprzedana-jako-stan-pochodny.md)),
 „czy do limitu liczą się akceptacje moderatora?” (nie).
@@ -242,7 +246,8 @@ Draft | Published | Suspended ──withdraw──▶ Withdrawn (koniec)
   0 → > 0 to `OfferBackInStock`, inaczej `OfferStockChanged`. Ten sam stan
   to brak zdarzenia.
 - `suspend(SuspensionReason)`: powód ma **rodzaj** (`byModerator` albo
-  `sellerBlocked`). To jest hot spot z Event Stormingu zamieniony w typ.
+  `sellerBlocked`). To jest rozstrzygnięty w specu hot spot (w rekonstrukcji Event Stormingu
+z modułu 1) zamieniony w typ.
 - `isListed()` i `isSoldOut()` to stany pochodne, nie statusy
   ([ADR-0004](../adr/0004-wyprzedana-jako-stan-pochodny.md)).
 - `allowedActionsFor(Actor)` to jedyne źródło prawdy o tym, które przyciski
@@ -573,15 +578,16 @@ php artisan test --compact tests/Feature/SellerPortal/Http/ModerationTest.php te
 | 1 | Rejestracja → akceptacja → szkic → publikacja → oferta w `/search` w ciągu kilku sekund | ✅ szkic z ceną „1 299,99”, publikacja, w ES `price_min = 129999` |
 | 2 | Zmiana > 30% nie trafia do wyszukiwarki przed akceptacją; szósta zmiana w dobie odrzucona | ✅ +50%: podpowiedź, toast, ES dalej 129999; po akceptacji w panelu ES 195000. Szósta zmiana: test HTTP `PriceGuardTest` |
 | 3 | Stan 0 zdejmuje ofertę z wyszukiwarki, uzupełnienie przywraca | ✅ stan 0 → znika z ES, stan 5 → wraca |
-| 4 | Blokada zawiesza opublikowane oferty; odblokowanie przywraca tylko zawieszone przez blokadę | ✅ oferta zawieszona wcześniej przez moderatora + blokada sprzedawcy: 68 ofert zawieszonych jako `seller_blocked` zniknęło z ES; po odblokowaniu wszystkie 68 wróciły, a oferta moderatora została zawieszona (liczby z notatek z weryfikacji) |
+| 4 | Blokada zawiesza opublikowane oferty; odblokowanie przywraca tylko zawieszone przez blokadę | ✅ sprzedawca z seeda Senger LLC: oferta #40 zawieszona wcześniej przez moderatora; blokada sprzedawcy zawiesiła pozostałe opublikowane oferty (m.in. #68 i #311) jako `seller_blocked` i zniknęły z ES; po odblokowaniu wróciły, a #40 została zawieszona |
 | 5 | Domena nie importuje Laravela, pilnuje test w CI | ✅ `tests/Arch` (z jedną luką: globalna funkcja `now()`, patrz moduł 8) |
 | 6 | Testy domeny < 1 s | ✅ `tests/Unit/SellerPortal`: 130 testów, 44 ms |
 | 7 | Gałąź DDD-lite, te same testy HTTP, porównanie na liczbach | ⏳ następne zadanie |
 | 8 | Commity + przewodnik | ✅ ten dokument |
 
 Po drodze dodatkowy, niezamierzony dowód: przy sprawdzaniu kryterium 4
-najpierw zablokowany został zły sprzedawca. Wszystkie jego 76 ofert zostało
-zawieszonych, a po odblokowaniu wszystkie wróciły.
+najpierw kliknięty został zły wiersz i zablokowany sprzedawca Orn Ltd.
+Wszystkie jego 76 opublikowanych ofert zostało zawieszonych jako
+`seller_blocked`, a po odblokowaniu wszystkie 76 wróciły.
 
 ### Wyszukiwarka po zmianie `active` → `listed()`
 

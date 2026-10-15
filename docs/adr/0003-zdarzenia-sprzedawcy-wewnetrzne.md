@@ -55,9 +55,10 @@ się wydarzyło.**
 
 **Negatywne**
 - Blokada sprzedawcy z tysiącami ofert to tysiące zdarzeń `offer.suspended`
-  i tyle samo pobrań projekcji. W teście E2E na lokalnym stacku blokada
-  zawiesiła 68 ofert sprzedawcy i wszystkie zniknęły z wyszukiwarki. Czasu
-  nie mierzyliśmy; przy wielokrotnie większej skali trzeba to zrobić.
+  i tyle samo pobrań projekcji. W weryfikacji E2E na lokalnym stacku blokada
+  sprzedawcy Orn Ltd zawiesiła jego 76 opublikowanych ofert i wszystkie
+  zniknęły z wyszukiwarki. Czasu nie mierzyliśmy; przy wielokrotnie większej
+  skali trzeba to zrobić.
 - Zmiana nazwy sprzedawcy dalej nie trafia do searcha (fan-out
   `seller.updated` świadomie poza zakresem).
 - Gdy pojawi się konsument statusu sprzedawcy, trzeba będzie zaprojektować

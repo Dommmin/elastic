@@ -119,7 +119,7 @@ Zasady:
 | PL | Kod | Definicja |
 |---|---|---|
 | powód zawieszenia | `SuspensionReason` | rodzaj plus (przy moderacji) kto i dlaczego. Dwie fabryki: `byModerator(ModeratorId, Reason)` i `sellerBlocked()` |
-| rodzaj zawieszenia | `SuspensionKind` (`Moderation` = `moderation`, `SellerBlocked` = `seller_blocked`) | odpowiada na hot spot z Event Stormingu: odblokowanie sprzedawcy przywraca **tylko** oferty zawieszone przez blokadę |
+| rodzaj zawieszenia | `SuspensionKind` (`Moderation` = `moderation`, `SellerBlocked` = `seller_blocked`) | odpowiada na hot spot rozstrzygnięty w specu (moduł 1 `10-DDD.md`): odblokowanie sprzedawcy przywraca **tylko** oferty zawieszone przez blokadę |
 | powód, uzasadnienie | `Reason` | niepusty po przycięciu (także twardych spacji i znaków niewidocznych), ≤ 500 znaków, bez znaków sterujących poza `\n\r\t` |
 
 ## Zdarzenia

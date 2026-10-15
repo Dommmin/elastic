@@ -107,8 +107,14 @@ modelowa, a nie kosmetyka.
 
 **W projekcie: Event Storming portalu sprzedawcy, tak jak wyglądałby na ścianie**
 
-Tak doszliśmy do modelu w specu. Odtwarzam to krok po kroku, bo kolejność
-kroków jest ważniejsza od wyniku.
+**Uczciwie: ten warsztat się nie odbył.** Model portalu powstał w specu,
+w dialogu projektowym (pytania, odpowiedzi, decyzje spisane od razu jako
+tekst). Poniżej jest **rekonstrukcja**: tak doszedłby do tego samego modelu
+zespół stojący przed ścianą z karteczkami. Rozpisuję ją krok po kroku, bo
+kolejność kroków jest ważniejsza od wyniku, a hot spoty poniżej to dokładnie
+te pytania, które w specu trzeba było rozstrzygnąć. Następną funkcję
+(zamówienia, podprojekt C) zrób odwrotnie: najpierw prawdziwy Event Storming
+(choćby sam, na kartce), dopiero potem spec i kod (ćwiczenie 2).
 
 *Krok 1 — chaos: każdy wiesza zdarzenia, które zna (bez kolejności, bez dyskusji).*
 
@@ -156,9 +162,10 @@ pierwszy ślad, że cena w szkicu nie potrzebuje strażnika.
 Zauważ dwie rzeczy. Jedna komenda może dać *różne* zdarzenia (*Zmień cenę*
 → zmieniona albo czeka). To znaczy, że ktoś po drodze podejmuje decyzję według
 reguły, i ten ktoś będzie agregatem. Druga: „Zmiana ceny anulowana” nie
-wisiała na ścianie od początku. Wyszła dopiero przy implementacji i spec ją
+pojawiła się w specu. Wyszła dopiero przy implementacji i spec ją
 pominął (to jedyne świadome odstępstwo od specu w zdarzeniach, opisane
-w globalnych ograniczeniach planu). Ściana nigdy nie jest kompletna.
+w globalnych ograniczeniach planu). Żaden model, ani ze ściany, ani ze specu,
+nie jest od razu kompletny.
 
 *Krok 4 — polityki (fioletowe).* Szukamy zdań „za każdym razem, gdy…”.
 
@@ -220,7 +227,7 @@ I miejsca, gdzie język wprost żyje w kodzie:
    Gwarantowane hot spoty: rezerwacja stanu (kiedy zmniejszamy `stock`?),
    oferta wycofana w trakcie płacenia, zmiana ceny między koszykiem a płatnością.
    Który z nich zmieni agregat `Offer`, a który da nowy agregat?
-3. **Zepsuj i napraw: hot spot ze ściany jest testem.** Hot spot „odblokowanie
+3. **Zepsuj i napraw: rozstrzygnięty hot spot jest testem.** Hot spot „odblokowanie
    nie przywraca ofert zawieszonych przez moderatora” wyrzuć z polityki
    przywracania:
 
@@ -243,7 +250,7 @@ I miejsca, gdzie język wprost żyje w kodzie:
 **Sprawdź się**
 - Dlaczego Event Storming zaczyna się od zdarzeń, a nie od encji albo tabel?
 - Jedna komenda daje dwa różne zdarzenia. Co to mówi o modelu?
-- Podaj hot spot z tego etapu, który bez warsztatu rozstrzygnąłby programista,
+- Podaj hot spot z tego etapu, który bez specu i warsztatu rozstrzygnąłby programista,
   i gdzie by go rozstrzygnął.
 - „Wyprzedana” w UI, `isSoldOut()` w kodzie. Czy to łamie język wszechobecny?
   (Nie: słownik mapuje 1:1. Złamaniem byłoby, gdyby UI liczyło „wyprzedaną” po swojemu.)
