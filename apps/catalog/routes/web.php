@@ -3,7 +3,10 @@
 use App\Http\Controllers\Panel\Moderation\SellerModerationController;
 use App\Http\Controllers\Panel\ProductController;
 use App\Http\Controllers\SearchController;
+use App\Http\Controllers\Seller\ProductLookupController;
 use App\Http\Controllers\Seller\SellerApplicationController;
+use App\Http\Controllers\Seller\SellerDashboardController;
+use App\Http\Controllers\Seller\SellerOfferController;
 use Illuminate\Support\Facades\Route;
 
 Route::inertia('/', 'Welcome')->name('home');
@@ -23,6 +26,28 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
 Route::middleware(['auth', 'seller'])->group(function () {
     Route::get('seller/status', [SellerApplicationController::class, 'status'])->name('seller.status');
+});
+
+// Portal sprzedawcy: aktywny i zablokowany (ten drugi tylko ogląda i wycofuje
+// — resztę odrzuca warstwa aplikacji). `{offer}` to ID; właściciela sprawdza
+// `SellerOfferAccess`, cudza oferta kończy się 404.
+Route::middleware(['auth', 'seller', 'seller.approved'])->prefix('seller')->name('seller.')->group(function () {
+    Route::get('/', SellerDashboardController::class)->name('dashboard');
+    Route::get('products/lookup', ProductLookupController::class)->name('products.lookup');
+
+    Route::get('offers', [SellerOfferController::class, 'index'])->name('offers.index');
+    Route::get('offers/create', [SellerOfferController::class, 'create'])->name('offers.create');
+    Route::post('offers', [SellerOfferController::class, 'store'])->name('offers.store');
+
+    Route::whereNumber('offer')->group(function () {
+        Route::get('offers/{offer}', [SellerOfferController::class, 'show'])->name('offers.show');
+        Route::post('offers/{offer}/publish', [SellerOfferController::class, 'publish'])->name('offers.publish');
+        Route::put('offers/{offer}/price', [SellerOfferController::class, 'updatePrice'])->name('offers.price');
+        Route::delete('offers/{offer}/pending-price', [SellerOfferController::class, 'cancelPendingPrice'])->name('offers.pending-price.destroy');
+        Route::put('offers/{offer}/stock', [SellerOfferController::class, 'updateStock'])->name('offers.stock');
+        Route::put('offers/{offer}/details', [SellerOfferController::class, 'updateDetails'])->name('offers.details');
+        Route::post('offers/{offer}/withdraw', [SellerOfferController::class, 'withdraw'])->name('offers.withdraw');
+    });
 });
 
 // Panel edycji katalogu: `can:panel` (flaga is_admin), bo rejestracja jest
