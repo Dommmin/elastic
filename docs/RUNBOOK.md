@@ -41,6 +41,8 @@
 | [026](#026) | 18 testów Fortify pada tylko w kontenerze (419) — i testy WCIĄŻ czyściły Postgresa | Laravel / PHPUnit | 7 |
 | [027](#027) | Retry Messengera: `no exchange 'delays'` -> DLQ po 1 próbie (a pod spodem retry bez limitu) | RabbitMQ / Symfony | 7 |
 | [040](#040) | Zablokowany sprzedawca, a jego oferty wciąż w `/search` (worker polityk) | Kolejka / Portal sprzedawcy | Portal |
+| [041](#041) | Szósta zmiana ceny w dobie przechodzi (dev DB z migracjami sprzed poprawki precyzji) | Postgres / Portal sprzedawcy | Portal |
+| [042](#042) | „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” (konflikt wersji) | Portal sprzedawcy | Portal |
 
 ---
 
@@ -1791,6 +1793,115 @@ Spójność ostateczna wymaga właściciela dla „ostatecznie”: bez działaj�
 konsumenta kolejka jest tylko tabelą. Worker ma więc healthcheck, wpis tutaj
 i pozycję w sprawdzeniach wdrożenia. Szybkie „zablokuj → odblokuj” jest
 bezpieczne, bo job sprawdza stan sprzedawcy w chwili wykonania.
+
+<a id="041"></a>
+## 041 — Szósta zmiana ceny w dobie przechodzi (dev DB z migracjami sprzed poprawki precyzji)
+
+**Objaw**
+Na lokalnym stacku sprzedawca zmienia cenę kilka razy szybko po sobie
+(albo skrypt w tinkerze robi to w pętli) i przekracza limit 5 zmian na dobę
+bez błędu „Wykorzystano limit 5 zmian ceny na dobę”. Testy na hoście są
+zielone (SQLite), a w tabeli `offer_price_changes` jest mniej wierszy, niż
+było zmian.
+
+**Diagnoza**
+```bash
+docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB -c \
+  "select table_name, column_name, datetime_precision from information_schema.columns
+   where (table_name, column_name) in (('offer_price_changes','changed_at'), ('offers','pending_requested_at'))"
+```
+Obie kolumny muszą mieć `datetime_precision = 6`. Wartość `0` oznacza bazę,
+która uruchomiła migracje portalu w wersji sprzed poprawki.
+
+**Przyczyna**
+`timestampTz('changed_at')` bez precyzji to w Postgresie `timestamptz(0)`,
+czyli zaokrąglenie do pełnych sekund. `SqlOfferRepository::savePriceChanges`
+dopisuje do historii tylko wpisy nowsze od najnowszego zapisanego, więc dwie
+zmiany z tej samej (zaokrąglonej) sekundy sklejają się w jeden wiersz,
+a limit dobowy liczy za mało. SQLite tego nie pokazuje, dlatego wyszło
+dopiero przy weryfikacji migracji na jednorazowym Postgresie 18.4 (Task 6).
+Poprawka zmieniła **już zacommitowane** migracje
+(`2026_10_15_100001_…` i `2026_10_15_100002_…`, precyzja 6). Laravel nie
+uruchamia ponownie migracji, które ma w tabeli `migrations`, więc baza
+deweloperska, która przeszła starą wersję, zostaje ze starym typem kolumny.
+(`sellers.status_changed_at` ma precyzję 0 i to jest w porządku: nic jej nie
+porównuje.)
+
+**Naprawa**
+Wariant A, zostawia produkty i użytkowników (migracje portalu są odwracalne,
+a w repo nie ma nowszych):
+```bash
+docker compose exec catalog-app php artisan migrate:rollback --step=3 --force
+docker compose exec catalog-app php artisan migrate --force
+make reproject
+```
+Uwaga: rollback cofa kolumny portalu. Sprzedawcy zarejestrowani przez portal
+tracą powiązanie z kontem i wracają jako aktywni bez `user_id` (trzeba się
+zgłosić od nowa). Oferty przechodzą przez `active`: opublikowane zostają
+opublikowane, a szkice i zawieszone stają się wycofane. Znikają też
+oczekujące zmiany cen i historia zmian cen. Na dev to akceptowalne.
+
+Wariant B, od zera:
+```bash
+docker compose exec catalog-app php artisan migrate:fresh --force
+make seed && make admin email=ty@example.com && make reproject
+```
+Na produkcji (k3s) problem nie wystąpi, bo migracje wejdą tam od razu
+w poprawionej wersji.
+
+**Czego się nauczyłem**
+Migracja, która już gdzieś się wykonała, jest niezmienna. Poprawka typu
+kolumny w już uruchomionej migracji naprawia tylko świeże bazy. Gdyby ta
+gałąź była już na produkcji, poprawka musiałaby być nową migracją
+(`ALTER COLUMN … TYPE timestamptz(6)`). Druga lekcja: typy dat i ich
+precyzję sprawdza się na tym samym silniku co produkcja, bo SQLite w testach
+przyjmie wszystko.
+
+<a id="042"></a>
+## 042 — „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” (konflikt wersji)
+
+**Objaw**
+Sprzedawca albo moderator zapisuje formularz oferty i dostaje komunikat
+„Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” (błąd `domain`,
+HTTP 302 z powrotem na stronę). Zmiana się nie zapisała.
+
+**Diagnoza**
+```bash
+# kto i kiedy zmieniał tę ofertę (ostatnie zdarzenia, sequence = wersja)
+docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB -c \
+  "select sequence, event_type, occurred_at from outbox
+   where aggregate_type = 'offer' and aggregate_id = '<ID>' order by id desc limit 10"
+docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB -c \
+  "select id, version, status, stock, price_cents, pending_price_cents from offers where id = <ID>"
+```
+W UI to samo widać na osi czasu oferty (`/seller/offers/<ID>`).
+
+**Przyczyna**
+Optymistyczna blokada: `SqlOfferRepository::save` robi
+`UPDATE … WHERE id = ? AND version = ?`. Między odczytem oferty a zapisem
+ktoś inny zapisał ją pierwszy (druga karta tego samego sprzedawcy, moderator
+akceptujący zmianę ceny, job polityki zawieszający oferty zablokowanego
+sprzedawcy), więc `UPDATE` trafił w 0 wierszy i repozytorium rzuciło
+`ConcurrencyConflict`. To jest **zamierzone**: zamiast po cichu nadpisać
+cudzą zmianę (lost update), drugi zapis jest odrzucany w całości, razem
+z wierszami outboxu (jedna transakcja).
+
+**Naprawa**
+1. Pojedynczy przypadek: odśwież stronę i powtórz. To normalne zachowanie.
+2. Konflikt przy **każdej** próbie na tej samej ofercie: coś zmienia ją
+   w kółko w tle. Sprawdź w outboxie, jakie zdarzenia przybywają, i czy
+   `catalog-worker` nie mieli tego samego joba (`make worker-logs`,
+   RUNBOOK [#040](#040)). Job polityki sam ponawia ofertę 3 razy przy
+   konflikcie, a po wyczerpaniu prób ponawia się cały (idempotentnie).
+3. Konflikt bez żadnego nowego zdarzenia w outboxie: ktoś zmienił
+   `offers.version` z pominięciem repozytorium (ręczny SQL). Zapisy ofert idą
+   wyłącznie przez handlery Seller Portalu ([ADR-0002](adr/0002-czysta-domena-bez-eloquenta.md)).
+
+**Czego się nauczyłem**
+Konflikt wersji to komunikat dla użytkownika, nie błąd serwera: ma dać 302
+z czytelnym tekstem, nigdy 500 i nigdy cichego nadpisania (test
+`PriceGuardTest` › „równoległa edycja → błąd concurrency”). Jak to zepsuć
+i odtworzyć dwiema „kartami” w tinkerze: [`10-DDD.md`](10-DDD.md), moduł 7.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 
