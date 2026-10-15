@@ -8,9 +8,10 @@ porównanie: te same reguły w bogatych modelach Eloquenta (DDD-lite), te same
 testy HTTP, zmierzone liczby zamiast opinii. To jest to porównanie. Wynik
 w skrócie: w tej domenie DDD-lite wystarcza. Kodu jest o połowę mniej, nowa
 reguła kosztuje tyle samo, a zachowanie przez HTTP jest identyczne. Za to
-lite ma dwie zmierzone dziury, które pełne DDD zamyka (brudna instancja po
-konflikcie wersji, niesprawdzane wiersze z bazy), traci test architektury,
-a testy reguł chodzą w nim ~35 razy wolniej. Dla zamówień (podprojekt C)
+lite nie sprawdza wierszy wczytanych z bazy (pełne DDD tak), traci test
+architektury, a testy reguł chodzą w nim ~35 razy wolniej. Druga zmierzona
+dziura lite (brudna instancja po konflikcie wersji) okazała się dwiema
+liniami i jest już zamknięta. Dla zamówień (podprojekt C)
 rekomendacja jest inna.*
 
 > **Stan:** gałąź `ddd-lite-porownanie` zrobiona lokalnie (2 commity od
@@ -53,16 +54,20 @@ Wspólne dla obu: kontrolery (poza trzema metodami, niżej), strony Vue, modele
 odczytu (`Infrastructure/ReadModel`), migracje, kody wyjątków i komunikaty
 (`DomainErrorMessages`), nazwy i pola zdarzeń `offer.*`.
 
-**Kryterium uczciwości:** testy HTTP z gałęzi DDD przechodzą na lite. Z 64
-testów HTTP 63 przechodzą bez zmiany ani jednej linii. Jeden
-(`PriceGuardTest` → „równoległa edycja → błąd concurrency”) wstrzykiwał
-wyścig dekoratorem `OfferRepository`, czyli klasą, której w lite z definicji
-nie ma. Na lite ten sam wyścig wstrzykuje zdarzenie Eloquenta `retrieved`
-(+5/−40 linii, same asercje). Bez tej zmiany test padał: wiązanie
-`OfferRepository` w kontenerze nikt już nie rozwiązywał, więc wyścigu nie
-było, zapis wygrywał, a komunikatu o konflikcie nie było. Warto to
-zapamiętać: test, który podmienia port, sprawdza zachowanie *i* architekturę
-naraz — zmiana architektury go łamie, choć zachowanie się nie zmieniło.
+**Kryterium uczciwości:** katalog `tests/Feature/SellerPortal/Http` jest na
+obu gałęziach **bajt w bajt identyczny**
+(`git diff portal-sprzedawcy ddd-lite-porownanie -- apps/catalog/tests/Feature/SellerPortal/Http`
+jest pusty) i wszystkie 64 testy przechodzą na obu.
+
+Historia, bo uczy: w pierwszej wersji porównania 63 z 64 testów przeszły od
+razu, a jeden (`PriceGuardTest` → „równoległa edycja → błąd concurrency”)
+padał. Wstrzykiwał wyścig dekoratorem `OfferRepository`, czyli klasą, której
+w lite z definicji nie ma: wiązania w kontenerze nikt nie rozwiązywał,
+wyścigu nie było, zapis wygrywał. Test, który podmienia port, sprawdza
+zachowanie *i* architekturę naraz — zmiana architektury go łamie, choć
+zachowanie się nie zmieniło. Naprawa (88aa1dd, na lite ten sam plik w 7138b8d):
+wyścig wstrzykuje `DB::beforeExecuting` tuż przed pierwszym UPDATE-em tabeli
+`offers` — poziom SQL, wspólny dla obu stylów. Asercje bez zmian.
 
 ---
 
@@ -116,7 +121,8 @@ zbudować słabą wersję, żeby DDD wypadło lepiej. Co jest w środku
    dają metody `offerStatus()`, `suspensionKind()`, `sellerStatus()`.
    Wniosek do zapamiętania: testy pisane pod jeden model persystencji
    przywiązują się do niego bardziej, niż się wydaje.
-2. `PriceGuardTest` — opisane wyżej.
+2. `PriceGuardTest` — w pierwszej wersji osobny na lite; dziś wspólny,
+   opisane wyżej.
 
 ---
 
@@ -133,13 +139,13 @@ Bez modeli odczytu i kontrolerów, które są wspólne
 | `src/SellerPortal/Application` | 45 / 1310 | 36 / 726 (komendy + cienkie akcje) |
 | `Infrastructure/Persistence` (mapowanie) | 5 / 598 | 0 / 0 |
 | adaptery portów, joby, provider | 8 / 255 | 2 / 69 (same joby) |
-| modele `Offer`, `Seller` (+ cast, trait) | 2 / 112 | 4 / 975 (`Offer` 542, `Seller` 337, `MoneyCast` 53, `SavesWithVersionCheck` 43) |
-| **razem** | **121 / 4516** | **66 / 2272** |
+| modele `Offer`, `Seller` (+ cast, trait) | 2 / 119 | 4 / 980 (`Offer` 542, `Seller` 337, `MoneyCast` 53, `SavesWithVersionCheck` 48) |
+| **razem** | **121 / 4523** | **66 / 2277** |
 | bez zmian w obu: `ReadModel` | 7 / 411 | 7 / 411 |
 | kontrolery portalu + `ProductController` | 8 / 609 | 8 / 602 |
 | strony Vue | bez zmian | bez zmian |
 
-**Lite to 50% kodu pełnego DDD** (2272 / 4516). Gdzie poszła różnica:
+**Lite to 50% kodu pełnego DDD** (2277 / 4523). Gdzie poszła różnica:
 598 linii mapowania, 19 klas zdarzeń domenowych, porty z jedną
 implementacją, dispatcher i provider. Same reguły kosztują w obu wersjach
 podobnie: agregaty `Offer` + `Seller` + `PriceChangePolicy` to 713 linii,
@@ -149,22 +155,22 @@ modele lite 879 (bo niosą też zapis, outbox i casty).
 
 | | Pełne DDD | DDD-lite |
 |---|---|---|
-| testy reguł | `tests/Unit/SellerPortal/Domain` (bez Money/Shared): 6 plików, 794 linie, **77 testów** | `tests/Feature/Lite`: 2 pliki, 731 linii, **76 testów** |
-| czas testów reguł (Pest, mediana z 5) | **24 ms** (23–28) | **843 ms** (762–858) — ~35× wolniej |
+| testy reguł | `tests/Unit/SellerPortal/Domain` (bez Money/Shared): 6 plików, 794 linie, **77 testów** | `tests/Feature/Lite`: 2 pliki, 747 linii, **77 testów** (76 przepisanych + test domkniętej dziury z rozdz. 6) |
+| czas testów reguł (Pest, mediana z 5) | **24 ms** (23–28) | **833 ms** (809–856) — ~35× wolniej |
 | czas ściany z bootem (mediana z 5) | 0,29 s | 1,12 s — ~3,9× wolniej |
 | na jeden test | ~0,3 ms | ~11 ms (RefreshDatabase + SQLite) |
 | testy aplikacji na repozytoriach w pamięci | 12 plików, 951 linii | brak (nie ma czego podmieniać) |
 | testy infrastruktury (`Feature/SellerPortal/Infrastructure`) | 6 plików, 860 linii | 3 pliki, 417 linii |
-| testy HTTP | 64 testy, 1064 linie | **te same 64**, 1029 linii (`PriceGuardTest` −40/+5) |
+| testy HTTP | 64 testy, 1039 linii | **te same pliki, bajt w bajt** |
 | test architektury | 1 (domena i aplikacja bez `Illuminate`) | 0 — **świadoma strata**, nie ma czystej domeny do pilnowania |
-| cały catalog | 362 testy (347 + 15 pominiętych), 6,0 s | 305 testów (290 + 15 pominiętych), 5,2 s; po commicie reguły z rozdziału 4: 308 (293 + 15) |
+| cały catalog | 362 testy (347 + 15 pominiętych), 6,0 s | 306 testów (291 + 15 pominiętych), 4,6 s |
 | PHPStan (poziom 7, `app/`; `src/` poza ścieżkami w obu) | 129 błędów (wcześniejsze) | 118 (mniej: typy relacji i `@property` w modelach, prostszy `ProductController`) |
 
 Liczba testów reguł jest prawie równa, bo przypadki przepisałem jeden do
 jednego (z drobnymi wyjątkami: `SuspensionReason::restore` nie ma
 odpowiednika, bo lite nie waliduje wierszy przy odczycie — rozdział 6).
 Różnica w czasie to w całości koszt bazy: każdy test lite migruje SQLite
-w pamięci i tworzy wiersze fabrykami. 843 ms to nadal mało; problem
+w pamięci i tworzy wiersze fabrykami. 833 ms to nadal mało; problem
 zaczyna się przy setkach przypadków brzegowych (np. siatka statusów ×
 aktorów × oczekującej ceny, jak test `allowedActionsFor` z 15 wierszami
 danych), gdzie w DDD dopisuje się je za darmo, a w lite każdy kosztuje
@@ -178,7 +184,14 @@ Ta sama reguła dopisana w obu wersjach jako osobny commit: cena szkicu
 i każda nowa cena (w szkicu i w opublikowanej ofercie) ≥ 100 groszy,
 wyjątek `PriceBelowMinimum` z kodem i polskim komunikatem.
 
-| | Pełne DDD (gałąź tymczasowa, f0d7266, usunięta po pomiarze) | DDD-lite (882d174, zostaje na gałęzi) |
+Reguły nie ma w specu, więc w stanie końcowym żadnej z gałęzi jej nie ma.
+Na DDD żyła na gałęzi tymczasowej (usuniętej po pomiarze). Na lite był to
+commit 882d174, cofnięty w b43503a: reguła zmienia przypadek „0,5 zł”
+w `SellerOfferTest`, a katalog testów HTTP ma być identyczny na obu
+gałęziach. Commit z regułą został w historii lite i na gałęzi
+`ddd-lite-pomiar-reguly` — `git show 882d174` pokazuje cały diff.
+
+| | Pełne DDD (gałąź tymczasowa, f0d7266, usunięta po pomiarze) | DDD-lite (882d174, cofnięty w b43503a; gałąź `ddd-lite-pomiar-reguly`) |
 |---|---|---|
 | `git diff --stat` | 6 plików, **+55 / −1** | 6 plików, **+53 / −1** |
 | wspólne dla obu (identyczne) | `PriceBelowMinimum.php` +19, `DomainErrorMessages.php` +1, jego test +3, `SellerOfferTest` 1 linia (przypadek „0,5 zł” łamie nową regułę → 1,5 zł) | to samo |
@@ -265,7 +278,7 @@ różni się tylko szybkość pętli „zmień → test”.
 |---|---|---|---|
 | zapis repozytorium | `SqlOfferRepository.php:99`, `SqlSellerRepository.php:131` (`->update` z `where version`) | — | nie, to jest właściwa droga |
 | zapis modelu | — | `SavesWithVersionCheck.php:35`, `Seller.php:112` (`static::create` w `register`) | nie, to jest właściwa droga |
-| `EmitsOutboxEvents.php:45` / `:92` (`static::create` / `$this->save()`) | jest w obu (trait użyty w obu modelach `Offer`) | jest | **tak, potencjalne:** `$offer->updateWithOutbox([...])` to publiczna metoda na `Offer` w obu gałęziach; zapisuje bez reguł i bez kontroli wersji, a do tego wysyła zdarzenie, więc wygląda legalnie |
+| `EmitsOutboxEvents.php:45` / `:92` (`static::create` / `$this->save()`) | w pomiarze: trait na `Offer`; od 88aa1dd model odczytu go nie ma | jest (lite go używa do zapisu) | **tak, potencjalne:** `$offer->updateWithOutbox([...])` zapisuje bez reguł i bez kontroli wersji, a do tego wysyła zdarzenie, więc wygląda legalnie. Na DDD usunięte, na lite zostaje |
 | `SeedMarketplaceCommand.php:217` `Offer::create([...'status' => 'published'])` | jest | jest | **tak, realne, celowe:** hurtowy import, opisany w komentarzu |
 | `Offer::query()->findOr(...)` w akcjach moderatora | — | 5× w `Application/Moderation`, `SellerOfferAccess` | nie, to odczyt |
 
@@ -280,13 +293,13 @@ napisać jutro. Jednorazowe testy uruchomione na obu gałęziach (nie są
 w repo; wklej do `tests/Feature/…`, uruchom, usuń):
 
 ```php
-// lite: save() po konflikcie wersji
+// lite przed 7138b8d: save() po konflikcie wersji
 $offer = Offer::factory()->for(Seller::factory()->create())->create(['status' => 'published', 'stock' => 5])->fresh();
 $stale = $offer->fresh();
 $offer->changeStock(9);
 try { $stale->changeStock(7); } catch (ConcurrencyConflict) {}
 $stale->save();
-expect($offer->fresh()->stock)->toBe(7); // przechodzi: cudza zmiana nadpisana
+expect($offer->fresh()->stock)->toBe(7); // przechodziło: cudza zmiana nadpisana (dziś: 9, test w OfferRulesTest)
 
 // obie gałęzie: zapis z pominięciem reguł
 $offer = Offer::factory()->for(Seller::factory()->create())->create(['status' => 'withdrawn'])->fresh();
@@ -301,17 +314,20 @@ Offer::factory()->for(Seller::factory()->create())->create(['status' => 'suspend
 | Próba | Pełne DDD | DDD-lite |
 |---|---|---|
 | `Offer::find($id)->update(['status' => 'published'])` na wycofanej ofercie | **przechodzi**, 0 wierszy outboxu | **przechodzi**, 0 wierszy outboxu |
-| po `ConcurrencyConflict` zawołać `$offer->save()` na tej samej instancji | nie da się: agregat nie ma `save()`, a `repository->save()` znowu trafia w starą wersję i rzuca konflikt | **nadpisuje cudzą zmianę** (stan 7 zamiast 9 zapisanego przez drugą kartę) |
-| wiersz niespójny: `status = suspended`, `suspension_kind = NULL` | `get()` rzuca `UnexpectedValueException` „Uszkodzony wiersz oferty #…” (`SqlOfferRepository.php:219`) | wczytuje się bez błędu, `allowedActionsFor(Moderator)` zwraca akcje |
+| po `ConcurrencyConflict` zawołać `$offer->save()` na tej samej instancji | nie da się: agregat nie ma `save()`, a `repository->save()` znowu trafia w starą wersję i rzuca konflikt | w pierwszej wersji **nadpisywało cudzą zmianę** (stan 7 zamiast 9); od 7138b8d instancja wraca do stanu z odczytu i `save()` nic nie zapisuje |
+| wiersz niespójny: `status = suspended`, `suspension_kind = NULL` | `get()` rzuca `UnexpectedValueException` „Uszkodzony wiersz oferty #…” (`hydrate`, `SqlOfferRepository.php:256`) | wczytuje się bez błędu, `allowedActionsFor(Moderator)` zwraca akcje |
 
 Najważniejszy wynik: **pierwszy wiersz.** Pełne DDD w tym repo nie usuwa
 możliwości zapisu z pominięciem reguł, bo model `App\Models\Offer` dalej
-istnieje (fabryki, modele odczytu, seeder) z pełnym `$fillable` i traitem
-outboxu. ADR-0002 opisywał opcję B słowami „reguły obchodzi
-`Offer::query()->update(...)`” — to prawda, ale **w obu wersjach w równym
-stopniu**. Różnica jest w tym, która droga jest „domyślna”: w DDD zapis przez
-model Eloquenta wygląda podejrzanie na przeglądzie kodu, w lite ten sam model
-ma i metody z regułami, i `update()`, więc łatwiej się pomylić.
+istnieje (fabryki, modele odczytu, seeder) z pełnym `$fillable`. ADR-0002
+opisywał opcję B słowami „reguły obchodzi `Offer::query()->update(...)`” —
+to prawda, ale **w obu wersjach w równym stopniu**. DDD zmienia domyślną
+drogę, nie możliwość: w DDD zapis przez model Eloquenta wygląda podejrzanie
+na przeglądzie kodu, w lite ten sam model ma i metody z regułami, i
+`update()`, więc łatwiej się pomylić. Granicę w obu trzyma konwencja
+i przegląd kodu. Po tym porównaniu model odczytu `Offer` na gałęzi DDD
+stracił trait `EmitsOutboxEvents` (88aa1dd), żeby zbłąkany zapis przez
+`updateWithOutbox()` nie wysyłał zdarzenia i nie wyglądał na legalny.
 
 ---
 
@@ -319,12 +335,15 @@ ma i metody z regułami, i `update()`, więc łatwiej się pomylić.
 
 ### Pełne DDD chroni (a lite nie)
 
-1. **Instancja po błędzie nie nadaje się do zapisu.** Agregat nie ma
-   `save()`. W lite metoda modelu zmienia atrybuty przed zapisem, a po
-   `ConcurrencyConflict` brudna instancja zostaje w pamięci: sonda wyżej.
-   Naprawa w lite: w `SavesWithVersionCheck` przed rzuceniem wyjątku
-   przywrócić `getOriginal()` (2 linie). Nie zrobiłem tego celowo, żeby
-   pokazać dziurę taką, jaką zostawiłby typowy zespół.
+1. **Instancja po błędzie nie nadaje się do zapisu — z definicji.** Agregat
+   nie ma `save()`. W lite metoda modelu zmienia atrybuty przed zapisem,
+   więc w pierwszej wersji po `ConcurrencyConflict` brudna instancja
+   zostawała w pamięci i zwykłe `save()` nadpisywało cudzą zmianę (sonda
+   wyżej). Naprawa w lite to dwie linie w `SavesWithVersionCheck`
+   (`setRawAttributes($this->getRawOriginal(), true)` przed wyjątkiem)
+   i test „instancja wraca do stanu z odczytu” w `OfferRulesTest`, który
+   tłumaczy, po co ta linia jest (7138b8d). Różnica, która zostaje: w DDD
+   ochrona wynika z kształtu kodu, w lite z linii, którą ktoś musi pamiętać.
 2. **Wiersz z bazy jest sprawdzany.** `SqlOfferRepository::hydrate`
    (`:206`–`:256`) odrzuca nieznany status, walutę, stan, niespójne
    zawieszenie i oczekującą cenę bez daty; `SuspensionReason::restore`
@@ -369,7 +388,9 @@ ma i metody z regułami, i `update()`, więc łatwiej się pomylić.
   (`src/` nie jest nawet w ścieżkach PHPStana). Pilnuje przegląd kodu
   i zasada „jeden właściciel zapisu tabeli `offers`”.
 - `EmitsOutboxEvents::updateWithOutbox()` jako publiczna metoda na `Offer`:
-  zdarzenie poleci, reguły i kontrola wersji nie.
+  zdarzenie poleci, reguły i kontrola wersji nie. Na DDD zamknięte
+  (88aa1dd: model odczytu bez traitu), na lite otwarte, bo lite używa traitu
+  do zapisu.
 
 ---
 
@@ -383,13 +404,14 @@ kilku naraz, i czy pomyłka kosztuje pieniądze?*
 | Część systemu | Wybór | Dlaczego (z tego porównania) |
 |---|---|---|
 | **Katalog** (Product, Brand, Category, Review), panel edycji | zwykły Laravel (CRUD, `updateWithOutbox`) | brak reguł do ochrony; i DDD, i DDD-lite dałyby kod bez zysku |
-| **Oferty sprzedawców** (ten portal) | **DDD-lite wystarczyłby.** Pełne DDD zostaje wersją główną (`portal-sprzedawcy`, potem `main`), bo już jest, jest przetestowane i służy do nauki | reguły dotyczą jednego agregatu naraz; nowa reguła kosztuje tyle samo; HTTP identyczne; połowa kodu. Gdybym zaczynał od zera z 1–2 osobami, wybrałbym lite **z trzema poprawkami**: przywracanie atrybutów po konflikcie wersji, `CHECK` w bazie zamiast walidacji przy odczycie, `updateWithOutbox` niedostępny na `Offer` (np. osobny trait bez tej metody) |
-| **Zamówienia** (podprojekt C: rezerwacja stanu, płatność, anulowanie, zwroty) | **pełne DDD dla agregatu `Order`**, z tym samym schematem co portal (repozytorium z kontrolą wersji, tłumaczenie zdarzeń na outbox) | reguły obejmują kilka agregatów naraz (zamówienie ↔ stan oferty), są procesy w czasie (rezerwacja wygasa, płatność wraca) i pomyłka kosztuje pieniądze. Dokładnie tu lite przecieka: brudna instancja po konflikcie, auto-zapis każdej metody (nie da się złożyć „zarezerwuj stan + utwórz zamówienie” w jedną zmianę bez ręcznego `DB::transaction` i dwóch wersji) i niesprawdzane wiersze. Siatka stanów zamówienia (płatność × wysyłka × anulowanie) to setki przypadków — 0,3 ms vs 11 ms na test robi różnicę |
+| **Oferty sprzedawców** (ten portal) | **DDD-lite wystarczyłby.** Pełne DDD zostaje wersją główną (`portal-sprzedawcy`, potem `main`), bo już jest, jest przetestowane i służy do nauki | reguły dotyczą jednego agregatu naraz; nowa reguła kosztuje tyle samo; HTTP identyczne; połowa kodu. Gdybym zaczynał od zera z 1–2 osobami, wybrałbym lite (przywracanie atrybutów po konflikcie wersji już jest) **z dwiema poprawkami**: `CHECK` w bazie zamiast walidacji przy odczycie, `updateWithOutbox` niedostępny na `Offer` (np. osobny trait bez tej metody) |
+| **Zamówienia** (podprojekt C: rezerwacja stanu, płatność, anulowanie, zwroty) | **pełne DDD dla agregatu `Order`**, z tym samym schematem co portal (repozytorium z kontrolą wersji, tłumaczenie zdarzeń na outbox) | reguły obejmują kilka agregatów naraz (zamówienie ↔ stan oferty), są procesy w czasie (rezerwacja wygasa, płatność wraca) i pomyłka kosztuje pieniądze. Dokładnie tu lite przecieka: auto-zapis każdej metody (nie da się złożyć „zarezerwuj stan + utwórz zamówienie” w jedną zmianę bez ręcznego `DB::transaction` i dwóch wersji) i niesprawdzane wiersze. Siatka stanów zamówienia (płatność × wysyłka × anulowanie) to setki przypadków — 0,3 ms vs 11 ms na test robi różnicę |
 
 **Uczciwie:** gdyby celem było tylko dowieźć portal sprzedawcy, pełne DDD
-było przepłacone o ~2200 linii. Te linie kupiły trzy rzeczy, które dało się
-zmierzyć (rozdział 6: odporność instancji po błędzie, walidacja wierszy,
-testy w milisekundach) i jedną, której nie da się zmierzyć jedną gałęzią:
+było przepłacone o ~2250 linii. Te linie kupiły rzeczy, które dało się
+zmierzyć (rozdział 6: walidacja wierszy, testy w milisekundach, granica
+pilnowana testem, odporność instancji po błędzie „z kształtu”, a nie z linii,
+o której trzeba pamiętać) i jedną, której nie da się zmierzyć jedną gałęzią:
 model, który przenosi się na zamówienia bez przepisywania.
 
 ---
@@ -416,8 +438,11 @@ git switch ddd-lite-porownanie && composer dump-autoload && php artisan test --c
 grep -rn "Offer::query()\|->update(\|->save()\|::create(" app src
 grep -rn "DB::table('offers')\|DB::table('sellers')" app src | grep -v ReadModel
 
-# 4. koszt nowej reguły
-git diff --stat ddd-lite-porownanie~1 ddd-lite-porownanie
+# 4. koszt nowej reguły (commit pomiarowy na lite)
+git show --stat 882d174
+
+# katalog testów HTTP identyczny na obu gałęziach (wynik: pusto)
+git diff portal-sprzedawcy ddd-lite-porownanie -- apps/catalog/tests/Feature/SellerPortal/Http
 
 # 5. cały catalog
 php artisan test --compact
@@ -429,11 +454,12 @@ git switch portal-sprzedawcy && composer dump-autoload
 
 ## 9. Twoja kolej
 
-1. **Załataj dziurę nr 1 w lite** (instancja po `ConcurrencyConflict`).
-   Najpierw napisz test z sondy „`save()` po konflikcie nadpisuje cudzą
-   zmianę” w `tests/Feature/Lite/OfferRulesTest.php`, zobacz, jak przechodzi
-   (czyli dziura jest), potem popraw `SavesWithVersionCheck` i odwróć
-   asercję.
+1. **Zepsuj i napraw dziurę po konflikcie wersji w lite.** Na gałęzi
+   `ddd-lite-porownanie` zakomentuj linię `setRawAttributes(...)`
+   w `SavesWithVersionCheck`, uruchom
+   `php artisan test --compact --filter "instancja wraca"` i przeczytaj, co
+   pada. Potem przywróć linię. Na gałęzi DDD spróbuj napisać ten sam błąd —
+   czego brakuje, żeby się dało?
 2. **Dodaj `CHECK` w migracji** dla pary `status`/`suspension_kind` i sprawdź
    na obu gałęziach, co się dzieje z sondą 3. Który styl teraz wygrywa?
 3. **Zrób ćwiczenie 3 z przewodnika etapu E na obu gałęziach**
@@ -447,6 +473,6 @@ git switch portal-sprzedawcy && composer dump-autoload
 Pytania kontrolne:
 
 - Dlaczego test HTTP z dekoratorem repozytorium padł na lite, choć zachowanie aplikacji było to samo, i co to mówi o testach podmieniających porty?
-- Skoro w obu gałęziach da się zapisać ofertę z pominięciem reguł, co *konkretnie* daje pełne DDD w ochronie reguł?
+- Skoro w obu gałęziach da się zapisać ofertę z pominięciem reguł, co *konkretnie* daje pełne DDD w ochronie reguł (podpowiedź: domyślna droga, walidacja wierszy, test architektury)?
 - Dlaczego koszt nowej reguły wyszedł taki sam, a koszt nowej kolumny nie?
 - Kiedy 11 ms na test zaczyna mieć znaczenie, a kiedy nie?

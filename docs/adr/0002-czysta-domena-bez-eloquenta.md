@@ -15,7 +15,9 @@ na dobę), rodzaj zawieszenia. Chcemy, żeby:
   `reconstitute`),
 - reguły dało się testować bez bazy i frameworka, szybko (kryterium sukcesu
   specu: testy domeny < 1 s),
-- reguły nie dało się obejść jednym `->update([...])`.
+- reguły nie dało się obejść jednym `->update([...])` z kodu portalu
+  (osiągnięte tylko częściowo — zob. Konsekwencje: model odczytu
+  `App\Models\Offer` nadal przyjmuje zapis).
 
 Eloquent to Active Record: model *jest* wierszem. Ma publiczny konstruktor,
 `fill()`, `save()` na każdym obiekcie i `Model::query()->update()` na całej
@@ -45,7 +47,7 @@ wyrazić bez walki z frameworkiem.
 | Opcja | Za | Przeciw |
 |---|---|---|
 | **A. Czysta domena + ręczne mapowanie (wybrana)** | agregat chroni się sam; domena testowana w ms bez frameworka; mapowanie jawne i testowalne | ~600 linii mapowania i tłumaczenia zdarzeń; każda nowa kolumna w 5–6 miejscach |
-| B. Bogate modele Eloquenta (DDD-lite) | mało kodu, znany styl, relacje i casty za darmo | reguły obchodzi `Offer::query()->update(...)`; testy reguł wymagają bazy; publiczny konstruktor i `fill()` |
+| B. Bogate modele Eloquenta (DDD-lite) | mało kodu, znany styl, relacje i casty za darmo | reguły obchodzi `Offer::query()->update(...)` (jak się okazało, opcję A też — patrz Konsekwencje); testy reguł wymagają bazy; publiczny konstruktor i `fill()` |
 | C. Doctrine ORM (Data Mapper) | mapowanie bez ręcznego kodu, encje jako czyste obiekty | nowa, ciężka zależność w aplikacji Laravela (globalne ograniczenie: zero nowych pakietów); drugi ORM obok Eloquenta |
 | D. Eloquent jako „rekord” + agregat budowany z rekordu | mniej SQL-a | dwa obiekty na jedną rzecz, łatwo zapisać rekord z pominięciem agregatu |
 
@@ -54,9 +56,17 @@ wyrazić bez walki z frameworkiem.
 **Pozytywne**
 - 130 testów domeny i aplikacji w 44 ms ([POMIARY](../POMIARY.md)), na
   repozytoriach w pamięci (`tests/Unit/SellerPortal/InMemory/`).
-- Reguł nie da się obejść z kodu portalu: jedyna droga zapisu to metoda
-  agregatu + repozytorium. (Surowy SQL w innym miejscu aplikacji nadal by
-  je obszedł. Granicę trzyma przegląd kodu i zasada jednego właściciela zapisu.)
+- W kodzie portalu jedyna droga zapisu to metoda agregatu + repozytorium.
+  To zmienia drogę *domyślną*, nie *możliwość*: model odczytu
+  `App\Models\Offer` (fabryki, seeder, modele odczytu) ma `$fillable`, więc
+  `Offer::find($id)->update([...])` albo `DB::table('offers')` obchodzi
+  reguły z dowolnego miejsca aplikacji — tak samo jak w DDD-lite (sonda
+  w [`ddd-vs-ddd-lite.md`](../blog/ddd-vs-ddd-lite.md)). Granicę trzyma
+  przegląd kodu i zasada jednego właściciela zapisu, nie kompilator.
+- Model odczytu `Offer` nie ma traitu `EmitsOutboxEvents` (usunięty po
+  porównaniu, 88aa1dd): zbłąkany zapis przez `updateWithOutbox()` nie wyśle
+  już zdarzenia i nie będzie wyglądał na legalny. `$fillable` zostaje, bo
+  potrzebują go seeder i fabryki.
 - Optymistyczna blokada jest jawna i przetestowana (konflikt → komunikat
   „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę”, nigdy ciche nadpisanie).
 
@@ -70,6 +80,6 @@ wyrazić bez walki z frameworkiem.
   precyzji to `timestamptz(0)`, czego SQLite nie pokaże (naprawione
   w Tasku 6, RUNBOOK [#041](../RUNBOOK.md#041)).
 - Ile to kosztuje względem DDD-lite: [`docs/blog/ddd-vs-ddd-lite.md`](../blog/ddd-vs-ddd-lite.md)
-  (gałąź `ddd-lite-porownanie`). Lite to połowa kodu przy tych samych testach
+  (gałąź `ddd-lite-porownanie`). Lite to połowa kodu przy identycznych testach
   HTTP; „obejście przez `Offer::query()->update(...)`” z tabeli wyżej działa
-  w obu wersjach, bo model `App\Models\Offer` istnieje i tutaj.
+  w obu wersjach (zob. Pozytywne).

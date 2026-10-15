@@ -645,15 +645,15 @@ Zmierzone na tym repo 2026-10-15 (`find … | wc -l`, wyniki testów z POMIARÓW
 | Mapowanie na bazę | Eloquent, za darmo | 598 linii (`Infrastructure/Persistence`) |
 | Gdzie żyją reguły | kontroler i model | agregat (stan), `SellerOfferAccess` (aktor), `PriceChangePolicy` (progi), polityki (skutki w czasie) |
 | Testy reguł | z bazą | 130 testów domeny i aplikacji w 44 ms, bez bazy |
-| Obejście reguły | `Offer::query()->update(...)` | brak drogi zapisu poza agregatem w kodzie portalu; surowy SQL nadal możliwy |
+| Obejście reguły | `Offer::query()->update(...)` | w kodzie portalu nic nie zapisuje poza agregatem, ale model odczytu `App\Models\Offer` nadal przyjmuje zapis (jak w lite) — granicę trzyma konwencja i przegląd kodu; DDD zmienia domyślną drogę, nie możliwość |
 | Granica | brak | test architektury w CI |
 | Dodanie kolumny | migracja + `$fillable` | migracja, `row`, `hydrate`, `reconstitute`, konstruktor, getter |
 
 Funkcjonalnie te dwie kolumny nie robią tego samego (portal ma sprzedawców,
 moderację, strażnika ceny i polityki), więc 4758 do 126 **nie** jest ceną
 DDD. Cenę DDD względem DDD-lite przy tych samych regułach mierzy
-[`ddd-vs-ddd-lite.md`](ddd-vs-ddd-lite.md): 4516 vs 2272 linie, ten sam koszt
-nowej reguły, dwie zmierzone dziury po stronie lite.
+[`ddd-vs-ddd-lite.md`](ddd-vs-ddd-lite.md): 4523 vs 2277 linii, ten sam koszt
+nowej reguły; lite nie sprawdza wierszy z bazy i testuje reguły ~35× wolniej.
 
 **DDD dało:** model, który odpowiada na pytania biznesu w jednym miejscu
 („co się dzieje z ofertami po odblokowaniu?” → `ReinstateOffersOfUnblockedSeller`

@@ -1106,8 +1106,11 @@ w których byłoby marnotrawstwem.
    repozytoria, porty, handlery) i robi się je tylko w core.
 4. **DDD-lite** (bogate modele Eloquenta z metodami domenowymi, enumy, casty
    VO, bez osobnej warstwy repozytoriów) to rozsądny środek. Ta sama logika
-   w modelu, ale bez ceny ręcznego mapowania. Za to reguły da się obejść
-   jednym `Offer::query()->update(...)`.
+   w modelu, ale bez ceny ręcznego mapowania. Reguły da się obejść jednym
+   `Offer::query()->update(...)` — ale w tym repo **tak samo w pełnym DDD**,
+   bo model odczytu `App\Models\Offer` istnieje i przyjmuje zapis. Pełne DDD
+   zmienia domyślną drogę zapisu, nie możliwość obejścia; granicę w obu
+   trzyma konwencja i przegląd kodu.
 5. Heurystyka: *jeśli najtrudniejsze pytanie o funkcję to „jakie pola ma
    formularz”, to CRUD. Jeśli najtrudniejsze pytanie to „co ma się stać,
    gdy…”, to model.*
@@ -1151,10 +1154,9 @@ Eloquenta `Offer` (84 linie, z `updateWithOutbox`) i `Panel/OfferController`
 moderację, strażnika ceny i polityki, więc 4758 do 126 nie jest uczciwym
 porównaniem. Uczciwe porównanie tych samych reguł w stylu DDD-lite:
 [`docs/blog/ddd-vs-ddd-lite.md`](blog/ddd-vs-ddd-lite.md) (gałąź
-`ddd-lite-porownanie`). Wynik: lite to 2272 linie zamiast 4516 przy tych
-samych testach HTTP i tym samym koszcie nowej reguły, ale z dwiema
-zmierzonymi dziurami (brudna instancja po konflikcie wersji, niesprawdzane
-wiersze), bez testu architektury i z testami reguł ~35× wolniejszymi.
+`ddd-lite-porownanie`). Wynik: lite to 2277 linii zamiast 4523 przy
+identycznych testach HTTP i tym samym koszcie nowej reguły; nie sprawdza
+wierszy z bazy, nie ma testu architektury, a testy reguł chodzą ~35× wolniej.
 
 **Co DDD tu dało** (też zmierzone): 130 testów domeny i aplikacji w 44 ms
 bez bazy i frameworka; każda reguła ma jedno miejsce (próg 30% to stała
