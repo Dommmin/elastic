@@ -108,27 +108,28 @@ docelowy zestaw na prawdziwym wolumenie. Patrz `docs/RUNBOOK.md` #020
 
 Zmiana: projekcja produktu zawiera tylko oferty `listed()` (status `published` **i** stan > 0); wcześniej wszystkie `active`, także ze stanem 0. Pomiar na tym samym stacku: „przed" = przed migracjami portalu, „po" = po migracjach i `make reproject` (przeliczenie wszystkich 1500 dokumentów; samo przetworzenie zdarzeń odświeża tylko ruszone produkty, więc indeks byłby niespójny).
 
-| Zapytanie | Przed | Po |
-|---|---|---|
-| Wyman-Howell Laptop Ultra 14" | 1.000 | 1.000 |
-| Bailey Ltd Smartfon Nova 128GB | 1.000 | 1.000 |
-| Orn PLC | 0.505 | 0.571 |
-| smartfon | 0.927 | 0.852 |
-| buty do biegania | 0.780 | 0.780 |
-| kurtka zimowa | 0.931 | 0.931 |
-| meble ogrodowe | 0.770 | 0.739 |
-| wiertarka | 0.731 | 0.860 |
-| rower górski | 0.905 | 0.718 |
-| notebook | 0.934 | 0.870 |
-| komórka | 0.589 | 0.703 |
-| telefon | 0.589 | 0.703 |
-| słuchawki bezprzewodowe | 0.471 | 0.486 |
-| **Średnia** | **0.779** | **0.786** |
+| Zapytanie | Przed | Po | Nieocenione w top-10 przed | Nieocenione w top-10 po |
+|---|---|---|---|---|
+| Wyman-Howell Laptop Ultra 14" | 1.000 | 1.000 | 9 | 9 |
+| Bailey Ltd Smartfon Nova 128GB | 1.000 | 1.000 | 9 | 9 |
+| Orn PLC | 0.505 | 0.571 | 5 | 4 |
+| smartfon | 0.927 | 0.852 | 1 | 2 |
+| buty do biegania | 0.780 | 0.780 | 1 | 1 |
+| kurtka zimowa | 0.931 | 0.931 | 1 | 1 |
+| meble ogrodowe | 0.770 | 0.739 | 3 | 3 |
+| wiertarka | 0.731 | 0.860 | 3 | 2 |
+| rower górski | 0.905 | 0.718 | 1 | 3 |
+| notebook | 0.934 | 0.870 | 1 | 2 |
+| komórka | 0.589 | 0.703 | 5 | 4 |
+| telefon | 0.589 | 0.703 | 5 | 4 |
+| słuchawki bezprzewodowe | 0.471 | 0.486 | 5 | 5 |
+| **Średnia** | **0.779** | **0.786** | | |
 
 Oferty: 4518 w sumie, wszystkie `published`; **89 (ok. 2%) ma stan 0** i `listed()` je odfiltrowuje.
 
-Interpretacja: średnia prawie bez zmian (+0.007), ale pojedyncze zapytania ruszyły się w obie strony (np. `rower górski` -0.19, `wiertarka` +0.13). Powód nie leży w rankingu, tylko w składzie indeksu: produkty, które straciły wyprzedane oferty (zmieniły się cena minimalna, dostępność, a przy braku ofert znikają z wyników), wypadają z top-k lub wchodzą na ich miejsce inne. Plik `ratings` obejmuje tylko część dokumentów, więc wejście dokumentu nieocenionego (kolumna „Nieocenione w top-k") obniża nDCG, a odejście — podnosi. To szum zbioru ocen, nie regresja jakości wyszukiwania; wnioski wymagałyby rozszerzenia `ratings`. Nie ma tu żadnej zmiany zapytania ES.
+Testy i smoke (ta sama zmiana): `tests/Unit/SellerPortal`: 130 testów, 44 ms (kryterium < 1 s); `make smoke`: 25/25.
 
+Interpretacja (hipotezy, nie zweryfikowane): średnia prawie bez zmian (+0.007), ale pojedyncze zapytania ruszyły się w obie strony (`rower górski` 0.905 -> 0.718, `wiertarka` 0.731 -> 0.860). Najprawdopodobniej przyczyną jest skład indeksu, nie ranking: produkty, które straciły wyprzedane oferty, mogą zmienić dostępność/cenę minimalną lub zniknąć z wyników, więc zmienia się skład top-10. Plik `ratings` obejmuje tylko część dokumentów, więc zmiana liczby nieocenionych trafień w top-10 wpływa na nDCG: `rower górski` ma ich 1 -> 3 (nDCG spada), `wiertarka` 3 -> 2 (rośnie), `komórka`/`telefon` 5 -> 4 (rosną), `smartfon` 1 -> 2 (spada), `notebook` 1 -> 2 (spada).  Zgodność kierunku z liczbą nieocenionych jest sugestią, nie dowodem (`notebook` i `smartfon` pasują; `meble ogrodowe` spada przy tej samej liczbie 3). Nie zmieniało się zapytanie ES. Żeby to zweryfikować: porównać listy top-10 per zapytanie przed i po (które dokumenty wypadły/weszły i czy to produkty z ofertami o stanie 0) oraz policzyć, ile z nowych dokumentów nie ma ocen.
 
 ---
 
