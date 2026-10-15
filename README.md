@@ -74,6 +74,7 @@ Wszystkie komendy: `make help`
 | 7 | Wyszukiwarka: `ProductSearchService`, facety, autocomplete, UI Vue/Inertia | ✅ zweryfikowane end-to-end na żywym stacku |
 | D | Wdrożenie na VPS: obrazy z GHCR (CI), Compose, tunel SSH, backupy, rollback | ✅ zweryfikowane na serwerze (`make vps-verify` 63/63 + restart) — [przewodnik](docs/blog/etap-d-vps.md) |
 | D2 | Ten sam stack w k3s: ECK (ES ×3 + Kibana), StatefulSety, Job migracji, CronJob backupu; migracja z Compose | ✅ zweryfikowane na serwerze (`make k3s-verify` 82/82 + restart) — [przewodnik](docs/blog/etap-d2-k3s.md) |
+| Portal sprzedawcy | Moduł DDD w catalog: rejestracja i akceptacja sprzedawcy, oferty (szkic/publikacja/cena/stan), moderacja, blokady; do projekcji trafiają tylko oferty `listed()` | w trakcie — testy, `make smoke` i pomiary (nDCG 0.779 → 0.786, [POMIARY](docs/POMIARY.md)) OK, brak wdrożenia k3s |
 | 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:

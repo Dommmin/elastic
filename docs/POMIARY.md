@@ -100,8 +100,35 @@ docelowy zestaw na prawdziwym wolumenie. Patrz `docs/RUNBOOK.md` #020
 | Data | Konfiguracja | nDCG@10 (średnia, 13 zapytań) | Uwagi |
 |---|---|---|---|
 | 2026-08-17 | `multi_match best_fields` (`name^3`, `name.ac`, `brand^2`, `description`), bez fuzziness, + 2 zapytania testujące `synonyms.txt` | **0.967** | Jedno zapytanie (`Orn PLC`, samo dopasowanie marki jako wolny tekst) ma nDCG 0.571 — oczekiwane: równe `_score` dla wszystkich trafień daje arbitralną kolejność remisów, `ratings` obejmuje tylko część z >15 pasujących dokumentów. Nie jest to regresja do pilnowania, tylko właściwość zapytania tego typu (do rozważenia: filtr `term` na `brand`, nie `multi_match`, gdyby to był realny przypadek użycia, nie test synonimów/kategorii). |
+| 2026-10-15 | j.w., po Portalu sprzedawcy: w projekcji tylko oferty `listed()` (`published` i stan > 0); po `make reproject` | **0.786** | Porównywalny punkt odniesienia to **0.779** zmierzone tego samego dnia na tym samym stacku przed migracjami portalu. Starsze 0.967 pochodzi z 2026-08-17 z innych danych — nie porównywać. Szczegóły: sekcja poniżej. |
 
 **Uruchomienie:** `make eval` (albo `docker compose exec catalog-app php artisan search:eval`).
+
+### Portal sprzedawcy: wpływ `listed()` na wyszukiwanie (2026-10-15)
+
+Zmiana: projekcja produktu zawiera tylko oferty `listed()` (status `published` **i** stan > 0); wcześniej wszystkie `active`, także ze stanem 0. Pomiar na tym samym stacku: „przed" = przed migracjami portalu, „po" = po migracjach i `make reproject` (przeliczenie wszystkich 1500 dokumentów; samo przetworzenie zdarzeń odświeża tylko ruszone produkty, więc indeks byłby niespójny).
+
+| Zapytanie | Przed | Po |
+|---|---|---|
+| Wyman-Howell Laptop Ultra 14" | 1.000 | 1.000 |
+| Bailey Ltd Smartfon Nova 128GB | 1.000 | 1.000 |
+| Orn PLC | 0.505 | 0.571 |
+| smartfon | 0.927 | 0.852 |
+| buty do biegania | 0.780 | 0.780 |
+| kurtka zimowa | 0.931 | 0.931 |
+| meble ogrodowe | 0.770 | 0.739 |
+| wiertarka | 0.731 | 0.860 |
+| rower górski | 0.905 | 0.718 |
+| notebook | 0.934 | 0.870 |
+| komórka | 0.589 | 0.703 |
+| telefon | 0.589 | 0.703 |
+| słuchawki bezprzewodowe | 0.471 | 0.486 |
+| **Średnia** | **0.779** | **0.786** |
+
+Oferty: 4518 w sumie, wszystkie `published`; **89 (ok. 2%) ma stan 0** i `listed()` je odfiltrowuje.
+
+Interpretacja: średnia prawie bez zmian (+0.007), ale pojedyncze zapytania ruszyły się w obie strony (np. `rower górski` -0.19, `wiertarka` +0.13). Powód nie leży w rankingu, tylko w składzie indeksu: produkty, które straciły wyprzedane oferty (zmieniły się cena minimalna, dostępność, a przy braku ofert znikają z wyników), wypadają z top-k lub wchodzą na ich miejsce inne. Plik `ratings` obejmuje tylko część dokumentów, więc wejście dokumentu nieocenionego (kolumna „Nieocenione w top-k") obniża nDCG, a odejście — podnosi. To szum zbioru ocen, nie regresja jakości wyszukiwania; wnioski wymagałyby rozszerzenia `ratings`. Nie ma tu żadnej zmiany zapytania ES.
+
 
 ---
 
