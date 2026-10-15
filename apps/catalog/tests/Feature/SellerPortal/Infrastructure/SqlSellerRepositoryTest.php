@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use SellerPortal\Application\SellerAlreadyRegistered;
 use SellerPortal\Domain\Seller\City;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
@@ -101,4 +102,14 @@ test('drugi zapis tej samej wersji sprzedawcy rzuca ConcurrencyConflict', functi
 
     expect(fn () => $repo->save($b))->toThrow(ConcurrencyConflict::class)
         ->and($repo->get($seller->id())->status())->toBe(SellerStatus::Active);
+});
+
+test('druga rejestracja tego samego użytkownika rzuca SellerAlreadyRegistered, nie surowy QueryException', function () {
+    $repo = new SqlSellerRepository;
+    $user = User::factory()->create();
+    sellerRepoRegister($repo, $user);
+
+    expect(fn () => sellerRepoRegister($repo, $user, name: 'Drugi Sklep'))
+        ->toThrow(SellerAlreadyRegistered::class)
+        ->and(DB::table('sellers')->where('user_id', $user->id)->count())->toBe(1);
 });

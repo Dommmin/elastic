@@ -2,8 +2,10 @@
 
 namespace SellerPortal\Infrastructure\Persistence;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use SellerPortal\Application\SellerAlreadyRegistered;
 use SellerPortal\Domain\Seller\City;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
@@ -28,6 +30,8 @@ use UnexpectedValueException;
  */
 final class SqlSellerRepository implements SellerRepository
 {
+    private const string USER_ID_INDEX = 'sellers_user_id_unique';
+
     public function nextIdentity(): SellerId
     {
         return SellerId::fromInt(NextId::for('sellers'));
@@ -51,7 +55,35 @@ final class SqlSellerRepository implements SellerRepository
         return $row === null ? null : $this->hydrate($row);
     }
 
+    /**
+     * DLACZEGO mapowanie naruszenia unikalności: dwie równoległe rejestracje
+     * tego samego użytkownika mogą obie przejść sprawdzenie `findByUserId`;
+     * indeks na `user_id` jest ostateczną gwarancją i ma dać czytelny błąd, nie 500.
+     *
+     * @throws SellerAlreadyRegistered
+     */
     public function save(Seller $seller): void
+    {
+        try {
+            $this->persist($seller);
+        } catch (QueryException $e) {
+            if ($this->violatesUserIdIndex($e)) {
+                throw new SellerAlreadyRegistered;
+            }
+
+            throw $e;
+        }
+    }
+
+    private function violatesUserIdIndex(QueryException $e): bool
+    {
+        $message = $e->getMessage();
+
+        return str_contains($message, self::USER_ID_INDEX)
+            || str_contains($message, 'UNIQUE constraint failed: sellers.user_id');
+    }
+
+    private function persist(Seller $seller): void
     {
         DB::transaction(function () use ($seller): void {
             $newVersion = $seller->version() + 1;
