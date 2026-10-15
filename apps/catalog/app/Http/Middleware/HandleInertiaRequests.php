@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Http\CurrentSeller;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -40,6 +41,9 @@ class HandleInertiaRequests extends Middleware
             'name' => config('app.name'),
             'auth' => [
                 'user' => $request->user(),
+                // Closure: liczone dopiero przy renderze strony (nie przy
+                // przekierowaniach), jedno zapytanie dzielone z middleware `seller`.
+                'seller' => fn () => app(CurrentSeller::class)->of($request),
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];

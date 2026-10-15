@@ -1,3 +1,5 @@
+import type { SellerProfile } from './seller';
+
 export type User = {
     id: number;
     name: string;
@@ -13,6 +15,7 @@ export type User = {
 
 export type Auth = {
     user: User;
+    seller: SellerProfile | null;
 };
 
 export type Passkey = {
