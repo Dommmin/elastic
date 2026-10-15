@@ -133,7 +133,19 @@ metadata:
   labels:
     app.kubernetes.io/component: app
 spec:
+  # DOKŁADNIE JEDNA replika i Recreate zamiast domyślnego RollingUpdate.
+  # Polityki blokady/odblokowania (SuspendOffersOfBlockedSeller,
+  # ReinstateOffersOfUnblockedSeller) sprawdzają status sprzedawcy tylko na
+  # starcie joba i zakładają kolejność FIFO na jednym workerze. RollingUpdate
+  # (maxSurge 1, brak readinessProbe) uruchamia nowy pod, zanim stary skończy
+  # job: „zablokuj” na starym i „odblokuj” na nowym mogą się przeplatać,
+  # a sprzedawca zostaje aktywny z ofertami zawieszonymi na zawsze.
+  # Recreate najpierw zatrzymuje stary pod, potem startuje nowy. Koszt:
+  # przy wdrożeniu kolejka chwilę stoi (joby czekają w `jobs`, nic nie ginie).
+  # RUNBOOK #040.
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: catalog-worker
@@ -142,6 +154,14 @@ spec:
       labels:
         app: catalog-worker
     spec:
+      # Na SIGTERM `queue:work` kończy BIEŻĄCY job i dopiero wtedy wychodzi.
+      # Domyślne 30 s to za mało dla sprzedawcy z setkami ofert; zabity job
+      # wraca dopiero po `retry_after` = 660 s, a przez ten czas oferty
+      # zablokowanego sprzedawcy są wciąż widoczne. 120 s wystarcza typowemu
+      # jobowi. Dłuższy (limit `--timeout=600`) i tak jest bezpieczny do
+      # przerwania: joby są idempotentne, ponowienie kontynuuje od ofert,
+      # które jeszcze nie zmieniły stanu.
+      terminationGracePeriodSeconds: 120
       containers:
         - name: worker
           image: ghcr.io/dommmin/elastic-catalog:placeholder

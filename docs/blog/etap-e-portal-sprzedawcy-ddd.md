@@ -606,10 +606,14 @@ sprzedawcy”. `make reproject` jest potrzebne, bo samo przetwarzanie zdarzeń
 odświeża tylko ruszone produkty, a indeks byłby niespójny.
 
 **Nie zrobione w tym kroku:** wdrożenie na k3s. To zmiana na serwerze i czeka
-na Twoją zgodę. Gdy ją dasz, kolejność to `make k3s-deploy` (Job migracji
-wykona trzy migracje portalu), sprawdzenie `catalog-worker` w
-`kubectl -n marketplace get deploy catalog-worker`, `make k3s-reproject`
-i `php artisan search:eval` w podzie `catalog-app` na k3s.
+na Twoją zgodę. Gdy ją dasz, kolejność to: pre-flight danych z RUNBOOK
+[#043](../RUNBOOK.md#043) (oba zapytania mają zwrócić zero wierszy),
+`make k3s-deploy` (Job migracji wykona trzy migracje portalu; przez chwilę,
+do końca rolloutu, stare pody `catalog-app` mogą dawać 500 — to oczekiwane
+okno, opisane w #043), sprawdzenie `catalog-worker` w
+`kubectl -n marketplace get deploy catalog-worker` (jedna replika,
+strategia `Recreate`), `make k3s-reproject` i `php artisan search:eval`
+w podzie `catalog-app` na k3s.
 
 ---
 
@@ -617,11 +621,14 @@ i `php artisan search:eval` w podzie `catalog-app` na k3s.
 
 Uczciwa lista z przeglądów kodu, rzeczy nienaprawione w tym etapie:
 
-- **Dwa pody workera przy rolling update** mogą jednocześnie wykonać
-  zawieszanie i przywracanie dla tego samego sprzedawcy, bo status
-  sprzedawcy jest sprawdzany raz na starcie joba. Możliwe naprawy:
-  ponowne sprawdzenie statusu przed każdą paczką albo strategia `Recreate`
-  dla `catalog-worker`.
+- **Status sprzedawcy sprawdzany raz na starcie joba polityki.** Dopóki
+  joby wykonuje jeden worker po kolei, to wystarcza. Dwa pody przy
+  domyślnym RollingUpdate mogły przeplatać „zablokuj” i „odblokuj”;
+  przegląd końcowy zamknął to strategią `Recreate` i
+  `terminationGracePeriodSeconds: 120` dla `catalog-worker` (RUNBOOK
+  [#040](../RUNBOOK.md#040)). Ponowne sprawdzenie statusu przy każdej
+  ofercie zostaje na później — potrzebne dopiero, gdyby worker miał się
+  skalować.
 - `ACTIONS_WITHOUT_ACTIVE_SELLER` to ręczne lustro handlerów używających
   `forUser`. Nic nie wymusza ich zgodności.
 - `offer_price_changes` nigdy nie jest przycinane (repozytorium czyta tylko

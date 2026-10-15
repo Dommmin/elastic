@@ -43,6 +43,7 @@
 | [040](#040) | Zablokowany sprzedawca, a jego oferty wciąż w `/search` (worker polityk) | Kolejka / Portal sprzedawcy | Portal |
 | [041](#041) | Szósta zmiana ceny w dobie przechodzi (dev DB z migracjami sprzed poprawki precyzji) | Postgres / Portal sprzedawcy | Portal |
 | [042](#042) | „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” (konflikt wersji) | Portal sprzedawcy | Portal |
+| [043](#043) | Przed wdrożeniem portalu na k3s: pre-flight danych i okno 500 po migracji | k3s / Postgres / Portal sprzedawcy | Portal |
 
 ---
 
@@ -1788,11 +1789,31 @@ na sam status sprzedawcy.
    `app(SellerPortal\Application\Policy\SuspendOffersOfBlockedSeller::class)->run(SellerPortal\Domain\Seller\SellerId::fromInt(ID))`
    (po odblokowaniu analogicznie `ReinstateOffersOfUnblockedSeller`).
 
+4. Sprzedawca **aktywny**, a jego oferty `suspended` z `suspension_kind =
+   seller_blocked` (albo odwrotnie: zablokowany z opublikowanymi) tuż po
+   wdrożeniu: dwa workery wykonały „zablokuj” i „odblokuj” równolegle.
+   Sprawdź, że `catalog-worker` ma `replicas: 1` i `strategy: Recreate`
+   (`kubectl -n marketplace get deploy catalog-worker -o jsonpath='{.spec.replicas} {.spec.strategy.type}'`
+   → `1 Recreate`), potem przepchnij politykę ręcznie jak w pkt 3.
+
+**Jeden worker, nie więcej**
+Polityki sprawdzają status sprzedawcy tylko na starcie joba i zakładają
+kolejność FIFO na **jednym** workerze. Dlatego `catalog-worker` ma dokładnie
+jedną replikę i `strategy: Recreate` (stary pod kończy pracę, zanim wstanie
+nowy), a `terminationGracePeriodSeconds: 120` daje `queue:work` czas na
+dokończenie bieżącego joba po SIGTERM. Nie skaluj workera bez wcześniejszej
+zmiany polityk (np. ponowne sprawdzanie statusu sprzedawcy przy każdej
+ofercie). Compose ma jeden kontener i zatrzymuje go przed startem nowego,
+więc zachowuje się tak samo.
+
 **Czego się nauczyłem**
 Spójność ostateczna wymaga właściciela dla „ostatecznie”: bez działającego
 konsumenta kolejka jest tylko tabelą. Worker ma więc healthcheck, wpis tutaj
 i pozycję w sprawdzeniach wdrożenia. Szybkie „zablokuj → odblokuj” jest
-bezpieczne, bo job sprawdza stan sprzedawcy w chwili wykonania.
+bezpieczne, bo job sprawdza stan sprzedawcy w chwili wykonania — pod
+warunkiem, że joby wykonuje jeden worker po kolei. Domyślny RollingUpdate
+w k8s po cichu łamał to założenie przy każdym wdrożeniu (przegląd końcowy,
+I3).
 
 <a id="041"></a>
 ## 041 — Szósta zmiana ceny w dobie przechodzi (dev DB z migracjami sprzed poprawki precyzji)
@@ -1928,6 +1949,90 @@ i obiecywała ochronę „dwóch kart” — przegląd końcowy pokazał, że ka
 otwarte od minut nigdy się nie nakładają, więc ta obietnica nie była
 prawdziwa, dopóki formularze nie zaczęły odsyłać wersji. Jak to zepsuć
 i odtworzyć dwiema „kartami” w tinkerze: [`10-DDD.md`](10-DDD.md), moduł 7.
+
+<a id="043"></a>
+## 043 — Przed wdrożeniem portalu na k3s (pre-flight danych i okno migracji)
+
+**Objaw (którego chcemy uniknąć)**
+Po `make k3s-deploy` z portalem sprzedawcy strona produktu w panelu
+(`/panel/products/<ID>`) daje 500 z `UnexpectedValueException: Uszkodzony
+wiersz oferty #…` albo `… sprzedawcy #…`, a job polityki blokady kończy się
+w `failed_jobs` na jednej ofercie, zostawiając resztę ofert sprzedawcy
+niezawieszonych (RUNBOOK [#040](#040)). Druga rzecz: przez chwilę między
+Jobem migracji a końcem rolloutu stare pody `catalog-app` odpowiadają 500.
+
+**Diagnoza — pre-flight PRZED `make k3s-deploy`**
+Stary panel pozwalał na wartości, których value objecty portalu nie
+przyjmą: `Stock` 0–100 000, `Money` > 0 groszy, `ShippingTime` 1–30 dni,
+`SellerName` 3–120 znaków, `City` niepuste po trim i ≤ 120 znaków (stara
+kolumna `sellers.city` jest nullable). Zapytanie czyta tylko kolumny, które
+istnieją przed migracjami, więc działa na starym schemacie. Tunel musi
+działać (`make k3s-tunnel`):
+```bash
+/opt/homebrew/bin/kubectl --kubeconfig ~/.kube/elastic-vps.yaml -n marketplace \
+  exec -i postgres-0 -- psql -U postgres -d catalog <<'SQL'
+-- oferty, których SqlOfferRepository::hydrate nie wczyta
+select o.id, o.seller_id, o.product_id, o.stock, o.price_cents, o.currency, o.shipping_days
+from offers o
+left join sellers s on s.id = o.seller_id
+left join products p on p.id = o.product_id
+where o.stock > 100000
+   or o.price_cents <= 0
+   or o.currency <> 'PLN'
+   or o.shipping_days not between 1 and 30
+   or s.id is null            -- brak sprzedawcy (FK z cascade, więc tylko po ręcznym SQL)
+   or p.id is null;           -- brak produktu (jw.)
+
+-- sprzedawcy, których SqlSellerRepository::hydrate nie wczyta
+select id, name, city
+from sellers
+where city is null
+   or btrim(city) = ''
+   or char_length(btrim(city)) > 120
+   or char_length(btrim(name)) < 3
+   or char_length(btrim(name)) > 120;
+SQL
+```
+Oba wyniki muszą być puste. (Nazwy bazy i użytkownika z
+`deploy/k8s/config.env`: `CATALOG_DB=catalog`, `POSTGRES_USER=postgres`.)
+
+**Przyczyna**
+Portal odtwarza agregaty z bazy przez value objecty (`hydrate`), a te
+pilnują zakresów, których stary CRUD nie pilnował. Jeden zły wiersz psuje
+całą stronę produktu (panel ładuje agregat każdej oferty) albo zatrzymuje
+politykę na tej ofercie.
+
+Okno 500: `tools/k3s/deploy.sh` uruchamia Job migracji (usuwa
+`offers.active`) **przed** rolloutem aplikacji. Stare pody wciąż mają kod
+z `where('active', true)` i do czasu podmiany dostają błędy SQL. To
+oczekiwane, krótkie okno (sekundy do minuty). Search-consumer ponawia
+pobranie projekcji (błąd odzyskiwalny), a `make k3s-reproject` po wdrożeniu
+i tak wyrównuje indeks.
+
+**Naprawa**
+1. Pre-flight zwrócił wiersze: popraw je **przed** wdrożeniem, świadomie,
+   po jednym (np. `update offers set stock = 100000 where id = …`,
+   `update sellers set city = 'Nieznane' where id = …`). Zanotuj, co
+   zmieniłeś. Potem uruchom zapytanie jeszcze raz.
+2. Okno 500 skróć, nie zatrzymując się między krokami: `make k3s-deploy`
+   przechodzi od migracji prosto do rolloutu, więc nie przerywaj go i nie
+   wdrażaj w szczycie ruchu. Jeśli 500 są niedopuszczalne, przed wdrożeniem
+   włącz tryb serwisowy w starym podzie
+   (`… exec deploy/catalog-app -- php artisan down`): sterownik `file`
+   trzyma flagę w systemie plików poda, więc nowy pod startuje już bez niej.
+   Przy więcej niż jednej replice trzeba to zrobić w każdym podzie.
+3. Po wdrożeniu: `catalog-worker` dostępny
+   (`make k3s k="get deploy catalog-worker -n marketplace"`, strategia
+   `Recreate`, RUNBOOK [#040](#040)), `make k3s-reproject`, `search:eval`.
+
+**Czego się nauczyłem**
+Nowe niezmienniki w kodzie to też migracja danych, tylko niewidoczna:
+schemat przechodzi, a stare wiersze wybuchają przy pierwszym odczycie.
+Pre-flight sprawdza dokładnie te zakresy, które pilnują value objecty.
+Druga lekcja: „schemat przed kodem” (expand) zakłada, że stary kod przeżyje
+nowy schemat. Usunięcie kolumny w tym samym wdrożeniu (contract) to
+świadomie przyjęte okno błędów; czysta wersja to zostawić `active` na jedno
+wydanie i usunąć ją w następnym.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

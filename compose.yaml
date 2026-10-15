@@ -475,6 +475,10 @@ services:
     # Jak w outbox-publisher: HEALTHCHECK z obrazu pyta Caddy'ego, którego tu
     # nie ma. Proces artisan jest PID 1; --max-time kończy go co godzinę,
     # a `restart: unless-stopped` podnosi z nowym kodem.
+    # Jeden kontener celowo (bez `deploy.replicas`): polityki blokady
+    # sprzedawcy zakładają FIFO na jednym workerze, a Compose przy `up`
+    # najpierw zatrzymuje stary kontener, potem startuje nowy — to samo, co
+    # `strategy: Recreate` w deploy/k8s/catalog.yaml (RUNBOOK #040).
     healthcheck:
       test: ["CMD-SHELL", "grep -q 'queue:work' /proc/1/cmdline"]
       interval: 30s
