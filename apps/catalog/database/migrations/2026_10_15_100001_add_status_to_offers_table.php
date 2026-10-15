@@ -15,7 +15,7 @@ return new class extends Migration
             $table->text('suspension_note')->nullable();
             $table->unsignedBigInteger('suspended_by')->nullable();
             $table->unsignedBigInteger('pending_price_cents')->nullable();
-            $table->timestampTz('pending_requested_at')->nullable();
+            $table->timestampTz('pending_requested_at', 6)->nullable();
         });
 
         // Dane przed usunięciem `active`: aktywna oferta jest opublikowana,

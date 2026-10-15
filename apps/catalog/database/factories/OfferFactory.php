@@ -22,7 +22,7 @@ class OfferFactory extends Factory
             'seller_id' => Seller::factory(),
             'price_cents' => fake()->numberBetween(1000, 500000),
             'currency' => 'PLN',
-            'stock' => fake()->numberBetween(0, 100),
+            'stock' => fake()->numberBetween(1, 100),
             'condition' => fake()->randomElement(['new', 'used']),
             'shipping_days' => fake()->numberBetween(1, 14),
             'status' => 'published',
