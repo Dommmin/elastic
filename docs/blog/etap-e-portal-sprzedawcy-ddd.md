@@ -637,8 +637,10 @@ Uczciwa lista z przeglądów kodu, rzeczy nienaprawione w tym etapie:
   czasu robi partial reload. Formularze stanu i szczegółów resetują się po
   każdym przeładowaniu.
 - Strona produktu w panelu ładuje agregat na każdą ofertę (N odczytów).
-- Test architektury nie widzi globalnych funkcji (`now()`, `time()`) w domenie.
-  Reguła, która to zamyka, jest w ćwiczeniu w module 8 `10-DDD.md`.
+- Test architektury nie widzi `new DateTimeImmutable()` bez argumentu
+  w domenie. Globalne funkcje zegara (`now()`, `time()`, `date()`,
+  `microtime()`) pilnuje od przeglądu końcowego osobna reguła
+  w `tests/Arch/SellerPortalLayersTest.php` (ćwiczenie 4 w module 8 `10-DDD.md`).
 
 ---
 

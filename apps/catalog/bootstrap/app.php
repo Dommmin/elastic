@@ -43,12 +43,21 @@ return Application::configure(basePath: dirname(__DIR__))
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
 
-        // Złamana reguła biznesowa to oczekiwany błąd użytkownika (limit zmian
-        // ceny, konflikt wersji) — nie śmiecimy nim logu. `InvalidValue` zostaje
-        // zgłaszany: wartość spoza zakresu VO, która przeszła walidację
-        // formularza, to błąd w kodzie, który chcemy zobaczyć.
+        // Złamana reguła biznesowa w żądaniu HTTP to oczekiwany błąd
+        // użytkownika (limit zmian ceny, konflikt wersji) — człowiek dostaje
+        // komunikat, nie śmiecimy nim logu. `InvalidValue` zostaje zgłaszany:
+        // wartość spoza zakresu VO, która przeszła walidację formularza, to
+        // błąd w kodzie, który chcemy zobaczyć.
+        // DLACZEGO tylko poza konsolą: w workerze (`queue:work`) i komendach
+        // nikt komunikatu nie zobaczy. Job polityki, który padł na
+        // `ConcurrencyConflict` po 3 próbach albo na `SellerNotFound`, musi
+        // zostawić linię w logu, a nie tylko wiersz w `failed_jobs`
+        // (RUNBOOK #040). Octane ustawia `APP_RUNNING_IN_CONSOLE=false`, więc
+        // żądania HTTP na FrankenPHP/Swoole nie liczą się jako konsola.
         $exceptions->dontReportWhen(
-            fn (Throwable $e): bool => $e instanceof DomainException && ! $e instanceof InvalidValue,
+            fn (Throwable $e): bool => $e instanceof DomainException
+                && ! $e instanceof InvalidValue
+                && ! app()->runningInConsole(),
         );
 
         // Cudza lub nieistniejąca oferta / sprzedawca → 404, nie 403: nie

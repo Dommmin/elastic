@@ -3,6 +3,7 @@ import { Head, useForm, useHttp, usePage } from '@inertiajs/vue3';
 import { X } from '@lucide/vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import InputError from '@/components/InputError.vue';
+import BlockedBanner from '@/components/seller/BlockedBanner.vue';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,6 +32,10 @@ defineOptions({
 });
 
 const page = usePage();
+const seller = computed(() => page.props.auth.seller);
+// Link „Nowa oferta” jest ukryty dla zablokowanego, ale adres da się wpisać:
+// wtedy baner zamiast formularza, który i tak skończyłby się odmową domeny.
+const isBlocked = computed(() => seller.value?.status === 'blocked');
 // Np. „Masz już aktywną ofertę na ten produkt” z `LiveOfferAlreadyExists`.
 const domainError = computed(() => page.props.errors?.domain);
 
@@ -100,8 +105,16 @@ function submit() {
     <Head title="Nowa oferta" />
 
     <div class="flex max-w-xl flex-col gap-4 p-4">
+        <BlockedBanner
+            v-if="isBlocked"
+            :reason="seller?.status_reason ?? null"
+        />
+
         <h1 class="text-xl font-semibold">Nowa oferta</h1>
-        <p class="text-sm text-muted-foreground">
+        <p v-if="isBlocked" class="text-sm text-muted-foreground">
+            Zablokowane konto nie może wystawiać nowych ofert.
+        </p>
+        <p v-else class="text-sm text-muted-foreground">
             Oferta powstaje jako szkic — opublikujesz ją na następnym ekranie.
         </p>
 
@@ -109,7 +122,11 @@ function submit() {
             <AlertDescription>{{ domainError }}</AlertDescription>
         </Alert>
 
-        <form class="flex flex-col gap-4" @submit.prevent="submit">
+        <form
+            v-if="!isBlocked"
+            class="flex flex-col gap-4"
+            @submit.prevent="submit"
+        >
             <div class="grid gap-2">
                 <Label for="product-search">Produkt</Label>
 

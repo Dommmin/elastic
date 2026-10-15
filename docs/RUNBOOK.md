@@ -1761,7 +1761,10 @@ docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB \
 docker compose exec postgres psql -U $CATALOG_DB_USER $CATALOG_DB \
   -c "select id, failed_at, left(exception, 200) from failed_jobs order by id desc limit 5"
 ```
-Job w `jobs` = worker nie nadąża albo nie działa. Pusty `jobs` i pusty
+Job w `jobs` = worker nie nadąża albo nie działa. Job, który padł na regule
+domeny (np. `ConcurrencyConflict` po 3 próbach, `SellerNotFound`), zostawia
+też linię w `make worker-logs`: błędy domeny są wyciszone tylko w żądaniach
+HTTP, nie w konsoli i workerze (`bootstrap/app.php`). Pusty `jobs` i pusty
 `failed_jobs` przy niezmienionych ofertach = job nie powstał albo już się
 wykonał; sprawdź, czy sprzedawca ma teraz właściwy status (job nic nie robi,
 gdy status zdążył się zmienić).

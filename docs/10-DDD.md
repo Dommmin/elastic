@@ -314,7 +314,8 @@ Decyzje z tego etapu:
 - **Granica jest w kodzie, nie w infrastrukturze.** Osobny katalog bazowy
   `apps/catalog/src/` (PSR-4 `SellerPortal\`), żeby „to nie jest kod
   frameworka” było widać w drzewie plików. Pilnuje tego test architektury:
-  `apps/catalog/tests/Arch/SellerPortalLayersTest.php:3` (domena) i `:7` (aplikacja).
+  `apps/catalog/tests/Arch/SellerPortalLayersTest.php:3` (domena), `:7` (aplikacja)
+  i `:14` (domena nie woła `now()`/`time()`/`date()`/`microtime()`).
 
 **Ćwiczenia**
 
@@ -929,11 +930,12 @@ ostatecznie, ale nie gubi pracy.
   ręcznym lustrem tego, które handlery używają `forUser`, i nic tego nie
   wymusza automatycznie (docblock `:74`).
 - Błędy domeny trafiają do UI w jednym miejscu:
-  `apps/catalog/bootstrap/app.php:57` (`OfferNotOwned`, `OfferNotFound`,
+  `apps/catalog/bootstrap/app.php:66` (`OfferNotOwned`, `OfferNotFound`,
   `SellerNotFound` → 404, nie 403, żeby nie zdradzać istnienia cudzej oferty),
-  `:64` (każdy `DomainException` → powrót z błędem `domain`), `:50` (złamana
-  reguła to oczekiwany błąd użytkownika, nie trafia do logu, z wyjątkiem
-  `InvalidValue`) i `apps/catalog/app/Http/DomainErrorMessages.php:15` (kod → zdanie).
+  `:73` (każdy `DomainException` → powrót z błędem `domain`), `:57` (złamana
+  reguła w żądaniu HTTP to oczekiwany błąd użytkownika i nie trafia do logu,
+  z wyjątkiem `InvalidValue`; w konsoli i workerze kolejki trafia, bo job
+  polityki, który padł, nie ma komu pokazać komunikatu) i `apps/catalog/app/Http/DomainErrorMessages.php:15` (kod → zdanie).
 - **Polityka blokady, cztery decyzje:**
   1. Listener tylko kolejkuje:
      `apps/catalog/src/SellerPortal/Application/Policy/QueueSuspensionWhenSellerBlocked.php:15`.
@@ -1017,7 +1019,7 @@ ostatecznie, ale nie gubi pracy.
    i tak zawiesza wszystkie oferty aktywnego sprzedawcy. Cofnij:
    `git checkout -- src/SellerPortal/Application/Policy/SuspendOffersOfBlockedSeller.php`.
 4. **Zepsuj i napraw: luka w teście architektury.** Globalne ograniczenie
-   brzmi „domena nie woła `now()`/`time()`”. Sprawdź, czy ktoś tego pilnuje:
+   brzmi „domena nie woła `now()`/`time()`”. Zepsuj je:
 
    ```diff
    --- apps/catalog/src/SellerPortal/Domain/Offer/Offer.php   (metoda publish)
@@ -1025,22 +1027,19 @@ ostatecznie, ale nie gubi pracy.
    +        $this->recordThat(new OfferPublished($this->id, now()->toDateTimeImmutable()));
    ```
 
-   Uruchom cały portal: **wszystko zielone**. `now()` to globalna funkcja
-   Laravela, a nie klasa z przestrzeni `Illuminate`, więc reguła
-   `not->toUse(['Illuminate', …])` jej nie widzi. Napraw lukę (zostaw
-   zepsucie w `Offer.php`):
-
-   ```php
-   // apps/catalog/tests/Arch/SellerPortalLayersTest.php — dopisz na końcu
-   arch('domena nie czyta zegara sama')
-       ->expect('SellerPortal\Domain')
-       ->not->toUse(['now', 'time', 'date']);
-   ```
-
-   Teraz czerwony jest nowy test: `Expecting 'SellerPortal\Domain' not to use 'now'.`
-   Cofnij `Offer.php` (`git checkout -- src`): zielone, bo obecny kod tej
-   reguły nie łamie. Czy reguła powinna zostać na stałe? To dobra decyzja do
-   zrobienia przez Ciebie, osobnym commitem.
+   Uruchom `php artisan test --compact tests/Arch`. Czerwony jest test
+   „domena nie woła funkcji zegara”: `Expecting 'SellerPortal\Domain' not to
+   use 'now'.` Teraz zakomentuj tę regułę w
+   `apps/catalog/tests/Arch/SellerPortalLayersTest.php` i uruchom cały
+   portal: **wszystko zielone**. `now()` to globalna funkcja Laravela, a nie
+   klasa z przestrzeni `Illuminate`, więc reguła
+   `not->toUse(['Illuminate', …])` jej nie widzi. Tak wyglądał portal do
+   przeglądu końcowego: ograniczenie żyło tylko w dokumentacji i w oczach
+   recenzenta, dopiero osobna reguła `not->toUse(['now', 'time', 'date',
+   'microtime'])` zrobiła z niego strażnika w CI. Cofnij oba pliki
+   (`git checkout -- src tests/Arch`). Czego ta reguła nadal nie widzi:
+   `new DateTimeImmutable()` bez argumentu — to konstruktor klasy, którego
+   domena legalnie używa z argumentem.
 
 **Sprawdź się**
 - Jak rozpoznać, że reguła biznesowa przeciekła do kontrolera, skoro testy HTTP są zielone?

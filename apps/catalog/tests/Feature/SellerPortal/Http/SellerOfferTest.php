@@ -227,6 +227,13 @@ test('zablokowany nie tworzy szkicu', function () {
     [$user] = sellerOfferTestAccount('blocked');
     $product = Product::factory()->create();
 
+    // Strona formularza dostaje status konta — UI pokazuje baner zamiast formularza.
+    $this->actingAs($user)
+        ->get('/seller/offers/create')
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('seller/offers/Create')
+            ->where('auth.seller.status', 'blocked'));
+
     $this->actingAs($user)
         ->from('/seller/offers/create')
         ->post('/seller/offers', sellerOfferTestDraftPayload($product))
@@ -279,6 +286,24 @@ test('stan 0 → wyprzedana, szczegóły i anulowanie oczekującej ceny', functi
         ->assertInertiaFlash('toast.message', 'Zgłoszenie zmiany ceny anulowane');
 
     expect($offer->fresh()->pending_price_cents)->toBeNull();
+});
+
+test('kryterium 3: stan 0 zdejmuje ofertę z projekcji, uzupełnienie stanu ją przywraca', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $product = Product::factory()->create();
+    $offer = Offer::factory()->for($product)->for($seller)->create(['stock' => 3]);
+    $show = "/seller/offers/{$offer->id}";
+    $projectionOfferIds = fn (): array => $this->getJson("/api/internal/products/{$product->id}/projection")->json('offers.*.offer_id') ?? [];
+
+    expect($projectionOfferIds())->toBe([(string) $offer->id]);
+
+    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 0, 'version' => 1])->assertSessionHasNoErrors();
+    expect($projectionOfferIds())->toBe([])
+        ->and(DB::table('outbox')->where('aggregate_id', (string) $offer->id)->where('event_type', 'offer.sold_out')->count())->toBe(1);
+
+    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 4, 'version' => 2])->assertSessionHasNoErrors();
+    expect($projectionOfferIds())->toBe([(string) $offer->id])
+        ->and(DB::table('outbox')->where('aggregate_id', (string) $offer->id)->where('event_type', 'offer.back_in_stock')->count())->toBe(1);
 });
 
 test('walidacja stanu i szczegółów', function () {
