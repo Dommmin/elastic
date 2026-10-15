@@ -205,6 +205,7 @@ test('allowedActionsFor zgodne z tabelą', function (OfferStatus $status, Actor 
         'draft seller, stan>0' => [OfferStatus::Draft, $S, false, 5, [OfferAction::Publish, OfferAction::ChangePrice, OfferAction::ChangeStock, OfferAction::ChangeDetails, OfferAction::Withdraw]],
         'draft seller, stan 0' => [OfferStatus::Draft, $S, false, 0, [OfferAction::ChangePrice, OfferAction::ChangeStock, OfferAction::ChangeDetails, OfferAction::Withdraw]],
         'draft moderator' => [OfferStatus::Draft, $M, false, 5, []],
+        'draft seller, pending (z bazy) nadal może zmienić cenę' => [OfferStatus::Draft, $S, true, 5, [OfferAction::Publish, OfferAction::ChangePrice, OfferAction::ChangeStock, OfferAction::ChangeDetails, OfferAction::Withdraw]],
         'published seller, brak pending' => [OfferStatus::Published, $S, false, 5, [OfferAction::ChangePrice, OfferAction::ChangeStock, OfferAction::ChangeDetails, OfferAction::Withdraw]],
         'published seller, pending' => [OfferStatus::Published, $S, true, 5, [OfferAction::CancelPendingPriceChange, OfferAction::ChangeStock, OfferAction::ChangeDetails, OfferAction::Withdraw]],
         'published moderator, brak pending' => [OfferStatus::Published, $M, false, 5, [OfferAction::Suspend]],

@@ -45,14 +45,24 @@ final readonly class Money
     }
 
     /**
-     * Czy `$other` różni się od tej kwoty (punkt odniesienia) o ściśle
-     * więcej niż `$percent` procent. Dokładnie 30% to jeszcze NIE "więcej
-     * niż 30%". Liczymy na int: |inna − ta| × 100 > ta × procent.
+     * Czy `$other` różni się od tej kwoty o ściśle więcej niż `$percent`
+     * procent.
+     *
+     * PUNKT ODNIESIENIA to `$this` (stara, obecna cena), nie `$other`:
+     * 10000 → 13001 to `true` (+30,01%), ale 13001 → 10000 to `false`
+     * (−23,08%). Dlatego wołaj zawsze jako `$obecna->differs...($proponowana, …)`.
+     * Dokładnie 30% to jeszcze NIE "więcej niż 30%". Liczymy na int:
+     * |inna − ta| × 100 > ta × procent.
      *
      * @throws CurrencyMismatch gdy waluty się różnią
+     * @throws InvalidValue gdy `$percent` poza 0..100
      */
     public function differsByMoreThanPercent(self $other, int $percent): bool
     {
+        if ($percent < 0 || $percent > 100) {
+            throw new InvalidValue('Procent musi być w zakresie 0–100.');
+        }
+
         if ($this->currency !== $other->currency) {
             throw CurrencyMismatch::between($this->currency, $other->currency);
         }

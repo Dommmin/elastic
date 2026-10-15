@@ -60,3 +60,42 @@ test('AggregateRoot: pendingEvents podgląda, releaseEvents zwraca i czyści', f
         ->and($aggregate->pendingEvents())->toBe([])
         ->and($aggregate->releaseEvents())->toBe([]);
 });
+
+test('Reason traktuje same twarde spacje jako puste', function () {
+    expect(fn () => Reason::fromString("\u{00A0}"))->toThrow(InvalidValue::class)
+        ->and(fn () => Reason::fromString("\u{00A0}\u{200B}\u{00A0}"))->toThrow(InvalidValue::class);
+});
+
+test('Reason przyjmuje wieloliniowy tekst z textarea', function () {
+    expect(Reason::fromString("linia 1\r\nlinia 2\tkoniec")->value())->toBe("linia 1\r\nlinia 2\tkoniec");
+});
+
+test('Reason odrzuca znaki sterujące poza \\n, \\r, \\t', function () {
+    expect(fn () => Reason::fromString("ab\x07cd"))->toThrow(InvalidValue::class)
+        ->and(fn () => Reason::fromString("ab\x7Fcd"))->toThrow(InvalidValue::class);
+});
+
+test('każdy konkretny wyjątek domeny ma niepusty CODE', function () {
+    $dir = dirname(__DIR__, 4).'/src/SellerPortal/Domain';
+    $checked = 0;
+
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir)) as $file) {
+        if ($file->getExtension() !== 'php') {
+            continue;
+        }
+
+        $class = 'SellerPortal\\Domain\\'.str_replace('/', '\\', substr($file->getPathname(), strlen($dir) + 1, -4));
+        $reflection = new ReflectionClass($class);
+
+        if ($reflection->isAbstract() || ! $reflection->isSubclassOf(DomainException::class)) {
+            continue;
+        }
+
+        $code = $reflection->getReflectionConstant('CODE');
+        expect($code)->not->toBeFalse("$class nie definiuje CODE")
+            ->and($code->getValue())->toBeString()->not->toBe('', "$class ma pusty CODE");
+        $checked++;
+    }
+
+    expect($checked)->toBeGreaterThan(5);
+});

@@ -6,6 +6,11 @@ use DateTimeImmutable;
 use SellerPortal\Domain\Offer\Event\OfferBackInStock;
 use SellerPortal\Domain\Offer\Event\OfferDetailsChanged;
 use SellerPortal\Domain\Offer\Event\OfferDrafted;
+use SellerPortal\Domain\Offer\Event\OfferPriceChangeApproved;
+use SellerPortal\Domain\Offer\Event\OfferPriceChangeCancelled;
+use SellerPortal\Domain\Offer\Event\OfferPriceChanged;
+use SellerPortal\Domain\Offer\Event\OfferPriceChangeRejected;
+use SellerPortal\Domain\Offer\Event\OfferPriceChangeRequested;
 use SellerPortal\Domain\Offer\Event\OfferPublished;
 use SellerPortal\Domain\Offer\Event\OfferReinstated;
 use SellerPortal\Domain\Offer\Event\OfferSoldOut;
@@ -16,7 +21,10 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Shared\AggregateRoot;
+use SellerPortal\Domain\Shared\CurrencyMismatch;
+use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Money;
+use SellerPortal\Domain\Shared\Reason;
 
 /**
  * Agregat oferty: propozycja sprzedaży jednego produktu przez jednego sprzedawcę.
@@ -192,6 +200,110 @@ final class Offer extends AggregateRoot
     }
 
     /**
+     * Strażnik ceny. W szkicu cena zmienia się od razu: nikt jej jeszcze nie
+     * widzi, więc nie ma przed czym chronić kupujących (bez limitu, bez
+     * wpisu do okna). W opublikowanej ofercie kolejność jest stała:
+     * oczekująca zmiana → limit → próg.
+     *
+     * DLACZEGO i wprowadzona, i zgłoszona zmiana trafia do `recentPriceChanges`:
+     * limit ma ograniczać klikanie sprzedawcy, a nie to, ile przeszło bez
+     * moderatora. Akceptacja moderatora już nie dopisuje — to nie jest jego akcja.
+     * Ta sama cena to no-op (jak ten sam stan magazynowy): bez zdarzenia i bez
+     * zużywania limitu.
+     *
+     * @throws InvalidOfferTransition
+     * @throws PriceChangeAlreadyPending
+     * @throws PriceChangeLimitExceeded
+     * @throws CurrencyMismatch
+     */
+    public function changePrice(Money $proposed, DateTimeImmutable $now): PriceChangeDecision
+    {
+        $this->requireStatus([OfferStatus::Draft, OfferStatus::Published], OfferAction::ChangePrice);
+
+        $current = $this->price;
+
+        if ($this->status === OfferStatus::Draft) {
+            if ($current->currency() !== $proposed->currency()) {
+                throw CurrencyMismatch::between($current->currency(), $proposed->currency());
+            }
+
+            if (! $current->equals($proposed)) {
+                $this->price = $proposed;
+                $this->recordThat(new OfferPriceChanged($this->id, $current, $proposed, $now));
+            }
+
+            return PriceChangeDecision::AppliedNow;
+        }
+
+        if ($this->pendingPriceChange !== null) {
+            throw new PriceChangeAlreadyPending;
+        }
+
+        if ($current->equals($proposed)) {
+            return PriceChangeDecision::AppliedNow;
+        }
+
+        $decision = PriceChangePolicy::decide($current, $proposed, $this->recentPriceChanges, $now);
+
+        // Przycinamy do okna przy każdym dopisaniu, żeby lista nie rosła w nieskończoność.
+        $this->recentPriceChanges = [...PriceChangePolicy::withinWindow($this->recentPriceChanges, $now), $now];
+
+        if ($decision === PriceChangeDecision::AppliedNow) {
+            $this->price = $proposed;
+            $this->recordThat(new OfferPriceChanged($this->id, $current, $proposed, $now));
+        } else {
+            $this->pendingPriceChange = new PendingPriceChange($proposed, $now);
+            $this->recordThat(new OfferPriceChangeRequested($this->id, $current, $proposed, $now));
+        }
+
+        return $decision;
+    }
+
+    /**
+     * Sprzedawca wycofuje własną propozycję. Nie zwraca wpisu do limitu:
+     * samo zgłoszenie było już "użyciem" zmiany.
+     *
+     * @throws InvalidOfferTransition
+     * @throws NoPendingPriceChange
+     */
+    public function cancelPendingPriceChange(DateTimeImmutable $now): void
+    {
+        $pending = $this->requirePendingPriceChange(OfferAction::CancelPendingPriceChange);
+
+        $this->pendingPriceChange = null;
+        $this->recordThat(new OfferPriceChangeCancelled($this->id, $pending->price(), $now));
+    }
+
+    /**
+     * DLACZEGO dozwolone także w Suspended: zawieszenie nie unieważnia
+     * zgłoszenia, a moderator ma prawo je rozpatrzyć (zob. `allowedActionsFor`).
+     *
+     * @throws InvalidOfferTransition
+     * @throws NoPendingPriceChange
+     */
+    public function approvePriceChange(ModeratorId $moderatorId, DateTimeImmutable $now): void
+    {
+        $pending = $this->requirePendingPriceChange(OfferAction::ApprovePriceChange);
+
+        $old = $this->price;
+        $this->price = $pending->price();
+        $this->pendingPriceChange = null;
+        $this->recordThat(new OfferPriceChangeApproved($this->id, $old, $this->price, $moderatorId, $now));
+    }
+
+    /**
+     * @throws InvalidOfferTransition
+     * @throws NoPendingPriceChange
+     */
+    public function rejectPriceChange(ModeratorId $moderatorId, Reason $reason, DateTimeImmutable $now): void
+    {
+        $pending = $this->requirePendingPriceChange(OfferAction::RejectPriceChange);
+
+        $this->pendingPriceChange = null;
+        $this->recordThat(new OfferPriceChangeRejected($this->id, $pending->price(), $moderatorId, $reason, $now));
+    }
+
+    /**
      * Oferta widoczna dla kupujących: opublikowana i jest co kupić.
      */
     public function isListed(): bool
@@ -322,6 +434,13 @@ final class Offer extends AggregateRoot
     public function version(): int
     {
         return $this->version;
+    }
+
+    private function requirePendingPriceChange(OfferAction $action): PendingPriceChange
+    {
+        $this->requireStatus([OfferStatus::Published, OfferStatus::Suspended], $action);
+
+        return $this->pendingPriceChange ?? throw new NoPendingPriceChange;
     }
 
     /**

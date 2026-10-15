@@ -2,6 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
+use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 
@@ -32,10 +33,23 @@ final readonly class SuspensionReason
     }
 
     /**
-     * Odtworzenie z bazy: tu kombinacje wynikają z zapisanych kolumn.
+     * Odtworzenie z bazy: kombinacja wynika z zapisanych kolumn, więc
+     * niezmienniki fabryk powyżej trzeba tu powtórzyć — uszkodzony wiersz
+     * (np. blokada z moderatorem) ma zgłosić błąd, nie stać się obiektem.
+     *
+     * @throws InvalidValue
      */
     public static function restore(SuspensionKind $kind, ?ModeratorId $moderatorId, ?Reason $note): self
     {
+        $valid = match ($kind) {
+            SuspensionKind::SellerBlocked => $moderatorId === null && $note === null,
+            SuspensionKind::Moderation => $moderatorId !== null && $note !== null,
+        };
+
+        if (! $valid) {
+            throw new InvalidValue('Niespójny powód zawieszenia: rodzaj nie pasuje do moderatora i notatki.');
+        }
+
         return new self($kind, $moderatorId, $note);
     }
 

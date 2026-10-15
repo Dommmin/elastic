@@ -41,3 +41,17 @@ test('kody wyjątków domeny są stałe', function () {
     expect(InvalidValue::CODE)->toBe('invalid_value')
         ->and(CurrencyMismatch::CODE)->toBe('currency_mismatch');
 });
+
+test('differsByMoreThanPercent jest asymetryczne: punktem odniesienia jest stara cena ($this)', function () {
+    expect(Money::fromCents(10000)->differsByMoreThanPercent(Money::fromCents(13001), 30))->toBeTrue()
+        ->and(Money::fromCents(13001)->differsByMoreThanPercent(Money::fromCents(10000), 30))->toBeFalse();
+});
+
+test('differsByMoreThanPercent odrzuca procent spoza 0..100', function () {
+    $a = Money::fromCents(10000);
+
+    expect(fn () => $a->differsByMoreThanPercent($a, -1))->toThrow(InvalidValue::class)
+        ->and(fn () => $a->differsByMoreThanPercent($a, 101))->toThrow(InvalidValue::class)
+        ->and($a->differsByMoreThanPercent(Money::fromCents(10001), 0))->toBeTrue()
+        ->and($a->differsByMoreThanPercent(Money::fromCents(20000), 100))->toBeFalse();
+});
