@@ -50,7 +50,7 @@ Zasady jak w słowniku portalu:
 
 | PL | Kod | Definicja | Gdzie |
 |---|---|---|---|
-| złożenie zamówień | `PlaceOrdersFromCart`, `PlaceOrdersFromCartHandler` | z koszyka i cen, które kupujący widział, powstaje N zamówień `Placed` i pusty koszyk, w jednej transakcji | `Application/Order/` |
+| złożenie zamówień | `PlaceOrdersFromCart`, `PlaceOrdersFromCartHandler` | z koszyka i cen, które kupujący widział, powstaje N zamówień `Placed`, a z koszyka znikają złożone oferty (pozycja dodana w międzyczasie w innej karcie zostaje), w jednej transakcji | `Application/Order/` |
 | pozycja wejścia | `CartLine(offerId, quantity, expectedUnitPriceCents)` | to, co przyszło z formularza koszyka | `Application/Order/CartLine.php` |
 | migawka oferty | port `OfferSnapshots` → `OfferSnapshot` | co Ordering wie o ofercie w chwili składania: sprzedawca, użytkownik sprzedawcy, nazwa produktu, cena, czy widoczna | `Application/Port/`, `Infrastructure/DbOfferSnapshots.php` |
 | „Ceny w koszyku się zmieniły — sprawdź i złóż zamówienie ponownie” | `PriceChangedSinceCart` (`price_changed_since_cart`), lista `PriceChange` | cena oferty ≠ widziana (H5). Nic nie powstaje | `Application/Order/PriceChangedSinceCart.php` |
@@ -81,7 +81,7 @@ Etykiety w jednym miejscu: `Infrastructure/ReadModel/OrderStatusLabel.php`.
 
 | PL (UI) | Kod | Znaczenie | Przejścia |
 |---|---|---|---|
-| **Sprawdzamy dostępność** | `Placed` | złożone; saga rezerwuje pozycje. Strona odświeża się co sekundę | → czeka na płatność (wszystkie pozycje zarezerwowane), → odrzucone, → wygasło, → anulowane (kupujący) |
+| **Sprawdzamy dostępność** | `Placed` | złożone; saga rezerwuje pozycje. Strona odświeża się co sekundę, najwyżej 120 s | → czeka na płatność (wszystkie pozycje zarezerwowane), → odrzucone, → wygasło, → anulowane (kupujący) |
 | **Czeka na płatność** | `AwaitingPayment` | wszystkie pozycje zarezerwowane; „Zapłać” do terminu | → opłacone, → wygasło, → anulowane (kupujący) |
 | **Opłacone** | `Paid` | wpłata zaksięgowana; u sprzedawcy w „Do wysłania” | → wysłane, → anulowane (sprzedawca, ze zwrotem) |
 | **Wysłane** | `Shipped` | **końcowy** dla statusu | brak |
@@ -119,7 +119,7 @@ Etykiety w jednym miejscu: `Infrastructure/ReadModel/OrderStatusLabel.php`.
 | „Zapłać” (w sklepie) | `StartPayment`, `StartPaymentHandler`, `Order::requirePayable` | otwiera **nową** sesję w bramce (ponowienie po odmowie, H7); tylko w `AwaitingPayment`. Po terminie (jeszcze przed sweepem) przycisk znika, bo bramka i tak by nie przyjęła wpłaty | `Application/Order/StartPaymentHandler.php` |
 | sesja płatności | `fake_gateway_payments`, `FakePaymentGateway::createPayment` | wygasa dokładnie w `paymentDeadline` („Sesja wygasła — wróć do sklepu i rozpocznij płatność”) | `apps/catalog/app/FakePaymentGateway/FakePaymentGateway.php` |
 | „Zapłać” / „Odmów” (w bramce) | `FakePaymentGateway::decide` | decyzja kupującego; druga decyzja tej samej sesji to no-op | |
-| webhook płatności | `POST /webhooks/payments`, `PaymentWebhookController` | podpisany HMAC-SHA256 (`X-Signature`); ACL tłumaczy payload na `RecordPayment` / `RecordPaymentFailure` | `apps/catalog/app/Http/Controllers/Webhooks/PaymentWebhookController.php` |
+| webhook płatności | `POST /webhooks/payments`, `PaymentWebhookController` | podpisany HMAC-SHA256 (`X-Signature`); ACL tłumaczy payload na `RecordPayment` / `RecordPaymentFailure`. Pusty sekret w konfiguracji = 500 (fail closed), kwota < 1 gr = zepsuty payload | `apps/catalog/app/Http/Controllers/Webhooks/PaymentWebhookController.php` |
 | ID płatności | `PaymentId` | identyfikator z bramki; po nim rozpoznajemy zdublowany webhook (R4) | `Domain/PaymentId.php` |
 | wpłata (zaksięgowana) | `Payment(paymentId, amount, paidAt)`, `Order::recordPayment` | działa w **każdym** statusie: przyjmuje, rozpoznaje duplikat albo zleca zwrot (H6, H10) | `Domain/Order.php` |
 | „Płatność przyjęta” | `OrderPaid` | `AwaitingPayment` i kwota = suma | |
@@ -140,7 +140,7 @@ Etykiety w jednym miejscu: `Infrastructure/ReadModel/OrderStatusLabel.php`.
 | „Anuluj ze zwrotem” | `OrderAction::CancelBySeller`, `CancelOrderBySeller` | potwierdzenie mówi: „Kupujący dostanie zwrot … Stan oferty nie wróci automatycznie.” |
 | „Tej operacji nie można wykonać na zamówieniu w obecnym stanie” | `InvalidOrderTransition` (`invalid_order_transition`) | akcja niedozwolona w statusie |
 | cudze zamówienie | `OrderAccess::forBuyer`, `OrderAccess::forSeller`, `OrderNotFound` (`order_not_found`) | dla użytkownika **404**, nie 403 |
-| niepoprawne pozycje | `InvalidOrderLines` (`invalid_order_lines`) | 0 albo > 20 pozycji, oferta dwa razy, inna waluta. Za walidacją formularza to błąd w kodzie |
+| niepoprawne pozycje | `InvalidOrderLines` (`invalid_order_lines`) | 0 albo > 20 pozycji, oferta dwa razy, inna waluta. Z koszyka osiągalne są dwie: > 20 ofert jednego sprzedawcy i dwie waluty u jednego sprzedawcy; koszyk pokazuje wtedy „Tego koszyka nie da się złożyć — u jednego sprzedawcy zamówisz najwyżej 20 różnych ofert, wszystkie w jednej walucie”. Pozostałe to błąd w kodzie |
 
 ## Proces (saga)
 
@@ -151,11 +151,12 @@ Etykiety w jednym miejscu: `Infrastructure/ReadModel/OrderStatusLabel.php`.
 | job sagi | `ReserveOrderLinesJob`, `ReleaseOrderReservationsJob`, `ConfirmOrderReservationsJob`, `RefundPaymentJob` | wiersz w `jobs` na połączeniu `queue.ordering_process_connection` (`database`), `tries = 5`, `backoff = [5, 30, 120]` | `Infrastructure/Job/` |
 | kolejka sagi | port `ProcessJobQueue` → `LaravelProcessJobQueue` | wstawia job w transakcji zapisu zamówienia (outbox komend) | `Infrastructure/LaravelProcessJobQueue.php` |
 | T1 / T2 | — | dwie transakcje kroku rezerwacji: T1 w ofercie (port), T2 `markLineReserved` w zamówieniu | `ReserveOrderLines::run` |
-| kompensacja | `ReleaseOrderReservations`, `RefundPayment`, gałąź R1 w `ReserveOrderLines` | cofnięcie skutku kroku, który już się wydarzył (oddanie sztuk, oddanie pieniędzy) | [`10-DDD.md`](10-DDD.md), moduł 12 |
+| kompensacja | `ReleaseOrderReservations`, `RefundPayment`, gałąź R1 w `ReserveOrderLines` i jej odpowiednik na starcie ponowionego kroku (R1 + R2) | cofnięcie skutku kroku, który już się wydarzył (oddanie sztuk, oddanie pieniędzy) | [`10-DDD.md`](10-DDD.md), moduł 12 |
+| trzyma rezerwacje | `Order::holdsReservations` | zamówienie wciąż potrzebuje sztuk: `Placed` (jeszcze rezerwuje), `AwaitingPayment`, `Paid`, `Shipped`, `Cancelled` przez sprzedawcę (H8). `Rejected`, `Expired`, `Cancelled` przez kupującego z nich zrezygnowały | `Domain/Order.php` |
 | rezerwacje (port) | `StockReservations` (`reserve`, `release`, `confirm`) → `SellerPortalStockReservations` | Ordering mówi, czego potrzebuje; adapter woła komendy portalu i tłumaczy jego wyjątki | `Application/Port/StockReservations.php`, `Infrastructure/SellerPortalStockReservations.php` |
 | wynik rezerwacji | `ReservationResult` (`Reserved`, `OutOfStock`, `PriceChanged`, `OfferUnavailable`) | odmowy biznesowe jako wynik; reszta (np. `ReservationConflict`) leci jako wyjątek | `Application/Port/ReservationResult.php` |
 | ponowienie przy konflikcie | `Ordering\Application\RetryOnConflict` | do 3 prób na świeżym stanie; kopia portalowej klasy ([ADR-0008](adr/0008-shared-kernel.md)) | `Application/RetryOnConflict.php` |
-| wygaszenie | `Order::expire`, `ExpireOverdueOrders` | `Placed` albo `AwaitingPayment` po terminie i karencji → `Expired` (R10) | |
+| wygaszenie | `Order::expire`, `ExpireOverdueOrders` | `Placed` albo `AwaitingPayment` po terminie i karencji → `Expired` (R10). Błąd jednego zamówienia nie przerywa przebiegu: trafia do `ExpireOverdueOrdersResult::failures`, komenda go loguje | |
 | kontener schedulera | `catalog-scheduler` (`schedule:work`) | uruchamia sweep co minutę; `/health` pokazuje `ordering_sweep_last_run_at`. RUNBOOK [#044](RUNBOOK.md#044) | `compose.yaml` |
 
 ## Zdarzenia

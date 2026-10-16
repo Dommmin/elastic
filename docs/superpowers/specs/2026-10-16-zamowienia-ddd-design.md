@@ -369,15 +369,23 @@ Przy `ConcurrencyConflict` na `Order` w T2 krok ponawia T2 na świeżym stanie
 > trafiło w *jego* rezerwację (no-op po kluczu), a zwolnienie jej to
 > overselling. Kod zwalnia pozycję tylko, gdy zamówienie samo zrezygnowało
 > z rezerwacji: `Rejected`, `Expired`, `Cancelled` przez kupującego
-> (`ReserveOrderLines::wantsReservations`). Przypina to test
-> `OrderRacesTest` › „R1: zdublowany krok rezerwacji nie zwalnia sztuk
-> zamówienia, które czeka na płatność” (moduł 12 w `10-DDD.md`).
+> (`Order::holdsReservations`, wcześniej `ReserveOrderLines::wantsReservations`).
+> Przypina to test `OrderRacesTest` › „R1: zdublowany krok rezerwacji nie
+> zwalnia sztuk zamówienia, które czeka na płatność” (moduł 12 w `10-DDD.md`).
+>
+> **Poprawka z końcowego przeglądu (R1 + R2 naraz).** Gdy T1 zatwierdzi się
+> po kroku zwalniającym, a worker padnie przed T2, gałąź R1 się nie wykona,
+> a ponowiony job zastaje zamówienie już poza `Placed`. Krok na starcie
+> zwalnia wtedy każdą pozycję, jeśli zamówienie nie trzyma rezerwacji
+> (`Order::holdsReservations()`; no-op, gdy nic nie wisi). Test:
+> `OrderRacesTest` › „R1+R2: T1 zatwierdzone po zwolnieniu, worker padł
+> przed T2: ponowiony krok zwalnia sztukę”.
 
 **Wyścigi** (każdy ma osobny test aplikacyjny z ręcznie ustawioną kolejnością kroków):
 
 | # | Scenariusz | Rozstrzygnięcie |
 |---|---|---|
-| R1 | Kupujący anuluje, gdy saga właśnie zarezerwowała pozycję | Job zwalniający po anulowaniu przeszedł wcześniej i nie miał czego zwolnić. Gałąź „inny status → release” w T2 zwalnia tę pozycję. Bez niej sztuka wisiałaby zarezerwowana na zawsze. |
+| R1 | Kupujący anuluje, gdy saga właśnie zarezerwowała pozycję | Job zwalniający po anulowaniu przeszedł wcześniej i nie miał czego zwolnić. Gałąź „inny status → release” w T2 zwalnia tę pozycję (zawężone — patrz poprawka R18 wyżej). Bez niej sztuka wisiałaby zarezerwowana na zawsze. |
 | R2 | Awaria między T1 a T2 | Ponowiony job: `reserve` z tym samym kluczem i ilością to no-op, potem T2. Jeśli zamówienie w międzyczasie wygasło, `OrderExpired` zwalnia wszystkie klucze, także ten. |
 | R3 | Webhook płatności w chwili wygaśnięcia | Oba kroki zapisują `Order`, a wersja przepuszcza jeden. Przegrany ponawia: wygasło → zwrot; zapłacone → `expire` to no-op. Karencja 5 min sprawia, że wpłaty przyjęte przez bramkę w terminie nie trafiają w wygaśnięcie. |
 | R4 | Zdublowany webhook | Ten sam `paymentId` to no-op. Endpoint odpowiada 200, żeby bramka przestała ponawiać. |

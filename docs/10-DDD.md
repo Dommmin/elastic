@@ -447,7 +447,7 @@ Ordering ──✗── outbox (zdarzenia order.* nie wychodzą z kontekstu, ja
 |---|---|---|
 | Ordering → Seller Portal (rezerwacje) | **Customer/Supplier**: Ordering definiuje port, portal wystawia komendy `ReserveStock`/`ReleaseReservation`/`ConfirmReservation`, adapter tłumaczy wyjątki portalu na `ReservationResult` (mały ACL) | `apps/catalog/src/Ordering/Application/Port/StockReservations.php`, `apps/catalog/src/Ordering/Infrastructure/SellerPortalStockReservations.php:41` |
 | Ordering ↔ Seller Portal (pieniądze, klasy bazowe) | **Shared Kernel** | `apps/catalog/src/SharedKernel/`, [ADR-0008](adr/0008-shared-kernel.md) |
-| Ordering ← bramka | **ACL**: jedyna klasa, która zna format bramki (podpis, `reference`, `status`) | `apps/catalog/app/Http/Controllers/Webhooks/PaymentWebhookController.php:29` |
+| Ordering ← bramka | **ACL**: jedyna klasa, która zna format bramki (podpis, `reference`, `status`) | `apps/catalog/app/Http/Controllers/Webhooks/PaymentWebhookController.php:34` |
 | Ordering ← Tożsamość | **Conformist** | `apps/catalog/src/Ordering/Domain/BuyerId.php` |
 | Seller Portal → Search | **Published Language**, rozszerzony o trzy nazwy rezerwacji i pole `available`; klucz rezerwacji nie wychodzi | `apps/catalog/src/SellerPortal/Infrastructure/Persistence/OfferIntegrationEvents.php:123` |
 
@@ -1348,35 +1348,38 @@ umiesz spiąć kilka agregatów procesem (process manager) i wiesz, gdzie ma
 - Słuchacze sagi rejestrowani w fabryce `scoped` dispatchera, tak jak
   w portalu (Octane, moduł 8):
   `apps/catalog/app/Providers/OrderingServiceProvider.php:59`, test „słuchacze
-  sagi przeżywają flush instancji scoped (Octane)” (`ProcessJobsTest.php:133`).
+  sagi przeżywają flush instancji scoped (Octane)” (`ProcessJobsTest.php:144`).
 - Kto zwalnia, a kto nie: `onCancelled` (`OrderProcessManager.php:52`)
   przepuszcza tylko anulowanie przez kupującego. Sprzedawca anuluje opłacone
   zamówienie, bo towaru nie ma (H8), więc oddanie sztuk wystawiłoby je
   następnemu kupującemu, który też by ich nie dostał.
 - Spójność ostateczna w UI: `Placed` → „Sprawdzamy dostępność”
   (`apps/catalog/src/Ordering/Infrastructure/ReadModel/OrderStatusLabel.php:17`)
-  i polling co 1 s tylko w tym statusie
-  (`apps/catalog/resources/js/pages/shop/orders/Show.vue:37`). Drugi stan
+  i polling co 1 s tylko w tym statusie, najwyżej 120 s, potem „Sprawdzanie
+  trwa dłużej niż zwykle”
+  (`apps/catalog/resources/js/pages/shop/orders/Show.vue:38`). Drugi stan
   „pomiędzy” to powrót z bramki przed webhookiem: „Czekamy na potwierdzenie
   płatności” (`apps/catalog/app/Http/Controllers/Shop/OrderController.php:43`).
   Nie jest statusem zamówienia, bo zamówienie jeszcze nic nie wie.
 - Czas jako aktor: sweep `orders:expire-overdue` co minutę
   (`apps/catalog/routes/console.php:13`), w kontenerze `catalog-scheduler`
   (`compose.yaml:518`). Handler
-  (`apps/catalog/src/Ordering/Application/Order/ExpireOverdueOrdersHandler.php:37`):
+  (`apps/catalog/src/Ordering/Application/Order/ExpireOverdueOrdersHandler.php:39`):
   paczki po 100, każde zamówienie we własnej transakcji, konflikt wersji
   pomija (następny przebieg za minutę), a przed `expire` sprawdza
-  `isDueForExpiry` jeszcze raz na świeżym stanie (`:65`). Sweep zamiast
+  `isDueForExpiry` jeszcze raz na świeżym stanie (`:72`). Każdy inny błąd
+  jednego zamówienia handler zbiera do wyniku i idzie dalej; komenda
+  loguje go i kończy się kodem FAILURE. Sweep zamiast
   opóźnionego joba, bo zgubiony job zostawiłby zamówienie wiszące na zawsze,
   a sweep naprawia także zamówienia, w których saga utknęła (R10).
   `/health` pokazuje czas ostatniego przebiegu
   (`apps/catalog/app/Http/Controllers/HealthController.php:51`).
 - Karencja na spóźniony webhook ma **dwie** definicje, jak `listed()`
-  w module 10: w domenie (`Order::isDueForExpiry`, `Order.php:339`) i w
+  w module 10: w domenie (`Order::isDueForExpiry`, `Order.php:361`) i w
   zapytaniu sweepa (`SqlOrderRepository::idsDueForExpiry`,
   `apps/catalog/src/Ordering/Infrastructure/Persistence/SqlOrderRepository.php:114`;
   repozytorium w pamięci ją powtarza:
-  `apps/catalog/tests/Unit/Ordering/InMemory/InMemoryOrderRepository.php:62`).
+  `apps/catalog/tests/Unit/Ordering/InMemory/InMemoryOrderRepository.php:77`).
   Ćwiczenie 3 pokazuje, co z tego wynika.
 - Wszystkie wyścigi (R1–R10 ze specu) to testy aplikacji w pamięci
   z ręcznie ustawionym przeplotem:
@@ -1440,9 +1443,10 @@ umiesz spiąć kilka agregatów procesem (process manager) i wiesz, gdzie ma
    sweepem (np. przycisk „Zapłać” w przyszłości), dostanie złą odpowiedź.
    Dwie definicje tej samej reguły pilnuje tylko to, że obie mają testy.
    Cofnij: `git checkout -- src/Ordering/Domain/Order.php`.
-4. **Tylko do przeczytania: kolejka sagi na domyślnym połączeniu.** To
-   zepsucie wykonałem, ale **nie powtarzaj go** na maszynie, na której na
-   `127.0.0.1:6379` działa cudzy Redis:
+4. **Zepsuj i napraw: kolejka sagi na domyślnym połączeniu.** Maszyna
+   bywa współdzielona i na `127.0.0.1:6379` może działać cudzy Redis, więc
+   test z datasetem `redis` kieruje Redisa na port 1 (nic tam nie słucha),
+   a komendę uruchamiaj z `REDIS_PORT=1` jako drugim zabezpieczeniem:
 
    ```diff
    --- apps/catalog/src/Ordering/Infrastructure/LaravelProcessJobQueue.php   (metoda reserveLines)
@@ -1450,20 +1454,29 @@ umiesz spiąć kilka agregatów procesem (process manager) i wiesz, gdzie ma
    +        ReserveOrderLinesJob::dispatch($orderId->value());
    ```
 
-   Czerwonych jest pięć: `ProcessJobsTest` › „złożenie zamówienia wstawia
+   ```bash
+   REDIS_PORT=1 php artisan test --compact tests/Unit/Ordering tests/Feature/Ordering tests/Unit/SellerPortal tests/Feature/SellerPortal tests/Arch
+   ```
+
+   Czerwonych jest sześć: `ProcessJobsTest` › „złożenie zamówienia wstawia
    job w tej samej transakcji”, „kolejka sagi trafia na połączenie z configu
-   mimo queue.default” (oba datasety, `redis` i `sync`), „słuchacze sagi
-   przeżywają flush instancji scoped (Octane)” i
-   `ExpireOverdueOrdersCommandTest` › „orders:expire-overdue szanuje karencję
-   i zapisuje czas przebiegu” (zamówienie jest od razu `awaiting_payment`, bo
-   `phpunit.xml` ma `QUEUE_CONNECTION=sync` i krok wykonał się w żądaniu).
-   Dataset `redis` nie padł z błędem połączenia: Laravel wysłał job do
-   **prawdziwego** Redisa z `.env` (u mnie: Redis innego projektu na tej
-   samej maszynie, został w nim jeden obcy job). Dwie lekcje. Atomowość
-   „zapis + krok” zależy od jednej linijki i od tego, że kolejka jest w tej
-   samej bazie. Test z datasetem „zły config” jest bezpieczny tylko dopóty,
-   dopóki kod jest dobry; zepsuty kod robi z niego test integracyjny na cudzej
-   infrastrukturze.
+   mimo queue.default” (oba datasety: `sync` z asercją, `redis` z błędem
+   `Connection refused`), „słuchacze sagi przeżywają flush instancji scoped
+   (Octane)” i dwa testy `ExpireOverdueOrdersCommandTest`: „orders:expire-overdue
+   szanuje karencję i zapisuje czas przebiegu” oraz „błąd jednego zamówienia:
+   reszta wygasa, błąd w logu, kod wyjścia FAILURE” (zamówienie jest od razu
+   `awaiting_payment`, bo `phpunit.xml` ma `QUEUE_CONNECTION=sync` i krok
+   wykonał się w żądaniu). Cofnij:
+   `git checkout -- src/Ordering/Infrastructure/LaravelProcessJobQueue.php`.
+
+   Historia, bo uczy: przy pierwszym przebiegu tego ćwiczenia test nie
+   przestawiał Redisa i dataset `redis` **nie** padł: Laravel wysłał job do
+   prawdziwego Redisa z `.env` (Redis innego projektu na tej samej maszynie,
+   został w nim jeden obcy job). Dwie lekcje. Atomowość „zapis + krok”
+   zależy od jednej linijki i od tego, że kolejka jest w tej samej bazie.
+   Test z datasetem „zły config” jest bezpieczny tylko dopóty, dopóki kod
+   jest dobry, chyba że sam odetnie się od prawdziwej infrastruktury; bez
+   tego zepsuty kod robi z niego test integracyjny na cudzym serwerze.
 
 **Sprawdź się**
 - Dlaczego nie da się złożyć zamówienia i zarezerwować towaru w jednej
@@ -1559,10 +1572,18 @@ ten, który przychodzi **równolegle**.
     klucz już rozliczony → `ReservationConflict` (rozstrzygnięcie R12),
     zamiast surowego błędu indeksu unikalnego.
 - **Kompensacja przed skutkiem (R1):**
-  `apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php:82`.
+  `apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php:96`.
   Kupujący anulował między T1 a T2. Job zwalniający po anulowaniu już
   przeszedł i nie zastał rezerwacji, bo T1 jeszcze się nie zatwierdziło.
   Krok rezerwacji, wracając do zamówienia, sam zwalnia tę pozycję.
+- **R1 i R2 naraz (poprawka z końcowego przeglądu):** jak wyżej, ale worker
+  pada po T1, zanim dojdzie do T2, więc gałąź R1 się nie wykonuje. Kolejka
+  ponawia job, a ten zastaje zamówienie już `Cancelled`. Pierwsza wersja
+  kończyła się wtedy samym `return` i sztuka wisiała zarezerwowana na
+  zawsze. Teraz krok na starcie, gdy zamówienie nie jest `Placed` i nie
+  trzyma rezerwacji, zwalnia każdą pozycję (no-op, gdy nic nie wisi):
+  `ReserveOrderLines.php:63` (komentarz) i `:71`. Test: `OrderRacesTest` ›
+  „R1+R2: T1 zatwierdzone po zwolnieniu, worker padł przed T2…”.
 - **Duplikat równoległy (R18): spec był zbyt ogólny, test duplikatu go
   poprawił.** Spec mówił: w T2 „inny status niż `Placed` → zwolnij tę
   pozycję”. Przy implementacji (Task 8) powstał test zdublowanego joba: drugi
@@ -1573,10 +1594,14 @@ ten, który przychodzi **równolegle**.
   płatność bez towaru, sztuka wraca do sprzedaży, overselling. Kod zwalnia
   więc tylko wtedy, gdy zamówienie **samo zrezygnowało** z rezerwacji:
   `Rejected`, `Expired` albo `Cancelled` przez kupującego
-  (`ReserveOrderLines.php:103` docblock, `:118`, `wantsReservations` w `:153`).
-  Intencja R1 zostaje, zmienia się warunek: nie „czy status jest inny niż
-  oczekiwałem”, tylko „czy zamówienie nadal chce tych sztuk”. Spec ma tę
-  poprawkę dopisaną w sekcji 5.
+  (`ReserveOrderLines.php:117` docblock, `:132`). Intencja R1 zostaje,
+  zmienia się warunek: nie „czy status jest inny niż oczekiwałem”, tylko
+  „czy zamówienie nadal chce tych sztuk”. Ta reguła to wiedza o zamówieniu,
+  więc mieszka w agregacie: `Order::holdsReservations`
+  (`apps/catalog/src/Ordering/Domain/Order.php:352`); pytają o nią krok
+  rezerwacji i krok potwierdzenia
+  (`ConfirmOrderReservations.php:35`: wpłata + rezerwacje trzymane = sprzedaż).
+  Spec ma tę poprawkę dopisaną w sekcji 5.
 - **Znany skrót (R19):** zdublowany krok rezerwacji, który trwałby przez
   płatność **i** potwierdzenie, spróbowałby zarezerwować klucz już
   `confirmed`. Fałszywa oferta w testach pamięci by na to pozwoliła, ale
@@ -1620,7 +1645,7 @@ Wszystkie z katalogu `apps/catalog`, komendą „zamówienia i portal” z sekcj
 
    ```diff
    --- apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php   (metoda markReserved)
-   -                return self::wantsReservations($order) ? self::HELD_BY_ORDER : self::ABANDONED;
+   -                return $order->holdsReservations() ? self::HELD_BY_ORDER : self::ABANDONED;
    +                return self::ABANDONED;
    ```
 
@@ -1631,7 +1656,32 @@ Wszystkie z katalogu `apps/catalog`, komendą „zamówienia i portal” z sekcj
    ta wersja „działa” dla scenariusza, który spec rozpisał. Lekcja: spec był
    zbyt ogólny, a błąd wyszedł dopiero z pytania „co, jeśli ten sam krok
    wykona się dwa razy **naraz**?”. Cofnij jak wyżej.
-3. **Zepsuj i napraw: idempotencja bez pamięci.** Usuń sprawdzenie statusu
+3. **Zepsuj i napraw: ponowiony krok, który tylko wraca.** Przywróć
+   pierwszą wersję startu kroku (samo `return`, gdy zamówienie nie jest
+   `Placed`):
+
+   ```diff
+   --- apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php   (metoda run)
+            if ($order->status() !== OrderStatus::Placed) {
+   -            if (! $order->holdsReservations()) {
+   -                foreach ($order->lines() as $line) {
+   -                    $this->reservations->release($key, $line->offerId());
+   -                }
+   -            }
+   -
+                return;
+            }
+   ```
+
+   Czerwony jest **jeden** test: `OrderRacesTest` › „R1+R2: T1 zatwierdzone
+   po zwolnieniu, worker padł przed T2: ponowiony krok zwalnia sztukę”
+   (zostaje aktywne `order-1|1`). Dwa wyścigi z osobna (R1: gałąź w T2, R2:
+   ponowienie po kluczu) są obsłużone i mają zielone testy; dziura była
+   dopiero w ich złożeniu, a znalazł ją przegląd całej gałęzi, nie test.
+   Lekcja: przy każdej gałęzi „tu nic nie robię” zapytaj, czy poprzedni
+   przebieg tego samego kroku mógł zostawić coś, o czym wie już tylko on.
+   Cofnij jak wyżej.
+4. **Zepsuj i napraw: idempotencja bez pamięci.** Usuń sprawdzenie statusu
    klucza w potwierdzeniu:
 
    ```diff

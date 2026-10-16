@@ -2065,8 +2065,11 @@ select id, status, payment_deadline from orders
 ```
 `ordering_sweep_last_run_at` = `null` albo starsze niż 2 minuty → sweep nie
 biegnie. Sweep biegnie, a zamówienia po terminie zostają → patrz log
-(`ConcurrencyConflict` jest pomijany i spróbuje za minutę; inny wyjątek
-przerywa przebieg).
+(`ConcurrencyConflict` jest pomijany i spróbuje za minutę; każdy inny
+wyjątek pomija tylko to jedno zamówienie: w logu „Sweep nie wygasił
+zamówienia” z `order_id` i wyjątkiem, komenda kończy się kodem FAILURE,
+a reszta zamówień wygasa normalnie). To samo zamówienie w logu co minutę =
+zepsuty wiersz albo błąd w kodzie, którego ponowienie nie naprawi.
 
 **Przyczyna**
 Czas jest w tym procesie aktorem: nikt nie wyśle zdarzenia „minął termin”.
@@ -2102,6 +2105,8 @@ przebiegu w `/health`.
 Kupujący złożył zamówienie, strona `/orders/{id}` odświeża się co sekundę
 i od dłuższej chwili pokazuje „Sprawdzamy dostępność towaru — odświeżam co
 sekundę.” Nie przechodzi ani do „Czeka na płatność”, ani do „Odrzucone”.
+Po 120 s strona przestaje odpytywać i pokazuje „Sprawdzanie trwa dłużej niż
+zwykle — odśwież stronę za chwilę”.
 
 **Diagnoza**
 ```bash
@@ -2241,7 +2246,7 @@ make worker-logs                                                       # SendPay
 make psql db=catalog
 select id, status, decided_at, expires_at from fake_gateway_payments order by created_at desc limit 5;
 select id, attempts, payload::json->>'displayName' from jobs where payload like '%SendPaymentWebhookJob%';
-make logs s=catalog-app        # „Nieprawidłowy podpis” = 401, „nieprawidłowym payloadem” / „nieznanego zamówienia” = 200 z ostrzeżeniem
+make logs s=catalog-app        # „Nieprawidłowy podpis” = 401, „brak sekretu” = 500, „nieprawidłowym payloadem” / „nieznanego zamówienia” = 200 z ostrzeżeniem
 ```
 
 **Przyczyna**
@@ -2258,7 +2263,9 @@ worker nie działa; wewnętrzny blok Caddy `http://catalog-app` nie
 przepuszcza `/webhooks/*` (obsługiwał tylko `/api/*`, trasa doszła
 w etapie zamówień, `infra/caddy/Caddyfile`); sekret
 `FAKE_GATEWAY_WEBHOOK_SECRET` różny w `catalog-app` i `catalog-worker`
-(webhook dostaje 401 i job ponawia do 10 razy).
+(webhook dostaje 401 i job ponawia do 10 razy) albo pusty w `catalog-app`
+(webhook dostaje 500, w logu „Webhook płatności odrzucony: brak sekretu”;
+pusty sekret odrzucamy celowo, bo HMAC z pustym kluczem policzy każdy).
 
 **Naprawa**
 1. Przyciski: ustaw `APP_ENV=local` w lokalnym `.env`. Na serwerze ich nie
@@ -2271,7 +2278,8 @@ w etapie zamówień, `infra/caddy/Caddyfile`); sekret
    `docker compose --profile apps build catalog-app && docker compose --profile apps up -d catalog-app`.
    Sprawdzenie z sieci `marketplace`:
    `docker compose exec catalog-worker curl -s -o /dev/null -w '%{http_code}\n' -X POST http://catalog-app/webhooks/payments`
-   → `401` (trasa jest, podpis zły) zamiast `404`.
+   → `401` (trasa jest, podpis zły) zamiast `404`; `500` znaczy, że
+   `catalog-app` nie ma sekretu (punkt 4).
 4. Sekret: ta sama wartość w obu serwisach (`compose.yaml` podaje domyślną
    `dev-only-fake-gateway-secret` obu), potem restart obu i „Wyślij webhook
    ponownie”. Zdublowany webhook jest bezpieczny (R4: ten sam `paymentId`
@@ -2281,7 +2289,7 @@ w etapie zamówień, `infra/caddy/Caddyfile`); sekret
    To pokaz ponowień, nie awaria.
 
 **Czego się nauczyłem**
-ACL webhooka odpowiada 200 na wszystko poza złym podpisem, więc błędy
+ACL webhooka odpowiada 200 na wszystko poza złym podpisem i brakiem sekretu, więc błędy
 „po naszej stronie” widać tylko w logu. Test w pamięci nie złapie trasy w
 Caddy ani różnicy sekretów między kontenerami; to wychodzi dopiero na stacku.
 

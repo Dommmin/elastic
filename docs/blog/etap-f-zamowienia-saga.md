@@ -257,7 +257,7 @@ w transakcji na jednej ofercie i ponawia `ConcurrencyConflict` do 3 razy:
 komendy są systemowe, nikt nie „odświeży strony”. `ConfirmReservationHandler`
 kończy cicho dla klucza już `confirmed` (`:35`), a dla zwolnionego albo
 nieznanego rzuca `ReservationNotFound`, bo sprzedaż bez zmniejszenia stanu
-jest gorsza niż błąd (moduł 12, ćwiczenie 3).
+jest gorsza niż błąd (moduł 12, ćwiczenie 4).
 
 Sprzedawca widzi w szczegółach oferty „Na stanie N · zarezerwowane R ·
 dostępne A”, a próba zejścia poniżej zarezerwowanego kończy się komunikatem
@@ -387,7 +387,8 @@ bez towaru, sztuka wraca do sprzedaży. Overselling.
 
 Kod zwalnia więc tylko wtedy, gdy zamówienie **samo zrezygnowało**
 z rezerwacji: `Rejected`, `Expired` albo `Cancelled` przez kupującego
-(`ReserveOrderLines.php:103` i `:153`). Kontroler zatwierdził to jako
+(`ReserveOrderLines.php:117`; sama reguła to dziś
+`Order::holdsReservations`, `Order.php:352`). Kontroler zatwierdził to jako
 rozstrzygnięcie R18, a spec dostał dopisek w sekcji 5. Test:
 `OrderRacesTest` › „R1: zdublowany krok rezerwacji nie zwalnia sztuk
 zamówienia, które czeka na płatność”. Moduł 12, ćwiczenie 2 pozwala to
@@ -487,7 +488,7 @@ Poprawki z przeglądu (`30c6840`):
 - „Akceptuję nową cenę” wysyła `accept_price_cents` i działa tylko, gdy ta
   cena jest dalej obecna,
 - checkout czyta koszyk pod `lockForUpdate` i woła handler w tej samej
-  transakcji (`apps/catalog/app/Http/Controllers/Shop/CartController.php:125`):
+  transakcji (`apps/catalog/app/Http/Controllers/Shop/CartController.php:126`):
   dwa równoległe „Złóż zamówienia” dają jedno złożenie, drugie widzi pusty
   koszyk (R9), a formularz niezgodny z koszykiem w bazie jest odrzucany.
 
@@ -637,6 +638,69 @@ montuje `apps/catalog` z `/Users/…/elastic`, nie z worktree), czyli merge
 
 ---
 
+## Krok 15 — Poprawki z końcowego przeglądu gałęzi
+
+**Commity:** `8bc5d80`, `ce8da4f` (+ ten z dokumentacją). **Moduł nauki:** 12.
+
+Przegląd całej gałęzi (nie pojedynczego zadania) znalazł dziurę, której
+żaden test nie widział, bo każdy test sprawdzał jeden wyścig naraz.
+
+### Co się zepsuło: R1 i R2 jednocześnie zostawiały sztukę zarezerwowaną
+
+Przeplot: krok rezerwacji wczytał zamówienie `Placed` i wysłał T1. Kupujący
+anulował, krok zwalniający przeszedł i nie zastał żadnej rezerwacji (T1 się
+jeszcze nie zatwierdziło). T1 się zatwierdza, worker pada przed T2, więc
+gałąź R1 (zwolnij, gdy T2 zastanie inny status) się nie wykonuje. Kolejka
+ponawia job (R2), a ten widzi `Cancelled` i… kończył się samym `return`.
+Sztuka wisiała zarezerwowana na zawsze: sweep nie rusza anulowanych,
+zwolnienie już było.
+
+Poprawka: krok, który zastaje zamówienie poza `Placed` i **bez**
+rezerwacji, zwalnia każdą pozycję (zwolnienie nieistniejącej to no-op)
+(`apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php:63`).
+Pytanie „czy zamówienie trzyma rezerwacje” było powtórzone w dwóch krokach
+sagi, każdy z własnym `match` po statusie; teraz to metoda agregatu
+`Order::holdsReservations` (`apps/catalog/src/Ordering/Domain/Order.php:352`),
+z testem dla każdego statusu w `OrderLifecycleTest`. Test wyścigu:
+`OrderRacesTest` › „R1+R2: T1 zatwierdzone po zwolnieniu, worker padł przed
+T2: ponowiony krok zwalnia sztukę”. Moduł 12, ćwiczenie 3 pozwala to
+zepsuć samemu.
+
+### Drobniejsze poprawki z tego samego przeglądu
+
+- **Numer przesyłki** odrzuca znaki sterujące i niewidoczne (`\p{C}`, np.
+  zero-width space), jak powód anulowania.
+- **Ponad 20 ofert jednego sprzedawcy** w koszyku dawało ogólny komunikat;
+  teraz `invalid_order_lines` ma własne zdanie w koszyku (jedno dla dwóch
+  osiągalnych przyczyn: limit 20 ofert i dwie waluty u jednego sprzedawcy).
+- **Toast sprzedawcy:** „zwrot zlecony” (była literówka).
+- **Webhook:** pusty sekret to 500 i błąd w logu (HMAC z pustym kluczem
+  policzy każdy, więc zamykamy się), a kwota 0 to zepsuty payload (200
+  i ostrzeżenie).
+- **Sweep:** błąd jednego zamówienia nie przerywa przebiegu; handler zbiera
+  błędy do wyniku (`ExpireOverdueOrdersResult`), komenda loguje je i kończy
+  się kodem FAILURE.
+- **Koszyk:** składanie usuwa tylko złożone oferty, więc pozycja dodana
+  w międzyczasie w innej karcie zostaje (`BuyerCart::clear(BuyerId, list<OfferId>)`).
+- **Strona zamówienia** przestaje odpytywać w `placed` po 120 s („Sprawdzanie
+  trwa dłużej niż zwykle — odśwież stronę za chwilę”); oś czasu oferty ma
+  polskie etykiety zdarzeń rezerwacji.
+- **Higiena testów:** dataset `redis` w `ProcessJobsTest` kieruje Redisa na
+  port 1, żeby zepsuty kod nie wysłał joba do cudzego Redisa na tej samej
+  maszynie (moduł 11, ćwiczenie 4).
+
+**Weryfikacja:** cały catalog `php artisan test --compact` zielony, Pint,
+`npm run build`, lint, format i typy. Polling 120 s sprawdzony tylko buildem
+i typami, nie w przeglądarce.
+
+> **Do przeniesienia na `zamowienia-ddd-lite`:** testy HTTP w
+> `tests/Feature/Ordering/Http` są na obu gałęziach bajt w bajt identyczne
+> (`saga-vs-transakcja.md`, rozdział 1). Ten krok zmienia `CheckoutTest`,
+> `SellerOrdersTest` i dodaje `PaymentWebhookHardeningTest`, więc gałąź lite
+> potrzebuje tych samych poprawek kontrolerów i tych samych plików testów.
+
+---
+
 ## Znane ograniczenia (świadomie odłożone)
 
 - **H11, zablokowany sprzedawca z opłaconymi zamówieniami:** otwarte.
@@ -652,17 +716,11 @@ montuje `apps/catalog` z `/Users/…/elastic`, nie z worktree), czyli merge
   przycinane.**
 - **Karencja ma dwie definicje** (domena i zapytanie sweepa), wiąże je tylko
   to, że obie mają testy (moduł 11, ćwiczenie 3).
-- **Reguła „ma rezerwacje”** jest powtórzona w `ReserveOrderLines::wantsReservations`
-  i `ConfirmOrderReservations::holdsSoldReservations`; kandydat na
-  `Order::holdsReservations()`.
 - **Koszt konfliktów w gorącej ofercie** nie jest jeszcze zmierzony
   (`orders:race-test` czeka na Postgresa).
 - Polling co 1 s, odliczanie i 30-sekundowe wyjście z „Czekamy na
   potwierdzenie płatności” sprawdzone tylko buildem i typami, nie
   w przeglądarce (Task 15).
-- Literówka w toaście sprzedawcy po anulowaniu
-  (`apps/catalog/app/Http/Controllers/Seller/SellerOrderController.php:66`,
-  „zwrot zleczony” zamiast „zlecony”) czeka na poprawkę w końcowej fali.
 - `catalog-scheduler` i `catalog-worker` są tylko w `compose.yaml`; manifesty
   k3s dla zamówień nie istnieją (wdrożenie poza zakresem).
 
@@ -678,9 +736,9 @@ Pełne porównanie z liczbami („saga kontra jedna transakcja”):
 | Kod Orderingu | 105 plików PHP, 4462 linie (domena 1643, aplikacja 1537, infrastruktura 1282) |
 | Shared Kernel | 8 plików, 218 linii |
 | Bramka (obcy system) | 4 pliki, 314 linii |
-| Testy domeny Orderingu | 80 w 41 ms (kryterium specu: < 1 s) |
-| Testy domeny + aplikacji (saga, wyścigi R1–R10) | 122 w 48 ms |
-| `tests/Feature/Ordering` | 144 testy |
+| Testy domeny Orderingu | 80 w 41 ms (kryterium specu: < 1 s); po poprawkach z przeglądu 94 w 47 ms |
+| Testy domeny + aplikacji (saga, wyścigi R1–R10) | 122 w 48 ms; po poprawkach 139 w 56 ms |
+| `tests/Feature/Ordering` | 144 testy; po poprawkach 149 |
 
 **Dało:** każdy wyścig ze specu jest testem w pamięci z ręcznym przeplotem,
 więc można go zepsuć i zobaczyć (moduły 11–12); kompensacje są nazwane
@@ -689,7 +747,8 @@ oferty (brak towaru, cena, niedostępność) zostały w jednym agregacie, a
 Ordering dostaje gotowy wynik przez port. **Kosztowało:** stan `Placed`
 i polling, którego jedna transakcja by nie potrzebowała; worker i scheduler
 jako warunek działania; dwanaście wyścigów do przemyślenia, z których jeden
-(R18) spec rozstrzygnął źle; dwie definicje karencji i „ma rezerwacje”.
+(R18) spec rozstrzygnął źle, a jeden (R1 + R2 naraz) wyszedł dopiero
+w przeglądzie; dwie definicje karencji.
 
 Porównanie z gałęzią `zamowienia-ddd-lite` (zmierzone 2026-10-16): kod
 zamówień 4155 linii w DDD kontra 1389 w lite, testy reguł 27 ms kontra
@@ -722,11 +781,12 @@ obejścia i werdykt: [`saga-vs-transakcja.md`](saga-vs-transakcja.md).
 
 ## Twoja kolej
 
-1. **Zrób pięć „zepsuj i napraw” z modułów 11 i 12** w
-   [`10-DDD.md`](../10-DDD.md) (czwarte w module 11 jest tylko do
-   przeczytania). Zanim uruchomisz testy, zgadnij, ile będzie czerwonych
+1. **Zrób siedem „zepsuj i napraw” z modułów 11 i 12** w
+   [`10-DDD.md`](../10-DDD.md) (czwarte w module 11 uruchamiaj
+   z `REDIS_PORT=1`). Zanim uruchomisz testy, zgadnij, ile będzie czerwonych
    i na którym poziomie. Najciekawsze: moduł 12, ćwiczenie 2 (reguła ze
-   specu „działa” dla scenariusza, który spec rozpisał).
+   specu „działa” dla scenariusza, który spec rozpisał) i 3 (dziura, którą
+   znalazł dopiero przegląd całej gałęzi).
 2. **Dopisz wyścig, którego nie ma.** Sprzedawca wycofuje ofertę, gdy
    zamówienie jest już `AwaitingPayment` (H4: rezerwacja ma być dotrzymana).
    Napisz test w `OrderRacesTest`: płatność po wycofaniu zamienia rezerwację

@@ -83,6 +83,13 @@ git diff zamowienia zamowienia-ddd-lite -- apps/catalog/tests/Feature/Ordering/H
 
 Wszystkie 67 testów HTTP zamówień przechodzi na obu gałęziach.
 
+> **Stan po końcowym przeglądzie `zamowienia`:** poprawki z przeglądu
+> (komunikat `invalid_order_lines`, toast sprzedawcy, utwardzenie webhooka)
+> zmieniły `CheckoutTest`, `SellerOrdersTest` i dodały
+> `PaymentWebhookHardeningTest`. Dopóki te same poprawki nie trafią na
+> `zamowienia-ddd-lite`, `git diff` powyżej nie jest pusty; liczby w tym
+> dokumencie są sprzed tych poprawek.
+
 **Historia, bo uczy (ta sama lekcja co przy portalu):** pierwsza wersja
 `PaymentWebhookTest` budowała stan agregatem (`Order::place`,
 `markLineReserved`, `OrderRepository::save`) i sprawdzała go przez
