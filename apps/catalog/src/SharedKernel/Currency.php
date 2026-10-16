@@ -1,6 +1,6 @@
 <?php
 
-namespace SellerPortal\Domain\Shared;
+namespace SharedKernel;
 
 enum Currency: string
 {

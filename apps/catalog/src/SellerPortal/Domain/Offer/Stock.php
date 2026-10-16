@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Liczba sztuk na stanie (0–100 000). DLACZEGO VO: zero jest wartością dozwoloną i znaczącą (oferta wyprzedana), a ujemny stan albo absurdalnie duża liczba nie ma jak wejść do agregatu.

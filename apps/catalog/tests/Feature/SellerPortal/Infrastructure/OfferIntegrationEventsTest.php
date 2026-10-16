@@ -16,10 +16,10 @@ use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Infrastructure\Persistence\SqlOfferRepository;
 use SellerPortal\Infrastructure\SystemClock;
+use SharedKernel\Money;
 
 beforeEach(function () {
     Carbon::setTestNow('2026-10-15 12:00:00');

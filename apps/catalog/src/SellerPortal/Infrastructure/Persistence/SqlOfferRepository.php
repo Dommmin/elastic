@@ -21,12 +21,12 @@ use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Offer\SuspensionReason;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
-use SellerPortal\Domain\Shared\Currency;
-use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\ConcurrencyConflict;
+use SharedKernel\Currency;
+use SharedKernel\InvalidValue;
+use SharedKernel\Money;
 use stdClass;
 use UnexpectedValueException;
 

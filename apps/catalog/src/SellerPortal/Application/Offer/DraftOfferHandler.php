@@ -16,9 +16,9 @@ use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Seller\SellerNotFound;
 use SellerPortal\Domain\Seller\SellerRepository;
-use SellerPortal\Domain\Shared\InvalidValue;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\InvalidValue;
+use SharedKernel\Money;
 
 /**
  * Handler komendy DraftOffer: wczytaj → zmień agregat → zapisz → roześlij zdarzenia, wszystko w jednej transakcji.

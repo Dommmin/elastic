@@ -26,8 +26,8 @@ use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\PriceChangeDecision;
 use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerNotFound;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\ConcurrencyConflict;
+use SharedKernel\InvalidValue;
 use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 
 function offerHandlersPublish(PortalWorld $w, int $userId, OfferId $offerId): void

@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Nazwa sklepu widoczna dla kupujących.

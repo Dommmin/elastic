@@ -3,7 +3,7 @@
 namespace SellerPortal\Domain\Offer;
 
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Port: jak domena widzi "kolekcję ofert". Implementacja (SQL) żyje w Infrastructure.

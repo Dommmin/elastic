@@ -3,7 +3,7 @@
 namespace Tests\Unit\SellerPortal\InMemory;
 
 use SellerPortal\Application\Port\DomainEventDispatcher;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 final class RecordingDispatcher implements DomainEventDispatcher
 {

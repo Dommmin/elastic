@@ -1,6 +1,6 @@
 <?php
 
-namespace SellerPortal\Domain\Shared;
+namespace SharedKernel;
 
 /**
  * Korzeń agregatu: jedyne wejście do grupy obiektów, która zmienia się

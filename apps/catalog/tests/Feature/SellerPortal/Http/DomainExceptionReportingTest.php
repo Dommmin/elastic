@@ -6,8 +6,8 @@ use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Route;
 use SellerPortal\Domain\Offer\PriceChangeLimitExceeded;
 use SellerPortal\Domain\Seller\SellerNotFound;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\ConcurrencyConflict;
+use SharedKernel\InvalidValue;
 
 /**
  * Testy biegną z CLI, więc `runningInConsole()` jest tu zawsze `true`.

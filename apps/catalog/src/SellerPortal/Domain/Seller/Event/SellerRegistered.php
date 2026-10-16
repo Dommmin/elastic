@@ -4,8 +4,8 @@ namespace SellerPortal\Domain\Seller\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\DomainEvent;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\DomainEvent;
 
 /**
  * Sprzedawca złożył zgłoszenie; czeka na moderatora.

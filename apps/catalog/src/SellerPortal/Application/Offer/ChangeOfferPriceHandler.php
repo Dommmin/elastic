@@ -9,8 +9,8 @@ use SellerPortal\Application\Port\TransactionManager;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Offer\PriceChangeDecision;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\Money;
 
 /**
  * Handler komendy ChangeOfferPrice: wczytaj → zmień agregat → zapisz → roześlij zdarzenia, wszystko w jednej transakcji.

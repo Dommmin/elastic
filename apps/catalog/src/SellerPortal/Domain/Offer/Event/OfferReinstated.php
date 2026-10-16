@@ -4,7 +4,7 @@ namespace SellerPortal\Domain\Offer\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Zawieszona oferta wróciła do sprzedaży.

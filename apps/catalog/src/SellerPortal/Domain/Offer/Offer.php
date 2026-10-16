@@ -20,11 +20,11 @@ use SellerPortal\Domain\Offer\Event\OfferWithdrawn;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\AggregateRoot;
-use SellerPortal\Domain\Shared\CurrencyMismatch;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\AggregateRoot;
+use SharedKernel\CurrencyMismatch;
+use SharedKernel\Money;
 
 /**
  * Agregat oferty: propozycja sprzedaży jednego produktu przez jednego sprzedawcę.

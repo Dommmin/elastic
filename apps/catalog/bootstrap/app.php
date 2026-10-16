@@ -13,8 +13,8 @@ use Illuminate\Http\Request;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Seller\SellerNotFound;
-use SellerPortal\Domain\Shared\DomainException;
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\DomainException;
+use SharedKernel\InvalidValue;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))

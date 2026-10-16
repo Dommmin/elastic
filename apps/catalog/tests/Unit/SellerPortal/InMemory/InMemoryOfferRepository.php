@@ -10,7 +10,7 @@ use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\ProductId;
 use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Ten sam kontrakt co SqlOfferRepository (wersje, kopie, `hasLiveOffer`

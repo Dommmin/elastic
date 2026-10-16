@@ -23,9 +23,9 @@ use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Seller\Event\SellerBlocked;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\ConcurrencyConflict;
 use Tests\Unit\SellerPortal\InMemory\InMemoryOfferRepository;
 use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 

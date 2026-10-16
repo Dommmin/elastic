@@ -4,8 +4,8 @@ namespace SellerPortal\Domain\Offer\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
-use SellerPortal\Domain\Shared\DomainEvent;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\DomainEvent;
+use SharedKernel\Money;
 
 /**
  * Sprzedawca wycofał własną oczekującą zmianę ceny.

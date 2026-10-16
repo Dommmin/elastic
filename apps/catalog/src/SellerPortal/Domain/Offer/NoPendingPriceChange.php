@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Akcja dotyczy oczekującej zmiany ceny, a żadnej nie ma (np. moderator kliknął po tym, jak sprzedawca ją wycofał).

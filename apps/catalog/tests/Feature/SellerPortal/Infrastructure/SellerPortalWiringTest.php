@@ -8,10 +8,10 @@ use SellerPortal\Application\Seller\RegisterSellerHandler;
 use SellerPortal\Domain\Seller\Event\SellerRegistered;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\DomainEvent;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\UserId;
 use SellerPortal\Infrastructure\InProcessDomainEventDispatcher;
+use SharedKernel\DomainEvent;
 
 test('kontener składa handler z implementacjami SQL, a dispatcher jest scoped', function () {
     $user = User::factory()->create();

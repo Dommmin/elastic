@@ -2,7 +2,7 @@
 
 namespace App\Http;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Jedyne miejsce, które tłumaczy kody reguł domeny na polskie komunikaty.

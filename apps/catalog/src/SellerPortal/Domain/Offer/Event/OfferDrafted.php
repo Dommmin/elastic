@@ -6,7 +6,7 @@ use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\ProductId;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Sprzedawca utworzył szkic oferty.

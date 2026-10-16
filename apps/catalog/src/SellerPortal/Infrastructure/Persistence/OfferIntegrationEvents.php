@@ -20,7 +20,7 @@ use SellerPortal\Domain\Offer\Event\OfferStockChanged;
 use SellerPortal\Domain\Offer\Event\OfferSuspended;
 use SellerPortal\Domain\Offer\Event\OfferWithdrawn;
 use SellerPortal\Domain\Offer\Offer;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Translacja zdarzeń domenowych oferty na zdarzenia integracyjne (wiersze outboxu).

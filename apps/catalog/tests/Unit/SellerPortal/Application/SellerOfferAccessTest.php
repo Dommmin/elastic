@@ -8,9 +8,9 @@ use SellerPortal\Domain\Offer\OfferAction;
 use SellerPortal\Domain\Offer\SuspensionReason;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\Money;
 use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 
 /**

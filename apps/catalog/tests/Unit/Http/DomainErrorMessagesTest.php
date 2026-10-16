@@ -10,9 +10,9 @@ use SellerPortal\Domain\Offer\PendingPriceChangeMismatch;
 use SellerPortal\Domain\Offer\PriceChangeAlreadyPending;
 use SellerPortal\Domain\Offer\PriceChangeLimitExceeded;
 use SellerPortal\Domain\Seller\SellerCannotSell;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
-use SellerPortal\Domain\Shared\DomainException;
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\ConcurrencyConflict;
+use SharedKernel\DomainException;
+use SharedKernel\InvalidValue;
 
 test('każdy zmapowany CODE daje dokładny polski komunikat', function (DomainException $exception, string $message) {
     expect(DomainErrorMessages::for($exception))->toBe($message);

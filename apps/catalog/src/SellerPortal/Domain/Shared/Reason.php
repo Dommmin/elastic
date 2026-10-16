@@ -2,6 +2,8 @@
 
 namespace SellerPortal\Domain\Shared;
 
+use SharedKernel\InvalidValue;
+
 /**
  * Uzasadnienie decyzji człowieka (odrzucenie zmiany ceny, zawieszenie oferty).
  *

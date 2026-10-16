@@ -1,9 +1,9 @@
 <?php
 
-use SellerPortal\Domain\Shared\Currency;
-use SellerPortal\Domain\Shared\CurrencyMismatch;
-use SellerPortal\Domain\Shared\InvalidValue;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\Currency;
+use SharedKernel\CurrencyMismatch;
+use SharedKernel\InvalidValue;
+use SharedKernel\Money;
 
 test('Money odrzuca 0 i ujemne', function () {
     expect(fn () => Money::fromCents(0))->toThrow(InvalidValue::class)

@@ -1,6 +1,6 @@
 <?php
 
-namespace SellerPortal\Domain\Shared;
+namespace SharedKernel;
 
 /**
  * Wartość spoza dozwolonego zakresu value objectu (np. cena <= 0).

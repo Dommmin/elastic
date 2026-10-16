@@ -5,7 +5,7 @@ namespace SellerPortal\Domain\Offer\Event;
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\Stock;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Opublikowana oferta spadła do zera sztuk. DLACZEGO osobne zdarzenie: dla reszty systemu to nie 'zmiana liczby', tylko zniknięcie oferty z półki.

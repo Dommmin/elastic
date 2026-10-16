@@ -1,6 +1,6 @@
 <?php
 
-namespace SellerPortal\Domain\Shared;
+namespace SharedKernel;
 
 use DateTimeImmutable;
 

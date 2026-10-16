@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Akcja niedozwolona w bieżącym statusie oferty (np. zmiana stanu wycofanej).

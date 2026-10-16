@@ -12,8 +12,8 @@ use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Offer\SuspensionReason;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\InvalidValue;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\InvalidValue;
+use SharedKernel\Money;
 
 function offerStockOffer(OfferStatus $status, int $stock): Offer
 {

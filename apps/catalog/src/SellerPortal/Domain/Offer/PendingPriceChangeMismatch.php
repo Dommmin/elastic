@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Moderator decyduje o innej cenie niż ta, która czeka teraz w ofercie

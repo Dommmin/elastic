@@ -27,7 +27,7 @@ use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\PendingPriceChangeMismatch;
 use SellerPortal\Domain\Seller\SellerCannotSell;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 
 function moderationHandlersPublishedOffer(PortalWorld $w): OfferId

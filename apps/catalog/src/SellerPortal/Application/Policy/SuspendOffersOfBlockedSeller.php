@@ -11,7 +11,7 @@ use SellerPortal\Domain\Offer\SuspensionReason;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerRepository;
 use SellerPortal\Domain\Seller\SellerStatus;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Wykonanie polityki „zablokowany sprzedawca nie sprzedaje”: zawiesza jego opublikowane oferty.

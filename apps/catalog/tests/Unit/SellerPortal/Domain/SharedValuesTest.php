@@ -1,13 +1,13 @@
 <?php
 
-use SellerPortal\Domain\Shared\AggregateRoot;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
-use SellerPortal\Domain\Shared\DomainEvent;
-use SellerPortal\Domain\Shared\DomainException;
-use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\AggregateRoot;
+use SharedKernel\ConcurrencyConflict;
+use SharedKernel\DomainEvent;
+use SharedKernel\DomainException;
+use SharedKernel\InvalidValue;
 
 test('Reason przycina białe znaki', function () {
     expect(Reason::fromString("  za wysoka cena \n")->value())->toBe('za wysoka cena');

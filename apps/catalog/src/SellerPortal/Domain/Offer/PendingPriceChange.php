@@ -3,7 +3,7 @@
 namespace SellerPortal\Domain\Offer;
 
 use DateTimeImmutable;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\Money;
 
 /**
  * Zgłoszona, jeszcze niezaakceptowana zmiana ceny (część agregatu Offer).

@@ -14,11 +14,11 @@ use SellerPortal\Domain\Seller\Event\SellerBlocked;
 use SellerPortal\Domain\Seller\Event\SellerRegistered;
 use SellerPortal\Domain\Seller\Event\SellerRejected;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
-use SellerPortal\Domain\Shared\AggregateRoot;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\AggregateRoot;
+use SharedKernel\Money;
 
 /**
  * Agregat sprzedawcy: konto handlowe użytkownika i jego status w moderacji.

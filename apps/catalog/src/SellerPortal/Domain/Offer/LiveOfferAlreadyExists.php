@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Sprzedawca ma już żywą ofertę na ten produkt. DLACZEGO nie w agregacie: reguła dotyczy WIELU ofert, więc pilnuje jej aplikacja (hasLiveOffer), a indeks unikalny jest ostatnią gwarancją.

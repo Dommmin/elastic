@@ -55,8 +55,8 @@ Zasady:
 |---|---|---|---|
 | oferta | `Offer` | propozycja sprzedaży **jednego** produktu z katalogu przez **jednego** sprzedawcę: cena, stan magazynowy, stan egzemplarza, czas wysyłki. Agregat | `Domain/Offer/Offer.php` |
 | produkt | `ProductId` | produkt z katalogu (inny kontekst). Portal zna tylko jego ID i pyta katalog, czy istnieje | `Domain/Offer/ProductId.php`, port `Application/Port/ProductCatalog.php` |
-| kwota, cena | `Money` | grosze (int > 0) plus waluta. Arytmetyka tylko w tej samej walucie | `Domain/Shared/Money.php` |
-| waluta | `Currency` | dziś tylko PLN | `Domain/Shared/Currency.php` |
+| kwota, cena | `Money` | grosze (int > 0) plus waluta. Arytmetyka tylko w tej samej walucie | `../SharedKernel/Money.php` |
+| waluta | `Currency` | dziś tylko PLN | `../SharedKernel/Currency.php` |
 | stan magazynowy, stan | `Stock` | 0–100 000 sztuk | `Domain/Offer/Stock.php` |
 | stan egzemplarza | `Condition` (`New`, `Used`) | nowy / używany. Opis oferty, nie produktu | `Domain/Offer/Condition.php` |
 | czas wysyłki | `ShippingTime` | 1–30 dni | `Domain/Offer/ShippingTime.php` |
@@ -159,13 +159,13 @@ innych kontekstów (search). Tłumaczy je `Infrastructure/Persistence/OfferInteg
 
 | PL | Kod | Definicja | Gdzie |
 |---|---|---|---|
-| agregat, korzeń agregatu | `AggregateRoot` | jedyne wejście do grupy obiektów, która musi być spójna po każdej operacji. Zapisuje zdarzenia, nie publikuje ich | `Domain/Shared/AggregateRoot.php` |
+| agregat, korzeń agregatu | `AggregateRoot` | jedyne wejście do grupy obiektów, która musi być spójna po każdej operacji. Zapisuje zdarzenia, nie publikuje ich | `../SharedKernel/AggregateRoot.php` |
 | odtworzenie (rekonstytucja) | `Offer::reconstitute`, `Seller::reconstitute` | zbudowanie agregatu ze stanu w bazie, bez zdarzeń i bez reguł przejść | |
 | repozytorium | `OfferRepository`, `SellerRepository` | „kolekcja” agregatów. Interfejs w domenie, implementacja SQL w infrastrukturze (`Sql*Repository`) | `Domain/*/…Repository.php`, `Infrastructure/Persistence/` |
 | nowa tożsamość | `nextIdentity()` | ID z sekwencji bazy przed zapisem, bo agregat ma ID od urodzenia | `Infrastructure/Persistence/NextId.php` |
 | wersja, konflikt wersji | kolumna `version`, `ConcurrencyConflict` (`concurrency_conflict`) | optymistyczna blokada: ktoś zapisał ofertę, odkąd ją widzieliśmy. Dwa sprawdzenia: wersja odesłana z formularza kontra wczytana w handlerze (karty otwarte od dawna) i `UPDATE … WHERE version = ?` w repozytorium (zapisy w tych samych milisekundach). UI: „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” | `Application/ExpectedVersion.php`, `Infrastructure/Persistence/SqlOfferRepository.php` |
 | oczekiwana wersja | pole `version` formularza, `expectedVersion` komendy | wersja oferty, którą człowiek widział na ekranie. Niesie ją każda komenda z UI zmieniająca ofertę; polityki nie | `Application/ExpectedVersion.php` |
-| niepoprawna wartość | `InvalidValue` (`invalid_value`) | VO odmówił utworzenia. Za walidacją formularza to błąd w kodzie, więc **jest** logowany | `Domain/Shared/InvalidValue.php` |
+| niepoprawna wartość | `InvalidValue` (`invalid_value`) | VO odmówił utworzenia. Za walidacją formularza to błąd w kodzie, więc **jest** logowany | `../SharedKernel/InvalidValue.php` |
 | kod reguły | stała `CODE` każdego `DomainException` | stabilny identyfikator złamanej reguły. Tekst dla człowieka nadaje `apps/catalog/app/Http/DomainErrorMessages.php` | |
 | komenda | `DraftOffer`, `ChangeOfferPrice`, `BlockSeller`, … | prosta klasa readonly: intencja aktora | `Application/*/` |
 | handler | `…Handler` | orkiestruje: transakcja → wczytaj → wywołaj → zapisz → roześlij zdarzenia. Bez reguł biznesowych | `Application/*/` |

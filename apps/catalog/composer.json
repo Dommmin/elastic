@@ -39,7 +39,8 @@
             "App\\": "app/",
             "Database\\Factories\\": "database/factories/",
             "Database\\Seeders\\": "database/seeders/",
-            "SellerPortal\\": "src/SellerPortal/"
+            "SellerPortal\\": "src/SellerPortal/",
+            "SharedKernel\\": "src/SharedKernel/"
         }
     },
     "autoload-dev": {

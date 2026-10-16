@@ -328,7 +328,7 @@ Decyzje z tego etapu:
    z Laravela:
 
    ```diff
-   --- apps/catalog/src/SellerPortal/Domain/Shared/Money.php
+   --- apps/catalog/src/SharedKernel/Money.php
    +use Illuminate\Support\Str;
    +
     final readonly class Money
@@ -341,9 +341,9 @@ Decyzje z tego etapu:
    php artisan test --compact tests/Arch
    ```
 
-   Czerwony: `SellerPortalLayersTest` › „domena nie zna frameworka ani innych
-   warstw”, komunikat `Expecting 'SellerPortal\Domain' not to use 'Illuminate'.`
-   Cofnij: `git checkout -- src/SellerPortal/Domain/Shared/Money.php`.
+   Czerwony: `SharedKernelTest` › „shared kernel nie zna nikogo”,
+   komunikat `Expecting 'SharedKernel' not to use 'Illuminate'.`
+   Cofnij: `git checkout -- src/SharedKernel/Money.php`.
    Pytanie do przemyślenia: dlaczego to ma być test w CI, a nie zasada
    w README? (Bo zasady w README łamie się w piątek o 18:00.)
 
@@ -473,16 +473,16 @@ niepoprawnej wartości nie da się utworzyć.
 
 **W projekcie**
 
-- `Money`, int w groszach plus waluta: `apps/catalog/src/SellerPortal/Domain/Shared/Money.php:23`
+- `Money`, int w groszach plus waluta: `apps/catalog/src/SharedKernel/Money.php:23`
   (`fromCents` odmawia `<= 0`). `int`, bo `0.1 + 0.2 != 0.3`, a próg 30%
   ma się rozstrzygać co do grosza.
-- `Money::differsByMoreThanPercent`: `apps/catalog/src/SellerPortal/Domain/Shared/Money.php:60`.
+- `Money::differsByMoreThanPercent`: `apps/catalog/src/SharedKernel/Money.php:60`.
   **Historia z tego etapu:** automatyczny przegląd bezpieczeństwa po Tasku 1
   zauważył, że punkt odniesienia był *domyślny*. Zamiana argumentów zmienia
   wynik: 10000 → 13001 to +30,01% (do akceptacji), ale 13001 → 10000 liczone
   od 13001 to ≈ 23% (przechodzi). Ktoś, kto kiedyś wywoła to odwrotnie,
   odwróci strażnika ceny. Naprawa w Tasku 4: punkt odniesienia nazwany wprost
-  w docblocku, test asymetrii (`apps/catalog/tests/Unit/SellerPortal/Domain/MoneyTest.php:45`),
+  w docblocku, test asymetrii (`apps/catalog/tests/Unit/SharedKernel/MoneyTest.php:45`),
   walidacja procentu 0–100 i komentarz w jedynym miejscu wywołania
   (`apps/catalog/src/SellerPortal/Domain/Offer/PriceChangePolicy.php:39`).
 - `Reason`, uzasadnienie decyzji człowieka: `apps/catalog/src/SellerPortal/Domain/Shared/Reason.php:18`.
@@ -678,7 +678,7 @@ innych systemów, i wiesz, dlaczego między nimi stoi tłumacz.
 
 **W projekcie**
 
-- `apps/catalog/src/SellerPortal/Domain/Shared/AggregateRoot.php:27`:
+- `apps/catalog/src/SharedKernel/AggregateRoot.php:27`:
   `recordThat`. Dwie metody odczytu: `pendingEvents` (`:35`) tylko podgląda
   (repozytorium pisze outbox, ale zapis może się jeszcze nie udać),
   `releaseEvents` (`:43`) zwraca i czyści (woła handler *po* udanym zapisie).

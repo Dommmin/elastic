@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Application;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Szkic oferty wskazuje produkt, którego nie ma w katalogu. Katalog to inny kontekst, więc sprawdza to aplikacja przez port, nie agregat.

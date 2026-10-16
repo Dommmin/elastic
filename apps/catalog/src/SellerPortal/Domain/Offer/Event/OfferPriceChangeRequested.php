@@ -4,8 +4,8 @@ namespace SellerPortal\Domain\Offer\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
-use SellerPortal\Domain\Shared\DomainEvent;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\DomainEvent;
+use SharedKernel\Money;
 
 /**
  * Zmiana ceny przekroczyła próg i czeka na decyzję moderatora; cena obowiązująca się nie zmienia.

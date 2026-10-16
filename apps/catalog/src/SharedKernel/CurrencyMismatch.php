@@ -1,6 +1,6 @@
 <?php
 
-namespace SellerPortal\Domain\Shared;
+namespace SharedKernel;
 
 /**
  * Próba porównania lub działania na kwotach w różnych walutach.

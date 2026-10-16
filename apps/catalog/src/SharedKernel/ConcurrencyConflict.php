@@ -1,6 +1,6 @@
 <?php
 
-namespace SellerPortal\Domain\Shared;
+namespace SharedKernel;
 
 /**
  * Ktoś inny zapisał ten sam agregat między odczytem a zapisem

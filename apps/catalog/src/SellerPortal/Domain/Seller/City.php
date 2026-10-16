@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Miasto sprzedawcy. Celowo tylko tekst: słownika miejscowości nie

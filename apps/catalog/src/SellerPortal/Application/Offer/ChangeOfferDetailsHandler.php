@@ -10,8 +10,8 @@ use SellerPortal\Domain\Offer\Condition;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Offer\ShippingTime;
-use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\InvalidValue;
 
 /**
  * Handler komendy ChangeOfferDetails: wczytaj → zmień agregat → zapisz → roześlij zdarzenia, wszystko w jednej transakcji.
