@@ -1,5 +1,7 @@
 <?php
 
+use Illuminate\Support\Facades\Cache;
+
 /**
  * W środowisku testowym baza (SQLite) jest dostępna, ale Redis/ES/RabbitMQ
  * nie (nie łączymy testów jednostkowych z żywą infrastrukturą). To dobra
@@ -24,4 +26,12 @@ test('/api/health raportuje latencję dla działających zależności', function
 
     $response->assertJsonPath('checks.database.status', 'ok')
         ->assertJsonStructure(['checks' => ['database' => ['latency_ms']]]);
+});
+
+test('/api/health podaje czas ostatniego sweepu zamówień albo null, bez wpływu na status', function () {
+    Cache::forget('ordering:sweep:last_run_at');
+    $this->getJson('/api/health')->assertStatus(200)->assertJsonPath('ordering_sweep_last_run_at', null);
+
+    Cache::put('ordering:sweep:last_run_at', '2026-10-16T12:00:00+00:00');
+    $this->getJson('/api/health')->assertStatus(200)->assertJsonPath('ordering_sweep_last_run_at', '2026-10-16T12:00:00+00:00');
 });

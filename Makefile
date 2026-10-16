@@ -93,6 +93,10 @@ logs: ## Logi (make logs s=elasticsearch)
 worker-logs: ## Logi catalog-worker (polityki blokady sprzedawcy, RUNBOOK #040)
 	$(DC) logs -f --tail=200 catalog-worker
 
+.PHONY: scheduler-logs
+scheduler-logs: ## Logi catalog-scheduler (sweep wygasania zamówień)
+	$(DC) logs -f --tail=200 catalog-scheduler
+
 .PHONY: sh
 sh: ## Shell w kontenerze (make sh s=es01)
 	$(DC) exec $(s) bash

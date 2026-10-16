@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Elastic\Elasticsearch\Client;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Throwable;
@@ -45,7 +46,20 @@ class HealthController extends Controller
         return response()->json([
             'status' => $status,
             'checks' => $checks,
+            // Sygnał, że scheduler sweepu zamówień żyje; null = jeszcze nie biegł.
+            // Nie wpływa na status: bez sweepu sprzedaż działa, tylko zamówienia nie wygasają.
+            'ordering_sweep_last_run_at' => $this->sweepLastRunAt(),
         ], $critical ? 200 : 503);
+    }
+
+    private function sweepLastRunAt(): ?string
+    {
+        try {
+            return Cache::get('ordering:sweep:last_run_at');
+        } catch (Throwable) {
+            // Cache (domyślnie baza/Redis) może leżeć: health ma wtedy dalej odpowiadać.
+            return null;
+        }
     }
 
     /**

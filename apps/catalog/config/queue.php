@@ -37,6 +37,18 @@ return [
     */
     'seller_policies_connection' => env('SELLER_POLICIES_QUEUE_CONNECTION', 'database'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Połączenie kolejki sagi zamówień
+    |--------------------------------------------------------------------------
+    |
+    | Kroki sagi (rezerwacja, zwolnienie, potwierdzenie, zwrot) muszą powstać
+    | atomowo ze stanem zamówienia, więc idą do tabeli `jobs` w tej samej
+    | bazie, a worker czyta wyłącznie to połączenie. Zmiana QUEUE_CONNECTION
+    | nie może tego rozpiąć; `after_commit` połączenia musi zostać `false`.
+    */
+    'ordering_process_connection' => env('ORDERING_PROCESS_QUEUE_CONNECTION', 'database'),
+
     'connections' => [
 
         'sync' => [

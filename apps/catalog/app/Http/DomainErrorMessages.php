@@ -29,6 +29,11 @@ final class DomainErrorMessages
         'seller_cannot_sell' => 'Konto sprzedawcy nie jest aktywne',
         'stock_below_reserved' => 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk',
         'seller_already_registered' => 'To konto ma już profil sprzedawcy',
+        'price_changed_since_cart' => 'Ceny w koszyku się zmieniły — sprawdź i złóż zamówienie ponownie',
+        'offer_no_longer_available' => 'Część ofert w koszyku nie jest już dostępna',
+        'cannot_buy_own_offer' => 'Nie możesz kupić własnej oferty',
+        'invalid_order_transition' => 'Tej operacji nie można wykonać na zamówieniu w obecnym stanie',
+        'cart_empty' => 'Koszyk jest pusty',
     ];
 
     public static function for(DomainException $exception): string

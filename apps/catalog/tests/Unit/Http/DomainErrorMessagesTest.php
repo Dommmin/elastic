@@ -1,6 +1,12 @@
 <?php
 
 use App\Http\DomainErrorMessages;
+use Ordering\Application\Order\CannotBuyOwnOffer;
+use Ordering\Application\Order\CartEmpty;
+use Ordering\Application\Order\OfferNoLongerAvailable;
+use Ordering\Application\Order\PriceChangedSinceCart;
+use Ordering\Domain\InvalidOrderTransition;
+use Ordering\Domain\OrderStatus;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Application\SellerAlreadyRegistered;
 use SellerPortal\Domain\Offer\LiveOfferAlreadyExists;
@@ -28,6 +34,11 @@ test('każdy zmapowany CODE daje dokładny polski komunikat', function (DomainEx
     'no_pending_price_change' => [fn () => new NoPendingPriceChange, 'Ta oferta nie ma już zgłoszonej zmiany ceny'],
     'pending_price_changed' => [fn () => new PendingPriceChangeMismatch, 'Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę'],
     'stock_below_reserved' => [fn () => new StockBelowReserved, 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk'],
+    'price_changed_since_cart' => [fn () => new PriceChangedSinceCart([]), 'Ceny w koszyku się zmieniły — sprawdź i złóż zamówienie ponownie'],
+    'offer_no_longer_available' => [fn () => new OfferNoLongerAvailable([1]), 'Część ofert w koszyku nie jest już dostępna'],
+    'cannot_buy_own_offer' => [fn () => new CannotBuyOwnOffer([1]), 'Nie możesz kupić własnej oferty'],
+    'invalid_order_transition' => [fn () => InvalidOrderTransition::from(OrderStatus::Paid, 'ship'), 'Tej operacji nie można wykonać na zamówieniu w obecnym stanie'],
+    'cart_empty' => [fn () => new CartEmpty, 'Koszyk jest pusty'],
 ]);
 
 test('nieznany kod i brak CODE → komunikat zastępczy, nie treść wyjątku', function (DomainException $exception) {
@@ -45,6 +56,7 @@ test('mapa nie ma kodów spoza testu powyżej', function () {
     expect(array_keys($messages))->toEqualCanonicalizing([
         'price_change_limit', 'price_change_pending', 'concurrency_conflict', 'live_offer_exists',
         'offer_without_stock', 'seller_cannot_sell', 'seller_already_registered', 'no_pending_price_change',
-        'pending_price_changed', 'stock_below_reserved',
+        'pending_price_changed', 'stock_below_reserved', 'price_changed_since_cart', 'offer_no_longer_available',
+        'cannot_buy_own_offer', 'invalid_order_transition', 'cart_empty',
     ]);
 });

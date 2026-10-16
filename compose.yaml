@@ -492,6 +492,51 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # Scheduler Laravela (`schedule:work`): co minutę uruchamia sweep
+  # `orders:expire-overdue`. Bez tego procesu zamówienia nie wygasają, a towar
+  # zostaje zarezerwowany (RUNBOOK, Task 16). Dokładnie jeden kontener:
+  # `withoutOverlapping` chroni przed nakładaniem się przebiegów, nie przed
+  # kilkoma schedulerami. Kroki sagi wykonuje catalog-worker.
+  catalog-scheduler:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/catalog.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+        NODE_VERSION: ${NODE_VERSION}
+    command: ["php", "artisan", "schedule:work"]
+    environment:
+      APP_ENV: ${APP_ENV}
+      APP_DEBUG: ${APP_DEBUG}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: ${CATALOG_DB}
+      DB_USERNAME: ${CATALOG_DB_USER}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_CLIENT: phpredis
+    volumes:
+      - ./apps/catalog:/app
+    # PID 1 to proces artisan (jak w catalog-worker), stąd healthcheck po cmdline.
+    # `schedule:work` żyje bez końca; `restart: unless-stopped` podnosi go po awarii.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q 'schedule:work' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres: { condition: service_healthy }
+      catalog-app: { condition: service_healthy }
+    mem_limit: 128m
+    networks: [marketplace]
+    restart: unless-stopped
+
   search-consumer:
     profiles: [apps]
     build:
