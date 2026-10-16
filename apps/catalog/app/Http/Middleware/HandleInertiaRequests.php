@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Http\CurrentSeller;
+use App\Models\CartItem;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 use SellerPortal\Infrastructure\ReadModel\PriceChangeQueue;
@@ -51,6 +52,11 @@ class HandleInertiaRequests extends Middleware
             'moderation' => fn (): ?array => $request->user()?->can('panel')
                 ? ['pending_price_changes' => app(PriceChangeQueue::class)->count()]
                 : null,
+            // Closure z tego samego powodu co `moderation`: jedno `COUNT` przy
+            // renderze strony. Liczymy pozycje, nie sztuki.
+            'cart' => fn (): array => [
+                'count' => $request->user() ? CartItem::query()->where('user_id', $request->user()->getAuthIdentifier())->count() : 0,
+            ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];
     }

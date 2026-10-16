@@ -10,6 +10,8 @@ use App\Http\Controllers\Seller\ProductLookupController;
 use App\Http\Controllers\Seller\SellerApplicationController;
 use App\Http\Controllers\Seller\SellerDashboardController;
 use App\Http\Controllers\Seller\SellerOfferController;
+use App\Http\Controllers\Shop\CartController;
+use App\Http\Controllers\Shop\ProductPageController;
 use App\Http\Controllers\Webhooks\PaymentWebhookController;
 use Illuminate\Support\Facades\Route;
 
@@ -18,6 +20,18 @@ Route::inertia('/', 'Welcome')->name('home');
 // ETAP 7 — nazwana, więc Wayfinder generuje typed `search()` do użycia
 // w Vue (`resources/js/routes`), patrz docs/06-PLAN-WDROZENIA.md.
 Route::get('search', [SearchController::class, 'index'])->name('search');
+
+// Strona produktu jest publiczna (oferty z bazy); dodanie do koszyka wymaga logowania.
+Route::get('products/{product}', [ProductPageController::class, 'show'])->whereNumber('product')->name('products.show');
+
+// Koszyk i składanie zamówień: tylko zalogowany kupujący. `{offer}` to ID oferty w koszyku.
+Route::middleware('auth')->group(function () {
+    Route::get('cart', [CartController::class, 'index'])->name('cart.index');
+    Route::post('cart/items', [CartController::class, 'store'])->name('cart.items.store');
+    Route::patch('cart/items/{offer}', [CartController::class, 'update'])->whereNumber('offer')->name('cart.items.update');
+    Route::delete('cart/items/{offer}', [CartController::class, 'destroy'])->whereNumber('offer')->name('cart.items.destroy');
+    Route::post('cart/checkout', [CartController::class, 'checkout'])->name('cart.checkout');
+});
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::inertia('dashboard', 'Dashboard')->name('dashboard');

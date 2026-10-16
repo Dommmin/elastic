@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Ordering\Application\Port\BuyerCart;
 use Ordering\Application\Port\Clock;
 use Ordering\Application\Port\DomainEventDispatcher;
 use Ordering\Application\Port\OfferSnapshots;
@@ -21,6 +22,7 @@ use Ordering\Domain\Event\RefundRequested;
 use Ordering\Domain\OrderRepository;
 use Ordering\Infrastructure\DbOfferSnapshots;
 use Ordering\Infrastructure\DbSellerAccounts;
+use Ordering\Infrastructure\EloquentBuyerCart;
 use Ordering\Infrastructure\FakeGatewayPaymentGateway;
 use Ordering\Infrastructure\InProcessDomainEventDispatcher;
 use Ordering\Infrastructure\LaravelProcessJobQueue;
@@ -35,8 +37,6 @@ use Ordering\Infrastructure\SystemClock;
  * DLACZEGO `bind`, a nie `singleton`: pod Octane singleton żyje między
  * żądaniami, a implementacje są bezstanowe i tanie. Wyjątek: dispatcher
  * trzyma słuchaczy, więc jest `scoped` (wzorzec `SellerPortalServiceProvider`).
- *
- * Port `BuyerCart` dostaje adapter w późniejszym zadaniu (koszyk).
  */
 class OrderingServiceProvider extends ServiceProvider
 {
@@ -50,6 +50,7 @@ class OrderingServiceProvider extends ServiceProvider
         $this->app->bind(SellerAccounts::class, DbSellerAccounts::class);
         $this->app->bind(ProcessJobQueue::class, LaravelProcessJobQueue::class);
         $this->app->bind(PaymentGateway::class, FakeGatewayPaymentGateway::class);
+        $this->app->bind(BuyerCart::class, EloquentBuyerCart::class);
 
         // Słuchacze rejestrowani W fabryce scoped, a nie w boot(): po flushu
         // scoped instancji (Octane) fabryka biegnie od nowa, więc każda

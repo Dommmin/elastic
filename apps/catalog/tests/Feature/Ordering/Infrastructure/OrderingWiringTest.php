@@ -8,10 +8,12 @@ use Illuminate\Support\Facades\DB;
 use Ordering\Application\Order\CancelOrderByBuyerHandler;
 use Ordering\Application\Order\CancelOrderBySellerHandler;
 use Ordering\Application\Order\ExpireOverdueOrdersHandler;
+use Ordering\Application\Order\PlaceOrdersFromCartHandler;
 use Ordering\Application\Order\RecordPaymentFailureHandler;
 use Ordering\Application\Order\RecordPaymentHandler;
 use Ordering\Application\Order\ShipOrderHandler;
 use Ordering\Application\Order\StartPaymentHandler;
+use Ordering\Application\Port\BuyerCart;
 use Ordering\Application\Port\Clock;
 use Ordering\Application\Port\DomainEventDispatcher;
 use Ordering\Application\Port\OfferSnapshots;
@@ -51,6 +53,7 @@ test('provider rozwiązuje wszystkie porty i handlery', function (string $abstra
     ExpireOverdueOrdersHandler::class, RecordPaymentHandler::class, RecordPaymentFailureHandler::class,
     CancelOrderByBuyerHandler::class, CancelOrderBySellerHandler::class, ShipOrderHandler::class,
     OrderProcessManager::class, PaymentGateway::class, StartPaymentHandler::class, RefundPayment::class,
+    BuyerCart::class, PlaceOrdersFromCartHandler::class,
 ]);
 
 test('dispatcher Orderingu jest scoped i ma dokładnie sześć słuchaczy sagi', function () {

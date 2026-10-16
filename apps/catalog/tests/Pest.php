@@ -26,6 +26,13 @@ pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
     ->in('Feature');
 
+// Saga zamówień jedzie w testach HTTP synchronicznie: po złożeniu zamówienia
+// rezerwacja od razu przesuwa je do AwaitingPayment, bez workera. Testy,
+// które sprawdzają wiersze w tabeli `jobs`, ustawiają `database` same
+// (konfiguracja w teście wygrywa z tym hakiem, bo biegnie później).
+pest()->beforeEach(fn () => config(['queue.ordering_process_connection' => 'sync']))
+    ->in('Feature/Ordering');
+
 /*
 |--------------------------------------------------------------------------
 | Expectations

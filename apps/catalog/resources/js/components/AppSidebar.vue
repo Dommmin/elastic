@@ -6,6 +6,7 @@ import {
     LayoutGrid,
     PackageSearch,
     Scale,
+    ShoppingCart,
     Store,
     Users,
 } from '@lucide/vue';
@@ -25,6 +26,7 @@ import {
 } from '@/components/ui/sidebar';
 import { hasSellerPortal } from '@/lib/sellerStatus';
 import { dashboard } from '@/routes';
+import { index as cartIndex } from '@/routes/cart';
 import { priceChanges as panelPriceChanges } from '@/routes/panel/moderation';
 import { index as panelProducts } from '@/routes/panel/products';
 import { index as panelSellers } from '@/routes/panel/sellers';
@@ -46,6 +48,12 @@ const mainNavItems = computed<NavItem[]>(() => [
     },
     ...(page.props.auth.user
         ? [
+              {
+                  title: 'Koszyk',
+                  href: cartIndex(),
+                  icon: ShoppingCart,
+                  badge: page.props.cart.count || undefined,
+              },
               page.props.auth.seller
                   ? {
                         title: 'Portal sprzedawcy',
