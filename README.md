@@ -52,9 +52,10 @@ Wszystkie komendy: `make help`
 | [05-SPOJNOSC-DANYCH](docs/05-SPOJNOSC-DANYCH.md) | jak nie rozjechać danych między serwisami |
 | [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | mapa drogowa, 15 etapów, rejestr decyzji |
 | [07-WERSJE](docs/07-WERSJE.md) | przypięte wersje i zasady utrzymania |
-| [10-DDD](docs/10-DDD.md) | Domain-Driven Design od zera na portalu sprzedawcy: 10 modułów, „zepsuj i napraw” |
-| [11-SELLER-PORTAL-SLOWNIK](docs/11-SELLER-PORTAL-SLOWNIK.md) | język wszechobecny portalu sprzedawcy (PL ↔ kod) |
-| [adr/](docs/adr/) | decyzje architektoniczne: portal sprzedawcy (ADR-0001…0004), metryki w Prometheusie (ADR-0005) |
+| [10-DDD](docs/10-DDD.md) | Domain-Driven Design od zera na portalu sprzedawcy i zamówieniach: 12 modułów, „zepsuj i napraw” |
+| [11-SELLER-PORTAL-SLOWNIK](docs/11-SELLER-PORTAL-SLOWNIK.md) | język wszechobecny portalu sprzedawcy (PL ↔ kod), z rezerwacjami |
+| [12-ZAMOWIENIA-SLOWNIK](docs/12-ZAMOWIENIA-SLOWNIK.md) | język wszechobecny zamówień: statusy, płatność, zwroty, saga (PL ↔ kod) |
+| [adr/](docs/adr/) | decyzje architektoniczne: portal sprzedawcy (ADR-0001…0004), metryki w Prometheusie (ADR-0005), zamówienia (ADR-0006 rezerwacje w ofercie, 0007 process manager, 0008 Shared Kernel) |
 | [RUNBOOK](docs/RUNBOOK.md) | **przewodnik diagnostyczny — uzupełniaj po każdym błędzie** |
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
 | [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
@@ -78,6 +79,7 @@ Wszystkie komendy: `make help`
 | D | Wdrożenie na VPS: obrazy z GHCR (CI), Compose, tunel SSH, backupy, rollback | ✅ zweryfikowane na serwerze (`make vps-verify` 63/63 + restart) — [przewodnik](docs/blog/etap-d-vps.md) |
 | D2 | Ten sam stack w k3s: ECK (ES ×3 + Kibana), StatefulSety, Job migracji, CronJob backupu; migracja z Compose | ✅ zweryfikowane na serwerze (`make k3s-verify` 82/82 + restart) — [przewodnik](docs/blog/etap-d2-k3s.md) |
 | Portal sprzedawcy | Moduł DDD w catalog: rejestracja i akceptacja sprzedawcy, oferty (szkic/publikacja/cena/stan), moderacja, blokady; do projekcji trafiają tylko oferty `listed()` | w trakcie — testy, `make smoke`, kryteria 1–4 na lokalnym stacku i pomiary (nDCG 0.779 → 0.786, [POMIARY](docs/POMIARY.md)) OK — [przewodnik](docs/blog/etap-e-portal-sprzedawcy-ddd.md); porównanie z DDD-lite zrobione lokalnie ([dokument](docs/blog/ddd-vs-ddd-lite.md), gałąź `ddd-lite-porownanie` niewypchnięta); brak wdrożenia k3s |
+| Zamówienia (F) | Kontekst Ordering w pełnym DDD: koszyk wielosprzedawcowy, zamówienie na sprzedawcę, rezerwacje stanu w `Offer`, saga (process manager, kompensacje, wyścigi R1–R10), symulowana bramka z podpisanym webhookiem, wysyłka i anulowanie ze zwrotem, `orders:race-test` | w trakcie — kod i testy lokalnie na gałęzi `zamowienia` (cały catalog 740 testów, domena zamówień 80 testów w 41 ms) — [przewodnik](docs/blog/etap-f-zamowienia-saga.md); **nie zrobione:** merge do `main` (czeka na zgodę), E2E na stacku, `orders:race-test` na Postgresie, gałąź porównawcza `zamowienia-ddd-lite`, k3s |
 | 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:

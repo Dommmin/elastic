@@ -9,7 +9,9 @@ Format każdego modułu (jak w [`03-SCIEZKA-NAUKI.md`](03-SCIEZKA-NAUKI.md)):
 
 Moduły 1–3 to **strategia** (jak podzielić problem i rozmawiać o nim). Moduły
 4–9 to **taktyka** (jak zapisać model w kodzie). Moduł 10 mówi, kiedy całą
-resztę odpuścić. Kolejność jest celowa: większość zespołów, które „robiły DDD”
+resztę odpuścić. Moduły 11–12 (etap „Zamówienia”) to reguły, które obejmują
+**kilka agregatów naraz**: process manager, spójność ostateczna, kompensacja
+i idempotencja. Kolejność jest celowa: większość zespołów, które „robiły DDD”
 i się sparzyły, zaczęła od taktyki (repozytoria, agregaty, value objecty
 wszędzie) i nigdy nie zadała pytania strategicznego, czy ten kawałek systemu
 w ogóle na to zasługuje.
@@ -19,9 +21,14 @@ Materiał jest zbudowany na prawdziwym module: `apps/catalog/src/SellerPortal`
 Obok leżą słownik [`11-SELLER-PORTAL-SLOWNIK.md`](11-SELLER-PORTAL-SLOWNIK.md)
 i decyzje architektoniczne [`adr/`](adr/). Spec, z którego wszystko wyszło:
 [`superpowers/specs/2026-10-15-portal-sprzedawcy-ddd-design.md`](superpowers/specs/2026-10-15-portal-sprzedawcy-ddd-design.md).
+Moduły 11–12 stoją na kontekście `apps/catalog/src/Ordering` (zamówienia,
+przewodnik: [`blog/etap-f-zamowienia-saga.md`](blog/etap-f-zamowienia-saga.md),
+słownik: [`12-ZAMOWIENIA-SLOWNIK.md`](12-ZAMOWIENIA-SLOWNIK.md), spec:
+[`superpowers/specs/2026-10-16-zamowienia-ddd-design.md`](superpowers/specs/2026-10-16-zamowienia-ddd-design.md)).
 
 > **Ścieżki.** Wszystkie odwołania `plik:linia` są względne wobec korzenia
-> repozytorium i zostały sprawdzone na gałęzi `portal-sprzedawcy` (2026-10-15).
+> repozytorium i zostały sprawdzone na gałęzi `portal-sprzedawcy` (2026-10-15),
+> a w modułach 11–12 na gałęzi `zamowienia` (2026-10-16).
 > Linie dryfują przy każdej zmianie, więc zawsze podaję też symbol (klasę,
 > metodę, nazwę testu). Gdy numer się nie zgadza, szukaj po symbolu:
 > `grep -n "function changePrice" apps/catalog/src/SellerPortal/Domain/Offer/Offer.php`.
@@ -41,6 +48,8 @@ php artisan test --compact tests/Arch                            # reguły zale�
 php artisan test --compact tests/Feature/SellerPortal            # SQL, outbox, joby, HTTP
 # cały portal naraz (tak sprawdzane są wszystkie „zepsuj i napraw” poniżej, ~2–4 s):
 php artisan test --compact tests/Unit/SellerPortal tests/Feature/SellerPortal tests/Arch
+# moduły 11–12: zamówienia i portal razem (rezerwacje żyją w ofercie), ~6 s:
+php artisan test --compact tests/Unit/Ordering tests/Feature/Ordering tests/Unit/SellerPortal tests/Feature/SellerPortal tests/Arch
 ```
 
 **Protokół „zepsuj i napraw”:** wprowadź zmianę z bloku `diff` → uruchom cały
@@ -223,11 +232,17 @@ I miejsca, gdzie język wprost żyje w kodzie:
    `/panel/moderation/price-changes`). Wypisz każde słowo z etykiet, toastów
    i komunikatów błędów. Dla każdego znajdź pojęcie w słowniku i symbol w kodzie.
    Słowo bez pary w kodzie to albo dziura w modelu, albo zbędne słowo w UI.
-2. **Event Storming na sucho, zamówienia (podprojekt C).** Zanim powstanie
-   jedna linijka kodu, rozpisz krok 1–6 dla „kupujący zamawia z oferty”.
+2. **Event Storming na sucho, zamówienia (podprojekt C).** Zanim przeczytasz
+   odpowiedź, rozpisz krok 1–7 dla „kupujący zamawia z oferty”.
    Gwarantowane hot spoty: rezerwacja stanu (kiedy zmniejszamy `stock`?),
    oferta wycofana w trakcie płacenia, zmiana ceny między koszykiem a płatnością.
-   Który z nich zmieni agregat `Offer`, a który da nowy agregat?
+   Który z nich zmieni agregat `Offer`, a który da nowy agregat? Potem porównaj
+   z prawdziwym warsztatem, który tym razem odbył się **przed** specem:
+   [spec zamówień, sekcja 1](superpowers/specs/2026-10-16-zamowienia-ddd-design.md#1-event-storming-kupujący-zamawia-z-oferty)
+   (12 hot spotów H1–H12, z których każdy ma miejsce w kodzie). Ile z nich
+   znalazłeś sam? Których zabrakło i dlaczego (zwykle: wpłata po terminie H6
+   i zdublowany webhook H10, bo wychodzą dopiero z pytania „co, jeśli to samo
+   przyjdzie dwa razy albo za późno?”).
 3. **Zepsuj i napraw: rozstrzygnięty hot spot jest testem.** Hot spot „odblokowanie
    nie przywraca ofert zawieszonych przez moderatora” wyrzuć z polityki
    przywracania:
@@ -414,6 +429,33 @@ dowiaduje się o blokadzie z `offer.suspended` każdej oferty
 ([ADR-0003](adr/0003-zdarzenia-sprzedawcy-wewnetrzne.md)). Gdyby jakiś
 `seller.*` jednak przyszedł, handler loguje ostrzeżenie zamiast go po cichu
 zgubić: `apps/search/src/MessageHandler/ProductSyncHandler.php:47`.
+
+**Mapa po etapie zamówień.** Doszedł kontekst Ordering, Shared Kernel i obcy
+system (bramka płatności). Strzałka idzie od tego, kto woła:
+
+```
+Tożsamość (users) ──[Conformist: BuyerId = users.id]──▶ Ordering
+Ordering ──[port StockReservations → komendy aplikacyjne portalu]──▶ Seller Portal     (Customer/Supplier)
+Ordering ──[port OfferSnapshots, port SellerAccounts: odczyt]──▶ Seller Portal / katalog
+Ordering ──[port PaymentGateway]──▶ Fake gateway ──[podpisany webhook]──▶ ACL: PaymentWebhookController ──▶ Ordering
+Seller Portal ──[outbox offer.*: + stock_reserved, reservation_released, reservation_confirmed]──▶ RabbitMQ ──▶ Search
+Ordering + Seller Portal ──[Shared Kernel: Money, Currency, AggregateRoot, DomainEvent, …]
+Ordering ──✗── outbox (zdarzenia order.* nie wychodzą z kontekstu, jak w ADR-0003)
+```
+
+| Relacja | Wzorzec | Kod |
+|---|---|---|
+| Ordering → Seller Portal (rezerwacje) | **Customer/Supplier**: Ordering definiuje port, portal wystawia komendy `ReserveStock`/`ReleaseReservation`/`ConfirmReservation`, adapter tłumaczy wyjątki portalu na `ReservationResult` (mały ACL) | `apps/catalog/src/Ordering/Application/Port/StockReservations.php`, `apps/catalog/src/Ordering/Infrastructure/SellerPortalStockReservations.php:41` |
+| Ordering ↔ Seller Portal (pieniądze, klasy bazowe) | **Shared Kernel** | `apps/catalog/src/SharedKernel/`, [ADR-0008](adr/0008-shared-kernel.md) |
+| Ordering ← bramka | **ACL**: jedyna klasa, która zna format bramki (podpis, `reference`, `status`) | `apps/catalog/app/Http/Controllers/Webhooks/PaymentWebhookController.php:29` |
+| Ordering ← Tożsamość | **Conformist** | `apps/catalog/src/Ordering/Domain/BuyerId.php` |
+| Seller Portal → Search | **Published Language**, rozszerzony o trzy nazwy rezerwacji i pole `available`; klucz rezerwacji nie wychodzi | `apps/catalog/src/SellerPortal/Infrastructure/Persistence/OfferIntegrationEvents.php:123` |
+
+Kierunek jest jeden: portal nie zna zamówień (`arch('portal sprzedawcy nie zna
+zamówień')`, `apps/catalog/tests/Arch/OrderingLayersTest.php:20`), a z
+`SellerPortal\*` korzysta wyłącznie `Ordering\Infrastructure`. Gdyby portal
+stał się osobną usługą, zmieniają się trzy adaptery (`SellerPortalStockReservations`,
+`DbOfferSnapshots`, `DbSellerAccounts`), domena i aplikacja Orderingu nie.
 
 **Ćwiczenia**
 
@@ -1236,3 +1278,382 @@ nazwy pola to 4 pliki zamiast 1).
 - Czym różni się złożoność biznesowa od technicznej? Przykład każdej z tego repo.
 - Co *konkretnie* tracisz, przechodząc z pełnego DDD na DDD-lite?
 - Startup, 2 programistów, 3 miesiące do premiery, reguły jeszcze nieznane. Co robisz ze strategią, a co z taktyką?
+
+---
+
+## MODUŁ 11 — Process manager i spójność ostateczna
+
+**Cel:** rozpoznajesz regułę, której nie da się zamknąć w jednym agregacie,
+umiesz spiąć kilka agregatów procesem (process manager) i wiesz, gdzie ma
+żyć stan tego procesu. Rozumiesz, co kupujący widzi „pomiędzy” krokami.
+
+**Teoria**
+
+1. **Reguła na wielu agregatach.** „Złożone zamówienie trzyma towar w każdej
+   ofercie” dotyczy `Order` i kilku `Offer` naraz. Moduł 5 mówi: jedna
+   transakcja zmienia jeden agregat. Opcje są trzy: większy agregat (tu
+   absurdalny: zamówienie z ofertami?), jedna transakcja na kilku agregatach
+   (blokady, deadlocki; to robi gałąź lite) albo **proces**: każdy agregat we
+   własnej transakcji, a coś pomiędzy pilnuje kolejności i sprząta po
+   porażkach.
+2. **Saga i process manager.** *Saga* (Garcia-Molina, Salem, 1987) to ciąg
+   lokalnych transakcji, z których każda ma kompensację. *Process manager*
+   (Hohpe, Woolf, „Enterprise Integration Patterns”) to komponent, który
+   odbiera zdarzenia i decyduje o następnym kroku. W praktyce mówi się
+   „saga” na oba. Ważniejsze rozróżnienie: **orkiestracja** (jeden
+   koordynator zna cały proces) kontra **choreografia** (każdy reaguje na
+   cudze zdarzenia, nikt nie widzi całości). Tu jest orkiestracja.
+3. **Gdzie żyje stan procesu.** Process manager musi wiedzieć, gdzie proces
+   jest („rezerwuję pozycję 2 z 3”, „czekam na płatność”). Można go trzymać
+   w osobnej tabeli sagi albo w agregacie, którego proces dotyczy. Jeśli
+   każdy krok procesu jest też stanem, który widzi użytkownik, osobna tabela
+   to druga kopia tej samej prawdy, a dwie kopie się rozjeżdżają.
+4. **Spójność ostateczna ma twarz.** Między krokami świat jest „pomiędzy”:
+   zamówienie istnieje, a towar jeszcze nie jest zarezerwowany. Nie ukrywaj
+   tego. Nazwij ten stan w języku użytkownika i pokaż go w UI. Tu to
+   „Sprawdzamy dostępność” (`Placed`) z odświeżaniem co sekundę.
+5. **Trzy warunki z modułu 8 obowiązują dalej:** krok zlecony atomowo ze
+   zdarzeniem (outbox komend), warunek sprawdzany w chwili wykonania,
+   idempotencja (moduł 12). Dochodzi czwarty: **czas jest aktorem.** Termin
+   płatności nie przyjdzie jako zdarzenie od kupującego. Ktoś musi co jakiś
+   czas zapytać „co już minęło?”.
+
+**W projekcie**
+
+- Process manager:
+  `apps/catalog/src/Ordering/Application/Process/OrderProcessManager.php:25`.
+  Sześć słuchaczy, każdy jedną linijką kolejkuje krok, zero stanu. Docblock
+  (`:19`) mówi, dlaczego tylko kolejkuje: wywołanie portalu albo bramki
+  w transakcji zamówienia trzymałoby blokadę na czas cudzej operacji.
+- Stan procesu w `Order`, nie w tabeli sagi
+  ([ADR-0007](adr/0007-process-manager-ze-stanem-w-zamowieniu.md)):
+  docblock `apps/catalog/src/Ordering/Domain/Order.php:35`. Status pozycji
+  (`LineStatus::Pending`/`Reserved`) to jedyny kawałek stanu, którego
+  kupujący nie widzi wprost.
+- Atomowość „zapis zamówienia + krok sagi”: job w tabeli `jobs`, w tej samej
+  transakcji, na połączeniu przypiętym w configu
+  (`apps/catalog/src/Ordering/Infrastructure/LaravelProcessJobQueue.php:14`,
+  `apps/catalog/config/queue.php:50`, `after_commit => false` w `:71`).
+  Testy: `ProcessJobsTest` › „złożenie zamówienia wstawia job w tej samej
+  transakcji” i „wycofana transakcja nie zostawia joba”
+  (`apps/catalog/tests/Feature/Ordering/Infrastructure/ProcessJobsTest.php:55`, `:67`).
+- Słuchacze sagi rejestrowani w fabryce `scoped` dispatchera, tak jak
+  w portalu (Octane, moduł 8):
+  `apps/catalog/app/Providers/OrderingServiceProvider.php:59`, test „słuchacze
+  sagi przeżywają flush instancji scoped (Octane)” (`ProcessJobsTest.php:133`).
+- Kto zwalnia, a kto nie: `onCancelled` (`OrderProcessManager.php:52`)
+  przepuszcza tylko anulowanie przez kupującego. Sprzedawca anuluje opłacone
+  zamówienie, bo towaru nie ma (H8), więc oddanie sztuk wystawiłoby je
+  następnemu kupującemu, który też by ich nie dostał.
+- Spójność ostateczna w UI: `Placed` → „Sprawdzamy dostępność”
+  (`apps/catalog/src/Ordering/Infrastructure/ReadModel/OrderStatusLabel.php:17`)
+  i polling co 1 s tylko w tym statusie
+  (`apps/catalog/resources/js/pages/shop/orders/Show.vue:37`). Drugi stan
+  „pomiędzy” to powrót z bramki przed webhookiem: „Czekamy na potwierdzenie
+  płatności” (`apps/catalog/app/Http/Controllers/Shop/OrderController.php:43`).
+  Nie jest statusem zamówienia, bo zamówienie jeszcze nic nie wie.
+- Czas jako aktor: sweep `orders:expire-overdue` co minutę
+  (`apps/catalog/routes/console.php:13`), w kontenerze `catalog-scheduler`
+  (`compose.yaml:518`). Handler
+  (`apps/catalog/src/Ordering/Application/Order/ExpireOverdueOrdersHandler.php:37`):
+  paczki po 100, każde zamówienie we własnej transakcji, konflikt wersji
+  pomija (następny przebieg za minutę), a przed `expire` sprawdza
+  `isDueForExpiry` jeszcze raz na świeżym stanie (`:65`). Sweep zamiast
+  opóźnionego joba, bo zgubiony job zostawiłby zamówienie wiszące na zawsze,
+  a sweep naprawia także zamówienia, w których saga utknęła (R10).
+  `/health` pokazuje czas ostatniego przebiegu
+  (`apps/catalog/app/Http/Controllers/HealthController.php:51`).
+- Karencja na spóźniony webhook ma **dwie** definicje, jak `listed()`
+  w module 10: w domenie (`Order::isDueForExpiry`, `Order.php:339`) i w
+  zapytaniu sweepa (`SqlOrderRepository::idsDueForExpiry`,
+  `apps/catalog/src/Ordering/Infrastructure/Persistence/SqlOrderRepository.php:114`;
+  repozytorium w pamięci ją powtarza:
+  `apps/catalog/tests/Unit/Ordering/InMemory/InMemoryOrderRepository.php:62`).
+  Ćwiczenie 3 pokazuje, co z tego wynika.
+- Wszystkie wyścigi (R1–R10 ze specu) to testy aplikacji w pamięci
+  z ręcznie ustawionym przeplotem:
+  `apps/catalog/tests/Unit/Ordering/Application/OrderRacesTest.php`. Hak
+  `afterReserve` wstrzykuje cudzy krok między T1 a T2. Cały plik trwa
+  milisekundy, bo nie ma w nim bazy ani kolejki.
+
+**Ćwiczenia**
+
+1. Narysuj z pamięci przepływ od „Złóż zamówienia” do „Opłacone” i do
+   „Wygasło”: każde zdarzenie, każdy job, każda transakcja (T1, T2). Zaznacz,
+   w którym miejscu kupujący widzi „Sprawdzamy dostępność”. Porównaj ze
+   specem, sekcja 5.
+2. **Zepsuj i napraw: process manager zwalnia także po anulowaniu przez
+   sprzedawcę.** Ktoś „upraszcza” słuchacza, bo „anulowane to anulowane”:
+
+   ```diff
+   --- apps/catalog/src/Ordering/Application/Process/OrderProcessManager.php   (metoda onCancelled)
+   -        if ($event->by !== CancelledBy::Buyer) {
+   -            return;
+   -        }
+   -
+            $this->jobs->releaseReservations($event->orderId);
+   ```
+
+   Uruchom zamówienia i portal (komenda z „Jak uruchamiać testy”). Czerwone
+   są **trzy** testy, wszystkie w warstwie aplikacji, w pamięci:
+   `OrderProcessTest` › „anulowanie przez kupującego zwalnia, przez sprzedawcę
+   nie” (w kolejce jest `releaseReservations` przed `refund`),
+   `OrderRacesTest` › „R7: anulowanie przez sprzedawcę przed potwierdzeniem:
+   potwierdzenie i tak się wykonuje” (kolejka `confirmReservations`,
+   `releaseReservations`, `refund` zamiast `confirmReservations`, `refund`)
+   i `OrderProcessTest` › „ponowiony zwrot po zakończeniu nie woła bramki drugi
+   raz” (błąd typu: test bierze pierwszy job z kolejki jako zwrot, a pierwszy
+   jest teraz zwolnieniem). Wszystkie testy HTTP sprzedawcy są zielone.
+   Zwróć uwagę, dlaczego żaden test nie pokazał „sztuka wróciła do
+   sprzedaży”: w tych scenariuszach zwolnienie wykonuje się **po**
+   potwierdzeniu, a zwolnienie potwierdzonego klucza to w ofercie no-op. Gdyby
+   kolejność była odwrotna (zwolnienie przed potwierdzeniem), potwierdzenie
+   dostałoby `ReservationNotFound` i job wylądowałby w `failed_jobs`:
+   pieniądze są, a stan oferty nie spadł. Test przypina tu **decyzję** (H8),
+   nie jej skutek. Cofnij:
+   `git checkout -- src/Ordering/Application/Process/OrderProcessManager.php`.
+3. **Zepsuj i napraw: karencja tylko w jednej z dwóch definicji.** Usuń
+   karencję z domeny, zostaw w zapytaniu sweepa:
+
+   ```diff
+   --- apps/catalog/src/Ordering/Domain/Order.php   (metoda isDueForExpiry)
+   -            && $now >= $this->paymentDeadline->add(new DateInterval(self::WEBHOOK_GRACE));
+   +            && $now >= $this->paymentDeadline;
+   ```
+
+   Czerwone są **dwa** przypadki jednego testu domeny:
+   `OrderLifecycleTest` › „wygasa dopiero po terminie i 5 min karencji”
+   z datasetem `Placed` i `AwaitingPayment`. Testy sweepa (`OrderCommandsTest` ›
+   „ExpireOverdueOrders wygasza tylko po karencji i pomija konflikty”,
+   `ExpireOverdueOrdersCommandTest` › „orders:expire-overdue szanuje karencję
+   i zapisuje czas przebiegu”) są **zielone**, bo zapytanie repozytorium
+   dalej odcina zamówienia sprzed karencji. Sweep zachowuje się poprawnie,
+   a mimo to model kłamie: każdy, kto zapyta agregat „czy już wygasa?” poza
+   sweepem (np. przycisk „Zapłać” w przyszłości), dostanie złą odpowiedź.
+   Dwie definicje tej samej reguły pilnuje tylko to, że obie mają testy.
+   Cofnij: `git checkout -- src/Ordering/Domain/Order.php`.
+4. **Tylko do przeczytania: kolejka sagi na domyślnym połączeniu.** To
+   zepsucie wykonałem, ale **nie powtarzaj go** na maszynie, na której na
+   `127.0.0.1:6379` działa cudzy Redis:
+
+   ```diff
+   --- apps/catalog/src/Ordering/Infrastructure/LaravelProcessJobQueue.php   (metoda reserveLines)
+   -        ReserveOrderLinesJob::dispatch($orderId->value())->onConnection($this->connection());
+   +        ReserveOrderLinesJob::dispatch($orderId->value());
+   ```
+
+   Czerwonych jest pięć: `ProcessJobsTest` › „złożenie zamówienia wstawia
+   job w tej samej transakcji”, „kolejka sagi trafia na połączenie z configu
+   mimo queue.default” (oba datasety, `redis` i `sync`), „słuchacze sagi
+   przeżywają flush instancji scoped (Octane)” i
+   `ExpireOverdueOrdersCommandTest` › „orders:expire-overdue szanuje karencję
+   i zapisuje czas przebiegu” (zamówienie jest od razu `awaiting_payment`, bo
+   `phpunit.xml` ma `QUEUE_CONNECTION=sync` i krok wykonał się w żądaniu).
+   Dataset `redis` nie padł z błędem połączenia: Laravel wysłał job do
+   **prawdziwego** Redisa z `.env` (u mnie: Redis innego projektu na tej
+   samej maszynie, został w nim jeden obcy job). Dwie lekcje. Atomowość
+   „zapis + krok” zależy od jednej linijki i od tego, że kolejka jest w tej
+   samej bazie. Test z datasetem „zły config” jest bezpieczny tylko dopóty,
+   dopóki kod jest dobry; zepsuty kod robi z niego test integracyjny na cudzej
+   infrastrukturze.
+
+**Sprawdź się**
+- Dlaczego nie da się złożyć zamówienia i zarezerwować towaru w jednej
+  transakcji jednego agregatu? Co by kosztowała jedna transakcja na kilku?
+- Process manager w tym repo nie ma ani jednego pola. Gdzie jest stan procesu
+  i co by się stało, gdyby był w dwóch miejscach?
+- Kupujący widzi „Sprawdzamy dostępność”. Jaki to status i co musi się stać,
+  żeby się zmienił?
+- Dlaczego zegar to sweep co minutę, a nie job z opóźnieniem 20 minut?
+- Dlaczego anulowanie przez sprzedawcę nie zwalnia rezerwacji, a anulowanie
+  przez kupującego tak?
+- Karencja ma dwie definicje. Która jest „prawdziwa” i jak byś je związał?
+
+---
+
+## MODUŁ 12 — Kompensacja i idempotencja
+
+**Cel:** umiesz zaprojektować krok procesu, który znosi powtórzenie,
+i kompensację, która sprząta po kroku, gdy dalszy ciąg się nie udał. Wiesz,
+dlaczego „idempotencja wymaga pamięci” i dlaczego najgroźniejszy duplikat to
+ten, który przychodzi **równolegle**.
+
+**Teoria**
+
+1. **Kompensacja to nie rollback.** Rollback cofa transakcję, która się nie
+   zatwierdziła. Kompensacja to **nowa** operacja biznesowa, która znosi
+   skutek czegoś, co już się wydarzyło: zwolnienie rezerwacji, zwrot pieniędzy.
+   Ma własne awarie (zwrot w bramce może paść), więc sama potrzebuje ponowień
+   i idempotencji. Wpłaty nie da się „cofnąć wyjątkiem”: pieniądze już są
+   u nas, odmowa przyjęcia zostawia je bez właściciela.
+2. **Dostarczenie co najmniej raz.** Kolejka ponawia job po awarii, bramka
+   ponawia webhook, aż dostanie 2xx, człowiek klika dwa razy. Każdy krok musi
+   znieść, że wykona się drugi raz. To jest **idempotencja**: ten sam krok
+   powtórzony daje ten sam stan.
+3. **Idempotencja wymaga pamięci.** Żeby rozpoznać powtórzenie, trzeba
+   pamiętać, co już się stało: klucz (deterministyczny, nie losowy) i status
+   tego, co pod nim zrobiono. Losowy klucz przy każdym ponowieniu to nowa
+   operacja, nie powtórzenie.
+4. **Trzy rodzaje duplikatów,** od najłatwiejszego:
+   - *sekwencyjny* (job padł, kolejka go ponawia): wystarczy klucz,
+   - *zewnętrzny* (webhook drugi raz): klucz z cudzego systemu (`paymentId`),
+   - *równoległy* (ten sam job w dwóch workerach naraz, bo pierwszy
+     przekroczył `retry_after`): oba przebiegi widzą stan sprzed drugiego.
+     Klucz pomaga, ale **decyzja** o kompensacji może być zła, jeśli patrzy
+     tylko na „czy jest po mojemu”, a nie „kto to zrobił”.
+5. **Kompensacja przed skutkiem.** Najmniej intuicyjny wyścig: krok
+   zwalniający przeszedł, *zanim* krok rezerwujący się zatwierdził, więc nie
+   miał czego zwolnić. Wtedy krok rezerwujący, wracając, musi sam posprzątać
+   (gałąź R1).
+6. **Gdy kompensacji brak**, sygnałem musi być coś, co ktoś zobaczy:
+   `failed_jobs`, log, alert. Cicha porażka jest gorsza niż głośna.
+
+**W projekcie**
+
+- **Wpłata nigdy nie jest odrzucana wyjątkiem:**
+  `apps/catalog/src/Ordering/Domain/Order.php:42` (docblock) i
+  `Order::recordPayment` (`:196`). Kolejność warunków: duplikat tej samej
+  wpłaty (no-op), wpłata, która ma już zwrot (no-op), jedyna ścieżka
+  przyjęcia (`AwaitingPayment` i kwota = suma), cała reszta to
+  `LatePaymentReceived` + `RefundRequested`. Rozstrzygnięcie R15:
+  `LatePaymentReceived` poprzedza zwrot na **każdej** ścieżce (po terminie,
+  podwójna wpłata, zła kwota), a różnicę niesie `RefundReason`.
+- **Zwrot jako kompensacja z własną idempotencją:**
+  `apps/catalog/src/Ordering/Application/Process/RefundPayment.php:20`.
+  Bramka jest wołana **przed** transakcją zamówienia (`:51`), bo wywołanie
+  sieci w transakcji trzymałoby blokadę. To bezpieczne tylko dlatego, że
+  `refundId` (`refund-{orderId}-{n}`, nadany przez domenę) jest kluczem
+  idempotencji w bramce:
+  `apps/catalog/app/FakePaymentGateway/FakePaymentGateway.php:115`
+  (`insertOrIgnore` po `idempotency_key`). Jeśli zapis po udanym zwrocie
+  padnie, ponowiony job zleci ten sam zwrot, a bramka wykona go raz.
+- **Zwolnienie wszystkich pozycji, nie tylko oznaczonych:**
+  `apps/catalog/src/Ordering/Application/Process/ReleaseOrderReservations.php:13`.
+  Status pozycji w zamówieniu bywa w tyle za ofertą (awaria między T1 a T2),
+  a zwolnienie nieistniejącej rezerwacji jest no-opem, więc „wszystkie” jest
+  zawsze bezpieczne, a „tylko `Reserved`” gubiłoby sztuki.
+- **Klucz deterministyczny:** `order-{id}`
+  (`apps/catalog/src/Ordering/Application/Process/OrderReservationKey.php:10`).
+  Ponowiony krok rezerwacji trafia w tę samą rezerwację (R2), a oferta
+  traktuje „ten sam klucz, ta sama ilość” jako no-op
+  (`apps/catalog/src/SellerPortal/Domain/Offer/Offer.php:215`).
+- **Pamięć rozliczonych kluczy** (bo agregat zna tylko aktywne): tabela
+  `offer_reservations` ze statusem i `SqlOfferRepository::reservationStatus`
+  ([ADR-0006](adr/0006-rezerwacje-w-ofercie.md)). Dwa handlery z niej
+  korzystają:
+  - `ConfirmReservationHandler`
+    (`apps/catalog/src/SellerPortal/Application/Reservation/ConfirmReservationHandler.php:35`):
+    klucz już `confirmed` → no-op. Potwierdzenie bez aktywnej rezerwacji to
+    w agregacie błąd (`Offer.php:278`), nie no-op: „zwolniona, potem
+    potwierdzona” byłoby sprzedażą bez zmniejszenia stanu.
+  - `ReserveStockHandler`
+    (`apps/catalog/src/SellerPortal/Application/Reservation/ReserveStockHandler.php:42`):
+    klucz już rozliczony → `ReservationConflict` (rozstrzygnięcie R12),
+    zamiast surowego błędu indeksu unikalnego.
+- **Kompensacja przed skutkiem (R1):**
+  `apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php:82`.
+  Kupujący anulował między T1 a T2. Job zwalniający po anulowaniu już
+  przeszedł i nie zastał rezerwacji, bo T1 jeszcze się nie zatwierdziło.
+  Krok rezerwacji, wracając do zamówienia, sam zwalnia tę pozycję.
+- **Duplikat równoległy (R18): spec był zbyt ogólny, test duplikatu go
+  poprawił.** Spec mówił: w T2 „inny status niż `Placed` → zwolnij tę
+  pozycję”. Przy implementacji (Task 8) powstał test zdublowanego joba: drugi
+  worker dostał ten sam krok (pierwszy przekroczył `retry_after`)
+  i doprowadził zamówienie do `AwaitingPayment` między T1 a T2 pierwszego.
+  T1 pierwszego trafiło wtedy w **cudzą** aktywną rezerwację (no-op po
+  kluczu), a reguła ze specu kazałaby ją zwolnić: zamówienie czeka na
+  płatność bez towaru, sztuka wraca do sprzedaży, overselling. Kod zwalnia
+  więc tylko wtedy, gdy zamówienie **samo zrezygnowało** z rezerwacji:
+  `Rejected`, `Expired` albo `Cancelled` przez kupującego
+  (`ReserveOrderLines.php:103` docblock, `:118`, `wantsReservations` w `:153`).
+  Intencja R1 zostaje, zmienia się warunek: nie „czy status jest inny niż
+  oczekiwałem”, tylko „czy zamówienie nadal chce tych sztuk”. Spec ma tę
+  poprawkę dopisaną w sekcji 5.
+- **Znany skrót (R19):** zdublowany krok rezerwacji, który trwałby przez
+  płatność **i** potwierdzenie, spróbowałby zarezerwować klucz już
+  `confirmed`. Fałszywa oferta w testach pamięci by na to pozwoliła, ale
+  prawdziwy `ReserveStockHandler` rzuca `ReservationConflict` (R12), więc job
+  głośno trafia do `failed_jobs` (RUNBOOK [#046](RUNBOOK.md#046)). Wymaga
+  to, żeby człowiek zapłacił w trakcie jednego przebiegu joba, więc zostało
+  opisane, nie rozwiązane.
+- **Webhook: 200 zamiast ponowień w nieskończoność.**
+  `apps/catalog/app/Http/Controllers/Webhooks/PaymentWebhookController.php:22`.
+  Nieznane zamówienie, zły payload: ostrzeżenie w logu i 200, bo wiadomość
+  nie stanie się lepsza po ponowieniu. Tylko zły podpis daje 401.
+- **ACL przepuszcza błędy programisty:**
+  `apps/catalog/src/Ordering/Infrastructure/SellerPortalStockReservations.php:26`.
+  Brak towaru, zmiana ceny i niedostępność to wyniki (`ReservationResult`),
+  po których zamówienie jest `Rejected`. `ReservationConflict` nie jest
+  wynikiem: job ma się wywrócić, a nie po cichu odrzucić zamówienie.
+
+**Ćwiczenia**
+
+Wszystkie z katalogu `apps/catalog`, komendą „zamówienia i portal” z sekcji
+[„Jak uruchamiać testy”](#jak-uruchamiać-testy-w-ćwiczeniach).
+
+1. **Zepsuj i napraw: usuń gałąź R1.**
+
+   ```diff
+   --- apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php   (metoda run)
+   -            if ($outcome === self::ABANDONED) {
+   -                $this->reservations->release($key, $line->offerId());
+   -            }
+   ```
+
+   Czerwony jest **jeden** test: `OrderRacesTest` › „R1: anulowanie w trakcie
+   rezerwacji nie zostawia rezerwacji” (w fałszywych rezerwacjach zostaje
+   aktywne `order-1|1`). Testy na bazie i HTTP są zielone, bo żaden z nich nie
+   umie wstawić anulowania **między** T1 a T2: w teście HTTP kroki idą po
+   kolei. Na produkcji ta sztuka wisiałaby zarezerwowana na zawsze (zamówienie
+   jest `Cancelled`, więc sweep go nie ruszy, a zwolnienie już się wykonało).
+   Jedyną ochroną przed tym błędem jest test z ręcznym przeplotem. Cofnij:
+   `git checkout -- src/Ordering/Application/Process/ReserveOrderLines.php`.
+2. **Zepsuj i napraw: wróć do reguły ze specu („inny status → zwolnij”).**
+
+   ```diff
+   --- apps/catalog/src/Ordering/Application/Process/ReserveOrderLines.php   (metoda markReserved)
+   -                return self::wantsReservations($order) ? self::HELD_BY_ORDER : self::ABANDONED;
+   +                return self::ABANDONED;
+   ```
+
+   Czerwony jest **jeden** test: `OrderRacesTest` › „R1: zdublowany krok
+   rezerwacji nie zwalnia sztuk zamówienia, które czeka na płatność”
+   (`Failed asserting that false is true.`: zamówienie czeka na płatność,
+   a jego rezerwacji już nie ma). Test R1 z anulowaniem jest zielony, więc
+   ta wersja „działa” dla scenariusza, który spec rozpisał. Lekcja: spec był
+   zbyt ogólny, a błąd wyszedł dopiero z pytania „co, jeśli ten sam krok
+   wykona się dwa razy **naraz**?”. Cofnij jak wyżej.
+3. **Zepsuj i napraw: idempotencja bez pamięci.** Usuń sprawdzenie statusu
+   klucza w potwierdzeniu:
+
+   ```diff
+   --- apps/catalog/src/SellerPortal/Application/Reservation/ConfirmReservationHandler.php
+   -            if ($this->offers->reservationStatus($offerId, $key) === ReservationStatus::Confirmed) {
+   -                return;
+   -            }
+   -
+   ```
+
+   Czerwone są **dwa** testy na dwóch poziomach, oba z błędem
+   `Nie ma aktywnej rezerwacji o tym kluczu.` (`ReservationNotFound`
+   z `Offer.php:278`): `ReservationHandlersTest` › „ConfirmReservation drugi
+   raz to no-op” (portal, w pamięci) i `ProcessJobsTest` › „confirm po
+   płatności zmniejsza stan w bazie, ponowienie joba nic nie zmienia”
+   (zamówienia, na bazie). Bez pamięci rozliczonych kluczy agregat nie
+   odróżni „już potwierdzone” od „nigdy nie było” i każdy ponowiony job
+   potwierdzenia skończyłby w `failed_jobs`, choć nic złego się nie stało.
+   Gdyby ktoś „naprawił” to, robiąc z braku rezerwacji no-op w agregacie,
+   otworzyłby drogę „zwolniona, potem potwierdzona” = sprzedaż bez
+   zmniejszenia stanu. Cofnij:
+   `git checkout -- src/SellerPortal/Application/Reservation/ConfirmReservationHandler.php`.
+
+**Sprawdź się**
+- Czym kompensacja różni się od rollbacku? Podaj dwie kompensacje z tego
+  modułu i powiedz, co może pójść źle w każdej z nich.
+- Dlaczego `refundId` nadaje domena, a nie bramka i nie `random_bytes`?
+- Dlaczego potwierdzenie brakującej rezerwacji jest błędem, a zwolnienie
+  brakującej rezerwacji no-opem?
+- Opisz wyścig R1 w trzech zdaniach. Kto sprząta i dlaczego nikt inny nie może?
+- Spec mówił „inny status → zwolnij”. Jaki scenariusz to psuje i jakie
+  pytanie powinno paść przy projektowaniu, żeby go znaleźć?
+- Webhook dla nieznanego zamówienia dostaje 200. Dlaczego nie 404?

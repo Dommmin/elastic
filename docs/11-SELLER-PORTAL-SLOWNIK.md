@@ -11,7 +11,8 @@ Zasady:
   commicie. Jeśli w UI pojawia się słowo bez pary w kodzie, to sygnał, że
   model ma dziurę.
 - **Nie używaj synonimów.** „Oferta aktywna”, „oferta włączona”, „oferta
-  dostępna” nie istnieją. Są tylko statusy poniżej i dwa stany pochodne.
+  dostępna” nie istnieją. Są tylko statusy poniżej i stany pochodne.
+  „Dostępne” to **liczba sztuk** (`Offer::available()`), nie stan oferty.
 - Kolumna „Gdzie” podaje symbol. Ścieżki są względne wobec
   `apps/catalog/src/SellerPortal/`, chyba że zaczynają się od `apps/` lub `app/`
   (wtedy względem korzenia repo albo `apps/catalog/`).
@@ -57,7 +58,7 @@ Zasady:
 | produkt | `ProductId` | produkt z katalogu (inny kontekst). Portal zna tylko jego ID i pyta katalog, czy istnieje | `Domain/Offer/ProductId.php`, port `Application/Port/ProductCatalog.php` |
 | kwota, cena | `Money` | grosze (int > 0) plus waluta. Arytmetyka tylko w tej samej walucie | `../SharedKernel/Money.php` |
 | waluta | `Currency` | dziś tylko PLN | `../SharedKernel/Currency.php` |
-| stan magazynowy, stan | `Stock` | 0–100 000 sztuk | `Domain/Offer/Stock.php` |
+| stan magazynowy, stan, „Na stanie” | `Stock` | 0–100 000 sztuk, **deklaracja sprzedawcy** („mam tyle na półce”). Rezerwacje go nie zmniejszają, dopiero potwierdzenie (sprzedaż) | `Domain/Offer/Stock.php` |
 | stan egzemplarza | `Condition` (`New`, `Used`) | nowy / używany. Opis oferty, nie produktu | `Domain/Offer/Condition.php` |
 | czas wysyłki | `ShippingTime` | 1–30 dni | `Domain/Offer/ShippingTime.php` |
 | szczegóły oferty | `changeDetails(Condition, ShippingTime)` | stan egzemplarza i czas wysyłki razem | `Offer::changeDetails` |
@@ -75,8 +76,9 @@ Zasady:
 
 | PL | Kod | Definicja | Dlaczego nie status |
 |---|---|---|---|
-| **widoczna** (w wyszukiwarce) | `Offer::isListed()`; po stronie odczytu scope `listed()` (`apps/catalog/app/Models/Offer.php`) | opublikowana **i** stan > 0 | to jedyna definicja „widocznej”; projekcja do ES bierze tylko takie oferty |
-| **wyprzedana** | `Offer::isSoldOut()`; filtr `sold_out` w `Infrastructure/ReadModel/SellerOfferList.php` | opublikowana **i** stan = 0 | gdyby była statusem, trzeba by ją synchronizować ze stanem przy każdej zmianie. [ADR-0004](adr/0004-wyprzedana-jako-stan-pochodny.md) |
+| **dostępne** | `Offer::available()`; po stronie odczytu scope `withAvailable()` (`apps/catalog/app/Models/Offer.php`) | stan − zarezerwowane. Tyle sztuk da się jeszcze zarezerwować | zapisana kolumna musiałaby się zmieniać przy każdej rezerwacji, zwolnieniu i zmianie stanu; liczona ze `stock` i aktywnych rezerwacji nie może się rozjechać. [ADR-0006](adr/0006-rezerwacje-w-ofercie.md) |
+| **widoczna** (w wyszukiwarce) | `Offer::isListed()`; po stronie odczytu scope `listed()` (`apps/catalog/app/Models/Offer.php`) | opublikowana **i** dostępne > 0 | to jedyna definicja „widocznej”; projekcja do ES bierze tylko takie oferty. Do etapu zamówień: „stan > 0” ([ADR-0004](adr/0004-wyprzedana-jako-stan-pochodny.md), zaktualizowany przez ADR-0006) |
+| **wyprzedana** | `Offer::isSoldOut()`; filtr `sold_out` w `Infrastructure/ReadModel/SellerOfferList.php` | opublikowana **i** dostępne = 0 (np. stan 3, wszystkie 3 zarezerwowane) | gdyby była statusem, trzeba by ją synchronizować ze stanem przy każdej zmianie. [ADR-0004](adr/0004-wyprzedana-jako-stan-pochodny.md) |
 | **żywa** oferta | `OfferRepository::hasLiveOffer` | każda poza wycofaną (szkic, opublikowana, zawieszona) | reguła na zbiorze: sprzedawca ma najwyżej jedną żywą ofertę na produkt (`LiveOfferAlreadyExists`, `live_offer_exists`) |
 
 ### Operacje na ofercie
@@ -86,14 +88,42 @@ Zasady:
 | wystawienie (szkic) | `Seller::draftOffer` → `Offer::draft`, `DraftOffer` | sprzedawca | zaczyna się u sprzedawcy, bo tylko on wie, czy może sprzedawać |
 | publikacja | `Offer::publish(Seller, now)` | sprzedawca | ze szkicu, stan > 0 (`OfferCannotBePublishedWithoutStock`, `offer_without_stock`), sprzedawca aktywny |
 | zmiana ceny | `Offer::changePrice`, `ChangeOfferPrice` | sprzedawca | w szkicu od razu; w opublikowanej przez strażnika ceny |
-| zmiana stanu | `Offer::changeStock` | sprzedawca | w opublikowanej przejście > 0 → 0 to „towar się skończył”, 0 → > 0 to „towar wrócił” |
+| zmiana stanu | `Offer::changeStock` | sprzedawca | nie poniżej zarezerwowanego (`StockBelowReserved`, `stock_below_reserved`: „Nie możesz zejść poniżej liczby zarezerwowanych sztuk”). W opublikowanej przejście **dostępnych** > 0 → 0 to „towar się skończył”, 0 → > 0 to „towar wrócił” |
 | zawieszenie | `Offer::suspend(SuspensionReason)` | moderator albo polityka | tylko z opublikowanej |
 | przywrócenie | `Offer::reinstate(Seller, now)` | moderator albo polityka | z zawieszonej do opublikowanej, tylko gdy sprzedawca może sprzedawać (`SellerCannotSell`), jak przy publikacji. Panel nie pokazuje „Przywróć” przy ofercie zablokowanego sprzedawcy (`SellerOfferAccess::moderatorActions`) |
-| wycofanie | `Offer::withdraw` | sprzedawca (także zablokowany) | kasuje oczekującą zmianę ceny |
+| wycofanie | `Offer::withdraw` | sprzedawca (także zablokowany) | kasuje oczekującą zmianę ceny. **Nie** zwalnia rezerwacji (H4) |
 | akcja | `OfferAction` | — | nazwa operacji, którą UI może zaproponować (`publish`, `change_price`, `cancel_pending_price_change`, `change_stock`, `change_details`, `withdraw`, `suspend`, `reinstate`, `approve_price_change`, `reject_price_change`) |
 | dozwolone akcje | `Offer::allowedActionsFor(Actor)`; dla sprzedawcy przez `SellerOfferAccess::sellerActions` | — | **jedyne** źródło przycisków w UI. Zablokowany sprzedawca dostaje z tej listy tylko `withdraw` |
 | niedozwolone przejście | `InvalidOfferTransition` (`invalid_offer_transition`), `InvalidSellerTransition` (`invalid_seller_transition`) | — | akcja niedozwolona w obecnym statusie |
 | cudza oferta | `OfferNotOwned` (`offer_not_owned`) | — | dla użytkownika to **404**, nie 403: nie zdradzamy, że oferta istnieje |
+
+## Rezerwacje
+
+Rezerwacje doszły w etapie zamówień ([ADR-0006](adr/0006-rezerwacje-w-ofercie.md)).
+Portal nie wie, kto rezerwuje: zna tylko nieprzezroczysty klucz. Słowa
+zamówienia (status, płatność, zwrot) są w
+[`12-ZAMOWIENIA-SLOWNIK.md`](12-ZAMOWIENIA-SLOWNIK.md).
+
+| PL (UI) | Kod | Definicja | Gdzie |
+|---|---|---|---|
+| **rezerwacja** | `Reservation(key, quantity, reservedAt)` | sztuki trzymane dla kogoś, kto właśnie płaci. Część agregatu oferty; agregat trzyma tylko **aktywne** | `Domain/Offer/Reservation.php` |
+| klucz rezerwacji | `ReservationKey` | 1–64 znaki, nadaje klient rezerwacji (Ordering: `order-{id}`). Dla portalu nieprzezroczysty | `Domain/Offer/ReservationKey.php` |
+| ilość (rezerwacji) | `Quantity` | 1–100 000 sztuk | `Domain/Offer/Quantity.php` |
+| **zarezerwowane** („zarezerwowane R”) | `Offer::reserved()` | suma ilości aktywnych rezerwacji | `Offer::reserved` |
+| **dostępne** („dostępne A”) | `Offer::available()` | stan − zarezerwowane (patrz stany pochodne) | `Offer::available` |
+| „Na stanie N · zarezerwowane R · dostępne A” | `SellerOfferDetails` (`stock`, `reserved`, `available`) | szczegóły oferty sprzedawcy | `Infrastructure/ReadModel/SellerOfferDetails.php`, `apps/catalog/resources/js/pages/seller/offers/Show.vue` |
+| zarezerwowanie | `Offer::reserve(Seller, key, Quantity, Money $expectedUnitPrice, now)`, `ReserveStock` | tylko opublikowana, sprzedawca może sprzedawać, cena = obecna, ilość ≤ dostępne. Ten sam klucz i ilość to no-op | `Application/Reservation/ReserveStockHandler.php` |
+| zwolnienie | `Offer::releaseReservation`, `ReleaseReservation` | sztuki wracają do dostępnych. W **każdym** statusie; brak rezerwacji to no-op | `Application/Reservation/ReleaseReservationHandler.php` |
+| potwierdzenie (sprzedaż) | `Offer::confirmReservation`, `ConfirmReservation` | stan maleje o ilość rezerwacji, dostępne bez zmian. W każdym statusie | `Application/Reservation/ConfirmReservationHandler.php` |
+| status rezerwacji | `ReservationStatus` (`Active`, `Confirmed`, `Released`), tabela `offer_reservations` | pamięć rozliczonych kluczy: ponowione potwierdzenie (`confirmed`) to no-op, ponowna rezerwacja rozliczonego klucza to `ReservationConflict` | `Domain/Offer/ReservationStatus.php`, `OfferRepository::reservationStatus` |
+| oferta nie przyjmuje rezerwacji | `OfferNotReservable` (`offer_not_reservable`) | nieopublikowana | |
+| cena rezerwacji się nie zgadza | `ReservationPriceMismatch` (`reservation_price_mismatch`) | cena zamówienia ≠ obecna cena oferty (oczekująca zmiana się nie liczy) | |
+| za mało towaru | `InsufficientStock` (`insufficient_stock`) | ilość > dostępne | |
+| konflikt rezerwacji | `ReservationConflict` (`reservation_conflict`) | ten sam klucz z inną ilością albo klucz już rozliczony. Błąd programisty, nie odmowa | |
+| brak rezerwacji | `ReservationNotFound` (`reservation_not_found`) | potwierdzenie klucza, który nie jest aktywny (zwolniony albo nieznany) | |
+
+Pięć wyjątków rezerwacji do UI nie dociera: tłumaczy je adapter Orderingu
+na `ReservationResult` albo przepuszcza jako błąd joba.
 
 ## Strażnik ceny
 
@@ -146,6 +176,9 @@ innych kontekstów (search). Tłumaczy je `Infrastructure/Persistence/OfferInteg
 | oferta zawieszona | `OfferSuspended` | `offer.suspended` |
 | oferta przywrócona | `OfferReinstated` | `offer.reinstated` |
 | oferta wycofana | `OfferWithdrawn` | `offer.withdrawn` |
+| towar zarezerwowany | `OfferStockReserved` | `offer.stock_reserved` (z `quantity`, `available`, `listed`; **bez** klucza rezerwacji) |
+| rezerwacja zwolniona | `OfferReservationReleased` | `offer.reservation_released` |
+| rezerwacja potwierdzona (sprzedaż) | `OfferReservationConfirmed` | `offer.reservation_confirmed` |
 | sprzedawca zgłosił się | `SellerRegistered` | **brak** (zdarzenia sprzedawcy nie wychodzą z kontekstu, [ADR-0003](adr/0003-zdarzenia-sprzedawcy-wewnetrzne.md)) |
 | konto zatwierdzone / odrzucone | `SellerApproved` / `SellerRejected` | brak |
 | sprzedawca zablokowany / odblokowany | `SellerBlocked` / `SellerUnblocked` | brak (search dowiaduje się z `offer.suspended` / `offer.reinstated` każdej oferty) |

@@ -44,6 +44,10 @@
 | [041](#041) | Szósta zmiana ceny w dobie przechodzi (dev DB z migracjami sprzed poprawki precyzji) | Postgres / Portal sprzedawcy | Portal |
 | [042](#042) | „Ktoś w międzyczasie zmienił tę ofertę — odśwież stronę” (konflikt wersji) | Portal sprzedawcy | Portal |
 | [043](#043) | Przed wdrożeniem portalu na k3s: pre-flight danych i okno 500 po migracji | k3s / Postgres / Portal sprzedawcy | Portal |
+| [044](#044) | Zamówienia nie wygasają, towar wisi zarezerwowany (`catalog-scheduler`) | Scheduler / Zamówienia | Zamówienia |
+| [045](#045) | Zamówienie wisi w „Sprawdzamy dostępność” (`placed`) | Kolejka / Zamówienia | Zamówienia |
+| [046](#046) | Krok sagi w `failed_jobs`: diagnoza i ręczne ponowienie | Kolejka / Zamówienia | Zamówienia |
+| [047](#047) | Bramka płatności: przyciski deweloperskie i webhook, który nie dochodzi | Caddy / Kolejka / Zamówienia | Zamówienia |
 
 ---
 
@@ -2036,6 +2040,250 @@ Druga lekcja: „schemat przed kodem” (expand) zakłada, że stary kod przeży
 nowy schemat. Usunięcie kolumny w tym samym wdrożeniu (contract) to
 świadomie przyjęte okno błędów; czysta wersja to zostawić `active` na jedno
 wydanie i usunąć ją w następnym.
+
+<a id="044"></a>
+## 044 — Zamówienia nie wygasają, towar wisi zarezerwowany (catalog-scheduler)
+
+> Wpis przygotowany przed pierwszym uruchomieniem zamówień na żywym stacku
+> (etap „Zamówienia”, Task 16). Komendy są sprawdzone na kodzie, objawy
+> wynikają z projektu, a nie z incydentu. Uzupełnij po pierwszym prawdziwym.
+
+**Objaw**
+Zamówienie „Czeka na płatność” albo „Sprawdzamy dostępność” długo po
+terminie (15 min + 5 min karencji). Oferta, której ostatnią sztukę ktoś
+zarezerwował i nie zapłacił, nie wraca do `/search`. U sprzedawcy
+„zarezerwowane” nie spada.
+
+**Diagnoza**
+```bash
+docker compose ps catalog-scheduler                 # healthy? (healthcheck: proces schedule:work)
+make scheduler-logs                                 # co minutę „Wygaszono zamówień: N”
+curl -sk https://catalog.localhost/api/health | jq .ordering_sweep_last_run_at
+make psql db=catalog
+select id, status, payment_deadline from orders
+ where status in ('placed', 'awaiting_payment') and payment_deadline < now() - interval '5 minutes';
+```
+`ordering_sweep_last_run_at` = `null` albo starsze niż 2 minuty → sweep nie
+biegnie. Sweep biegnie, a zamówienia po terminie zostają → patrz log
+(`ConcurrencyConflict` jest pomijany i spróbuje za minutę; inny wyjątek
+przerywa przebieg).
+
+**Przyczyna**
+Czas jest w tym procesie aktorem: nikt nie wyśle zdarzenia „minął termin”.
+Wygasza `orders:expire-overdue` (`routes/console.php`, co minutę,
+`withoutOverlapping`), a uruchamia go wyłącznie kontener `catalog-scheduler`
+(`schedule:work`). Bez niego zamówienia nie wygasają, zwolnienie rezerwacji
+nigdy nie jest kolejkowane i towar wisi. Drugi powód: `withoutOverlapping`
+trzyma blokadę w cache; jeśli przebieg zginął w połowie (OOM, kill),
+blokada wygasa dopiero po swoim czasie (domyślnie 24 h), a do tego czasu
+każdy kolejny przebieg jest pomijany.
+
+**Naprawa**
+1. Scheduler nie działa: `docker compose --profile apps up -d catalog-scheduler`.
+2. Jednorazowo, bez czekania: `docker compose exec catalog-app php artisan orders:expire-overdue`
+   (idempotentne: wygaszone zamówienie przy drugim przebiegu to no-op).
+3. Zablokowany `withoutOverlapping`: `docker compose exec catalog-app php artisan schedule:clear-cache`.
+4. Wygaszone zamówienia mają w `jobs` kroki `ReleaseOrderReservationsJob`;
+   wykona je `catalog-worker` (#045, #046).
+
+**Czego się nauczyłem**
+Proces, którego jeden krok wyzwala zegar, ma o jeden proces systemowy więcej
+do pilnowania. Sweep jest odporniejszy niż opóźniony job (zgubiony job
+zostawia zamówienie wiszące na zawsze, sweep naprawia nawet te, w których
+saga utknęła), ale tylko wtedy, gdy ktoś widzi, że żyje: stąd czas ostatniego
+przebiegu w `/health`.
+
+<a id="045"></a>
+## 045 — Zamówienie wisi w „Sprawdzamy dostępność” (`placed`)
+
+> Wpis przygotowany przed pierwszym uruchomieniem na żywym stacku, jak #044.
+
+**Objaw**
+Kupujący złożył zamówienie, strona `/orders/{id}` odświeża się co sekundę
+i od dłuższej chwili pokazuje „Sprawdzamy dostępność towaru — odświeżam co
+sekundę.” Nie przechodzi ani do „Czeka na płatność”, ani do „Odrzucone”.
+
+**Diagnoza**
+```bash
+docker compose ps catalog-worker
+make worker-logs
+make psql db=catalog
+select id, status, placed_at from orders where id = <ID>;
+select event_type, occurred_at from order_events where order_id = <ID> order by id;
+select id, attempts, available_at, payload::json->>'displayName' as job from jobs order by id;
+select id, failed_at, payload::json->>'displayName' as job, left(exception, 200) from failed_jobs order by id desc limit 5;
+select reservation_key, offer_id, quantity, status from offer_reservations where reservation_key = 'order-<ID>';
+```
+- `ReserveOrderLinesJob` w `jobs`, `attempts = 0` → worker nie działa albo nie nadąża.
+- `attempts > 0` i `available_at` w przyszłości → krok padł i czeka na
+  ponowienie (backoff 5/30/120 s); powód w `make worker-logs`.
+- Job w `failed_jobs` → #046.
+- Brak joba i w `order_events` tylko `order.placed` → job nie powstał.
+  Nie powinno się zdarzyć (job jest wstawiany w transakcji złożenia), chyba
+  że ktoś zmienił `ORDERING_PROCESS_QUEUE_CONNECTION` na połączenie spoza
+  bazy (Redis, `sync`).
+- Część pozycji ma wiersz `active` w `offer_reservations`, a zamówienie jest
+  dalej `placed` → awaria między T1 (rezerwacja w ofercie) a T2 (zapis
+  w zamówieniu). Ponowiony job dokończy, bo rezerwacja tym samym kluczem jest
+  no-opem (R2).
+
+**Przyczyna**
+`Placed` to stan procesu widoczny dla kupującego: zamówienie istnieje,
+a rezerwację robi dopiero `catalog-worker` (`queue:work database`) po
+`OrderPlaced`. Bez działającego workera saga nie rusza. Przy gorącej ofercie
+kroki rezerwacji tej samej oferty rywalizują o jej wersję i ponawiają się,
+więc przejście trwa dłużej, ale nie stoi.
+
+**Naprawa**
+1. Worker nie działa: `docker compose --profile apps up -d catalog-worker`.
+2. Krok w `failed_jobs`: #046.
+3. Ręcznie, w tinkerze (`docker compose exec catalog-app php artisan tinker`):
+   `app(Ordering\Application\Process\ReserveOrderLines::class)->run(Ordering\Domain\OrderId::fromInt(<ID>))`.
+   Krok jest idempotentny i sam sprawdza, czy zamówienie jest dalej `placed`.
+4. Nic nie robić też jest naprawą: po terminie i karencji sweep wygasi
+   zamówienie, a zwolnienie odda każdą pozycję, także zajętą bez zapisu w
+   zamówieniu (R10). Kosztem jest kupujący, który 20 minut patrzy na
+   „Sprawdzamy dostępność”.
+
+> **Do uzupełnienia po pomiarze (Task 15):** normalny czas od złożenia do
+> „Czeka na płatność” na lokalnym stacku (z `order_events`:
+> `occurred_at` zdarzenia `order.awaiting_payment` minus `order.placed`,
+> kilka zamówień), żeby wiedzieć, od ilu sekund „wisi” jest objawem, a nie
+> zwykłą spójnością ostateczną. Oraz to samo pod obciążeniem
+> `orders:race-test --buyers=50 --stock=10`.
+
+**Czego się nauczyłem**
+Spójność ostateczna, którą widzi użytkownik, potrzebuje progu „to już nie
+jest normalne”. Bez zmierzonego czasu przejścia każde „wisi” to zgadywanie.
+
+<a id="046"></a>
+## 046 — Krok sagi w `failed_jobs`: diagnoza i ręczne ponowienie
+
+> Wpis przygotowany przed pierwszym uruchomieniem na żywym stacku, jak #044.
+
+**Objaw**
+W `failed_jobs` jest job z przestrzeni `Ordering\Infrastructure\Job\`
+(`ReserveOrderLinesJob`, `ReleaseOrderReservationsJob`,
+`ConfirmOrderReservationsJob`, `RefundPaymentJob`) albo
+`App\FakePaymentGateway\Jobs\SendPaymentWebhookJob`. Zamówienie stoi:
+opłacone, a stan oferty nie spadł; zwrot „w toku” od godzin; „Sprawdzamy
+dostępność” bez końca.
+
+**Diagnoza**
+```bash
+make psql db=catalog
+select uuid, failed_at, payload::json->>'displayName' as job, left(exception, 300)
+  from failed_jobs order by id desc limit 10;
+```
+Pierwsza linia `exception` mówi, co dalej:
+
+| Wyjątek | Krok | Co znaczy |
+|---|---|---|
+| `ConcurrencyConflict` | dowolny | 3 próby w kroku × 5 prób joba przegrały z innymi zapisami tej samej oferty albo zamówienia. Gorąca oferta albo pętla. Ponowienie zwykle przechodzi |
+| `PaymentGatewayUnavailable` | `RefundPaymentJob` | bramka nie przyjęła zwrotu 5 razy. Zwrot zostaje `requested` („w toku”) |
+| `ReservationNotFound` | `ConfirmOrderReservationsJob` | rezerwacja zamówienia nie jest aktywna: została **zwolniona** przed potwierdzeniem. Pieniądze są, a stan oferty nie spadł. Ponowienie nic nie da |
+| `ReservationConflict` | `ReserveOrderLinesJob` | rezerwacja klucza już rozliczonego (`confirmed`/`released`). Znany przypadek R19: zdublowany krok rezerwacji trwał przez płatność i potwierdzenie. Zamówienie zwykle jest w porządku, a job jest zbędny |
+| `MaxAttemptsExceeded` | `SendPaymentWebhookJob` | 10 prób dostarczenia webhooka bez 2xx (#047) |
+
+Dla rezerwacji sprawdź stan klucza:
+```sql
+select offer_id, quantity, status, reserved_at, settled_at from offer_reservations where reservation_key = 'order-<ID>';
+select status, payment_id from orders where id = <ID>;
+```
+
+**Przyczyna**
+Każdy krok sagi jest idempotentny i ponawiany (`tries = 5`, backoff
+5/30/120 s), więc do `failed_jobs` trafia tylko to, czego ponowienia nie
+naprawiły. Zamówienie świadomie **nie** śledzi, czy potwierdzenie
+rezerwacji po płatności przeszło (spec, sekcja 5), a rekonsyliacji nie ma:
+`failed_jobs` jest jedynym sygnałem trwałej awarii.
+
+**Naprawa**
+1. Przyczyna przejściowa (konflikt, bramka, sieć): usuń ją, potem
+   `docker compose exec catalog-app php artisan queue:retry <uuid>`
+   (albo `queue:retry all`). Kroki są idempotentne, ponowienie nie dubluje
+   rezerwacji, zwrotów ani zdarzeń outboxu.
+2. Ręcznie, w tinkerze, gdy joba już nie ma:
+   ```php
+   use Ordering\Domain\OrderId; use Ordering\Domain\RefundId;
+   app(Ordering\Application\Process\ConfirmOrderReservations::class)->run(OrderId::fromInt(<ID>));
+   app(Ordering\Application\Process\ReleaseOrderReservations::class)->run(OrderId::fromInt(<ID>));
+   app(Ordering\Application\Process\RefundPayment::class)->run(OrderId::fromInt(<ID>), RefundId::fromString('refund-<ID>-1'));
+   ```
+3. `ReservationNotFound` przy potwierdzeniu: **nie** ponawiaj. Sztuki
+   opłaconego zamówienia wróciły do sprzedaży. Ustal z `order_events`
+   i `offer_reservations`, kto zwolnił (to błąd w sadze, nie zwykła ścieżka),
+   a stan oferty popraw ręcznie przez sprzedawcę (zmiana stanu w portalu,
+   z zachowaniem `StockBelowReserved`). Usuń wpis: `php artisan queue:forget <uuid>`.
+4. `ReservationConflict` z R19: sprawdź, że zamówienie jest `paid`/`shipped`,
+   a jego klucz `confirmed`. Jeśli tak, job jest zbędny: `queue:forget <uuid>`.
+
+**Czego się nauczyłem**
+Idempotentny krok można bez strachu ponawiać, ale nie każdy błąd jest
+przejściowy. Tabela wyjątków wyżej to w praktyce lista rzeczy, które
+naprawiłaby rekonsyliacja; dopóki jej nie ma, robi to człowiek z tym wpisem.
+
+<a id="047"></a>
+## 047 — Bramka płatności: przyciski deweloperskie i webhook, który nie dochodzi
+
+> Wpis przygotowany przed pierwszym uruchomieniem na żywym stacku, jak #044.
+
+**Objaw**
+(a) Na stronie bramki `/fake-gateway/payments/{id}` nie ma przycisków
+„Wyślij webhook ponownie” i „Zapłać mimo wygaśnięcia” albo zwracają 404.
+(b) Po „Zapłać” w bramce zamówienie zostaje „Czeka na płatność”, a strona
+pokazuje „Czekamy na potwierdzenie płatności” i po 30 s wraca „Zapłać”.
+
+**Diagnoza**
+```bash
+docker compose exec catalog-app php artisan about --only=environment   # APP_ENV
+make worker-logs                                                       # SendPaymentWebhookJob
+make psql db=catalog
+select id, status, decided_at, expires_at from fake_gateway_payments order by created_at desc limit 5;
+select id, attempts, payload::json->>'displayName' from jobs where payload like '%SendPaymentWebhookJob%';
+make logs s=catalog-app        # „Nieprawidłowy podpis” = 401, „nieprawidłowym payloadem” / „nieznanego zamówienia” = 200 z ostrzeżeniem
+```
+
+**Przyczyna**
+(a) Przyciski deweloperskie działają tylko w `APP_ENV` `local` i `testing`
+(`FakePaymentGateway::developerToolsEnabled`); gdzie indziej akcje `resend`
+i `pay_expired` dają 404. „Wyślij webhook ponownie” przed decyzją daje 409
+(nie ma czego wysłać).
+(b) Webhook jest jobem `SendPaymentWebhookJob` na połączeniu
+`services.fake_gateway.queue_connection` (domyślnie `database`), który
+wykonuje `catalog-worker` po ~2 s (`FAKE_GATEWAY_WEBHOOK_DELAY_SECONDS`)
+i wysyła `POST` pod `FAKE_GATEWAY_WEBHOOK_URL`
+(w compose `http://catalog-app/webhooks/payments`). Trzy typowe przyczyny:
+worker nie działa; wewnętrzny blok Caddy `http://catalog-app` nie
+przepuszcza `/webhooks/*` (obsługiwał tylko `/api/*`, trasa doszła
+w etapie zamówień, `infra/caddy/Caddyfile`); sekret
+`FAKE_GATEWAY_WEBHOOK_SECRET` różny w `catalog-app` i `catalog-worker`
+(webhook dostaje 401 i job ponawia do 10 razy).
+
+**Naprawa**
+1. Przyciski: ustaw `APP_ENV=local` w lokalnym `.env`. Na serwerze ich nie
+   włączaj, to celowe.
+2. Worker: `docker compose --profile apps up -d catalog-worker`.
+3. Caddy: Caddyfile jest **wbudowany w obraz** `catalog-app`
+   (`COPY infra/caddy/Caddyfile` w `infra/php/catalog.Dockerfile`), więc
+   sama zmiana pliku i restart nie wystarczą. Po pierwszym uruchomieniu
+   zamówień (albo po zmianie Caddyfile):
+   `docker compose --profile apps build catalog-app && docker compose --profile apps up -d catalog-app`.
+   Sprawdzenie z sieci `marketplace`:
+   `docker compose exec catalog-worker curl -s -o /dev/null -w '%{http_code}\n' -X POST http://catalog-app/webhooks/payments`
+   → `401` (trasa jest, podpis zły) zamiast `404`.
+4. Sekret: ta sama wartość w obu serwisach (`compose.yaml` podaje domyślną
+   `dev-only-fake-gateway-secret` obu), potem restart obu i „Wyślij webhook
+   ponownie”. Zdublowany webhook jest bezpieczny (R4: ten sam `paymentId`
+   to no-op).
+5. Zwroty z `FAKE_GATEWAY_FAIL_FIRST_REFUND=true` celowo padają przy
+   pierwszej próbie: zwrot jest „w toku”, po backoffie joba „zwrócono”.
+   To pokaz ponowień, nie awaria.
+
+**Czego się nauczyłem**
+ACL webhooka odpowiada 200 na wszystko poza złym podpisem, więc błędy
+„po naszej stronie” widać tylko w logu. Test w pamięci nie złapie trasy w
+Caddy ani różnicy sekretów między kontenerami; to wychodzi dopiero na stacku.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

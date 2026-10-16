@@ -180,7 +180,7 @@ test('wyprzedanie liczone od dostępności', ...);                      // stock
 ```
 
 - [ ] **Step 2:** `php artisan test --compact tests/Unit/SellerPortal/Domain` → FAIL
-- [ ] **Step 3: Implementacja.** W docblocku `Offer` dopisz, dlaczego rezerwacje są w ofercie (ADR-0005), dlaczego `withdraw` ich nie zwalnia (H4) i dlaczego `reserve` wymaga `Seller`.
+- [ ] **Step 3: Implementacja.** W docblocku `Offer` dopisz, dlaczego rezerwacje są w ofercie (ADR-0006), dlaczego `withdraw` ich nie zwalnia (H4) i dlaczego `reserve` wymaga `Seller`.
 - [ ] **Step 4:** `php artisan test --compact tests/Unit/SellerPortal tests/Arch` → PASS; `pint`
 - [ ] **Step 5: Commit** `Zamówienia: rezerwacje stanu w agregacie Offer (dostępne jako stan pochodny)`
 
@@ -347,7 +347,7 @@ test('allowedActionsFor dla kupującego i sprzedawcy w każdym statusie', ...);
 
 Arch (`tests/Arch/OrderingLayersTest.php`): reguły z Global Constraints dla `Ordering\Domain`, `Ordering\Application`, „domena nie woła funkcji zegara” oraz `SellerPortal` nie używa `Ordering`.
 - [ ] **Step 2:** `php artisan test --compact tests/Unit/Ordering tests/Arch` → FAIL
-- [ ] **Step 3: Implementacja.** Docblock `Order`: maszyna stanów, dlaczego stan procesu jest w zamówieniu (ADR-0006), dlaczego `recordPayment` nigdy nie rzuca dla „złego” statusu (kompensacja zamiast błędu: pieniądze już przyszły).
+- [ ] **Step 3: Implementacja.** Docblock `Order`: maszyna stanów, dlaczego stan procesu jest w zamówieniu (ADR-0007), dlaczego `recordPayment` nigdy nie rzuca dla „złego” statusu (kompensacja zamiast błędu: pieniądze już przyszły).
 - [ ] **Step 4:** PASS; czas `tests/Unit/Ordering/Domain` < 1 s (`--profile`); `pint`
 - [ ] **Step 5: Commit** `Zamówienia: agregat Order (statusy, płatność, zwroty, wygaśnięcie)`
 
@@ -820,8 +820,8 @@ test('pulpit pokazuje licznik do wysłania', ...);
 
 **Files:**
 - Create:
-  - `docs/adr/0005-rezerwacje-w-ofercie.md` (aktualizuje 0004; w 0004 dopisz „Zaktualizowana przez ADR-0005”),
-  - `docs/adr/0006-process-manager-ze-stanem-w-zamowieniu.md`, `docs/adr/0007-shared-kernel.md`,
+  - `docs/adr/0006-rezerwacje-w-ofercie.md` (aktualizuje 0004; w 0004 dopisz „Zaktualizowana przez ADR-0006”),
+  - `docs/adr/0007-process-manager-ze-stanem-w-zamowieniu.md`, `docs/adr/0008-shared-kernel.md`,
   - `docs/12-ZAMOWIENIA-SLOWNIK.md`,
   - `docs/blog/etap-f-zamowienia-saga.md`
 - Modify:

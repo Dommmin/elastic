@@ -41,7 +41,7 @@ use SharedKernel\Money;
  * synchronizować ze stanem magazynowym przy każdej zmianie i każdym
  * zawieszeniu — a tak dwie prawdy rozjechać się nie mogą.
  *
- * DLACZEGO rezerwacje żyją W OFERCIE (ADR „rezerwacje w ofercie”): niezmiennik
+ * DLACZEGO rezerwacje żyją W OFERCIE (ADR-0006, rezerwacje w ofercie): niezmiennik
  * „nie zarezerwujesz więcej, niż jest dostępne” dotyczy stanu i wszystkich
  * rezerwacji naraz. Osobny agregat „Rezerwacja” zostawiłby go bez właściciela,
  * a wersja oferty przepuszcza jeden z dwóch równoległych zapisów (rezerwacja

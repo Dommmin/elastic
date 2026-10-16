@@ -117,14 +117,14 @@ reguły. Ten ktoś musi znać stan magazynu, więc to **oferta**, nie zamówieni
 | # | Hot spot | Rozstrzygnięcie | Gdzie żyje |
 |---|---|---|---|
 | H1 | Kiedy zmniejszamy `stock`? W koszyku, przy złożeniu, przy płatności? | Przy złożeniu **rezerwujemy**, przy płatności **sprzedajemy**. Koszyk niczego nie blokuje (porzucone koszyki trzymałyby towar w nieskończoność). Zmniejszanie dopiero przy płatności to overselling: dwóch kupujących płaci za ostatnią sztukę. | `Offer::reserve`, `Offer::confirmReservation` |
-| H2 | Rezerwacja zmniejsza `stock` od razu czy osobno? | Osobno. `stock` to dalej „sztuki na stanie” deklarowane przez sprzedawcę, oferta ma listę rezerwacji, a **dostępne = stan − zarezerwowane** jest stanem pochodnym. Przy bezpośrednim zmniejszaniu sprzedawca ustawiający „10” nadpisałby 3 trzymane sztuki. | `Offer::available`, ADR-0005 |
+| H2 | Rezerwacja zmniejsza `stock` od razu czy osobno? | Osobno. `stock` to dalej „sztuki na stanie” deklarowane przez sprzedawcę, oferta ma listę rezerwacji, a **dostępne = stan − zarezerwowane** jest stanem pochodnym. Przy bezpośrednim zmniejszaniu sprzedawca ustawiający „10” nadpisałby 3 trzymane sztuki. | `Offer::available`, ADR-0006 |
 | H3 | Sprzedawca zmniejsza stan poniżej zarezerwowanego? | Nie wolno: te sztuki są obiecane komuś, kto właśnie płaci. | `Offer::changeStock`, `StockBelowReserved` |
 | H4 | Oferta wycofana albo zawieszona w trakcie płacenia | Istniejące rezerwacje są dotrzymywane: płatność może je zamienić w sprzedaż, a zwolnienie działa zawsze. Oferta przestaje przyjmować **nowe** rezerwacje. | `Offer::reserve` (tylko `Published`), `release`/`confirm` w każdym statusie |
 | H5 | Cena zmieniona między koszykiem a płatnością | Zamówienie zamraża cenę w chwili złożenia. Kupujący wysyła cenę, którą widział; składanie odmawia przy rozbieżności, a rezerwacja sprawdza ją jeszcze raz (wzorzec `expectedPrice` z moderacji). Po złożeniu zmiana ceny nie dotyka zamówienia. | `PlaceOrdersFromCart`, `Offer::reserve` |
 | H6 | Wpłata po terminie | Zamówienia nie ratujemy (towar mógł już trafić do kogoś innego); zwrot pieniędzy. | `Order::recordPayment` |
 | H7 | Płatność odrzucona kończy zamówienie? | Nie. Kupujący może ponowić do terminu. | `Order::recordPaymentFailure` |
 | H8 | Sprzedawca anuluje opłacone: stan wraca? | Nie. Anuluje zwykle dlatego, że towaru nie ma; jeśli jest, poprawi stan sam. | `Order::cancelBySeller` (bez kroku zwrotu stanu) |
-| H9 | Rezerwacja i zamówienie w jednej transakcji? (ta sama baza) | Nie: każdy agregat we własnej transakcji, spina je process manager. Proces i tak trwa w czasie (płatność z zewnątrz, termin), więc process manager jest potrzebny niezależnie; zamówienie z kilku ofert blokowałoby kilka gorących wierszy naraz. Alternatywa (jedna transakcja) żyje na gałęzi lite i jest mierzona. | sekcja 3, ADR-0006 |
+| H9 | Rezerwacja i zamówienie w jednej transakcji? (ta sama baza) | Nie: każdy agregat we własnej transakcji, spina je process manager. Proces i tak trwa w czasie (płatność z zewnątrz, termin), więc process manager jest potrzebny niezależnie; zamówienie z kilku ofert blokowałoby kilka gorących wierszy naraz. Alternatywa (jedna transakcja) żyje na gałęzi lite i jest mierzona. | sekcja 3, ADR-0007 |
 | H10 | Duplikaty: webhook dwa razy, job ponowiony | Każdy krok jest idempotentny: rezerwacja ma klucz, płatność ma ID z bramki, zwrot ma klucz idempotencji. | sekcja 3 |
 | H11 | Zablokowany sprzedawca z opłaconymi zamówieniami | **Otwarte, poza zakresem.** Wymaga decyzji biznesowej (masowe zwroty? realizacja mimo blokady?). Nowych rezerwacji zablokowany sprzedawca nie dostaje (`reserve` wymaga `canSell()`). | — |
 | H12 | Sprzedawca kupuje u siebie | Zabronione: pompuje statystyki, nie ma sensu biznesowego. | `PlaceOrdersFromCart`, `CannotBuyOwnOffer` |
@@ -171,7 +171,7 @@ Ordering ──✗── outbox (zdarzenia order.* bez konsumenta, zasada ADR-00
 | Relacja | Wzorzec | Uzasadnienie |
 |---|---|---|
 | Ordering → Seller Portal (rezerwacje) | **Customer/Supplier** przez port po stronie Orderingu | Ordering definiuje, czego potrzebuje (`StockReservations`); adapter w `Ordering\Infrastructure` woła komendy aplikacyjne portalu i tłumaczy jego wyjątki na `ReservationResult`. Przy rozdzieleniu na usługi zmienia się tylko adapter. |
-| Ordering ↔ Seller Portal (pieniądze) | **Shared Kernel** | Jedna definicja pieniądza. Kopia `Money` rozjechałaby się przy pierwszej zmianie zaokrągleń. Koszt (zmiana wymaga zgody obu kontekstów) jest niski, bo te klasy są stabilne. ADR-0007. |
+| Ordering ↔ Seller Portal (pieniądze) | **Shared Kernel** | Jedna definicja pieniądza. Kopia `Money` rozjechałaby się przy pierwszej zmianie zaokrągleń. Koszt (zmiana wymaga zgody obu kontekstów) jest niski, bo te klasy są stabilne. ADR-0008. |
 | Ordering ← bramka | **ACL** | Kontroler webhooka jest jedyną klasą, która zna format bramki. |
 | Ordering ← Tożsamość | **Conformist** | `BuyerId` opakowuje `users.id`, tak jak `UserId` w portalu. |
 
@@ -321,7 +321,7 @@ zdarzeń `Order` przez dispatcher w procesie. Każda reakcja to job w kolejce
 `ProcessJobQueue`, połączenie przypięte jak w `LaravelPolicyJobQueue`,
 `after_commit = false`). Działa to jak outbox komend: nie ma zapisu zamówienia
 bez kroku sagi i nie ma kroku bez zapisu. Stan procesu żyje w `Order`
-(ADR-0006): każdy stan procesu (`Placed` = „sprawdzamy dostępność”,
+(ADR-0007): każdy stan procesu (`Placed` = „sprawdzamy dostępność”,
 `AwaitingPayment`) jest też stanem biznesowym, który widzi kupujący, więc
 osobna tabela sagi byłaby duplikatem.
 
@@ -363,6 +363,16 @@ dla każdej pozycji Pending (w kolejności pozycji):
 Przy `ConcurrencyConflict` na `Order` w T2 krok ponawia T2 na świeżym stanie
 (do 3 razy, potem ponowienie całego joba; T1 jest idempotentne).
 
+> **Poprawka po implementacji (rozstrzygnięcie R18).** „Inny status → release”
+> jest za ogólne. Zdublowany job (worker przekroczył `retry_after`) mógł już
+> doprowadzić zamówienie do `AwaitingPayment`; wtedy T1 drugiego przebiegu
+> trafiło w *jego* rezerwację (no-op po kluczu), a zwolnienie jej to
+> overselling. Kod zwalnia pozycję tylko, gdy zamówienie samo zrezygnowało
+> z rezerwacji: `Rejected`, `Expired`, `Cancelled` przez kupującego
+> (`ReserveOrderLines::wantsReservations`). Przypina to test
+> `OrderRacesTest` › „R1: zdublowany krok rezerwacji nie zwalnia sztuk
+> zamówienia, które czeka na płatność” (moduł 12 w `10-DDD.md`).
+
 **Wyścigi** (każdy ma osobny test aplikacyjny z ręcznie ustawioną kolejnością kroków):
 
 | # | Scenariusz | Rozstrzygnięcie |
@@ -371,7 +381,7 @@ Przy `ConcurrencyConflict` na `Order` w T2 krok ponawia T2 na świeżym stanie
 | R2 | Awaria między T1 a T2 | Ponowiony job: `reserve` z tym samym kluczem i ilością to no-op, potem T2. Jeśli zamówienie w międzyczasie wygasło, `OrderExpired` zwalnia wszystkie klucze, także ten. |
 | R3 | Webhook płatności w chwili wygaśnięcia | Oba kroki zapisują `Order`, a wersja przepuszcza jeden. Przegrany ponawia: wygasło → zwrot; zapłacone → `expire` to no-op. Karencja 5 min sprawia, że wpłaty przyjęte przez bramkę w terminie nie trafiają w wygaśnięcie. |
 | R4 | Zdublowany webhook | Ten sam `paymentId` to no-op. Endpoint odpowiada 200, żeby bramka przestała ponawiać. |
-| R5 | Sprzedawca zmniejsza stan w trakcie rezerwacji | Brak wyścigu: niezmiennik w jednym agregacie, wersja oferty przepuszcza jeden zapis, a drugi po ponowieniu dostaje `StockBelowReserved` albo `OutOfStock`. Główny argument za ADR-0005. |
+| R5 | Sprzedawca zmniejsza stan w trakcie rezerwacji | Brak wyścigu: niezmiennik w jednym agregacie, wersja oferty przepuszcza jeden zapis, a drugi po ponowieniu dostaje `StockBelowReserved` albo `OutOfStock`. Główny argument za ADR-0006. |
 | R6 | Dwóch kupujących, ostatnia sztuka | Jak R5: drugi dostaje `OutOfStock`, jego zamówienie → `Rejected`. |
 | R7 | Sprzedawca anuluje opłacone przed potwierdzeniem rezerwacji | Potwierdzenie i tak się wykonuje (H8), zwrot idzie niezależnie. |
 | R8 | Oferta wycofana między złożeniem a rezerwacją | `OfferUnavailable` → `Rejected`. Rezerwacje już istniejące są dotrzymywane (H4). |
@@ -488,8 +498,8 @@ Pomiary:
 ## 10. Dokumentacja
 
 - ten spec (z Event Stormingiem),
-- `docs/adr/0005-rezerwacje-w-ofercie.md` (aktualizuje ADR-0004),
-  `0006-process-manager-ze-stanem-w-zamowieniu.md`, `0007-shared-kernel.md`,
+- `docs/adr/0006-rezerwacje-w-ofercie.md` (aktualizuje ADR-0004),
+  `0007-process-manager-ze-stanem-w-zamowieniu.md`, `0008-shared-kernel.md`,
 - `docs/12-ZAMOWIENIA-SLOWNIK.md`, słownik 1:1 jak `11-SELLER-PORTAL-SLOWNIK.md`;
   w `11-…` dochodzą „rezerwacja”, „zarezerwowane”, „dostępne”,
 - `docs/10-DDD.md`: moduł 11 (process manager i eventual consistency) i moduł 12
