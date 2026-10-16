@@ -33,6 +33,9 @@ return Application::configure(basePath: dirname(__DIR__))
             AddLinkHeadersForPreloadedAssets::class,
         ]);
 
+        // Webhook bramki nie ma sesji ani tokenu CSRF; wiarygodność daje podpis HMAC.
+        $middleware->preventRequestForgery(except: ['webhooks/*']);
+
         $middleware->alias([
             'seller' => EnsureHasSeller::class,
             'seller.approved' => EnsureSellerApproved::class,

@@ -6,6 +6,7 @@ use Illuminate\Support\ServiceProvider;
 use Ordering\Application\Port\Clock;
 use Ordering\Application\Port\DomainEventDispatcher;
 use Ordering\Application\Port\OfferSnapshots;
+use Ordering\Application\Port\PaymentGateway;
 use Ordering\Application\Port\ProcessJobQueue;
 use Ordering\Application\Port\SellerAccounts;
 use Ordering\Application\Port\StockReservations;
@@ -20,6 +21,7 @@ use Ordering\Domain\Event\RefundRequested;
 use Ordering\Domain\OrderRepository;
 use Ordering\Infrastructure\DbOfferSnapshots;
 use Ordering\Infrastructure\DbSellerAccounts;
+use Ordering\Infrastructure\FakeGatewayPaymentGateway;
 use Ordering\Infrastructure\InProcessDomainEventDispatcher;
 use Ordering\Infrastructure\LaravelProcessJobQueue;
 use Ordering\Infrastructure\LaravelTransactionManager;
@@ -34,8 +36,7 @@ use Ordering\Infrastructure\SystemClock;
  * żądaniami, a implementacje są bezstanowe i tanie. Wyjątek: dispatcher
  * trzyma słuchaczy, więc jest `scoped` (wzorzec `SellerPortalServiceProvider`).
  *
- * Porty `BuyerCart` i `PaymentGateway` dostają adaptery w późniejszych
- * zadaniach (koszyk, bramka płatności), tu ich jeszcze nie ma.
+ * Port `BuyerCart` dostaje adapter w późniejszym zadaniu (koszyk).
  */
 class OrderingServiceProvider extends ServiceProvider
 {
@@ -48,6 +49,7 @@ class OrderingServiceProvider extends ServiceProvider
         $this->app->bind(OfferSnapshots::class, DbOfferSnapshots::class);
         $this->app->bind(SellerAccounts::class, DbSellerAccounts::class);
         $this->app->bind(ProcessJobQueue::class, LaravelProcessJobQueue::class);
+        $this->app->bind(PaymentGateway::class, FakeGatewayPaymentGateway::class);
 
         // Słuchacze rejestrowani W fabryce scoped, a nie w boot(): po flushu
         // scoped instancji (Octane) fabryka biegnie od nowa, więc każda

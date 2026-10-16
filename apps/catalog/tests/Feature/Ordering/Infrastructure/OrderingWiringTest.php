@@ -11,15 +11,19 @@ use Ordering\Application\Order\ExpireOverdueOrdersHandler;
 use Ordering\Application\Order\RecordPaymentFailureHandler;
 use Ordering\Application\Order\RecordPaymentHandler;
 use Ordering\Application\Order\ShipOrderHandler;
+use Ordering\Application\Order\StartPaymentHandler;
 use Ordering\Application\Port\Clock;
 use Ordering\Application\Port\DomainEventDispatcher;
 use Ordering\Application\Port\OfferSnapshots;
+use Ordering\Application\Port\PaymentGateway;
+use Ordering\Application\Port\PaymentGatewayUnavailable;
 use Ordering\Application\Port\ProcessJobQueue;
 use Ordering\Application\Port\SellerAccounts;
 use Ordering\Application\Port\StockReservations;
 use Ordering\Application\Port\TransactionManager;
 use Ordering\Application\Process\ConfirmOrderReservations;
 use Ordering\Application\Process\OrderProcessManager;
+use Ordering\Application\Process\RefundPayment;
 use Ordering\Application\Process\ReleaseOrderReservations;
 use Ordering\Application\Process\ReserveOrderLines;
 use Ordering\Domain\Event\OrderCancelled;
@@ -29,8 +33,14 @@ use Ordering\Domain\Event\OrderPlaced;
 use Ordering\Domain\Event\OrderRejected;
 use Ordering\Domain\Event\RefundRequested;
 use Ordering\Domain\OfferId;
+use Ordering\Domain\OrderId;
 use Ordering\Domain\OrderRepository;
+use Ordering\Domain\PaymentId;
+use Ordering\Domain\RefundId;
+use Ordering\Infrastructure\FakeGatewayPaymentGateway;
 use Ordering\Infrastructure\InProcessDomainEventDispatcher;
+use Ordering\Infrastructure\Job\RefundPaymentJob;
+use SharedKernel\Money;
 
 test('provider rozwiązuje wszystkie porty i handlery', function (string $abstract) {
     expect(app($abstract))->toBeObject();
@@ -40,7 +50,7 @@ test('provider rozwiązuje wszystkie porty i handlery', function (string $abstra
     ReserveOrderLines::class, ReleaseOrderReservations::class, ConfirmOrderReservations::class,
     ExpireOverdueOrdersHandler::class, RecordPaymentHandler::class, RecordPaymentFailureHandler::class,
     CancelOrderByBuyerHandler::class, CancelOrderBySellerHandler::class, ShipOrderHandler::class,
-    OrderProcessManager::class,
+    OrderProcessManager::class, PaymentGateway::class, StartPaymentHandler::class, RefundPayment::class,
 ]);
 
 test('dispatcher Orderingu jest scoped i ma dokładnie sześć słuchaczy sagi', function () {
@@ -87,4 +97,27 @@ test('DbSellerAccounts mapuje użytkownika na sprzedawcę albo null', function (
 
     expect(app(SellerAccounts::class)->sellerIdForUser($user->id)?->value())->toBe($seller->id)
         ->and(app(SellerAccounts::class)->sellerIdForUser(User::factory()->create()->id))->toBeNull();
+});
+
+test('PaymentGateway to adapter symulowanej bramki i rozwiązuje się razem z RefundPaymentJob', function () {
+    $gateway = app(PaymentGateway::class);
+
+    expect($gateway)->toBeInstanceOf(FakeGatewayPaymentGateway::class)
+        ->and(app()->make(RefundPayment::class))->toBeObject()
+        ->and((new ReflectionMethod(RefundPaymentJob::class, 'handle'))->getParameters()[0]->getType()->getName())->toBe(RefundPayment::class);
+});
+
+test('adapter bramki: startPayment zwraca adres sesji, a awaria zwrotu to PaymentGatewayUnavailable', function () {
+    config(['services.fake_gateway.fail_first_refund' => true]);
+    $gateway = app(PaymentGateway::class);
+
+    $url = $gateway->startPayment(OrderId::fromInt(7), Money::fromCents(4498), new DateTimeImmutable('+15 minutes'), 'http://localhost/');
+    $paymentId = basename($url);
+    $refundId = RefundId::fromString('refund-7-1');
+
+    expect(DB::table('fake_gateway_payments')->where('id', $paymentId)->value('reference'))->toBe('order-7')
+        ->and(fn () => $gateway->refund($refundId, PaymentId::fromString($paymentId), Money::fromCents(4498)))->toThrow(PaymentGatewayUnavailable::class);
+
+    $gateway->refund($refundId, PaymentId::fromString($paymentId), Money::fromCents(4498));
+    expect(DB::table('fake_gateway_refunds')->where('idempotency_key', 'refund-7-1')->value('status'))->toBe('succeeded');
 });

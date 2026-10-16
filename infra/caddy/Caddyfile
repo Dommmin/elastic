@@ -94,5 +94,10 @@ http://catalog-app {
 		root * public/
 		php_server
 	}
+	# Webhook bramki płatności (worker -> catalog-app, podpis HMAC w nagłówku).
+	route /webhooks/* {
+		root * public/
+		php_server
+	}
 	respond 404
 }

@@ -54,4 +54,14 @@ return [
         'password' => env('ELASTICSEARCH_PASSWORD'),
     ],
 
+    // Symulowana bramka płatności (app/FakePaymentGateway, spec §6).
+    // `webhook_url` w Compose wskazuje wewnętrzny adres catalog-app w sieci
+    // `marketplace` (bez TLS), a nie publiczną nazwę przeglądarkową.
+    'fake_gateway' => [
+        'webhook_secret' => env('FAKE_GATEWAY_WEBHOOK_SECRET'),
+        'webhook_url' => env('FAKE_GATEWAY_WEBHOOK_URL', 'http://localhost/webhooks/payments'),
+        'webhook_delay_seconds' => (int) env('FAKE_GATEWAY_WEBHOOK_DELAY_SECONDS', 2),
+        'fail_first_refund' => (bool) env('FAKE_GATEWAY_FAIL_FIRST_REFUND', false),
+    ],
+
 ];

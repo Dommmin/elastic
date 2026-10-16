@@ -1,5 +1,6 @@
 <?php
 
+use App\FakePaymentGateway\Http\FakeGatewayController;
 use App\Http\Controllers\Panel\Moderation\OfferModerationController;
 use App\Http\Controllers\Panel\Moderation\PriceChangeModerationController;
 use App\Http\Controllers\Panel\Moderation\SellerModerationController;
@@ -9,6 +10,7 @@ use App\Http\Controllers\Seller\ProductLookupController;
 use App\Http\Controllers\Seller\SellerApplicationController;
 use App\Http\Controllers\Seller\SellerDashboardController;
 use App\Http\Controllers\Seller\SellerOfferController;
+use App\Http\Controllers\Webhooks\PaymentWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::inertia('/', 'Welcome')->name('home');
@@ -72,5 +74,12 @@ Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group
     Route::post('offers/{offer}/suspend', [OfferModerationController::class, 'suspend'])->whereNumber('offer')->name('offers.suspend');
     Route::post('offers/{offer}/reinstate', [OfferModerationController::class, 'reinstate'])->whereNumber('offer')->name('offers.reinstate');
 });
+
+// Symulowana bramka płatności: „zewnętrzny” serwis, więc bez `auth`. Kupujący
+// trafia tu z przekierowania, a webhook przychodzi z workera bez sesji
+// (autoryzuje go podpis HMAC, nie CSRF — wyjątek w bootstrap/app.php).
+Route::get('fake-gateway/payments/{payment}', [FakeGatewayController::class, 'show'])->name('fake-gateway.show');
+Route::post('fake-gateway/payments/{payment}/decide', [FakeGatewayController::class, 'decide'])->name('fake-gateway.decide');
+Route::post('webhooks/payments', PaymentWebhookController::class)->name('webhooks.payments');
 
 require __DIR__.'/settings.php';
