@@ -25,7 +25,7 @@ test('dodanie oferty zapisuje pozycję z ceną z chwili dodania', function () {
     $buyer = User::factory()->create();
     $offer = cartOffer();
 
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 2])
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 2, 'unit_price_cents' => 10000])
         ->assertSessionHasNoErrors();
 
     expect(cartQuantity($buyer, $offer))->toBe(2)
@@ -36,8 +36,8 @@ test('dodanie tej samej oferty dwa razy sumuje ilość', function () {
     $buyer = User::factory()->create();
     $offer = cartOffer();
 
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 2]);
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 3])
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 2, 'unit_price_cents' => 10000]);
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 3, 'unit_price_cents' => 10000])
         ->assertSessionHasNoErrors();
 
     expect(cartQuantity($buyer, $offer))->toBe(5)
@@ -48,9 +48,9 @@ test('ilość ponad min(10, dostępne) to błąd walidacji, koszyk bez zmian', f
     $buyer = User::factory()->create();
     $offer = cartOffer(['stock' => $stock]);
 
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => $first])
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => $first, 'unit_price_cents' => 10000])
         ->assertSessionHasNoErrors();
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => $second])
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => $second, 'unit_price_cents' => 10000])
         ->assertSessionHasErrors('quantity');
 
     expect(cartQuantity($buyer, $offer))->toBe($first);
@@ -63,7 +63,7 @@ test('pojedyncze dodanie ponad limit jest odrzucone i nic nie zapisuje', functio
     $buyer = User::factory()->create();
     $offer = cartOffer(['stock' => 50]);
 
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 11])
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 11, 'unit_price_cents' => 10000])
         ->assertSessionHasErrors('quantity');
 
     expect(CartItem::query()->count())->toBe(0);
@@ -73,7 +73,7 @@ test('oferta niewidoczna nie trafia do koszyka', function (string $state) {
     $buyer = User::factory()->create();
     $offer = OfferRow::factory()->{$state}()->create();
 
-    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1])
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1, 'unit_price_cents' => $offer->price_cents])
         ->assertSessionHasErrors('offer_id');
 
     expect(CartItem::query()->count())->toBe(0);
@@ -83,7 +83,7 @@ test('sprzedawca nie doda do koszyka własnej oferty', function () {
     $user = User::factory()->create();
     $offer = cartOffer(seller: SellerRow::factory()->forUser($user)->create());
 
-    $this->actingAs($user)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1])
+    $this->actingAs($user)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1, 'unit_price_cents' => $offer->price_cents])
         ->assertSessionHasErrors(['offer_id' => 'Nie możesz kupić własnej oferty']);
 
     expect(CartItem::query()->count())->toBe(0);
@@ -149,10 +149,40 @@ test('zaakceptowanie nowej ceny odświeża cenę widzianą przez kupującego', f
     $offer = cartOffer(['price_cents' => 12000]);
     CartItem::create(['user_id' => $buyer->id, 'offer_id' => $offer->id, 'quantity' => 2, 'added_price_cents' => 10000]);
 
-    $this->actingAs($buyer)->patch(route('cart.items.update', $offer->id), ['accept_price' => true])->assertSessionHasNoErrors();
+    $this->actingAs($buyer)->patch(route('cart.items.update', $offer->id), ['accept_price_cents' => 12000])->assertSessionHasNoErrors();
 
     expect(CartItem::query()->value('added_price_cents'))->toBe(12000)
         ->and(cartQuantity($buyer, $offer))->toBe(2);
+});
+
+test('ponowne dodanie po zmianie ceny jest odrzucone, a pozycja zostaje price_changed', function () {
+    $buyer = User::factory()->create();
+    $offer = cartOffer();
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1, 'unit_price_cents' => 10000]);
+    $offer->update(['price_cents' => 12000]);
+
+    // Strona produktu pokazywała starą cenę: dodanie odrzucone.
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1, 'unit_price_cents' => 10000])
+        ->assertSessionHasErrors('offer_id');
+    // Nawet po zobaczeniu nowej ceny dodanie nie kasuje oznaczenia zmiany.
+    $this->actingAs($buyer)->post(route('cart.items.store'), ['offer_id' => $offer->id, 'quantity' => 1, 'unit_price_cents' => 12000])
+        ->assertSessionHasNoErrors();
+
+    expect(cartQuantity($buyer, $offer))->toBe(2)
+        ->and(CartItem::query()->value('added_price_cents'))->toBe(10000);
+    $this->actingAs($buyer)->get(route('cart.index'))
+        ->assertInertia(fn (Assert $page) => $page->where('groups.0.lines.0.status', 'price_changed'));
+});
+
+test('akceptacja nieaktualnej ceny jest odrzucona', function () {
+    $buyer = User::factory()->create();
+    $offer = cartOffer(['price_cents' => 13000]);
+    CartItem::create(['user_id' => $buyer->id, 'offer_id' => $offer->id, 'quantity' => 1, 'added_price_cents' => 10000]);
+
+    $this->actingAs($buyer)->patch(route('cart.items.update', $offer->id), ['accept_price_cents' => 12000])
+        ->assertSessionHasErrors('accept_price_cents');
+
+    expect(CartItem::query()->value('added_price_cents'))->toBe(10000);
 });
 
 test('usunięcie pozycji i cudza pozycja', function () {

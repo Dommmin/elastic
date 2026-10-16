@@ -138,3 +138,16 @@ test('własna oferta w koszyku blokuje checkout', function () {
 test('gość nie złoży zamówień', function () {
     $this->post(route('cart.checkout'), [])->assertRedirect(route('login'));
 });
+
+test('ten sam snapshot koszyka wysłany z dwóch kart tworzy zamówienia tylko raz', function () {
+    $buyer = User::factory()->create();
+    $a = checkoutOffer(checkoutSeller());
+    $b = checkoutOffer(checkoutSeller());
+    checkoutFill($buyer, $a, $b);
+    $payload = checkoutPayload($a, $b);
+
+    $this->actingAs($buyer)->post(route('cart.checkout'), $payload)->assertRedirect('/orders');
+    $this->actingAs($buyer)->post(route('cart.checkout'), $payload)->assertRedirect('/orders')->assertSessionHasNoErrors();
+
+    expect(DB::table('orders')->count())->toBe(2);
+});

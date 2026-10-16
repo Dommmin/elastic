@@ -24,8 +24,8 @@ class UpdateCartItemRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'quantity' => ['required_without:accept_price', 'integer', 'min:1', 'max:'.AddToCartRequest::MAX_PER_LINE],
-            'accept_price' => ['sometimes', 'boolean'],
+            'quantity' => ['required_without:accept_price_cents', 'integer', 'min:1', 'max:'.AddToCartRequest::MAX_PER_LINE],
+            'accept_price_cents' => ['sometimes', 'integer', 'min:0'],
         ];
     }
 

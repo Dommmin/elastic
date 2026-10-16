@@ -35,6 +35,7 @@ class AddToCartRequest extends FormRequest
         return [
             'offer_id' => ['required', 'integer', 'exists:offers,id'],
             'quantity' => ['required', 'integer', 'min:1', 'max:'.self::MAX_PER_LINE],
+            'unit_price_cents' => ['required', 'integer', 'min:0'],
         ];
     }
 
@@ -47,6 +48,7 @@ class AddToCartRequest extends FormRequest
             'offer_id.required' => 'Wybierz ofertę.',
             'offer_id.integer' => 'Wybierz ofertę z listy.',
             'offer_id.exists' => 'Ta oferta już nie istnieje.',
+            'unit_price_cents.required' => 'Brak ceny widzianej przez kupującego.',
             'quantity.required' => 'Podaj ilość.',
             'quantity.integer' => 'Ilość musi być liczbą całkowitą.',
             'quantity.min' => 'Ilość musi wynosić co najmniej 1.',
@@ -74,6 +76,12 @@ class AddToCartRequest extends FormRequest
 
             if ($offer->seller->user_id === $this->user()->getAuthIdentifier()) {
                 $validator->errors()->add('offer_id', 'Nie możesz kupić własnej oferty');
+
+                return;
+            }
+
+            if ($this->integer('unit_price_cents') !== $offer->price_cents) {
+                $validator->errors()->add('offer_id', 'Cena oferty zmieniła się — odśwież stronę i sprawdź nową cenę.');
 
                 return;
             }

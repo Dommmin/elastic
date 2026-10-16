@@ -8,6 +8,8 @@ use App\Http\Requests\Shop\AddToCartRequest;
 use App\Http\Requests\Shop\CheckoutRequest;
 use App\Http\Requests\Shop\UpdateCartItemRequest;
 use App\Models\CartItem;
+use App\Models\Offer;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +21,7 @@ use Ordering\Application\Order\PlaceOrdersFromCart;
 use Ordering\Application\Order\PlaceOrdersFromCartHandler;
 use Ordering\Application\Order\PriceChangedSinceCart;
 use Ordering\Infrastructure\ReadModel\CartView;
+use SharedKernel\DomainException;
 
 /**
  * Koszyk kupującego i składanie zamówień. Koszyk to dane robocze (bez agregatu);
@@ -44,9 +47,24 @@ class CartController extends Controller
         $offer = $request->offer();
         $max = AddToCartRequest::maxQuantity($offer);
 
-        // Zapis pod blokadą wiersza, ze ściśnięciem do limitu: dwa równoległe
-        // żądania dodania nie mogą razem przekroczyć min(10, dostępne), choć
-        // każde z osobna przeszło walidację.
+        // Zapis pod blokadą istniejącego wiersza, ze ściśnięciem do limitu:
+        // równoległe dodania istniejącej pozycji nie przekroczą min(10, dostępne).
+        // Pierwsze dodanie nie ma czego zablokować, więc dwa równoległe mogą
+        // zderzyć się na unikalnym (user_id, offer_id): przegrany ponawia raz
+        // i trafia już na istniejący wiersz.
+        try {
+            $this->upsert($request, $offer, $max);
+        } catch (UniqueConstraintViolationException) {
+            $this->upsert($request, $offer, $max);
+        }
+
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Dodano do koszyka']);
+
+        return back();
+    }
+
+    private function upsert(AddToCartRequest $request, Offer $offer, int $max): void
+    {
         DB::transaction(function () use ($request, $offer, $max): void {
             $item = CartItem::query()
                 ->where('user_id', self::userId($request))
@@ -65,17 +83,11 @@ class CartController extends Controller
                 return;
             }
 
-            // Cena widziana przy ponownym dodaniu zastępuje starą: kupujący
-            // właśnie patrzył na stronę produktu z aktualną ceną.
-            $item->update([
-                'quantity' => min($max, $item->quantity + $request->integer('quantity')),
-                'added_price_cents' => $offer->price_cents,
-            ]);
+            // `added_price_cents` zostaje: cena zaakceptowana przy pierwszym
+            // dodaniu. Zmiana ceny ma wyjść w koszyku jako `price_changed`,
+            // a nie zniknąć przy kolejnym dodaniu.
+            $item->update(['quantity' => min($max, $item->quantity + $request->integer('quantity'))]);
         });
-
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Dodano do koszyka']);
-
-        return back();
     }
 
     public function update(UpdateCartItemRequest $request, int $offer): RedirectResponse
@@ -86,9 +98,16 @@ class CartController extends Controller
             $item->quantity = $request->integer('quantity');
         }
 
-        if ($request->boolean('accept_price')) {
-            // Zaakceptowanie nowej ceny = jawna zgoda kupującego (H5): od teraz formularz wyśle ją.
-            $item->added_price_cents = (int) $item->offer()->value('price_cents');
+        if ($request->has('accept_price_cents')) {
+            // Zgoda dotyczy ceny, którą kupujący widział; jeśli oferta zdążyła
+            // zmienić cenę ponownie, nie akceptujemy po cichu nowej (H5).
+            $current = (int) $item->offer()->value('price_cents');
+
+            if ($request->integer('accept_price_cents') !== $current) {
+                return back()->withErrors(['accept_price_cents' => 'Cena oferty zmieniła się ponownie — sprawdź nową cenę']);
+            }
+
+            $item->added_price_cents = $current;
         }
 
         $item->save();
@@ -105,34 +124,50 @@ class CartController extends Controller
 
     public function checkout(CheckoutRequest $request, PlaceOrdersFromCartHandler $handler): RedirectResponse
     {
-        $cart = CartItem::query()->where('user_id', self::userId($request))->pluck('quantity', 'offer_id')->all();
+        // Jedna transakcja obejmuje odczyt koszyka pod blokadą i handler
+        // (jego transakcja staje się savepointem): drugie równoległe żądanie
+        // czeka na blokadzie, a po commicie widzi już pusty koszyk (R9).
+        $result = DB::transaction(function () use ($request, $handler) {
+            $cart = CartItem::query()->where('user_id', self::userId($request))->lockForUpdate()->pluck('quantity', 'offer_id')->all();
 
-        // Drugi klik / druga karta: koszyk opróżnił już pierwszy checkout (R9).
-        if ($cart === []) {
+            if ($cart === []) {
+                return null;
+            }
+
+            $lines = $request->cartLines();
+            $sent = [];
+            foreach ($lines as $line) {
+                $sent[$line->offerId] = $line->quantity;
+            }
+
+            // Formularz musi odpowiadać koszykowi w bazie: zmiana w innej karcie
+            // nie może po cichu złożyć czegoś, czego kupujący nie widział.
+            if (count($lines) !== count($sent) || $sent != $cart) {
+                return 'mismatch';
+            }
+
+            try {
+                return $handler->handle(new PlaceOrdersFromCart(self::userId($request), $lines));
+            } catch (PriceChangedSinceCart|OfferNoLongerAvailable|CannotBuyOwnOffer $e) {
+                // Odmowy są przed zapisem, więc nic nie powstało; strona koszyka
+                // ze świeżym `CartView` pokaże, które pozycje się zmieniły.
+                return $e;
+            }
+        });
+
+        if ($result === null) {
             return redirect('/orders');
         }
 
-        $lines = $request->cartLines();
-        $sent = [];
-        foreach ($lines as $line) {
-            $sent[$line->offerId] = $line->quantity;
-        }
-
-        // Formularz musi odpowiadać koszykowi w bazie: zmiana w innej karcie
-        // nie może po cichu złożyć czegoś, czego kupujący nie widział.
-        if (count($lines) !== count($sent) || $sent != $cart) {
+        if ($result === 'mismatch') {
             return back()->withErrors(['cart' => 'Koszyk zmienił się w międzyczasie — odśwież stronę i sprawdź pozycje']);
         }
 
-        try {
-            $placed = $handler->handle(new PlaceOrdersFromCart(self::userId($request), $lines));
-        } catch (PriceChangedSinceCart|OfferNoLongerAvailable|CannotBuyOwnOffer $e) {
-            // Nic nie powstało (odmowy są przed zapisem); strona koszyka z
-            // świeżym `CartView` pokaże, które pozycje się zmieniły.
-            return back()->withErrors(['cart' => DomainErrorMessages::for($e)]);
+        if ($result instanceof DomainException) {
+            return back()->withErrors(['cart' => DomainErrorMessages::for($result)]);
         }
 
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Złożono '.self::ordersPhrase(count($placed))]);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Złożono '.self::ordersPhrase(count($result))]);
 
         return redirect('/orders');
     }

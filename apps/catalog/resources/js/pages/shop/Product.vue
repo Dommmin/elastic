@@ -46,7 +46,11 @@ function addToCart(offer: ShopOffer) {
 
     router.post(
         store().url,
-        { offer_id: offer.id, quantity: quantityOf(offer) },
+        {
+            offer_id: offer.id,
+            quantity: quantityOf(offer),
+            unit_price_cents: offer.price_cents,
+        },
         {
             preserveScroll: true,
             onFinish: () => {

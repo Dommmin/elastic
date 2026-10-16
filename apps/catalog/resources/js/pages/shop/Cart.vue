@@ -28,7 +28,9 @@ defineOptions({
 
 const page = usePage();
 const cartError = computed(() => page.props.errors?.cart);
-const quantityError = computed(() => page.props.errors?.quantity);
+const quantityError = computed(
+    () => page.props.errors?.quantity ?? page.props.errors?.accept_price_cents,
+);
 const submitting = ref(false);
 
 const ordersLabel = computed(() => {
@@ -60,7 +62,7 @@ function changeQuantity(line: CartLine, quantity: number) {
 function acceptPrice(line: CartLine) {
     router.patch(
         update(line.offer_id).url,
-        { accept_price: true },
+        { accept_price_cents: line.unit_price_cents },
         { preserveScroll: true },
     );
 }
