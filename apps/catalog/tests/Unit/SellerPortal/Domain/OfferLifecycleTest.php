@@ -58,6 +58,7 @@ function offerLifecycleOffer(
         $suspension,
         $pending,
         [],
+        [],
         4,
     );
 }

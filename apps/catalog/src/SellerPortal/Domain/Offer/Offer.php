@@ -13,8 +13,11 @@ use SellerPortal\Domain\Offer\Event\OfferPriceChangeRejected;
 use SellerPortal\Domain\Offer\Event\OfferPriceChangeRequested;
 use SellerPortal\Domain\Offer\Event\OfferPublished;
 use SellerPortal\Domain\Offer\Event\OfferReinstated;
+use SellerPortal\Domain\Offer\Event\OfferReservationConfirmed;
+use SellerPortal\Domain\Offer\Event\OfferReservationReleased;
 use SellerPortal\Domain\Offer\Event\OfferSoldOut;
 use SellerPortal\Domain\Offer\Event\OfferStockChanged;
+use SellerPortal\Domain\Offer\Event\OfferStockReserved;
 use SellerPortal\Domain\Offer\Event\OfferSuspended;
 use SellerPortal\Domain\Offer\Event\OfferWithdrawn;
 use SellerPortal\Domain\Seller\Seller;
@@ -33,10 +36,24 @@ use SharedKernel\Money;
  *   Draft --publish--> Published --suspend--> Suspended --reinstate--> Published
  *   Draft | Published | Suspended --withdraw--> Withdrawn (koniec)
  *
- * DLACZEGO "wyprzedana" NIE jest statusem: to pochodna `status` i `stock`
+ * DLACZEGO "wyprzedana" NIE jest statusem: to pochodna `status` i dostępności
  * (`isSoldOut`). Gdyby była osobnym statusem, trzeba by go ręcznie
  * synchronizować ze stanem magazynowym przy każdej zmianie i każdym
  * zawieszeniu — a tak dwie prawdy rozjechać się nie mogą.
+ *
+ * DLACZEGO rezerwacje żyją W OFERCIE (ADR „rezerwacje w ofercie”): niezmiennik
+ * „nie zarezerwujesz więcej, niż jest dostępne” dotyczy stanu i wszystkich
+ * rezerwacji naraz. Osobny agregat „Rezerwacja” zostawiłby go bez właściciela,
+ * a wersja oferty przepuszcza jeden z dwóch równoległych zapisów (rezerwacja
+ * kontra zmiana stanu przez sprzedawcę). `stock` zostaje tym, co deklaruje
+ * sprzedawca; `available = stock − reserved` jest stanem pochodnym. Gdyby
+ * rezerwacja zmniejszała `stock` od razu, sprzedawca ustawiający „10”
+ * nadpisałby sztuki trzymane dla kogoś, kto właśnie płaci.
+ *
+ * DLACZEGO `withdraw` (i zawieszenie) NIE zwalnia rezerwacji (H4): ktoś mógł
+ * już zapłacić. Istniejące rezerwacje są dotrzymywane — potwierdzenie
+ * i zwolnienie działają w każdym statusie — a oferta przestaje przyjmować
+ * tylko NOWE rezerwacje.
  *
  * DLACZEGO sprzedawca jest tylko ID: Offer i Seller to osobne agregaty,
  * które łączymy identyfikatorem. Dwa momenty, w których oferta potrzebuje
@@ -51,6 +68,7 @@ final class Offer extends AggregateRoot
 {
     /**
      * @param  list<DateTimeImmutable>  $recentPriceChanges
+     * @param  list<Reservation>  $reservations  tylko aktywne
      */
     private function __construct(
         private readonly OfferId $id,
@@ -64,6 +82,7 @@ final class Offer extends AggregateRoot
         private ?SuspensionReason $suspension,
         private ?PendingPriceChange $pendingPriceChange,
         private array $recentPriceChanges,
+        private array $reservations,
         private int $version,
     ) {}
 
@@ -81,7 +100,7 @@ final class Offer extends AggregateRoot
         ShippingTime $shippingTime,
         DateTimeImmutable $now,
     ): self {
-        $offer = new self($id, $sellerId, $productId, $price, $stock, $condition, $shippingTime, OfferStatus::Draft, null, null, [], 0);
+        $offer = new self($id, $sellerId, $productId, $price, $stock, $condition, $shippingTime, OfferStatus::Draft, null, null, [], [], 0);
         $offer->recordThat(new OfferDrafted($id, $sellerId, $productId, $now));
 
         return $offer;
@@ -92,6 +111,7 @@ final class Offer extends AggregateRoot
      * raz został opisany zdarzeniami.
      *
      * @param  list<DateTimeImmutable>  $recentPriceChanges
+     * @param  list<Reservation>  $reservations  tylko aktywne
      */
     public static function reconstitute(
         OfferId $id,
@@ -105,9 +125,10 @@ final class Offer extends AggregateRoot
         ?SuspensionReason $suspension,
         ?PendingPriceChange $pendingPriceChange,
         array $recentPriceChanges,
+        array $reservations,
         int $version,
     ): self {
-        return new self($id, $sellerId, $productId, $price, $stock, $condition, $shippingTime, $status, $suspension, $pendingPriceChange, $recentPriceChanges, $version);
+        return new self($id, $sellerId, $productId, $price, $stock, $condition, $shippingTime, $status, $suspension, $pendingPriceChange, $recentPriceChanges, $reservations, $version);
     }
 
     /**
@@ -137,6 +158,13 @@ final class Offer extends AggregateRoot
      * (oferta znika z półki albo na nią wraca). W szkicu i przy zawieszeniu
      * oferta i tak nie jest widoczna, więc to zwykła zmiana liczby.
      * Jedna zmiana = jedno zdarzenie; ten sam stan nie robi nic.
+     *
+     * Przejście przez zero liczymy od DOSTĘPNOŚCI, nie od stanu: kupujący
+     * widzi to, co da się jeszcze zarezerwować (stan 5 przy 2 zarezerwowanych
+     * zmieniony na 2 to wyprzedanie).
+     *
+     * @throws InvalidOfferTransition
+     * @throws StockBelowReserved
      */
     public function changeStock(Stock $stock, DateTimeImmutable $now): void
     {
@@ -148,15 +176,110 @@ final class Offer extends AggregateRoot
             return;
         }
 
+        $reserved = $this->reserved();
+
+        if ($stock->value() < $reserved) {
+            throw new StockBelowReserved;
+        }
+
+        $oldAvailable = $this->available();
         $this->stock = $stock;
 
-        if ($this->status === OfferStatus::Published && $old->value() > 0 && $stock->value() === 0) {
+        if ($this->status === OfferStatus::Published && $oldAvailable > 0 && $this->available() === 0) {
             $this->recordThat(new OfferSoldOut($this->id, $old, $now));
-        } elseif ($this->status === OfferStatus::Published && $old->value() === 0) {
+        } elseif ($this->status === OfferStatus::Published && $oldAvailable === 0) {
             $this->recordThat(new OfferBackInStock($this->id, $stock, $now));
         } else {
             $this->recordThat(new OfferStockChanged($this->id, $old, $stock, $now));
         }
+    }
+
+    /**
+     * DLACZEGO wymaga sprzedawcy: blokada sprzedawcy zawiesza jego oferty
+     * asynchronicznie (job), więc bez tego warunku jest okno, w którym oferta
+     * zablokowanego konta wciąż przyjmuje zamówienia (H11).
+     *
+     * DLACZEGO `$expectedUnitPrice`: kupujący zamawia po cenie, którą widział
+     * (H5, wzorzec `expectedPrice` z moderacji). Liczy się obecna cena;
+     * oczekująca zmiana jeszcze nie obowiązuje.
+     *
+     * Ten sam klucz z tą samą ilością to no-op: ponowiony job nie rezerwuje
+     * drugi raz (H10).
+     *
+     * @throws OfferNotReservable
+     * @throws SellerCannotSell
+     * @throws ReservationPriceMismatch
+     * @throws ReservationConflict
+     * @throws InsufficientStock
+     */
+    public function reserve(Seller $seller, ReservationKey $key, Quantity $quantity, Money $expectedUnitPrice, DateTimeImmutable $now): void
+    {
+        if ($this->status !== OfferStatus::Published) {
+            throw new OfferNotReservable;
+        }
+
+        if (! $seller->canSell()) {
+            throw new SellerCannotSell;
+        }
+
+        if (! $this->price->equals($expectedUnitPrice)) {
+            throw new ReservationPriceMismatch;
+        }
+
+        $existing = $this->findReservation($key);
+
+        if ($existing !== null) {
+            if ($existing->quantity->value() === $quantity->value()) {
+                return;
+            }
+
+            throw new ReservationConflict;
+        }
+
+        if ($quantity->value() > $this->available()) {
+            throw new InsufficientStock;
+        }
+
+        $this->reservations[] = new Reservation($key, $quantity, $now);
+        $this->recordThat(new OfferStockReserved($this->id, $key, $quantity, $this->available(), $this->isListed(), $now));
+    }
+
+    /**
+     * W każdym statusie (H4): zwolnienie to kompensacja (płatność nie przyszła,
+     * zamówienie anulowane), więc nie może zależeć od tego, co sprzedawca
+     * zrobił z ofertą w międzyczasie. Brak aktywnej rezerwacji to no-op:
+     * ponowiona kompensacja nie ma czego zwalniać.
+     */
+    public function releaseReservation(ReservationKey $key, DateTimeImmutable $now): void
+    {
+        $reservation = $this->findReservation($key);
+
+        if ($reservation === null) {
+            return;
+        }
+
+        $this->removeReservation($key);
+        $this->recordThat(new OfferReservationReleased($this->id, $key, $reservation->quantity, $this->available(), $this->isListed(), $now));
+    }
+
+    /**
+     * W każdym statusie (H4): pieniądze już przyszły, więc obiecane sztuki
+     * sprzedajemy także z wycofanej oferty. Stan spada o ilość rezerwacji,
+     * a dostępność się nie zmienia (te sztuki były już odjęte).
+     *
+     * DLACZEGO brak klucza to błąd, nie no-op: „zwolniona, potem potwierdzona”
+     * oznaczałoby sprzedaż bez zmniejszenia stanu. Ponowione potwierdzenie
+     * (klucz już `confirmed`) rozpoznaje handler przez repozytorium.
+     *
+     * @throws ReservationNotFound
+     */
+    public function confirmReservation(ReservationKey $key, DateTimeImmutable $now): void
+    {
+        $reservation = $this->findReservation($key) ?? throw new ReservationNotFound;
+
+        $this->removeReservation($key);
+        $this->stock = Stock::fromInt($this->stock->value() - $reservation->quantity->value());
+        $this->recordThat(new OfferReservationConfirmed($this->id, $key, $reservation->quantity, $this->stock, $now));
     }
 
     public function changeDetails(Condition $condition, ShippingTime $shippingTime, DateTimeImmutable $now): void
@@ -327,16 +450,37 @@ final class Offer extends AggregateRoot
     }
 
     /**
-     * Oferta widoczna dla kupujących: opublikowana i jest co kupić.
+     * Oferta widoczna dla kupujących: opublikowana i jest co zarezerwować.
      */
     public function isListed(): bool
     {
-        return $this->status === OfferStatus::Published && $this->stock->value() > 0;
+        return $this->status === OfferStatus::Published && $this->available() > 0;
     }
 
     public function isSoldOut(): bool
     {
-        return $this->status === OfferStatus::Published && $this->stock->value() === 0;
+        return $this->status === OfferStatus::Published && $this->available() === 0;
+    }
+
+    public function reserved(): int
+    {
+        return array_sum(array_map(static fn (Reservation $r): int => $r->quantity->value(), $this->reservations));
+    }
+
+    /**
+     * Stan pochodny: niezmiennik `changeStock` gwarantuje, że nie spada poniżej zera.
+     */
+    public function available(): int
+    {
+        return $this->stock->value() - $this->reserved();
+    }
+
+    /**
+     * @return list<Reservation>
+     */
+    public function reservations(): array
+    {
+        return $this->reservations;
     }
 
     /**
@@ -462,6 +606,25 @@ final class Offer extends AggregateRoot
     public function version(): int
     {
         return $this->version;
+    }
+
+    private function findReservation(ReservationKey $key): ?Reservation
+    {
+        foreach ($this->reservations as $reservation) {
+            if ($reservation->key->equals($key)) {
+                return $reservation;
+            }
+        }
+
+        return null;
+    }
+
+    private function removeReservation(ReservationKey $key): void
+    {
+        $this->reservations = array_values(array_filter(
+            $this->reservations,
+            static fn (Reservation $reservation): bool => ! $reservation->key->equals($key),
+        ));
     }
 
     private function requirePendingPriceChange(OfferAction $action, ?Money $expectedPrice = null): PendingPriceChange

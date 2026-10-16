@@ -38,7 +38,7 @@ function offerPriceOffer(OfferStatus $status = OfferStatus::Published, int $cent
 {
     return Offer::reconstitute(
         OfferId::fromInt(10), SellerId::fromInt(1), ProductId::fromInt(99), Money::fromCents($cents), Stock::fromInt(5),
-        Condition::New, ShippingTime::fromInt(3), $status, null, $pending, $recent, 4,
+        Condition::New, ShippingTime::fromInt(3), $status, null, $pending, $recent, [], 4,
     );
 }
 

@@ -257,6 +257,7 @@ final class SqlOfferRepository implements OfferRepository
                 $suspension,
                 $pending,
                 $recentPriceChanges,
+                [],
                 (int) $row->version,
             );
         } catch (UnexpectedValueException|InvalidValue $e) {

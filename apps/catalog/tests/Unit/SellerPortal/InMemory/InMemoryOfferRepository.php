@@ -87,6 +87,7 @@ final class InMemoryOfferRepository implements OfferRepository
             $offer->suspension(),
             $offer->pendingPriceChange(),
             $offer->recentPriceChanges(),
+            $offer->reservations(),
             $version ?? $offer->version(),
         );
     }
