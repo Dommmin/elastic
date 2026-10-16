@@ -336,6 +336,28 @@ final class Order extends AggregateRoot
         $this->requireStatus([OrderStatus::AwaitingPayment], OrderAction::Pay);
     }
 
+    /**
+     * Czy zamówienie wciąż potrzebuje sztuk zajętych w ofertach.
+     *
+     * DLACZEGO w domenie, a nie w krokach sagi: to jedna reguła biznesowa
+     * („kto zrezygnował z towaru”), a kroki rezerwacji i potwierdzenia
+     * pytają o nią z dwóch stron. Dwie kopie `match` po statusie rozjechałyby
+     * się przy pierwszej zmianie maszyny stanów.
+     * - `Placed`: wciąż rezerwuje, więc nie porzuciło rezerwacji;
+     * - `AwaitingPayment`, `Paid`, `Shipped`: towar czeka albo jest sprzedany;
+     * - `Cancelled` przez sprzedawcę: wpłata przyszła, sztuki są sprzedane (H8);
+     * - `Rejected`, `Expired`, `Cancelled` przez kupującego: zrezygnowało,
+     *   sztuki wracają do oferty.
+     */
+    public function holdsReservations(): bool
+    {
+        return match ($this->status) {
+            OrderStatus::Placed, OrderStatus::AwaitingPayment, OrderStatus::Paid, OrderStatus::Shipped => true,
+            OrderStatus::Cancelled => $this->cancellation?->by === CancelledBy::Seller,
+            OrderStatus::Rejected, OrderStatus::Expired => false,
+        };
+    }
+
     public function isDueForExpiry(DateTimeImmutable $now): bool
     {
         return in_array($this->status, [OrderStatus::Placed, OrderStatus::AwaitingPayment], true)

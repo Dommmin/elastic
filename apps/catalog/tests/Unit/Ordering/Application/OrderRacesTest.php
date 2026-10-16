@@ -235,3 +235,40 @@ test('zdarzenia płatności trafiają do kolejki sagi jako kroki', function (): 
         ->and($this->world->jobs->names())->toBe(['confirmReservations', 'refund'])
         ->and($this->world->jobs->jobs[1]['refundId']->value())->toBe('refund-'.$orderId->value().'-1');
 });
+
+test('R1+R2: T1 zatwierdzone po zwolnieniu, worker padł przed T2: ponowiony krok zwalnia sztukę', function (): void {
+    [$orderId] = $this->world->placeOrders(OrderingWorld::BUYER_USER_ID, [new CartLine(1, 1, 1000), new CartLine(2, 1, 500)]);
+    $this->world->jobs->take();
+    $key = OrderReservationKey::for($orderId);
+
+    // Krok wczytał Placed i wysłał T1. Zanim T1 się zatwierdziło, kupujący anulował,
+    // a krok zwalniający już przeszedł i nie zastał żadnej rezerwacji.
+    $this->world->cancelByBuyer()->handle(new CancelOrderByBuyer(OrderingWorld::BUYER_USER_ID, $orderId->value()));
+    $this->world->runQueuedJobs();
+    expect($this->world->reservations->active)->toBe([]);
+
+    // T1 zatwierdza się teraz; worker pada, zanim dojdzie do T2 (gałąź R1 się nie wykona).
+    $line = $this->world->orders->get($orderId)->lines()[0];
+    $this->world->reservations->reserve($key, $line->offerId(), $line->quantity(), $line->unitPrice());
+    expect($this->world->reservations->isActive($key, 1))->toBeTrue();
+
+    // Kolejka ponawia job: zamówienie już nie jest Placed i z rezerwacji zrezygnowało.
+    $this->world->reserveOrderLines()->run($orderId);
+
+    expect($this->world->orders->get($orderId)->status())->toBe(OrderStatus::Cancelled)
+        ->and($this->world->reservations->active)->toBe([])
+        ->and($this->world->reservations->newReservations)->toBe(1);
+});
+
+test('ponowiony krok rezerwacji po opłaceniu niczego nie zwalnia', function (): void {
+    [$orderId] = $this->world->placeOrders(OrderingWorld::BUYER_USER_ID, [new CartLine(1, 1, 1000)]);
+    $this->world->jobs->take();
+    $this->world->reserveOrderLines()->run($orderId);
+
+    // Spóźniony duplikat joba trafia na zamówienie, które trzyma rezerwację.
+    $this->world->reserveOrderLines()->run($orderId);
+
+    expect($this->world->orders->get($orderId)->status())->toBe(OrderStatus::AwaitingPayment)
+        ->and($this->world->reservations->isActive(OrderReservationKey::for($orderId), 1))->toBeTrue()
+        ->and(array_column($this->world->reservations->calls, 'op'))->not->toContain('release');
+});

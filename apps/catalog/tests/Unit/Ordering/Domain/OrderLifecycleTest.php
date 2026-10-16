@@ -191,6 +191,19 @@ test('allowedActionsFor dla kupującego i sprzedawcy w każdym statusie', functi
     'Cancelled' => [OrderStatus::Cancelled, [], []],
 ]);
 
+test('holdsReservations: zamówienie trzyma rezerwacje, dopóki z nich nie zrezygnowało', function (Closure $order, bool $holds) {
+    expect($order()->holdsReservations())->toBe($holds);
+})->with([
+    'Placed (wciąż rezerwuje)' => [fn () => OrderMother::placed(), true],
+    'AwaitingPayment' => [fn () => OrderMother::awaitingPayment(), true],
+    'Paid' => [fn () => OrderMother::paid(), true],
+    'Shipped' => [fn () => OrderMother::shipped(), true],
+    'Cancelled przez sprzedawcę (H8)' => [fn () => OrderMother::cancelledBySeller(), true],
+    'Cancelled przez kupującego' => [fn () => OrderMother::cancelledByBuyer(), false],
+    'Rejected' => [fn () => OrderMother::rejected(), false],
+    'Expired' => [fn () => OrderMother::expired(), false],
+]);
+
 test('requirePayable przepuszcza tylko AwaitingPayment', function (OrderStatus $status) {
     OrderMother::awaitingPayment()->requirePayable();
 

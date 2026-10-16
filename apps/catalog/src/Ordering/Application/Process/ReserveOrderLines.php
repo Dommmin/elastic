@@ -8,9 +8,7 @@ use Ordering\Application\Port\ReservationResult;
 use Ordering\Application\Port\StockReservations;
 use Ordering\Application\Port\TransactionManager;
 use Ordering\Application\RetryOnConflict;
-use Ordering\Domain\CancelledBy;
 use Ordering\Domain\OfferId;
-use Ordering\Domain\Order;
 use Ordering\Domain\OrderId;
 use Ordering\Domain\OrderLine;
 use Ordering\Domain\OrderRepository;
@@ -29,7 +27,9 @@ use SharedKernel\ConcurrencyConflict;
  *   nie zajmuje drugiej sztuki;
  * - T2 przy konflikcie wersji ponawia się na świeżym stanie (do 3 prób),
  *   potem wyjątek ponawia cały job;
- * - T2 sprawdza status jeszcze raz i sprząta po sobie (R1, niżej).
+ * - T2 sprawdza status jeszcze raz i sprząta po sobie (R1, niżej);
+ * - krok, który zastaje zamówienie już poza `Placed`, sprząta za siebie
+ *   z poprzedniego przebiegu (R1 + R2, niżej).
  *
  * Pierwsza odmowa kończy zamówienie (`reject`). Już zajęte sztuki zwalnia
  * dopiero krok po `OrderRejected` (`ReleaseOrderReservations` zwalnia
@@ -57,12 +57,26 @@ final readonly class ReserveOrderLines
     public function run(OrderId $orderId): void
     {
         $order = $this->orders->get($orderId);
+        $key = OrderReservationKey::for($orderId);
 
+        /*
+         * DLACZEGO nie samo `return`, gdy zamówienie nie jest już `Placed`
+         * (R1 + R2 naraz): poprzedni przebieg tego joba wysłał T1, kupujący
+         * anulował, krok zwalniający przeszedł i niczego nie zastał, a dopiero
+         * potem T1 się zatwierdziło. Worker padł przed T2, więc gałąź R1 niżej
+         * się nie wykonała. Ponowiony job jest ostatnim, kto o tej rezerwacji
+         * wie: zwalnia każdą pozycję (no-op, gdy nic nie wisi). Zamówieniu,
+         * które rezerwacje trzyma (np. czeka na płatność), niczego nie oddajemy.
+         */
         if ($order->status() !== OrderStatus::Placed) {
+            if (! $order->holdsReservations()) {
+                foreach ($order->lines() as $line) {
+                    $this->reservations->release($key, $line->offerId());
+                }
+            }
+
             return;
         }
-
-        $key = OrderReservationKey::for($orderId);
 
         foreach ($order->lines() as $line) {
             if ($line->isReserved()) {
@@ -115,7 +129,7 @@ final readonly class ReserveOrderLines
             $order = $this->orders->get($orderId);
 
             if ($order->status() !== OrderStatus::Placed) {
-                return self::wantsReservations($order) ? self::HELD_BY_ORDER : self::ABANDONED;
+                return $order->holdsReservations() ? self::HELD_BY_ORDER : self::ABANDONED;
             }
 
             $order->markLineReserved($line->offerId(), $this->clock->now());
@@ -144,19 +158,6 @@ final readonly class ReserveOrderLines
             $this->orders->save($order);
             $this->events->dispatch($order->releaseEvents());
         }));
-    }
-
-    /**
-     * Statusy, w których zamówienie trzyma swoje rezerwacje: czeka na
-     * płatność albo jest opłacone (także anulowane przez sprzedawcę, H8).
-     */
-    private static function wantsReservations(Order $order): bool
-    {
-        return match ($order->status()) {
-            OrderStatus::AwaitingPayment, OrderStatus::Paid, OrderStatus::Shipped => true,
-            OrderStatus::Cancelled => $order->cancellation()?->by === CancelledBy::Seller,
-            default => false,
-        };
     }
 
     private static function rejectionReason(ReservationResult $result): RejectionReason

@@ -3,11 +3,8 @@
 namespace Ordering\Application\Process;
 
 use Ordering\Application\Port\StockReservations;
-use Ordering\Domain\CancelledBy;
-use Ordering\Domain\Order;
 use Ordering\Domain\OrderId;
 use Ordering\Domain\OrderRepository;
-use Ordering\Domain\OrderStatus;
 
 /**
  * Krok po `OrderPaid`: zamienia rezerwacje w sprzedaż (stan ofert spada, H1).
@@ -33,7 +30,9 @@ final readonly class ConfirmOrderReservations
     {
         $order = $this->orders->get($orderId);
 
-        if (! $this->holdsSoldReservations($order)) {
+        // Wpłata + rezerwacje wciąż trzymane = sztuki sprzedane (`Paid`,
+        // `Shipped`, `Cancelled` przez sprzedawcę); bez wpłaty nie ma sprzedaży.
+        if ($order->payment() === null || ! $order->holdsReservations()) {
             return;
         }
 
@@ -42,18 +41,5 @@ final readonly class ConfirmOrderReservations
         foreach ($order->lines() as $line) {
             $this->reservations->confirm($key, $line->offerId());
         }
-    }
-
-    private function holdsSoldReservations(Order $order): bool
-    {
-        if ($order->payment() === null) {
-            return false;
-        }
-
-        return match ($order->status()) {
-            OrderStatus::Paid, OrderStatus::Shipped => true,
-            OrderStatus::Cancelled => $order->cancellation()?->by === CancelledBy::Seller,
-            default => false,
-        };
     }
 }
