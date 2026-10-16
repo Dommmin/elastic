@@ -39,6 +39,7 @@
             "App\\": "app/",
             "Database\\Factories\\": "database/factories/",
             "Database\\Seeders\\": "database/seeders/",
+            "Ordering\\": "src/Ordering/",
             "SellerPortal\\": "src/SellerPortal/",
             "SharedKernel\\": "src/SharedKernel/"
         }

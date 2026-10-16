@@ -3,6 +3,14 @@
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
+// Cały zestaw idzie w jednym procesie, a testy architektury (suite „Arch”,
+// uruchamiana po Feature) parsują docblocki każdej klasy z badanych
+// przestrzeni nazw. Z domyślnym limitem PHP 128M zestaw kończył się
+// „Allowed memory size exhausted”, gdy doszła domena Orderingu, choć sam
+// `tests/Arch` mieści się w 60M. Podnosimy limit tylko dla testów,
+// bez dotykania phpunit.xml.
+ini_set('memory_limit', '512M');
+
 /*
 |--------------------------------------------------------------------------
 | Test Case
