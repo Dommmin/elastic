@@ -135,7 +135,7 @@ final class Order extends AggregateRoot
         ?Shipment $shipment,
         int $version,
     ): self {
-        return new self($id, $buyerId, $sellerId, $lines, $status, $placedAt, $paymentDeadline, $payment, $refunds, $rejection, $cancellation, $shipment, $version);
+        return new self($id, $buyerId, $sellerId, array_values($lines), $status, $placedAt, $paymentDeadline, $payment, $refunds, $rejection, $cancellation, $shipment, $version);
     }
 
     /**
