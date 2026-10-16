@@ -4,6 +4,7 @@ import {
     BookOpen,
     FolderGit2,
     LayoutGrid,
+    PackageCheck,
     PackageSearch,
     Scale,
     ShoppingCart,
@@ -27,6 +28,7 @@ import {
 import { hasSellerPortal } from '@/lib/sellerStatus';
 import { dashboard } from '@/routes';
 import { index as cartIndex } from '@/routes/cart';
+import { index as ordersIndex } from '@/routes/orders';
 import { priceChanges as panelPriceChanges } from '@/routes/panel/moderation';
 import { index as panelProducts } from '@/routes/panel/products';
 import { index as panelSellers } from '@/routes/panel/sellers';
@@ -53,6 +55,11 @@ const mainNavItems = computed<NavItem[]>(() => [
                   href: cartIndex(),
                   icon: ShoppingCart,
                   badge: page.props.cart.count || undefined,
+              },
+              {
+                  title: 'Moje zamówienia',
+                  href: ordersIndex(),
+                  icon: PackageCheck,
               },
               page.props.auth.seller
                   ? {

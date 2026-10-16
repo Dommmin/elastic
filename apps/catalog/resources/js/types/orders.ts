@@ -42,3 +42,65 @@ export interface CartGroup {
     subtotal_cents: number;
     lines: CartLine[];
 }
+
+/**
+ * Zamówienia kupującego (App\Http\Controllers\Shop\OrderController,
+ * Ordering\Infrastructure\ReadModel\{BuyerOrderList, BuyerOrderDetails}).
+ */
+
+export type OrderStatus =
+    | 'placed'
+    | 'awaiting_payment'
+    | 'paid'
+    | 'shipped'
+    | 'rejected'
+    | 'expired'
+    | 'cancelled';
+
+export type OrderActionName = 'pay' | 'cancel';
+
+export interface OrderListItem {
+    id: number;
+    status: OrderStatus;
+    status_label: string;
+    seller: string;
+    total_cents: number;
+    placed_at: string;
+    lines_count: number;
+    first_product: string | null;
+}
+
+export interface OrderDetailsLine {
+    offer_id: number;
+    product_name: string;
+    unit_price_cents: number;
+    quantity: number;
+}
+
+export interface OrderRefund {
+    amount_cents: number;
+    status: 'requested' | 'completed';
+    reason: string;
+}
+
+export interface OrderDetails {
+    id: number;
+    status: OrderStatus;
+    status_label: string;
+    seller: { id: number; name: string };
+    lines: OrderDetailsLine[];
+    total_cents: number;
+    payment_deadline: string;
+    /** Liczone na serwerze: odliczanie nie ufa zegarowi przeglądarki. */
+    seconds_to_deadline: number;
+    refunds: OrderRefund[];
+    tracking_number: string | null;
+    rejection_label: string | null;
+    cancellation_label: string | null;
+}
+
+export interface OrderTimelineEvent {
+    id: number;
+    type: string;
+    occurred_at: string;
+}

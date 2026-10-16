@@ -156,7 +156,7 @@ class CartController extends Controller
         });
 
         if ($result === null) {
-            return redirect('/orders');
+            return redirect()->route('orders.index');
         }
 
         if ($result === 'mismatch') {
@@ -169,7 +169,7 @@ class CartController extends Controller
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Złożono '.self::ordersPhrase(count($result))]);
 
-        return redirect('/orders');
+        return redirect()->route('orders.index');
     }
 
     private static function item(Request $request, int $offer): CartItem

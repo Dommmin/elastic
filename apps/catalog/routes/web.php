@@ -11,6 +11,7 @@ use App\Http\Controllers\Seller\SellerApplicationController;
 use App\Http\Controllers\Seller\SellerDashboardController;
 use App\Http\Controllers\Seller\SellerOfferController;
 use App\Http\Controllers\Shop\CartController;
+use App\Http\Controllers\Shop\OrderController;
 use App\Http\Controllers\Shop\ProductPageController;
 use App\Http\Controllers\Webhooks\PaymentWebhookController;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,12 @@ Route::middleware('auth')->group(function () {
     Route::patch('cart/items/{offer}', [CartController::class, 'update'])->whereNumber('offer')->name('cart.items.update');
     Route::delete('cart/items/{offer}', [CartController::class, 'destroy'])->whereNumber('offer')->name('cart.items.destroy');
     Route::post('cart/checkout', [CartController::class, 'checkout'])->name('cart.checkout');
+
+    // Zamówienia kupującego. Cudze lub nieistniejące → 404 (OrderAccess), nie 403.
+    Route::get('orders', [OrderController::class, 'index'])->name('orders.index');
+    Route::get('orders/{order}', [OrderController::class, 'show'])->whereNumber('order')->name('orders.show');
+    Route::post('orders/{order}/pay', [OrderController::class, 'pay'])->whereNumber('order')->name('orders.pay');
+    Route::post('orders/{order}/cancel', [OrderController::class, 'cancel'])->whereNumber('order')->name('orders.cancel');
 });
 
 Route::middleware(['auth', 'verified'])->group(function () {
