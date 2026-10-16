@@ -31,6 +31,16 @@ final class InMemoryOfferRepository implements OfferRepository
     /** @var array<string, ReservationStatus> klucz "{offerId}:{reservationKey}" */
     private array $reservationStatuses = [];
 
+    private int $failingSaves = 0;
+
+    /**
+     * Następne `$count` zapisów rzuci ConcurrencyConflict, jak przy wyścigu o wersję (test ponowień).
+     */
+    public function failNextSaves(int $count): void
+    {
+        $this->failingSaves = $count;
+    }
+
     public function nextIdentity(): OfferId
     {
         return OfferId::fromInt(++$this->lastId);
@@ -43,6 +53,12 @@ final class InMemoryOfferRepository implements OfferRepository
 
     public function save(Offer $offer): void
     {
+        if ($this->failingSaves > 0) {
+            $this->failingSaves--;
+
+            throw new ConcurrencyConflict;
+        }
+
         $current = $this->stored[$offer->id()->value()] ?? null;
 
         if (($current?->version() ?? 0) !== $offer->version()) {

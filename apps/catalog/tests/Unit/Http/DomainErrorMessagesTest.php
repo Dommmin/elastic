@@ -9,6 +9,7 @@ use SellerPortal\Domain\Offer\OfferCannotBePublishedWithoutStock;
 use SellerPortal\Domain\Offer\PendingPriceChangeMismatch;
 use SellerPortal\Domain\Offer\PriceChangeAlreadyPending;
 use SellerPortal\Domain\Offer\PriceChangeLimitExceeded;
+use SellerPortal\Domain\Offer\StockBelowReserved;
 use SellerPortal\Domain\Seller\SellerCannotSell;
 use SharedKernel\ConcurrencyConflict;
 use SharedKernel\DomainException;
@@ -26,6 +27,7 @@ test('każdy zmapowany CODE daje dokładny polski komunikat', function (DomainEx
     'seller_already_registered' => [fn () => new SellerAlreadyRegistered, 'To konto ma już profil sprzedawcy'],
     'no_pending_price_change' => [fn () => new NoPendingPriceChange, 'Ta oferta nie ma już zgłoszonej zmiany ceny'],
     'pending_price_changed' => [fn () => new PendingPriceChangeMismatch, 'Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę'],
+    'stock_below_reserved' => [fn () => new StockBelowReserved, 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk'],
 ]);
 
 test('nieznany kod i brak CODE → komunikat zastępczy, nie treść wyjątku', function (DomainException $exception) {
@@ -43,6 +45,6 @@ test('mapa nie ma kodów spoza testu powyżej', function () {
     expect(array_keys($messages))->toEqualCanonicalizing([
         'price_change_limit', 'price_change_pending', 'concurrency_conflict', 'live_offer_exists',
         'offer_without_stock', 'seller_cannot_sell', 'seller_already_registered', 'no_pending_price_change',
-        'pending_price_changed',
+        'pending_price_changed', 'stock_below_reserved',
     ]);
 });

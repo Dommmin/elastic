@@ -415,3 +415,35 @@ test('lookup po EAN i po nazwie, max 10, bez produktów z własną żywą ofert�
         ->assertUnprocessable()
         ->assertJsonValidationErrors('q');
 });
+
+test('sprzedawca nie zejdzie ze stanem poniżej zarezerwowanego', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $offer = Offer::factory()->for($seller)->create(['stock' => 5]);
+    DB::table('offer_reservations')->insert([
+        'offer_id' => $offer->id, 'reservation_key' => 'order-1', 'quantity' => 3, 'status' => 'active', 'reserved_at' => now(),
+    ]);
+    $show = "/seller/offers/{$offer->id}";
+
+    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 2, 'version' => 1])
+        ->assertSessionHasErrors(['domain' => 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk']);
+
+    expect($offer->fresh()->stock)->toBe(5);
+});
+
+test('szczegóły oferty pokazują zarezerwowane i dostępne', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $offer = Offer::factory()->for($seller)->create(['stock' => 5]);
+    DB::table('offer_reservations')->insert([
+        ['offer_id' => $offer->id, 'reservation_key' => 'order-1', 'quantity' => 2, 'status' => 'active', 'reserved_at' => now()],
+        // Potwierdzona nie wlicza się do rezerwacji: jej sztuki są już odjęte od stanu.
+        ['offer_id' => $offer->id, 'reservation_key' => 'order-2', 'quantity' => 1, 'status' => 'confirmed', 'reserved_at' => now()],
+    ]);
+
+    $this->actingAs($user)
+        ->get("/seller/offers/{$offer->id}")
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('seller/offers/Show')
+            ->where('offer.stock', 5)
+            ->where('offer.reserved', 2)
+            ->where('offer.available', 3));
+});

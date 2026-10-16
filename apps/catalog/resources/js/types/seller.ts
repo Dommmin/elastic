@@ -70,6 +70,10 @@ export type SellerOfferDetails = {
     price_cents: number;
     currency: string;
     stock: number;
+    /** Sztuki zarezerwowane przez trwające zamówienia. */
+    reserved: number;
+    /** `stock − reserved`: tyle da się jeszcze kupić. */
+    available: number;
     condition: OfferCondition;
     shipping_days: number;
     status: OfferStatus;

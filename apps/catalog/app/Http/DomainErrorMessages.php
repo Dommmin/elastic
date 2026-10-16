@@ -27,6 +27,7 @@ final class DomainErrorMessages
         // Bez „Twoje”: ten sam kod widzi sprzedawca (własne konto) i moderator
         // (przywrócenie oferty zablokowanego sprzedawcy, `Offer::reinstate`).
         'seller_cannot_sell' => 'Konto sprzedawcy nie jest aktywne',
+        'stock_below_reserved' => 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk',
         'seller_already_registered' => 'To konto ma już profil sprzedawcy',
     ];
 
