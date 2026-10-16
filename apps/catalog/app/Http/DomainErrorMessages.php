@@ -34,6 +34,10 @@ final class DomainErrorMessages
         'cannot_buy_own_offer' => 'Nie możesz kupić własnej oferty',
         'invalid_order_transition' => 'Tej operacji nie można wykonać na zamówieniu w obecnym stanie',
         'cart_empty' => 'Koszyk jest pusty',
+        // Jeden komunikat na dwie reguły osiągalne z koszyka (`InvalidOrderLines`:
+        // ponad 20 ofert jednego sprzedawcy, oferty w dwóch walutach); pozostałe
+        // (pusta lista, duplikat oferty) koszyk wyklucza wcześniej.
+        'invalid_order_lines' => 'Tego koszyka nie da się złożyć — u jednego sprzedawcy zamówisz najwyżej 20 różnych ofert, wszystkie w jednej walucie',
     ];
 
     public static function for(DomainException $exception): string

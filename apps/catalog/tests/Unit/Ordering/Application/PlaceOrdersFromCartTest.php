@@ -8,6 +8,7 @@ use Ordering\Application\Order\PriceChange;
 use Ordering\Application\Order\PriceChangedSinceCart;
 use Ordering\Domain\BuyerId;
 use Ordering\Domain\Event\OrderPlaced;
+use Ordering\Domain\OfferId;
 use Ordering\Domain\OrderId;
 use Ordering\Domain\OrderNotFound;
 use Ordering\Domain\OrderStatus;
@@ -43,7 +44,11 @@ test('koszyk z ofertami dwóch sprzedawców daje dwa zamówienia i czyści koszy
         ->and($first->status())->toBe(OrderStatus::Placed)
         ->and($first->buyerId()->value())->toBe(OrderingWorld::BUYER_USER_ID)
         ->and($first->placedAt())->toEqual($this->world->clock->now)
-        ->and($this->world->cart->cleared)->toEqual([BuyerId::fromInt(OrderingWorld::BUYER_USER_ID)])
+        // Czyści tylko złożone oferty: pozycja dodana w innej karcie zostaje.
+        ->and($this->world->cart->cleared)->toEqual([[
+            'buyerId' => BuyerId::fromInt(OrderingWorld::BUYER_USER_ID),
+            'offerIds' => [OfferId::fromInt(1), OfferId::fromInt(3), OfferId::fromInt(2)],
+        ]])
         ->and($this->world->transactions->runs)->toBe(1);
 });
 

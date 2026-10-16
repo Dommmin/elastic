@@ -62,6 +62,17 @@ test('numer przesyłki ma 3–64 znaki po przycięciu', function () {
         ->and(fn () => TrackingNumber::fromString(str_repeat('9', 65)))->toThrow(InvalidValue::class);
 });
 
+test('numer przesyłki bez znaków sterujących i niewidocznych', function (string $value) {
+    expect(fn () => TrackingNumber::fromString($value))->toThrow(InvalidValue::class);
+})->with([
+    'NUL' => "PL1\x002",
+    'escape ANSI' => "PL\e[31m123",
+    'nowa linia w środku' => "PL1\n23",
+    'tabulator w środku' => "PL1\t23",
+    'DEL' => "PL1\x7F23",
+    'zero-width space' => "PL1\u{200B}23",
+]);
+
 test('powód jest niepusty po przycięciu i ma najwyżej 500 znaków', function () {
     expect(Reason::fromString("  Brak towaru\n ")->value())->toBe('Brak towaru')
         ->and(Reason::fromString(str_repeat('ź', 500))->value())->toBe(str_repeat('ź', 500))

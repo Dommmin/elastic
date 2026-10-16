@@ -63,7 +63,7 @@ class SellerOrderController extends Controller
     {
         $handler->handle(new CancelOrderBySeller(self::userId($request), $order, $request->validated('reason')));
 
-        Inertia::flash('toast', ['type' => 'success', 'message' => 'Zamówienie anulowane, zwrot zleczony']);
+        Inertia::flash('toast', ['type' => 'success', 'message' => 'Zamówienie anulowane, zwrot zlecony']);
 
         return redirect()->route('seller.orders.show', $order);
     }

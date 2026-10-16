@@ -101,7 +101,7 @@ test('ExpireOverdueOrders wygasza tylko po karencji i pomija konflikty', functio
     $this->world->clock->advance('PT10M');
     $this->world->orders->failNextSaves(1);
 
-    $expired = $this->world->expireOverdue()->handle(new ExpireOverdueOrders);
+    $expired = $this->world->expireOverdue()->handle(new ExpireOverdueOrders)->expired;
 
     expect($expired)->toBe(1)
         ->and($this->world->orders->get($first)->status())->toBe(OrderStatus::AwaitingPayment)
@@ -109,18 +109,35 @@ test('ExpireOverdueOrders wygasza tylko po karencji i pomija konflikty', functio
         ->and($this->world->orders->get($later)->status())->toBe(OrderStatus::AwaitingPayment);
 
     // Pominięte zamówienie łapie następny przebieg sweepu.
-    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders))->toBe(1)
+    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders)->expired)->toBe(1)
         ->and($this->world->orders->get($first)->status())->toBe(OrderStatus::Expired)
         ->and($this->world->orders->get($later)->status())->toBe(OrderStatus::AwaitingPayment);
 
     $this->world->clock->advance('PT1M');
 
-    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders))->toBe(0);
+    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders)->expired)->toBe(0);
 
     $this->world->clock->advance('PT9M');
 
-    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders))->toBe(1)
+    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders)->expired)->toBe(1)
         ->and($this->world->orders->get($later)->status())->toBe(OrderStatus::Expired);
+});
+
+test('ExpireOverdueOrders: zamówienie, którego nie da się zapisać, nie zatrzymuje sweepu', function (): void {
+    [$broken] = $this->world->placeOrders(OrderingWorld::BUYER_USER_ID, [new CartLine(1, 1, 1999)]);
+    [$healthy] = $this->world->placeOrders(OrderingWorld::BUYER_USER_ID, [new CartLine(1, 1, 1999)]);
+    $error = new RuntimeException('zepsuty wiersz');
+    $this->world->orders->breakSavesOf($broken, $error);
+    $this->world->clock->advance('PT20M');
+
+    $result = $this->world->expireOverdue()->handle(new ExpireOverdueOrders);
+
+    expect($result->expired)->toBe(1)
+        ->and($this->world->orders->get($healthy)->status())->toBe(OrderStatus::Expired)
+        ->and($this->world->orders->get($broken)->status())->toBe(OrderStatus::Placed)
+        ->and($result->failures)->toHaveCount(1)
+        ->and($result->failures[0]->orderId)->toEqual($broken)
+        ->and($result->failures[0]->error)->toBe($error);
 });
 
 test('ExpireOverdueOrders przechodzi przez wszystkie paczki', function (): void {
@@ -130,5 +147,5 @@ test('ExpireOverdueOrders przechodzi przez wszystkie paczki', function (): void 
 
     $this->world->clock->advance('PT20M');
 
-    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders))->toBe(101);
+    expect($this->world->expireOverdue()->handle(new ExpireOverdueOrders)->expired)->toBe(101);
 });

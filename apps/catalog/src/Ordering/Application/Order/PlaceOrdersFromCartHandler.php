@@ -19,7 +19,7 @@ use Ordering\Domain\SellerId;
 
 /**
  * Handler komendy PlaceOrdersFromCart: sprawdź koszyk z ofertami → pogrupuj
- * po sprzedawcy → w jednej transakcji złóż N zamówień i wyczyść koszyk.
+ * po sprzedawcy → w jednej transakcji złóż N zamówień i usuń z koszyka złożone oferty.
  *
  * DLACZEGO wszystkie odmowy przed zapisem: kupujący oczekuje „wszystko albo
  * nic”, a każda odmowa niesie pełną listę pozycji, żeby poprawił koszyk raz.
@@ -56,10 +56,11 @@ final readonly class PlaceOrdersFromCartHandler
         }
 
         $buyerId = BuyerId::fromInt($command->buyerUserId);
-        $snapshots = $this->offers->forOffers(array_map(
+        $offerIds = array_map(
             static fn (CartLine $line): OfferId => OfferId::fromInt($line->offerId),
             $command->lines,
-        ));
+        );
+        $snapshots = $this->offers->forOffers($offerIds);
 
         $this->guardAvailable($command->lines, $snapshots);
         $this->guardNotOwn($command, $snapshots);
@@ -67,7 +68,7 @@ final readonly class PlaceOrdersFromCartHandler
 
         $groups = $this->groupBySeller($command->lines, $snapshots);
 
-        return $this->transactions->run(function () use ($buyerId, $groups): array {
+        return $this->transactions->run(function () use ($buyerId, $groups, $offerIds): array {
             $now = $this->clock->now();
             $placed = [];
 
@@ -77,7 +78,7 @@ final readonly class PlaceOrdersFromCartHandler
                 $placed[] = $order;
             }
 
-            $this->cart->clear($buyerId);
+            $this->cart->clear($buyerId, $offerIds);
 
             foreach ($placed as $order) {
                 $this->events->dispatch($order->releaseEvents());

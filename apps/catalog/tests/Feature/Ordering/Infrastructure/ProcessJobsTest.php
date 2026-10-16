@@ -27,7 +27,7 @@ beforeEach(function () {
     // Koszyk to port z adapterem w późniejszym zadaniu: tu wystarczy atrapa.
     app()->instance(BuyerCart::class, new class implements BuyerCart
     {
-        public function clear(BuyerId $buyerId): void {}
+        public function clear(BuyerId $buyerId, array $offerIds): void {}
     });
 });
 
@@ -88,6 +88,17 @@ test('joby mają ponowienia z backoffem', function (object $job) {
 
 test('kolejka sagi trafia na połączenie z configu mimo queue.default', function (string $default) {
     config(['queue.default' => $default, 'queue.ordering_process_connection' => 'database']);
+    // Maszyna współdzielona: Redis na domyślnym porcie bywa cudzy (inny projekt).
+    // Port 1 nie przyjmie połączenia, więc job, który mimo wszystko poszedłby
+    // na `queue.default`, wywróci test zamiast trafić do obcej kolejki.
+    config([
+        'database.redis.default.host' => '127.0.0.1',
+        'database.redis.default.port' => 1,
+        'database.redis.default.url' => null,
+        'database.redis.cache.host' => '127.0.0.1',
+        'database.redis.cache.port' => 1,
+        'database.redis.cache.url' => null,
+    ]);
     [$buyer, $offer] = processJobsScenario();
 
     processJobsPlace($buyer, $offer);

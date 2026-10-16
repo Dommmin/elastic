@@ -135,6 +135,19 @@ test('własna oferta w koszyku blokuje checkout', function () {
     expect(DB::table('orders')->count())->toBe(0);
 });
 
+test('ponad 20 ofert jednego sprzedawcy: komunikat w errors.cart, bez zamówień', function () {
+    $buyer = User::factory()->create();
+    $seller = checkoutSeller();
+    $offers = array_map(fn (): OfferRow => checkoutOffer($seller), range(1, 21));
+    checkoutFill($buyer, ...$offers);
+
+    $this->actingAs($buyer)->post(route('cart.checkout'), checkoutPayload(...$offers))
+        ->assertSessionHasErrors(['cart' => 'Tego koszyka nie da się złożyć — u jednego sprzedawcy zamówisz najwyżej 20 różnych ofert, wszystkie w jednej walucie']);
+
+    expect(DB::table('orders')->count())->toBe(0)
+        ->and(CartItem::query()->count())->toBe(21);
+});
+
 test('gość nie złoży zamówień', function () {
     $this->post(route('cart.checkout'), [])->assertRedirect(route('login'));
 });

@@ -130,7 +130,8 @@ test('anulowanie opłaconego zleca zwrot i nie przywraca stanu', function () {
     expect(DB::table('orders')->where('id', $id)->value('status'))->toBe('cancelled')
         ->and(DB::table('order_refunds')->where('order_id', $id)->count())->toBe(1)
         ->and((int) DB::table('order_refunds')->where('order_id', $id)->value('amount_cents'))->toBe(20000)
-        ->and(OfferRow::find($offer->id)->stock)->toBe($stockBefore);
+        ->and(OfferRow::find($offer->id)->stock)->toBe($stockBefore)
+        ->and(session('inertia.flash_data.toast.message'))->toBe('Zamówienie anulowane, zwrot zlecony');
 
     $this->actingAs($user)->get(route('seller.orders.show', $id))
         ->assertInertia(fn (Assert $page) => $page

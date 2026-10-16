@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Ordering\Application\Order\ExpireOverdueOrders;
 use Ordering\Application\Order\ExpireOverdueOrdersHandler;
 
@@ -13,6 +14,10 @@ use Ordering\Application\Order\ExpireOverdueOrdersHandler;
  * DLACZEGO czas przebiegu w cache: `/health` pokazuje go jako sygnał, że
  * scheduler żyje. Bez sweepu zamówienia nie wygasają, a towar zostaje
  * zarezerwowany, więc cisza tego procesu musi być widoczna.
+ *
+ * Zamówienia, których nie dało się wygasić, handler zwraca w wyniku (nie zna
+ * loggera); tu trafiają do logu z wyjątkiem, a kod wyjścia FAILURE pokazuje
+ * je schedulerowi. Czas przebiegu zapisujemy mimo to: sweep żyje, reszta wygasła.
  */
 class ExpireOverdueOrdersCommand extends Command
 {
@@ -22,11 +27,24 @@ class ExpireOverdueOrdersCommand extends Command
 
     public function handle(ExpireOverdueOrdersHandler $handler): int
     {
-        $expired = $handler->handle(new ExpireOverdueOrders);
+        $result = $handler->handle(new ExpireOverdueOrders);
 
         Cache::put('ordering:sweep:last_run_at', now()->toIso8601String());
 
-        $this->info("Wygaszono zamówień: {$expired}");
+        foreach ($result->failures as $failure) {
+            Log::error('Sweep nie wygasił zamówienia — pominięte w tym przebiegu.', [
+                'order_id' => $failure->orderId->value(),
+                'exception' => $failure->error,
+            ]);
+        }
+
+        $this->info("Wygaszono zamówień: {$result->expired}");
+
+        if ($result->failures !== []) {
+            $this->error('Nie udało się wygasić zamówień: '.count($result->failures).' (szczegóły w logu)');
+
+            return self::FAILURE;
+        }
 
         return self::SUCCESS;
     }

@@ -20,6 +20,7 @@ use Ordering\Application\Order\OfferNoLongerAvailable;
 use Ordering\Application\Order\PlaceOrdersFromCart;
 use Ordering\Application\Order\PlaceOrdersFromCartHandler;
 use Ordering\Application\Order\PriceChangedSinceCart;
+use Ordering\Domain\InvalidOrderLines;
 use Ordering\Infrastructure\ReadModel\CartView;
 use SharedKernel\DomainException;
 
@@ -148,9 +149,10 @@ class CartController extends Controller
 
             try {
                 return $handler->handle(new PlaceOrdersFromCart(self::userId($request), $lines));
-            } catch (PriceChangedSinceCart|OfferNoLongerAvailable|CannotBuyOwnOffer $e) {
-                // Odmowy są przed zapisem, więc nic nie powstało; strona koszyka
-                // ze świeżym `CartView` pokaże, które pozycje się zmieniły.
+            } catch (PriceChangedSinceCart|OfferNoLongerAvailable|CannotBuyOwnOffer|InvalidOrderLines $e) {
+                // Odmowy są przed zapisem (a `InvalidOrderLines` z `Order::place`
+                // cofa transakcję), więc nic nie powstało; strona koszyka ze
+                // świeżym `CartView` pokaże, które pozycje się zmieniły.
                 return $e;
             }
         });

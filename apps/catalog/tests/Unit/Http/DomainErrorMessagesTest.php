@@ -5,6 +5,7 @@ use Ordering\Application\Order\CannotBuyOwnOffer;
 use Ordering\Application\Order\CartEmpty;
 use Ordering\Application\Order\OfferNoLongerAvailable;
 use Ordering\Application\Order\PriceChangedSinceCart;
+use Ordering\Domain\InvalidOrderLines;
 use Ordering\Domain\InvalidOrderTransition;
 use Ordering\Domain\OrderStatus;
 use SellerPortal\Application\Offer\OfferNotOwned;
@@ -39,6 +40,8 @@ test('każdy zmapowany CODE daje dokładny polski komunikat', function (DomainEx
     'cannot_buy_own_offer' => [fn () => new CannotBuyOwnOffer([1]), 'Nie możesz kupić własnej oferty'],
     'invalid_order_transition' => [fn () => InvalidOrderTransition::from(OrderStatus::Paid, 'ship'), 'Tej operacji nie można wykonać na zamówieniu w obecnym stanie'],
     'cart_empty' => [fn () => new CartEmpty, 'Koszyk jest pusty'],
+    'invalid_order_lines (za dużo ofert)' => [fn () => InvalidOrderLines::tooMany(20), 'Tego koszyka nie da się złożyć — u jednego sprzedawcy zamówisz najwyżej 20 różnych ofert, wszystkie w jednej walucie'],
+    'invalid_order_lines (dwie waluty)' => [fn () => InvalidOrderLines::mixedCurrencies(), 'Tego koszyka nie da się złożyć — u jednego sprzedawcy zamówisz najwyżej 20 różnych ofert, wszystkie w jednej walucie'],
 ]);
 
 test('nieznany kod i brak CODE → komunikat zastępczy, nie treść wyjątku', function (DomainException $exception) {
@@ -57,6 +60,6 @@ test('mapa nie ma kodów spoza testu powyżej', function () {
         'price_change_limit', 'price_change_pending', 'concurrency_conflict', 'live_offer_exists',
         'offer_without_stock', 'seller_cannot_sell', 'seller_already_registered', 'no_pending_price_change',
         'pending_price_changed', 'stock_below_reserved', 'price_changed_since_cart', 'offer_no_longer_available',
-        'cannot_buy_own_offer', 'invalid_order_transition', 'cart_empty',
+        'cannot_buy_own_offer', 'invalid_order_transition', 'cart_empty', 'invalid_order_lines',
     ]);
 });

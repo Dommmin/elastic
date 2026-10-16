@@ -24,12 +24,23 @@ final class InMemoryOrderRepository implements OrderRepository
 
     private int $failingSaves = 0;
 
+    /** @var array<int, \Throwable> */
+    private array $brokenSaves = [];
+
     /**
      * Następne `$count` zapisów rzuci ConcurrencyConflict, jak przy wyścigu o wersję (test ponowień).
      */
     public function failNextSaves(int $count): void
     {
         $this->failingSaves = $count;
+    }
+
+    /**
+     * Każdy zapis tego zamówienia rzuci `$error` (np. zepsuty wiersz), inne zapisują się normalnie.
+     */
+    public function breakSavesOf(OrderId $id, \Throwable $error): void
+    {
+        $this->brokenSaves[$id->value()] = $error;
     }
 
     public function nextIdentity(): OrderId
@@ -44,6 +55,10 @@ final class InMemoryOrderRepository implements OrderRepository
 
     public function save(Order $order): void
     {
+        if (isset($this->brokenSaves[$order->id()->value()])) {
+            throw $this->brokenSaves[$order->id()->value()];
+        }
+
         if ($this->failingSaves > 0) {
             $this->failingSaves--;
 

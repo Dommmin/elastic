@@ -36,6 +36,9 @@ export const timelineEventLabels: Record<string, string> = {
     'offer.suspended': 'Zawieszono',
     'offer.reinstated': 'Przywrócono',
     'offer.withdrawn': 'Wycofano',
+    'offer.stock_reserved': 'Zarezerwowano sztuki dla zamówienia',
+    'offer.reservation_released': 'Zwolniono rezerwację',
+    'offer.reservation_confirmed': 'Rezerwacja zamieniona w sprzedaż',
 };
 
 /**

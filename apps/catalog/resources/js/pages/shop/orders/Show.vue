@@ -32,8 +32,9 @@ const domainError = computed(() => page.props.errors?.domain);
 const busy = ref(false);
 
 // Odpytujemy co sekundę tylko wtedy, gdy stan jeszcze się zmieni bez udziału
-// kupującego: saga sprawdza dostępność (`placed`) albo czekamy na webhook po
-// powrocie z bramki (ograniczone do 30 s, żeby nie bić w serwer bez końca).
+// kupującego: saga sprawdza dostępność (`placed`, najwyżej 120 s) albo czekamy
+// na webhook po powrocie z bramki (najwyżej 30 s). Limity, żeby karta
+// zostawiona otwarta nie biła w serwer bez końca, gdy worker sagi stoi.
 const { start, stop } = usePoll(
     1000,
     { only: ['order', 'actions', 'timeline', 'awaiting_confirmation'] },
@@ -64,11 +65,33 @@ watch(
     },
     { immediate: true },
 );
-onBeforeUnmount(() => clearTimeout(confirmationTimer));
+const PLACED_POLL_LIMIT_MS = 120_000;
+const placedCheckTooLong = ref(false);
+let placedTimer: ReturnType<typeof setTimeout> | undefined;
+
+watch(
+    () => props.order.status === 'placed',
+    (placed) => {
+        clearTimeout(placedTimer);
+        placedCheckTooLong.value = false;
+
+        if (placed) {
+            placedTimer = setTimeout(() => {
+                placedCheckTooLong.value = true;
+            }, PLACED_POLL_LIMIT_MS);
+        }
+    },
+    { immediate: true },
+);
+
+onBeforeUnmount(() => {
+    clearTimeout(confirmationTimer);
+    clearTimeout(placedTimer);
+});
 
 const polling = computed(
     () =>
-        props.order.status === 'placed' ||
+        (props.order.status === 'placed' && !placedCheckTooLong.value) ||
         (props.awaiting_confirmation && !confirmationExpired.value),
 );
 
@@ -132,7 +155,10 @@ function refundText(refund: OrderDetails['refunds'][number]): string {
         </Alert>
 
         <Alert v-if="order.status === 'placed'" role="status">
-            <AlertDescription>
+            <AlertDescription v-if="placedCheckTooLong">
+                Sprawdzanie trwa dłużej niż zwykle — odśwież stronę za chwilę
+            </AlertDescription>
+            <AlertDescription v-else>
                 Sprawdzamy dostępność towaru — odświeżam co sekundę.
             </AlertDescription>
         </Alert>

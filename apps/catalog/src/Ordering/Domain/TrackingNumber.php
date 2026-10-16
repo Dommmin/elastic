@@ -24,6 +24,13 @@ final readonly class TrackingNumber
             throw new InvalidValue('Numer przesyłki musi mieć od '.self::MIN_LENGTH.' do '.self::MAX_LENGTH.' znaków.');
         }
 
+        // Jak w `Reason`, ale ostrzej (\p{C}: sterujące, niewidoczne, formatujące):
+        // numer jest jednoliniowy i trafia do logów, widoków i do kupującego,
+        // więc nie ma w nim miejsca nawet na \n ani zero-width space.
+        if (preg_match('/\p{C}/u', $trimmed) === 1) {
+            throw new InvalidValue('Numer przesyłki zawiera niedozwolone znaki sterujące.');
+        }
+
         return new self($trimmed);
     }
 
