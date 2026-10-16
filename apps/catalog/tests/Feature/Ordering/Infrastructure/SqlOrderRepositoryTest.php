@@ -196,7 +196,7 @@ test('każde zdarzenie zapisuje wiersz order_events', function () {
         'buyer_id' => $order->buyerId()->value(),
         'seller_id' => $order->sellerId()->value(),
         'total_cents' => 4498,
-        'currency' => 'PLN',
+        'total_currency' => 'PLN',
     ]);
 
     $reserved = json_decode($rows[1]->payload, true);
