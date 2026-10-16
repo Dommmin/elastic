@@ -111,7 +111,9 @@ function pageLabel(label: string): string {
                     <tr>
                         <th class="px-3 py-2 font-medium">Produkt</th>
                         <th class="px-3 py-2 text-right font-medium">Cena</th>
-                        <th class="px-3 py-2 text-right font-medium">Stan</th>
+                        <th class="px-3 py-2 text-right font-medium">
+                            Dostępne
+                        </th>
                         <th class="px-3 py-2 font-medium">Status</th>
                     </tr>
                 </thead>
@@ -145,7 +147,7 @@ function pageLabel(label: string): string {
                             </div>
                         </td>
                         <td class="px-3 py-2 text-right tabular-nums">
-                            {{ offer.stock }}
+                            {{ offer.available }}
                         </td>
                         <td class="px-3 py-2">
                             <OfferStatusBadge

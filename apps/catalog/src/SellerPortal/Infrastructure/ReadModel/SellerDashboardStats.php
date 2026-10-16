@@ -23,7 +23,7 @@ final class SellerDashboardStats
 
         $extra = DB::table('offers')
             ->where('seller_id', $sellerId)
-            ->selectRaw("SUM(CASE WHEN status = 'published' AND stock = 0 THEN 1 ELSE 0 END) AS sold_out")
+            ->selectRaw("SUM(CASE WHEN offers.status = 'published' AND ".SellerOfferList::AVAILABLE_SQL.' = 0 THEN 1 ELSE 0 END) AS sold_out')
             ->selectRaw('SUM(CASE WHEN pending_price_cents IS NOT NULL THEN 1 ELSE 0 END) AS pending_price')
             ->first();
 

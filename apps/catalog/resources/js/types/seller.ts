@@ -56,6 +56,8 @@ export type SellerOfferRow = {
     price_cents: number;
     currency: string;
     stock: number;
+    /** `stock − reserved`. */
+    available: number;
     status: OfferStatus;
     is_listed: boolean;
     is_sold_out: boolean;

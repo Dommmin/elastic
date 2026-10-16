@@ -67,6 +67,18 @@ test('ReserveStock bierze sprzedawcę z oferty: zablokowany sprzedawca nie przyj
     expect(fn () => reservationHandlersReserve($w, $id))->toThrow(SellerCannotSell::class);
 });
 
+test('ReserveStock z aktywnym kluczem i tą samą ilością to no-op (ponowienie sagi)', function () {
+    $w = new PortalWorld;
+    $id = reservationHandlersPublishedOffer($w);
+    reservationHandlersReserve($w, $id);
+    $w->forgetDispatched();
+
+    reservationHandlersReserve($w, $id);
+
+    expect($w->offers->get($id)->reserved())->toBe(2)
+        ->and($w->dispatcher->dispatched)->toBe([]);
+});
+
 test('ReserveStock dla zwolnionego klucza rzuca ReservationConflict (R12)', function () {
     $w = new PortalWorld;
     $id = reservationHandlersPublishedOffer($w);
