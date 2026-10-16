@@ -301,8 +301,12 @@ na którym eksperymentujesz. To zmienia naukę tuningu z teorii w obserwację.
 - `filebeat` lub `elastic-agent` — zbiera logi kontenerów (JSON z Laravela i Symfony)
   i wysyła do ES przez **ingest pipeline**. Uczysz się: data streams, ILM, grok/dissect,
   `@timestamp`, ECS (Elastic Common Schema).
-- `metricbeat` — metryki samego ES i RabbitMQ → gotowe dashboardy „Stack Monitoring".
+- `metricbeat` — metryki samego ES → gotowe dashboardy „Stack Monitoring".
   To jest dokładnie to, czym diagnozuje się produkcję.
+- `prometheus`, `grafana`, `alertmanager`, `postgres-exporter`, `elasticsearch-exporter`
+  — pozostałe metryki i wszystkie alerty (RabbitMQ, Caddy, Postgres, aplikacje),
+  patrz [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md). Szacunkowo
+  +400–600 MB; do zmierzenia w ETAPIE 11.
 - opcjonalnie `apm-server` + agent PHP → traces zapytań do ES z poziomu Laravela.
 
 ### 3.10 Profil `tools`

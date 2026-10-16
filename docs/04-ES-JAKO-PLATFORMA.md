@@ -216,6 +216,12 @@ Co konkretnie budujemy:
   od „moja apka wolno odpytuje ES",
 - dashboard: p95 latencji wyszukiwania, error rate, lag konsumentów.
 
+**Metryki i alerty nie idą do ES**, tylko do Prometheusa (zgodnie z sekcją 3 tego
+dokumentu, decyzja w [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md)).
+W ES zostają logi, ślady i Stack Monitoring samego klastra. Dashboard p95, error
+rate i lagu to Grafana. W ramach toru porównasz oba podejścia na tych samych
+metrykach.
+
 **Czego uczy, a czego nie uczy tor Search:** data streams, rollover, ILM, tiering,
 ingest pipelines, ECS, korelacja rozproszona, praca z ogromnym wolumenem
 append-only, oszczędzanie miejsca (`best_compression`, `synthetic _source`).

@@ -27,6 +27,7 @@ Decyzje podjęte świadomie, z uzasadnieniem. Jeśli którąś zmienimy, dopisuj
 | D-13 | Wolumen: 5 mln produktów / 15 mln ofert | przy 10 tys. dokumentów wszystko jest szybkie i nie widać decyzji | mały zbiór — brak materiału do nauki tuningu |
 | D-14 | Licencja: basic, trial tylko na moduł ML | uczciwe wobec realiów kosztowych | trial wszędzie — nauczyłbyś się rzeczy, których firma nie kupi |
 | D-15 | Cztery tory: search, observability, analityka, agregat 360 | ES to nie tylko wyszukiwarka (patrz `04`) | sam search — poznałbyś 25 % narzędzia |
+| D-16 | Metryki i alerty w Prometheusie, logi i ślady w ES ([ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md)) | TSDB + PromQL + Alertmanager to narzędzie do metryk; ES zostaje przy tym, w czym jest najlepszy | wszystko w ES przez Metricbeat — droższe i sprzeczne z sekcją 3 dokumentu `04` |
 
 ---
 
@@ -293,12 +294,30 @@ w psql zostaje wykryty i naprawiony automatycznie.
 wyszukiwarki; kasujesz indeks i przywracasz ze snapshotu.
 
 ### ETAP 11 — Tor observability (3–4 dni) → **moduł 10a**
+Podział sygnałów według [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md):
+logi i ślady do ES, metryki i alerty do Prometheusa.
+
+**Część ES (logi):**
 - logi ECS z obu apek, `trace_id` propagowany przez RabbitMQ
-- Filebeat/Metricbeat, ingest pipelines, data streams `logs-app-*`, ILM
-- Stack Monitoring, dashboard latencji i błędów
+- Filebeat, ingest pipelines, data streams `logs-app-*`, ILM
+- Metricbeat tylko dla Stack Monitoring klastra ES
+
+**Część Prometheus (metryki i alerty):**
+- profil `obs`: Prometheus, Grafana, Alertmanager (→ mailpit), `postgres_exporter`,
+  `elasticsearch_exporter`, każdy z `mem_limit`
+- scrape: plugin `rabbitmq_prometheus`, metryki Caddy/FrankenPHP
+- `catalog`: `spatie/laravel-prometheus`, gauge zaległości i wieku outboxu,
+  oferty i sprzedawcy czekający na moderację
+- `search`: `promphp/prometheus_client_php` z Redisem, liczniki bulka i błędów
+  pozycji, histogram czasu bulka, gauge opóźnienia synchronizacji
+- reguły alertów: wiek outboxu, DLQ > 0, lag synchronizacji, error rate HTTP
+- ćwiczenie porównawcze: Metricbeat (moduł `prometheus`) wysyła te same metryki
+  do ES; rozmiar i czas zapytań w obu systemach → `POMIARY.md`
 
 **DoD:** jedno żądanie użytkownika prześledzone przez Laravel → RabbitMQ → Symfony → ES
-po jednym `trace_id`; ILM przenosi indeksy między fazami na Twoich oczach.
+po jednym `trace_id`; ILM przenosi indeksy między fazami na Twoich oczach;
+zatrzymany `search-consumer` wywołuje alert w mailpicie, a po wznowieniu alert
+się zamyka; zmierzony narzut RAM profilu `obs` w `POMIARY.md`.
 
 ### ETAP 12 — Tor analityki operacyjnej (3–4 dni) → **moduł 13a**
 - data stream `events-user-*`, lejek konwersji, raport „zero results"

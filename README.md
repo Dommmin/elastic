@@ -54,7 +54,7 @@ Wszystkie komendy: `make help`
 | [07-WERSJE](docs/07-WERSJE.md) | przypięte wersje i zasady utrzymania |
 | [10-DDD](docs/10-DDD.md) | Domain-Driven Design od zera na portalu sprzedawcy: 10 modułów, „zepsuj i napraw” |
 | [11-SELLER-PORTAL-SLOWNIK](docs/11-SELLER-PORTAL-SLOWNIK.md) | język wszechobecny portalu sprzedawcy (PL ↔ kod) |
-| [adr/](docs/adr/) | decyzje architektoniczne portalu sprzedawcy (ADR-0001…0004) |
+| [adr/](docs/adr/) | decyzje architektoniczne: portal sprzedawcy (ADR-0001…0004), metryki w Prometheusie (ADR-0005) |
 | [RUNBOOK](docs/RUNBOOK.md) | **przewodnik diagnostyczny — uzupełniaj po każdym błędzie** |
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
 | [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
