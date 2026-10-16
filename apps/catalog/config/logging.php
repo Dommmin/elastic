@@ -131,6 +131,20 @@ return [
             'handler' => NullHandler::class,
         ],
 
+        /*
+        | Licznik konfliktów wersji (optymistyczna blokada ofert i zamówień).
+        | Osobny plik, bo `orders:race-test` liczy wpisy dopisane w trakcie
+        | przebiegu przez wszystkie procesy (kupujący, workery), a te nie
+        | dzielą pamięci. Poziom `info`, żeby LOG_LEVEL=warning go nie wyciszał
+        | po cichu: konflikt to zwykły wyścig, nie błąd.
+        */
+        'concurrency' => [
+            'driver' => 'single',
+            'path' => env('LOG_CONCURRENCY_PATH', storage_path('logs/concurrency.log')),
+            'level' => 'info',
+            'replace_placeholders' => true,
+        ],
+
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
         ],

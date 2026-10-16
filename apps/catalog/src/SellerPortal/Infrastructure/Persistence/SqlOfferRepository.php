@@ -6,6 +6,7 @@ use DateInterval;
 use DateTimeImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use SellerPortal\Application\Port\Clock;
 use SellerPortal\Domain\Offer\Condition;
 use SellerPortal\Domain\Offer\Event\OfferReservationConfirmed;
@@ -130,6 +131,14 @@ final class SqlOfferRepository implements OfferRepository
                         ]);
 
                     if ($updated === 0) {
+                        // Ślad dla `orders:race-test`: ponowienia połykają
+                        // konflikty, więc bez wpisu nie da się ich zmierzyć.
+                        Log::channel('concurrency')->info('concurrency_conflict', [
+                            'aggregate' => 'offer',
+                            'id' => $offer->id()->value(),
+                            'version' => $offer->version(),
+                        ]);
+
                         throw new ConcurrencyConflict;
                     }
                 }
