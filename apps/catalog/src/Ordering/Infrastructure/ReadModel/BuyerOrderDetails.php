@@ -54,7 +54,6 @@ final class BuyerOrderDetails
                     ->map(fn (object $refund): array => [
                         'amount_cents' => (int) $refund->amount_cents,
                         'status' => $refund->status,
-                        'reason' => $refund->reason,
                     ])->all(),
                 'tracking_number' => $row->tracking_number,
                 'rejection_label' => $this->rejectionLabel($row, $lines),

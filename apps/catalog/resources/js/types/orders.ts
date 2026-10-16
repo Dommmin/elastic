@@ -80,7 +80,6 @@ export interface OrderDetailsLine {
 export interface OrderRefund {
     amount_cents: number;
     status: 'requested' | 'completed';
-    reason: string;
 }
 
 export interface OrderDetails {

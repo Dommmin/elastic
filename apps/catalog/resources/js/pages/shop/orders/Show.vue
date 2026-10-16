@@ -7,7 +7,7 @@ import PaymentCountdown from '@/components/orders/PaymentCountdown.vue';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { formatPriceCents } from '@/lib/currency';
-import { cancel, index, pay } from '@/routes/orders';
+import { cancel, index, pay, show } from '@/routes/orders';
 import type {
     OrderActionName,
     OrderDetails,
@@ -50,10 +50,16 @@ watch(
         confirmationExpired.value = false;
 
         if (waiting) {
-            confirmationTimer = setTimeout(
-                () => (confirmationExpired.value = true),
-                30_000,
-            );
+            // Po 30 s zdejmujemy `?payment=returned` z adresu: bez tego odświeżenie
+            // strony trzymałoby `awaiting_confirmation` na stałe i „Zapłać” nigdy
+            // by nie wróciło (webhook mógł nie dojść albo płatność porzucono).
+            confirmationTimer = setTimeout(() => {
+                confirmationExpired.value = true;
+                router.visit(show(props.order.id), {
+                    replace: true,
+                    preserveScroll: true,
+                });
+            }, 30_000);
         }
     },
     { immediate: true },
@@ -165,8 +171,8 @@ function refundText(refund: OrderDetails['refunds'][number]): string {
         </ul>
 
         <p
-            v-for="refund in order.refunds"
-            :key="refund.status + refund.amount_cents"
+            v-for="(refund, index) in order.refunds"
+            :key="index"
             class="text-sm"
         >
             {{ refundText(refund) }}
@@ -175,9 +181,6 @@ function refundText(refund: OrderDetails['refunds'][number]): string {
         <Alert v-if="awaiting_confirmation" role="status">
             <AlertDescription>
                 Czekamy na potwierdzenie płatności
-                <template v-if="confirmationExpired">
-                    — to trwa dłużej niż zwykle, odśwież stronę za chwilę.
-                </template>
             </AlertDescription>
         </Alert>
 

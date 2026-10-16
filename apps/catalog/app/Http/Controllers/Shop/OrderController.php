@@ -42,13 +42,19 @@ class OrderController extends Controller
         // płatności) pokazujemy baner „czekamy na potwierdzenie” i nie oferujemy `pay`.
         $awaiting = $request->query('payment') === 'returned' && $aggregate->status() === OrderStatus::AwaitingPayment;
 
+        $data = $details->for($order, now()->toDateTimeImmutable());
+
+        // Po terminie (a przed sweepem, który czeka jeszcze karencję webhooka) bramka i tak
+        // nie przyjmie wpłaty, więc „Zapłać” znika; anulować nadal wolno.
+        $pastDeadline = $aggregate->status() === OrderStatus::AwaitingPayment && $data['order']['seconds_to_deadline'] === 0;
+
         $actions = array_values(array_filter(
             array_map(static fn (OrderAction $action): string => $action->value, $aggregate->allowedActionsFor(Actor::Buyer)),
-            static fn (string $action): bool => ! ($awaiting && $action === OrderAction::Pay->value),
+            static fn (string $action): bool => ! (($awaiting || $pastDeadline) && $action === OrderAction::Pay->value),
         ));
 
         return Inertia::render('shop/orders/Show', [
-            ...$details->for($order, now()->toDateTimeImmutable()),
+            ...$data,
             'actions' => $actions,
             'awaiting_confirmation' => $awaiting,
         ]);

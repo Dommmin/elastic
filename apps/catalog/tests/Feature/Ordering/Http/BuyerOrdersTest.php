@@ -197,3 +197,16 @@ test('wpłata po terminie pokazuje zwrot', function () {
                 && $refunds[0]['amount_cents'] === 20000
                 && $refunds[0]['status'] === 'requested'));
 });
+
+test('po terminie, ale przed sweepem: brak pay, anulowanie nadal możliwe', function () {
+    $buyer = User::factory()->create();
+    [$id] = buyerOrder($buyer);
+
+    $this->travel(16)->minutes();
+
+    $this->actingAs($buyer)->get(route('orders.show', $id))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('order.status', 'awaiting_payment')
+            ->where('order.seconds_to_deadline', 0)
+            ->where('actions', ['cancel']));
+});
