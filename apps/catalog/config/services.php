@@ -61,6 +61,8 @@ return [
         'webhook_secret' => env('FAKE_GATEWAY_WEBHOOK_SECRET'),
         'webhook_url' => env('FAKE_GATEWAY_WEBHOOK_URL', 'http://localhost/webhooks/payments'),
         'webhook_delay_seconds' => (int) env('FAKE_GATEWAY_WEBHOOK_DELAY_SECONDS', 2),
+        // Połączenie kolejki, które czyta catalog-worker (webhook wysyła job).
+        'queue_connection' => env('FAKE_GATEWAY_QUEUE_CONNECTION', 'database'),
         'fail_first_refund' => (bool) env('FAKE_GATEWAY_FAIL_FIRST_REFUND', false),
     ],
 

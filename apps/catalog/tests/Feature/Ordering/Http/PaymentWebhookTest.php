@@ -6,6 +6,8 @@ use App\Models\Seller as SellerRow;
 use App\Models\User;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
+use Ordering\Application\Order\ExpireOverdueOrders;
+use Ordering\Application\Order\ExpireOverdueOrdersHandler;
 use Ordering\Domain\BuyerId;
 use Ordering\Domain\LineQuantity;
 use Ordering\Domain\OfferId;
@@ -15,7 +17,9 @@ use Ordering\Domain\OrderLine;
 use Ordering\Domain\OrderRepository;
 use Ordering\Domain\OrderStatus;
 use Ordering\Domain\ProductName;
+use Ordering\Domain\RefundReason;
 use Ordering\Domain\SellerId;
+use Ordering\Infrastructure\Job\RefundPaymentJob;
 use SharedKernel\Money;
 
 /**
@@ -173,4 +177,29 @@ test('poprawny podpis, ale body nie jest JSON-em → 200 i ostrzeżenie', functi
     postWebhook(['body' => $raw, 'signature' => hash_hmac('sha256', $raw, 'test-secret')])->assertOk();
 
     Log::shouldHaveReceived('warning')->once();
+});
+
+test('„zapłać mimo wygaśnięcia” (H6): wpłata po terminie przez webhook daje zwrot, status zostaje Expired', function () {
+    config(['queue.ordering_process_connection' => 'database']);
+    $order = webhookAwaitingOrder();
+    $gateway = app(FakePaymentGateway::class);
+    Queue::fake();
+    $payment = $gateway->createPayment('order-'.$order->id()->value(), $order->total()->cents(), 'PLN', new DateTimeImmutable('+15 minutes'), 'http://localhost/');
+
+    $this->travel(21)->minutes();
+    expect(app(ExpireOverdueOrdersHandler::class)->handle(new ExpireOverdueOrders))->toBe(1);
+    expect(webhookOrderState($order->id())->status())->toBe(OrderStatus::Expired);
+
+    $gateway->decide($payment['payment_id'], 'pay_expired');
+    Queue::fake();
+
+    postWebhook($gateway->signedWebhook($payment['payment_id']))->assertOk();
+
+    $after = webhookOrderState($order->id());
+    expect($after->status())->toBe(OrderStatus::Expired)
+        ->and($after->payment())->toBeNull()
+        ->and($after->refunds())->toHaveCount(1)
+        ->and($after->refunds()[0]->reason)->toBe(RefundReason::LatePayment)
+        ->and($after->refunds()[0]->amount->cents())->toBe(4498);
+    Queue::assertPushed(RefundPaymentJob::class, 1);
 });

@@ -89,18 +89,17 @@ class FakePaymentGateway
         }
 
         // Rozstrzygnięta sesja nie przyjmuje drugiej decyzji; ponowne kliknięcie
-        // (dwuklik) nie może zamienić „zapłacone” na „odmówione”.
-        if ($payment->decided_at !== null) {
-            return;
-        }
-
-        DB::table('fake_gateway_payments')->where('id', $paymentId)->update([
+        // (dwuklik) nie może zamienić „zapłacone” na „odmówione”. `whereNull`
+        // czyni decyzję atomową: przy wyścigu webhook kolejkuje tylko zwycięzca.
+        $changed = DB::table('fake_gateway_payments')->where('id', $paymentId)->whereNull('decided_at')->update([
             'status' => $action === 'decline' ? 'failed' : 'succeeded',
             'decided_at' => now('UTC')->format('Y-m-d H:i:s.u'),
             'updated_at' => now(),
         ]);
 
-        $this->queueWebhook($paymentId);
+        if ($changed > 0) {
+            $this->queueWebhook($paymentId);
+        }
     }
 
     public function isExpired(stdClass $payment): bool
@@ -184,7 +183,7 @@ class FakePaymentGateway
     private function queueWebhook(string $paymentId): void
     {
         SendPaymentWebhookJob::dispatch($paymentId)
-            ->onConnection('database')
+            ->onConnection((string) config('services.fake_gateway.queue_connection'))
             ->delay((int) config('services.fake_gateway.webhook_delay_seconds'));
     }
 }
