@@ -16,7 +16,8 @@ ostateczna, kompensacja, idempotencja i wyścigi.*
 > `catalog-app` montuje główny checkout, więc E2E (Task 15) i
 > `orders:race-test` na Postgresie (Task 14, krok 5) czekają na merge
 > `zamowienia` do `main`, który musi zatwierdzić użytkownik. Gałąź porównawcza
-> `zamowienia-ddd-lite` (Task 17) i wdrożenie na k3s też jeszcze nie istnieją.
+> `zamowienia-ddd-lite` (Task 17) jest zrobiona lokalnie, porównanie:
+> [`saga-vs-transakcja.md`](saga-vs-transakcja.md). Wdrożenie na k3s jeszcze nie istnieje.
 > Wszystkie miejsca na liczby z pomiarów są oznaczone „Do uzupełnienia po
 > pomiarze”; żadna liczba w tym przewodniku nie jest zgadnięta.
 >
@@ -176,8 +177,10 @@ php artisan test --compact tests/Unit/Ordering tests/Feature/Ordering tests/Unit
 
 Testy HTTP zamówień przełączają kolejkę sagi na `sync` (`tests/Pest.php`,
 `beforeEach` dla `Feature/Ordering`), żeby kroki wykonały się w żądaniu.
-Katalog `tests/Feature/Ordering/Http` to kontrakt wspólny z przyszłą gałęzią
-lite, więc nie sprawdza stanów pośrednich (`Placed`).
+Katalog `tests/Feature/Ordering/Http` to kontrakt wspólny z gałęzią lite
+(bajt w bajt), więc nie sprawdza stanów pośrednich (`Placed`) ani nie sięga
+po agregat; brak towaru przy składaniu, jedyna świadoma różnica, żyje
+w `tests/Feature/Ordering/OutOfStockCheckoutTest.php`.
 
 ---
 
@@ -667,8 +670,8 @@ montuje `apps/catalog` z `/Users/…/elastic`, nie z worktree), czyli merge
 
 ## Bilans na dziś
 
-Pełne porównanie z liczbami („saga kontra jedna transakcja”) powstanie po
-gałęzi lite (Task 17) jako `docs/blog/saga-vs-transakcja.md`. Na dziś:
+Pełne porównanie z liczbami („saga kontra jedna transakcja”):
+[`saga-vs-transakcja.md`](saga-vs-transakcja.md). Na dziś:
 
 | | Wartość (2026-10-16) |
 |---|---|
@@ -688,10 +691,14 @@ i polling, którego jedna transakcja by nie potrzebowała; worker i scheduler
 jako warunek działania; dwanaście wyścigów do przemyślenia, z których jeden
 (R18) spec rozstrzygnął źle; dwie definicje karencji i „ma rezerwacje”.
 
-> **Do uzupełnienia po pomiarze (Task 17):** porównanie z gałęzią
-> `zamowienia-ddd-lite` (linie kodu per warstwa, czas testów, miejsca
-> obejścia reguł, `orders:race-test` w obu gałęziach, awaria w połowie,
-> koszt reguły „najwyżej 3 nieopłacone zamówienia naraz”).
+Porównanie z gałęzią `zamowienia-ddd-lite` (zmierzone 2026-10-16): kod
+zamówień 4155 linii w DDD kontra 1389 w lite, testy reguł 27 ms kontra
+~1 s, nowa reguła 12 plików (+113/−3) kontra 7 (+86/−4). Szczegóły, sondy
+obejścia i werdykt: [`saga-vs-transakcja.md`](saga-vs-transakcja.md).
+
+> **Do uzupełnienia po pomiarze (Task 17):** `orders:race-test` na obu
+> gałęziach i awaria w połowie (ubity worker kontra ubite żądanie) —
+> komendy w [`saga-vs-transakcja.md`](saga-vs-transakcja.md), rozdziały 6 i 7.
 
 ---
 
