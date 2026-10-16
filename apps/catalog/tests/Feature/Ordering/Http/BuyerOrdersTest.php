@@ -8,12 +8,16 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Inertia\Testing\AssertableInertia as Assert;
-use Ordering\Application\Order\ExpireOverdueOrders;
-use Ordering\Application\Order\ExpireOverdueOrdersHandler;
+
+/*
+ * Wspólny bajt w bajt dla gałęzi `zamowienia` i `zamowienia-ddd-lite`: tylko
+ * HTTP, komendy i kolumny w bazie (zob. PaymentWebhookTest). Brak towaru przy
+ * składaniu to jedyna świadoma różnica zachowania gałęzi, więc ten przypadek
+ * żyje osobno, w tests/Feature/Ordering/OutOfStockCheckoutTest.php.
+ */
 
 /**
- * Składa zamówienie przez prawdziwy checkout (saga biegnie synchronicznie, R5)
- * i zwraca jego ID. Jedna oferta, ilość 2.
+ * Składa zamówienie przez prawdziwy checkout i zwraca jego ID. Jedna oferta, ilość 2.
  */
 function buyerOrder(User $buyer, int $stock = 5, ?SellerRow $seller = null): array
 {
@@ -164,19 +168,6 @@ test('anulowanie zamówienia, którego nie wolno anulować, wraca z błędem', f
         ->assertSessionHasErrors(['domain' => 'Tej operacji nie można wykonać na zamówieniu w obecnym stanie']);
 });
 
-test('odrzucone zamówienie pokazuje powód z nazwą produktu', function () {
-    $buyer = User::factory()->create();
-    [$id] = buyerOrder($buyer, stock: 1);
-    $name = DB::table('order_lines')->where('order_id', $id)->value('product_name');
-
-    $this->actingAs($buyer)->get(route('orders.show', $id))
-        ->assertInertia(fn (Assert $page) => $page
-            ->where('order.status', 'rejected')
-            ->where('order.status_label', 'Odrzucone')
-            ->where('order.rejection_label', 'Zabrakło towaru: '.$name)
-            ->where('actions', []));
-});
-
 test('wpłata po terminie pokazuje zwrot', function () {
     $buyer = User::factory()->create();
     [$id] = buyerOrder($buyer);
@@ -186,7 +177,7 @@ test('wpłata po terminie pokazuje zwrot', function () {
     $gateway = app(FakePaymentGateway::class);
 
     $this->travel(21)->minutes();
-    expect(app(ExpireOverdueOrdersHandler::class)->handle(new ExpireOverdueOrders))->toBe(1);
+    $this->artisan('orders:expire-overdue')->expectsOutput('Wygaszono zamówień: 1')->assertSuccessful();
     $gateway->decide($payment, 'pay_expired');
     postBuyerWebhook($gateway->signedWebhook($payment));
 

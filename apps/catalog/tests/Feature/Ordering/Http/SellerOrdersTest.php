@@ -11,7 +11,7 @@ use Inertia\Testing\AssertableInertia as Assert;
 
 /**
  * Sprzedawca z ofertą i (opcjonalnie) opłaconym zamówieniem kupującego.
- * Checkout i webhook idą prawdziwą ścieżką (saga synchronicznie, R5).
+ * Checkout i webhook idą prawdziwą ścieżką (HTTP), jak u kupującego.
  *
  * @return array{0: User, 1: SellerRow, 2: OfferRow}
  */

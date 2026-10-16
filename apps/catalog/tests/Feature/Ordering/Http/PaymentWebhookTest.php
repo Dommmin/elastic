@@ -1,53 +1,45 @@
 <?php
 
 use App\FakePaymentGateway\FakePaymentGateway;
+use App\Models\CartItem;
 use App\Models\Offer as OfferRow;
 use App\Models\Seller as SellerRow;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
-use Ordering\Application\Order\ExpireOverdueOrders;
-use Ordering\Application\Order\ExpireOverdueOrdersHandler;
-use Ordering\Domain\BuyerId;
-use Ordering\Domain\LineQuantity;
-use Ordering\Domain\OfferId;
-use Ordering\Domain\Order;
-use Ordering\Domain\OrderId;
-use Ordering\Domain\OrderLine;
-use Ordering\Domain\OrderRepository;
-use Ordering\Domain\OrderStatus;
-use Ordering\Domain\ProductName;
-use Ordering\Domain\RefundReason;
-use Ordering\Domain\SellerId;
-use Ordering\Infrastructure\Job\RefundPaymentJob;
-use SharedKernel\Money;
+
+/*
+ * Ten plik jest wspólny dla gałęzi `zamowienia` (saga) i `zamowienia-ddd-lite`
+ * (jedna transakcja), bajt w bajt. Dlatego stan budujemy prawdziwym
+ * checkoutem, sweep wołamy komendą, a sprawdzamy kolumny w bazie: test,
+ * który sięga po agregat albo repozytorium, sprawdzałby też architekturę
+ * i padłby na drugiej gałęzi, choć zachowanie jest to samo
+ * (docs/blog/ddd-vs-ddd-lite.md, rozdział 1).
+ */
 
 /**
- * Zamówienie w `AwaitingPayment` (2 × 1999 + 500 = 4498 gr) zapisane w bazie.
+ * Zamówienie w `awaiting_payment` (2 × 1999 + 500 = 4498 gr) złożone przez checkout.
  */
-function webhookAwaitingOrder(): Order
+function webhookAwaitingOrder(): int
 {
-    $repo = app(OrderRepository::class);
-    $seller = SellerRow::factory()->create();
-    $offers = OfferRow::factory()->count(2)->create(['seller_id' => $seller->id]);
-    $now = new DateTimeImmutable('now');
+    $seller = SellerRow::factory()->forUser(User::factory()->create())->create();
+    $first = OfferRow::factory()->create(['seller_id' => $seller->id, 'price_cents' => 1999, 'stock' => 5]);
+    $second = OfferRow::factory()->create(['seller_id' => $seller->id, 'price_cents' => 500, 'stock' => 5]);
+    $buyer = User::factory()->create();
+    CartItem::create(['user_id' => $buyer->id, 'offer_id' => $first->id, 'quantity' => 2, 'added_price_cents' => 1999]);
+    CartItem::create(['user_id' => $buyer->id, 'offer_id' => $second->id, 'quantity' => 1, 'added_price_cents' => 500]);
 
-    $order = Order::place(
-        $repo->nextIdentity(),
-        BuyerId::fromInt(User::factory()->create()->id),
-        SellerId::fromInt($seller->id),
-        [
-            OrderLine::create(OfferId::fromInt($offers[0]->id), ProductName::fromString('Pierwszy'), Money::fromCents(1999), LineQuantity::fromInt(2)),
-            OrderLine::create(OfferId::fromInt($offers[1]->id), ProductName::fromString('Drugi'), Money::fromCents(500), LineQuantity::fromInt(1)),
-        ],
-        $now,
-    );
-    foreach ($order->lines() as $line) {
-        $order->markLineReserved($line->offerId(), $now);
-    }
-    $repo->save($order);
+    test()->actingAs($buyer)->post(route('cart.checkout'), ['lines' => [
+        ['offer_id' => $first->id, 'quantity' => 2, 'unit_price_cents' => 1999],
+        ['offer_id' => $second->id, 'quantity' => 1, 'unit_price_cents' => 500],
+    ]])->assertSessionHasNoErrors();
 
-    return $repo->get($order->id());
+    $id = (int) DB::table('orders')->where('buyer_user_id', $buyer->id)->value('id');
+    expect(webhookOrderStatus($id))->toBe('awaiting_payment')
+        ->and((int) DB::table('orders')->where('id', $id)->value('total_cents'))->toBe(4498);
+
+    return $id;
 }
 
 /**
@@ -55,11 +47,11 @@ function webhookAwaitingOrder(): Order
  *
  * @return array{body: string, signature: string}
  */
-function webhookFor(Order $order, string $decision = 'pay'): array
+function webhookFor(int $orderId, string $decision = 'pay'): array
 {
     Queue::fake();
     $gateway = app(FakePaymentGateway::class);
-    $payment = $gateway->createPayment('order-'.$order->id()->value(), $order->total()->cents(), 'PLN', new DateTimeImmutable('+15 minutes'), 'http://localhost/');
+    $payment = $gateway->createPayment('order-'.$orderId, 4498, 'PLN', new DateTimeImmutable('+15 minutes'), 'http://localhost/');
     $gateway->decide($payment['payment_id'], $decision);
 
     return $gateway->signedWebhook($payment['payment_id']);
@@ -73,9 +65,9 @@ function postWebhook(array $signed, ?string $signature = null)
     ], $signed['body']);
 }
 
-function webhookOrderState(OrderId $id): Order
+function webhookOrderStatus(int $orderId): string
 {
-    return app(OrderRepository::class)->get($id);
+    return (string) DB::table('orders')->where('id', $orderId)->value('status');
 }
 
 beforeEach(function () {
@@ -89,7 +81,7 @@ test('webhook ze złym podpisem → 401, zamówienie bez zmian', function () {
     postWebhook($signed, 'zly-podpis')->assertUnauthorized();
     postWebhook($signed, '')->assertUnauthorized();
 
-    expect(webhookOrderState($order->id())->status())->toBe(OrderStatus::AwaitingPayment);
+    expect(webhookOrderStatus($order))->toBe('awaiting_payment');
 });
 
 test('webhook succeeded → zamówienie Paid', function () {
@@ -97,8 +89,8 @@ test('webhook succeeded → zamówienie Paid', function () {
 
     postWebhook(webhookFor($order))->assertOk();
 
-    expect(webhookOrderState($order->id())->status())->toBe(OrderStatus::Paid)
-        ->and(webhookOrderState($order->id())->payment())->not->toBeNull();
+    expect(webhookOrderStatus($order))->toBe('paid')
+        ->and(DB::table('orders')->where('id', $order)->value('payment_id'))->not->toBeNull();
 });
 
 test('webhook failed → status bez zmian (H7), 200', function () {
@@ -106,7 +98,7 @@ test('webhook failed → status bez zmian (H7), 200', function () {
 
     postWebhook(webhookFor($order, 'decline'))->assertOk();
 
-    expect(webhookOrderState($order->id())->status())->toBe(OrderStatus::AwaitingPayment);
+    expect(webhookOrderStatus($order))->toBe('awaiting_payment');
 });
 
 test('zdublowany webhook → 200, jedna wpłata, żadnego zwrotu', function () {
@@ -116,9 +108,8 @@ test('zdublowany webhook → 200, jedna wpłata, żadnego zwrotu', function () {
     postWebhook($signed)->assertOk();
     postWebhook($signed)->assertOk();
 
-    $after = webhookOrderState($order->id());
-    expect($after->status())->toBe(OrderStatus::Paid)
-        ->and($after->refunds())->toBe([]);
+    expect(webhookOrderStatus($order))->toBe('paid')
+        ->and(DB::table('order_refunds')->where('order_id', $order)->count())->toBe(0);
 });
 
 test('webhook dla nieznanego zamówienia → 200 i ostrzeżenie w logu', function () {
@@ -159,7 +150,7 @@ test('poprawny podpis, ale zepsuty payload → 200, ostrzeżenie, zamówienie be
     postWebhook(['body' => $raw, 'signature' => hash_hmac('sha256', $raw, 'test-secret')])->assertOk();
 
     Log::shouldHaveReceived('warning')->once();
-    expect(webhookOrderState($order->id())->status())->toBe(OrderStatus::AwaitingPayment);
+    expect(webhookOrderStatus($order))->toBe('awaiting_payment');
 })->with([
     'waluta spoza listy' => ['currency', 'XXX'],
     'brak waluty' => ['currency', null],
@@ -180,26 +171,30 @@ test('poprawny podpis, ale body nie jest JSON-em → 200 i ostrzeżenie', functi
 });
 
 test('„zapłać mimo wygaśnięcia” (H6): wpłata po terminie przez webhook daje zwrot, status zostaje Expired', function () {
-    config(['queue.ordering_process_connection' => 'database']);
     $order = webhookAwaitingOrder();
+    config(['queue.ordering_process_connection' => 'database']);
     $gateway = app(FakePaymentGateway::class);
     Queue::fake();
-    $payment = $gateway->createPayment('order-'.$order->id()->value(), $order->total()->cents(), 'PLN', new DateTimeImmutable('+15 minutes'), 'http://localhost/');
+    $payment = $gateway->createPayment('order-'.$order, 4498, 'PLN', new DateTimeImmutable('+15 minutes'), 'http://localhost/');
 
     $this->travel(21)->minutes();
-    expect(app(ExpireOverdueOrdersHandler::class)->handle(new ExpireOverdueOrders))->toBe(1);
-    expect(webhookOrderState($order->id())->status())->toBe(OrderStatus::Expired);
+    $this->artisan('orders:expire-overdue')->expectsOutput('Wygaszono zamówień: 1')->assertSuccessful();
+    expect(webhookOrderStatus($order))->toBe('expired');
 
     $gateway->decide($payment['payment_id'], 'pay_expired');
     Queue::fake();
 
     postWebhook($gateway->signedWebhook($payment['payment_id']))->assertOk();
 
-    $after = webhookOrderState($order->id());
-    expect($after->status())->toBe(OrderStatus::Expired)
-        ->and($after->payment())->toBeNull()
-        ->and($after->refunds())->toHaveCount(1)
-        ->and($after->refunds()[0]->reason)->toBe(RefundReason::LatePayment)
-        ->and($after->refunds()[0]->amount->cents())->toBe(4498);
-    Queue::assertPushed(RefundPaymentJob::class, 1);
+    $refunds = DB::table('order_refunds')->where('order_id', $order)->get();
+    expect(webhookOrderStatus($order))->toBe('expired')
+        ->and(DB::table('orders')->where('id', $order)->value('payment_id'))->toBeNull()
+        ->and($refunds)->toHaveCount(1)
+        ->and($refunds[0]->reason)->toBe('late_payment')
+        ->and((int) $refunds[0]->amount_cents)->toBe(4498);
+
+    // Zwrot to wywołanie bramki, więc na obu gałęziach idzie jobem (jedynym po webhooku).
+    $pushed = Queue::pushedJobs();
+    expect(array_map(class_basename(...), array_keys($pushed)))->toBe(['RefundPaymentJob'])
+        ->and(array_values($pushed)[0])->toHaveCount(1);
 });
