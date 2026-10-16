@@ -28,6 +28,11 @@ interface OfferRepository
     public function hasLiveOffer(SellerId $sellerId, ProductId $productId): bool;
 
     /**
+     * Los rezerwacji, także zakończonej (agregat zna tylko aktywne). `null` = taka rezerwacja nigdy nie istniała.
+     */
+    public function reservationStatus(OfferId $offerId, ReservationKey $key): ?ReservationStatus;
+
+    /**
      * Stronicowanie po ID dla polityk masowych (np. zawieszenie ofert zablokowanego
      * sprzedawcy): job przetwarza paczki zamiast ładować wszystko naraz.
      *

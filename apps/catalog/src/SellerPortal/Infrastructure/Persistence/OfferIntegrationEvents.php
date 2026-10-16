@@ -15,8 +15,11 @@ use SellerPortal\Domain\Offer\Event\OfferPriceChangeRejected;
 use SellerPortal\Domain\Offer\Event\OfferPriceChangeRequested;
 use SellerPortal\Domain\Offer\Event\OfferPublished;
 use SellerPortal\Domain\Offer\Event\OfferReinstated;
+use SellerPortal\Domain\Offer\Event\OfferReservationConfirmed;
+use SellerPortal\Domain\Offer\Event\OfferReservationReleased;
 use SellerPortal\Domain\Offer\Event\OfferSoldOut;
 use SellerPortal\Domain\Offer\Event\OfferStockChanged;
+use SellerPortal\Domain\Offer\Event\OfferStockReserved;
 use SellerPortal\Domain\Offer\Event\OfferSuspended;
 use SellerPortal\Domain\Offer\Event\OfferWithdrawn;
 use SellerPortal\Domain\Offer\Offer;
@@ -76,6 +79,7 @@ final class OfferIntegrationEvents
             'price_cents' => $offer->price()->cents(),
             'currency' => $offer->price()->currency()->value,
             'stock' => $offer->stock()->value(),
+            'available' => $offer->available(),
             'condition' => $offer->condition()->value,
             'shipping_days' => $offer->shippingTime()->value(),
             'status' => $offer->status()->value,
@@ -114,6 +118,11 @@ final class OfferIntegrationEvents
                 'old_stock' => $event->old->value(),
                 'new_stock' => $event->new->value(),
             ]],
+            // DLACZEGO bez klucza rezerwacji: to szczegół Ordering (`order-{id}`),
+            // nie część Published Language oferty.
+            $event instanceof OfferStockReserved => ['offer.stock_reserved', ['quantity' => $event->quantity->value()]],
+            $event instanceof OfferReservationReleased => ['offer.reservation_released', ['quantity' => $event->quantity->value()]],
+            $event instanceof OfferReservationConfirmed => ['offer.reservation_confirmed', ['quantity' => $event->quantity->value()]],
             $event instanceof OfferSoldOut => ['offer.sold_out', []],
             $event instanceof OfferBackInStock => ['offer.back_in_stock', []],
             $event instanceof OfferDetailsChanged => ['offer.details_changed', []],

@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\DB;
 use SellerPortal\Domain\Offer\Condition;
 use SellerPortal\Domain\Offer\Offer;
 use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\Quantity;
+use SellerPortal\Domain\Offer\ReservationKey;
 use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Offer\SuspensionReason;
@@ -175,4 +177,66 @@ test('oferta bez zdarzeń (nic nie zmieniono) nie dodaje wierszy outboxu', funct
     $repo->save($repo->get($offer->id()));
 
     expect(DB::table('outbox')->count())->toBe($before);
+});
+
+function outboxEventsReserve(Offer $offer, string $key, int $quantity): void
+{
+    $offer->reserve(outboxEventsActiveSeller($offer->sellerId()->value()), ReservationKey::fromString($key), Quantity::fromInt($quantity), $offer->price(), outboxEventsAt('+1 minute'));
+}
+
+test('dwie rezerwacje w jednym zapisie: dwa wiersze outboxu offer.stock_reserved', function () {
+    $repo = outboxEventsRepo();
+    $offer = outboxEventsPublished(stock: 5);
+    outboxEventsReserve($offer, 'order-a', 1);
+    outboxEventsReserve($offer, 'order-b', 2);
+    $repo->save($offer);
+
+    $rows = DB::table('outbox')->where('event_type', 'offer.stock_reserved')->orderBy('id')->get();
+
+    // `available` to stan oferty po zapisie (jak `listed`): oba wiersze dzielą ten sam sequence.
+    expect($rows)->toHaveCount(2)
+        ->and(json_decode($rows[0]->payload, true))->toMatchArray(['quantity' => 1, 'available' => 2])
+        ->and(json_decode($rows[1]->payload, true))->toMatchArray(['quantity' => 2, 'available' => 2]);
+});
+
+test('payload offer.stock_reserved ma quantity, available, listed i nie ma klucza', function () {
+    $repo = outboxEventsRepo();
+    $offer = outboxEventsPublished(stock: 5);
+    outboxEventsReserve($offer, 'order-a', 5);
+    $repo->save($offer);
+
+    $payload = json_decode(DB::table('outbox')->where('event_type', 'offer.stock_reserved')->value('payload'), true);
+
+    expect($payload)->toMatchArray(['quantity' => 5, 'available' => 0, 'listed' => false, 'stock' => 5, 'status' => 'published'])
+        ->and(array_key_exists('reservation_key', $payload))->toBeFalse()
+        ->and(json_encode($payload))->not->toContain('order-a');
+});
+
+test('zwolnienie i potwierdzenie rezerwacji trafiają do outboxu z ilością i dostępnością', function () {
+    $repo = outboxEventsRepo();
+    $offer = outboxEventsPublished(stock: 5);
+    outboxEventsReserve($offer, 'order-a', 2);
+    outboxEventsReserve($offer, 'order-b', 1);
+    $repo->save($offer);
+
+    $offer = $repo->get($offer->id());
+    $offer->releaseReservation(ReservationKey::fromString('order-a'), outboxEventsAt('+2 minutes'));
+    $offer->confirmReservation(ReservationKey::fromString('order-b'), outboxEventsAt('+2 minutes'));
+    $repo->save($offer);
+
+    $released = json_decode(DB::table('outbox')->where('event_type', 'offer.reservation_released')->value('payload'), true);
+    $confirmed = json_decode(DB::table('outbox')->where('event_type', 'offer.reservation_confirmed')->value('payload'), true);
+
+    expect($released)->toMatchArray(['quantity' => 2, 'available' => 4, 'listed' => true])
+        ->and($confirmed)->toMatchArray(['quantity' => 1, 'stock' => 4, 'available' => 4])
+        ->and(array_key_exists('reservation_key', $released))->toBeFalse()
+        ->and(array_key_exists('reservation_key', $confirmed))->toBeFalse();
+});
+
+test('payload bazowy każdego zdarzenia oferty ma available', function () {
+    $offer = outboxEventsPublished(stock: 5);
+
+    $payload = json_decode(DB::table('outbox')->where('aggregate_id', (string) $offer->id()->value())->where('event_type', 'offer.published')->value('payload'), true);
+
+    expect($payload)->toMatchArray(['available' => 5]);
 });

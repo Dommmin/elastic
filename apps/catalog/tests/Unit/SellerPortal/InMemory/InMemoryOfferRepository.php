@@ -2,12 +2,17 @@
 
 namespace Tests\Unit\SellerPortal\InMemory;
 
+use SellerPortal\Domain\Offer\Event\OfferReservationConfirmed;
+use SellerPortal\Domain\Offer\Event\OfferReservationReleased;
+use SellerPortal\Domain\Offer\Event\OfferStockReserved;
 use SellerPortal\Domain\Offer\Offer;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\ReservationKey;
+use SellerPortal\Domain\Offer\ReservationStatus;
 use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Seller\SellerId;
 use SharedKernel\ConcurrencyConflict;
@@ -22,6 +27,9 @@ final class InMemoryOfferRepository implements OfferRepository
     private array $stored = [];
 
     private int $lastId = 0;
+
+    /** @var array<string, ReservationStatus> klucz "{offerId}:{reservationKey}" */
+    private array $reservationStatuses = [];
 
     public function nextIdentity(): OfferId
     {
@@ -41,7 +49,27 @@ final class InMemoryOfferRepository implements OfferRepository
             throw new ConcurrencyConflict;
         }
 
+        // Jak w SQL: los rezerwacji wynika ze zdarzeń, bo agregat nie pamięta
+        // zakończonych.
+        foreach ($offer->pendingEvents() as $event) {
+            $status = match (true) {
+                $event instanceof OfferStockReserved => ReservationStatus::Active,
+                $event instanceof OfferReservationReleased => ReservationStatus::Released,
+                $event instanceof OfferReservationConfirmed => ReservationStatus::Confirmed,
+                default => null,
+            };
+
+            if ($status !== null) {
+                $this->reservationStatuses[$offer->id()->value().':'.$event->key->value()] = $status;
+            }
+        }
+
         $this->stored[$offer->id()->value()] = $this->copy($offer, $offer->version() + 1);
+    }
+
+    public function reservationStatus(OfferId $offerId, ReservationKey $key): ?ReservationStatus
+    {
+        return $this->reservationStatuses[$offerId->value().':'.$key->value()] ?? null;
     }
 
     public function hasLiveOffer(SellerId $sellerId, ProductId $productId): bool

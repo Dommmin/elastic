@@ -8,6 +8,9 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use SellerPortal\Application\Port\Clock;
 use SellerPortal\Domain\Offer\Condition;
+use SellerPortal\Domain\Offer\Event\OfferReservationConfirmed;
+use SellerPortal\Domain\Offer\Event\OfferReservationReleased;
+use SellerPortal\Domain\Offer\Event\OfferStockReserved;
 use SellerPortal\Domain\Offer\LiveOfferAlreadyExists;
 use SellerPortal\Domain\Offer\Offer;
 use SellerPortal\Domain\Offer\OfferId;
@@ -16,6 +19,10 @@ use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\PendingPriceChange;
 use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\Quantity;
+use SellerPortal\Domain\Offer\Reservation;
+use SellerPortal\Domain\Offer\ReservationKey;
+use SellerPortal\Domain\Offer\ReservationStatus;
 use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Offer\SuspensionKind;
@@ -81,7 +88,21 @@ final class SqlOfferRepository implements OfferRepository
             ->map(fn (string $value): DateTimeImmutable => SqlTimestamp::parse($value))
             ->all();
 
-        return $this->hydrate($row, array_values($changes));
+        // DLACZEGO tylko `active`: agregat pilnuje niezmiennika „nie więcej niż
+        // dostępne”, a zakończone rezerwacje do niego nie należą.
+        $reservations = DB::table('offer_reservations')
+            ->where('offer_id', $id->value())
+            ->where('status', ReservationStatus::Active->value)
+            ->orderBy('id')
+            ->get()
+            ->map(fn (stdClass $r): Reservation => new Reservation(
+                ReservationKey::fromString($r->reservation_key),
+                Quantity::fromInt((int) $r->quantity),
+                SqlTimestamp::parse($r->reserved_at),
+            ))
+            ->all();
+
+        return $this->hydrate($row, array_values($changes), array_values($reservations));
     }
 
     public function save(Offer $offer): void
@@ -114,6 +135,7 @@ final class SqlOfferRepository implements OfferRepository
                 }
 
                 $this->savePriceChanges($offer);
+                $this->saveReservations($offer);
                 OfferIntegrationEvents::record($offer, $offer->pendingEvents(), $newVersion);
             });
         } catch (QueryException $e) {
@@ -123,6 +145,16 @@ final class SqlOfferRepository implements OfferRepository
 
             throw $e;
         }
+    }
+
+    public function reservationStatus(OfferId $offerId, ReservationKey $key): ?ReservationStatus
+    {
+        $status = DB::table('offer_reservations')
+            ->where('offer_id', $offerId->value())
+            ->where('reservation_key', $key->value())
+            ->value('status');
+
+        return $status === null ? null : ReservationStatus::from($status);
     }
 
     public function hasLiveOffer(SellerId $sellerId, ProductId $productId): bool
@@ -197,6 +229,52 @@ final class SqlOfferRepository implements OfferRepository
     }
 
     /**
+     * DLACZEGO ze zdarzeń, a nie przez porównanie agregatu z bazą: agregat nie
+     * pamięta, czy zniknięta rezerwacja została zwolniona, czy potwierdzona —
+     * mówi to dopiero zdarzenie. Dzięki temu zapis oferty NIGDY nie dotyka
+     * wierszy rezerwacji, o których agregat nie wyemitował zdarzenia
+     * (np. po zmianie stanu przez sprzedawcę).
+     */
+    private function saveReservations(Offer $offer): void
+    {
+        $offerId = $offer->id()->value();
+
+        foreach ($offer->pendingEvents() as $event) {
+            if ($event instanceof OfferStockReserved) {
+                DB::table('offer_reservations')->insert([
+                    'offer_id' => $offerId,
+                    'reservation_key' => $event->key->value(),
+                    'quantity' => $event->quantity->value(),
+                    'status' => ReservationStatus::Active->value,
+                    'reserved_at' => SqlTimestamp::format($event->occurredAt()),
+                ]);
+            } elseif ($event instanceof OfferReservationReleased || $event instanceof OfferReservationConfirmed) {
+                $this->settleReservation(
+                    $offerId,
+                    $event->key,
+                    $event instanceof OfferReservationReleased ? ReservationStatus::Released : ReservationStatus::Confirmed,
+                    $event->occurredAt(),
+                );
+            }
+        }
+    }
+
+    private function settleReservation(int $offerId, ReservationKey $key, ReservationStatus $status, DateTimeImmutable $at): void
+    {
+        $updated = DB::table('offer_reservations')
+            ->where('offer_id', $offerId)
+            ->where('reservation_key', $key->value())
+            ->where('status', ReservationStatus::Active->value)
+            ->update(['status' => $status->value, 'settled_at' => SqlTimestamp::format($at)]);
+
+        // Zdarzenie bez aktywnego wiersza to rozjazd agregatu z bazą: lepiej
+        // przerwać transakcję niż zapisać outbox o rezerwacji, której nie ma.
+        if ($updated === 0) {
+            throw new ConcurrencyConflict;
+        }
+    }
+
+    /**
      * Postgres nazywa naruszony indeks w komunikacie; SQLite podaje kolumny.
      */
     private function violatesLiveOfferIndex(QueryException $e): bool
@@ -209,8 +287,9 @@ final class SqlOfferRepository implements OfferRepository
 
     /**
      * @param  list<DateTimeImmutable>  $recentPriceChanges
+     * @param  list<Reservation>  $reservations
      */
-    private function hydrate(stdClass $row, array $recentPriceChanges): Offer
+    private function hydrate(stdClass $row, array $recentPriceChanges, array $reservations): Offer
     {
         $id = (int) $row->id;
 
@@ -257,7 +336,7 @@ final class SqlOfferRepository implements OfferRepository
                 $suspension,
                 $pending,
                 $recentPriceChanges,
-                [],
+                $reservations,
                 (int) $row->version,
             );
         } catch (UnexpectedValueException|InvalidValue $e) {

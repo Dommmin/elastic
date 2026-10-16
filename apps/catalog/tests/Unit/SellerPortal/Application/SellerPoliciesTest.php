@@ -19,6 +19,8 @@ use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\ReservationKey;
+use SellerPortal\Domain\Offer\ReservationStatus;
 use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Seller\Event\SellerBlocked;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
@@ -179,6 +181,11 @@ test('konflikt wersji ponawia ofertę, a po trzech próbach oddaje błąd', func
         public function nextIdentity(): OfferId
         {
             return $this->inner->nextIdentity();
+        }
+
+        public function reservationStatus(OfferId $offerId, ReservationKey $key): ?ReservationStatus
+        {
+            return $this->inner->reservationStatus($offerId, $key);
         }
 
         public function hasLiveOffer(SellerId $sellerId, ProductId $productId): bool
