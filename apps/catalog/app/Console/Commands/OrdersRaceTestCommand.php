@@ -2,13 +2,17 @@
 
 namespace App\Console\Commands;
 
+use App\Support\ConcurrencyConflictTrace;
+use App\Support\RaceTest\RaceFixture;
+use App\Support\RaceTest\RaceOutcome;
+use DateTimeInterface;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Ordering\Application\Order\RecordPayment;
 use Ordering\Application\Order\RecordPaymentHandler;
 use Symfony\Component\Process\Process;
+use Throwable;
 
 /**
  * Test współbieżności zamówień: N kupujących naraz na M ostatnich sztuk
@@ -20,14 +24,14 @@ use Symfony\Component\Process\Process;
  * DLACZEGO osobne procesy (`orders:race-test:buyer`, `queue:work`): każdy ma
  * własne połączenie z bazą, jak żądania HTTP i workery na produkcji; pętla
  * w jednym procesie złożyłaby zamówienia po kolei.
- * DLACZEGO fixture na wierszach, a składanie i płatność handlerami: dane
- * startowe nie są mierzone, mierzona jest ścieżka sagi. Fixture jest
- * oznaczone (`race-{run}-{n}@example.test`, slug `race-{run}`) i sprzątane
- * w `finally` po jego ID, więc przerwany przebieg nie zostawia śmieci
- * i nie dotyka cudzych danych.
- * DLACZEGO konflikty z logu: ponowienia (`RetryOnConflict`) połykają
- * konflikty wersji w innych procesach; repozytoria zapisują każdy do kanału
- * `concurrency`, a tu liczymy wpisy dopisane w trakcie przebiegu.
+ * DLACZEGO fixture na wierszach (`RaceFixture`), a składanie i płatność
+ * handlerami: dane startowe nie są mierzone, mierzona jest ścieżka sagi.
+ * Sprzątanie idzie w `finally` i w obsłudze SIGINT/SIGTERM, więc przerwany
+ * przebieg nie zostawia śmieci.
+ * DLACZEGO konflikty z osobnego pliku: ponowienia (`RetryOnConflict`)
+ * połykają konflikty wersji w innych procesach. Komenda ustawia
+ * `LOG_CONCURRENCY_PATH` sobie i swoim procesom potomnym, a repozytoria
+ * dopisują tam każdy konflikt (`ConcurrencyConflictTrace`).
  */
 class OrdersRaceTestCommand extends Command
 {
@@ -40,10 +44,6 @@ class OrdersRaceTestCommand extends Command
 
     protected $description = 'Test współbieżności: równolegli kupujący na ostatnie sztuki oferty (tylko Postgres)';
 
-    private const int PRICE_CENTS = 1000;
-
-    private const string CURRENCY = 'PLN';
-
     /** Ile czekamy na dokończenie sagi (joby z backoffem wracają po 5–120 s). */
     private const int DRAIN_TIMEOUT_SECONDS = 300;
 
@@ -51,6 +51,13 @@ class OrdersRaceTestCommand extends Command
     private const int START_DELAY_BASE_MS = 2000;
 
     private const int START_DELAY_PER_BUYER_MS = 40;
+
+    private ?RaceFixture $fixture = null;
+
+    private ?string $conflictLog = null;
+
+    /** @var list<Process> */
+    private array $running = [];
 
     public function handle(RecordPaymentHandler $payments): int
     {
@@ -77,36 +84,34 @@ class OrdersRaceTestCommand extends Command
         $this->renderPlan($plan);
 
         $run = Str::lower(Str::random(8));
-        $fixture = null;
         $startedAt = now();
-        $conflictLog = $this->conflictLogOffset();
+        $this->startConflictLog($run);
+        $this->trapSignals();
+        $exit = self::FAILURE;
 
         try {
-            $fixture = $this->createFixture($run, $plan);
-            $this->info("Fixture race-{$run}: oferta #{$fixture['offer']}, kupujących ".count($fixture['users']).'.');
+            $fixture = $this->fixture = RaceFixture::create($run, $plan['buyers'], $plan['stock']);
+            $this->info("Fixture race-{$run}: oferta #{$fixture->offerId}, kupujących ".count($fixture->userIds).'.');
 
             $placements = $this->placeOrders($fixture);
-            $this->drain($plan, fn (): bool => $this->ordersInStatus($fixture, 'placed') === 0);
+            $this->drain($plan, fn (): bool => self::ordersInStatus($fixture, 'placed') === 0);
 
-            $this->payAwaiting($payments, $fixture, $run);
-            $this->drain($plan, fn (): bool => $this->activeReservations($fixture) === 0);
+            $this->payAwaiting($payments, $fixture);
+            $this->drain($plan, fn (): bool => self::activeReservations($fixture) === 0);
 
-            $report = $this->report($plan, $fixture, $placements, $conflictLog, $startedAt);
-            $this->renderReport($report);
-
-            return $this->verdict($plan, $report);
+            $outcome = new RaceOutcome($plan['buyers'], $plan['stock'], self::ordersInStatus($fixture, 'paid'));
+            $this->renderReport($fixture, $outcome, $placements, $startedAt);
+            $exit = $this->verdict($outcome);
         } finally {
-            if ($fixture !== null && ! $this->option('keep')) {
-                $this->cleanUp($fixture);
-                $this->info("Fixture race-{$run} posprzątane.");
-            } elseif ($fixture !== null) {
-                $this->warn("Fixture race-{$run} zostaje (--keep): oferta #{$fixture['offer']}.");
-            }
+            // Błąd sprzątania nie może przykryć błędu przebiegu, więc `finish()` go nie rzuca.
+            $cleaned = $this->finish();
         }
+
+        return $cleaned ? $exit : self::FAILURE;
     }
 
     /**
-     * @return array{buyers: int, stock: int, workers: int, connection: string, expected_paid: int}|null
+     * @return array{buyers: int, stock: int, workers: int, connection: string}|null
      */
     private function plan(): ?array
     {
@@ -124,14 +129,11 @@ class OrdersRaceTestCommand extends Command
             $values[$name] = (int) $raw;
         }
 
-        return $values + [
-            'connection' => (string) config('queue.ordering_process_connection'),
-            'expected_paid' => min($values['buyers'], $values['stock']),
-        ];
+        return $values + ['connection' => (string) config('queue.ordering_process_connection')];
     }
 
     /**
-     * @param  array{buyers: int, stock: int, workers: int, connection: string, expected_paid: int}  $plan
+     * @param  array{buyers: int, stock: int, workers: int, connection: string}  $plan
      */
     private function renderPlan(array $plan): void
     {
@@ -140,87 +142,102 @@ class OrdersRaceTestCommand extends Command
             ['Stan oferty', (string) $plan['stock']],
             ['Workery kolejki', (string) $plan['workers']],
             ['Połączenie kolejki', $plan['connection']],
-            ['Oczekiwane opłacone', (string) $plan['expected_paid']],
+            ['Oczekiwane opłacone', (string) RaceOutcome::expectedPaid($plan['buyers'], $plan['stock'])],
             ['Fixture', 'race-{run}-{n}@example.test'],
         ]);
     }
 
     /**
-     * @param  array{buyers: int, stock: int}  $plan
-     * @return array{users: list<int>, seller: int, product: int, offer: int}
+     * Plik konfliktów tego przebiegu. `putenv`, bo ślad czyta zmienną przy
+     * każdym zapisie (działa mimo `config:cache`), a procesy potomne
+     * dziedziczą ją jawnie w `artisanProcess`. Konflikty `catalog-worker`
+     * tu nie trafiają, więc licznik to dolna granica, gdy ten worker
+     * przejmuje część jobów.
      */
-    private function createFixture(string $run, array $plan): array
+    private function startConflictLog(string $run): void
     {
-        return DB::transaction(function () use ($run, $plan): array {
-            $now = now();
-            $password = Hash::make(Str::random(40));
+        $this->conflictLog = storage_path("logs/race-{$run}.log");
+        putenv(ConcurrencyConflictTrace::ENV.'='.$this->conflictLog);
+    }
 
-            $users = [];
+    /**
+     * Ctrl+C w trakcie przebiegu: zatrzymaj procesy potomne, posprzątaj
+     * fixture i wyjdź kodem 128 + numer sygnału.
+     */
+    private function trapSignals(): void
+    {
+        if (! extension_loaded('pcntl')) {
+            return;
+        }
 
-            for ($n = 1; $n <= $plan['buyers']; $n++) {
-                $users[] = (int) DB::table('users')->insertGetId([
-                    'name' => "Race {$run} #{$n}",
-                    'email' => "race-{$run}-{$n}@example.test",
-                    'email_verified_at' => $now,
-                    'password' => $password,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]);
+        $this->trap([SIGINT, SIGTERM], function (int $signal): void {
+            $this->warn('Przerwano sygnałem, sprzątam.');
+
+            foreach ($this->running as $process) {
+                $process->stop(5);
             }
 
-            // Sprzedawca bez konta: nikt z fixture nie kupuje „własnej” oferty.
-            $seller = (int) DB::table('sellers')->insertGetId([
-                'name' => "Race {$run}",
-                'slug' => "race-{$run}",
-                'status' => 'active',
-                'version' => 1,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
+            $this->finish();
 
-            $product = (int) DB::table('products')->insertGetId([
-                'name' => "Race test {$run}",
-                'version' => 1,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-
-            $offer = (int) DB::table('offers')->insertGetId([
-                'product_id' => $product,
-                'seller_id' => $seller,
-                'price_cents' => self::PRICE_CENTS,
-                'currency' => self::CURRENCY,
-                'stock' => $plan['stock'],
-                'condition' => 'new',
-                'shipping_days' => 1,
-                'status' => 'published',
-                'version' => 1,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-
-            return ['users' => $users, 'seller' => $seller, 'product' => $product, 'offer' => $offer];
+            exit(128 + $signal);
         });
     }
 
     /**
-     * @param  array{users: list<int>, offer: int}  $fixture
+     * Sprzątanie raz, bez rzucania: zwraca false i wypisuje ID fixture, gdy się nie udało.
+     */
+    private function finish(): bool
+    {
+        $fixture = $this->fixture;
+        $this->fixture = null;
+        $ok = true;
+
+        if ($fixture !== null && $this->option('keep')) {
+            $this->warn("Fixture race-{$fixture->run} zostaje (--keep): oferta #{$fixture->offerId}, log konfliktów {$this->conflictLog}.");
+        } elseif ($fixture !== null) {
+            try {
+                $fixture->cleanUp();
+                $this->info("Fixture race-{$fixture->run} posprzątane.");
+            } catch (Throwable $e) {
+                $ok = false;
+                $this->error("Sprzątanie fixture race-{$fixture->run} nie powiodło się: {$e->getMessage()}");
+                $this->error(sprintf(
+                    'Do ręcznego usunięcia: users %s, seller #%d, product #%d, offer #%d.',
+                    implode(',', $fixture->userIds),
+                    $fixture->sellerId,
+                    $fixture->productId,
+                    $fixture->offerId,
+                ));
+            }
+        }
+
+        if ($this->conflictLog !== null && ! $this->option('keep')) {
+            @unlink($this->conflictLog);
+        }
+
+        putenv(ConcurrencyConflictTrace::ENV);
+
+        return $ok;
+    }
+
+    /**
      * @return array{placed: int, refused: array<string, int>, errors: list<string>, ms: list<float>}
      */
-    private function placeOrders(array $fixture): array
+    private function placeOrders(RaceFixture $fixture): array
     {
         $at = (int) (microtime(true) * 1000)
             + self::START_DELAY_BASE_MS
-            + self::START_DELAY_PER_BUYER_MS * count($fixture['users']);
+            + self::START_DELAY_PER_BUYER_MS * count($fixture->userIds);
 
         $processes = [];
 
-        foreach ($fixture['users'] as $userId) {
-            $process = $this->artisanProcess(['orders:race-test:buyer', (string) $userId, (string) $fixture['offer'], "--at={$at}"]);
+        foreach ($fixture->userIds as $userId) {
+            $process = $this->artisanProcess(['orders:race-test:buyer', (string) $userId, (string) $fixture->offerId, "--at={$at}"]);
             $process->start();
             $processes[] = $process;
         }
 
+        $this->running = $processes;
         $this->info('Kupujący wystartowali: '.count($processes).' procesów.');
 
         $placements = ['placed' => 0, 'refused' => [], 'errors' => [], 'ms' => []];
@@ -245,6 +262,8 @@ class OrdersRaceTestCommand extends Command
             }
         }
 
+        $this->running = [];
+
         return $placements;
     }
 
@@ -261,17 +280,19 @@ class OrdersRaceTestCommand extends Command
         $deadline = microtime(true) + self::DRAIN_TIMEOUT_SECONDS;
 
         do {
-            $workers = [];
+            $this->running = [];
 
             for ($i = 0; $i < $plan['workers']; $i++) {
                 $worker = $this->artisanProcess(['queue:work', $plan['connection'], '--stop-when-empty', '--sleep=0']);
                 $worker->start();
-                $workers[] = $worker;
+                $this->running[] = $worker;
             }
 
-            foreach ($workers as $worker) {
+            foreach ($this->running as $worker) {
                 $worker->wait();
             }
+
+            $this->running = [];
 
             if ($done()) {
                 return;
@@ -286,13 +307,11 @@ class OrdersRaceTestCommand extends Command
     /**
      * Płatność tą samą komendą co webhook bramki (bez HTTP i podpisu: to nie
      * one są tu mierzone).
-     *
-     * @param  array{users: list<int>}  $fixture
      */
-    private function payAwaiting(RecordPaymentHandler $payments, array $fixture, string $run): void
+    private function payAwaiting(RecordPaymentHandler $payments, RaceFixture $fixture): void
     {
         $orders = DB::table('orders')
-            ->whereIn('buyer_user_id', $fixture['users'])
+            ->whereIn('buyer_user_id', $fixture->userIds)
             ->where('status', 'awaiting_payment')
             ->orderBy('id')
             ->get(['id', 'total_cents', 'currency']);
@@ -300,7 +319,7 @@ class OrdersRaceTestCommand extends Command
         foreach ($orders as $order) {
             $payments->handle(new RecordPayment(
                 (int) $order->id,
-                "race-{$run}-{$order->id}",
+                "race-{$fixture->run}-{$order->id}",
                 (int) $order->total_cents,
                 (string) $order->currency,
             ));
@@ -310,181 +329,87 @@ class OrdersRaceTestCommand extends Command
     }
 
     /**
-     * @param  array{stock: int}  $plan
-     * @param  array{users: list<int>, offer: int}  $fixture
      * @param  array{placed: int, refused: array<string, int>, errors: list<string>, ms: list<float>}  $placements
-     * @param  array{path: string, offset: int}  $conflictLog
-     * @return array<string, mixed>
      */
-    private function report(array $plan, array $fixture, array $placements, array $conflictLog, \DateTimeInterface $startedAt): array
+    private function renderReport(RaceFixture $fixture, RaceOutcome $outcome, array $placements, DateTimeInterface $startedAt): void
     {
+        /** @var array<string, int> $statuses */
         $statuses = DB::table('orders')
-            ->whereIn('buyer_user_id', $fixture['users'])
+            ->whereIn('buyer_user_id', $fixture->userIds)
             ->selectRaw('status, count(*) as total')
             ->groupBy('status')
             ->pluck('total', 'status')
             ->map(fn ($total): int => (int) $total)
             ->all();
 
-        $paid = $statuses['paid'] ?? 0;
         $rejected = $statuses['rejected'] ?? 0;
+        $other = array_diff_key($statuses, ['paid' => true, 'rejected' => true]);
+        $conflicts = $this->conflictCounts();
         $ms = $placements['ms'];
         sort($ms);
 
-        return [
-            'placed' => $placements['placed'],
-            'refused' => $placements['refused'],
-            'errors' => $placements['errors'],
-            'paid' => $paid,
-            'rejected' => $rejected,
-            'other' => array_sum($statuses) - $paid - $rejected,
-            'other_statuses' => array_diff_key($statuses, ['paid' => true, 'rejected' => true]),
-            'stock' => (int) DB::table('offers')->where('id', $fixture['offer'])->value('stock'),
-            'active_reservations' => $this->activeReservations($fixture),
-            'overselling' => $paid - $plan['stock'],
-            'conflicts' => $this->conflictsSince($conflictLog),
-            'p50' => self::percentile($ms, 50),
-            'p95' => self::percentile($ms, 95),
-            'failed_jobs' => DB::table((string) config('queue.failed.table', 'failed_jobs'))
-                ->where('failed_at', '>=', $startedAt)
-                ->count(),
-        ];
-    }
-
-    /**
-     * @param  array<string, mixed>  $report
-     */
-    private function renderReport(array $report): void
-    {
-        $refused = $report['refused'] === [] ? '0' : self::counts($report['refused']);
-        $other = self::counts($report['other_statuses']);
-
         $this->table(['Wynik', 'Wartość'], [
-            ['Złożone zamówienia', (string) $report['placed']],
-            ['Odmowy przy składaniu', $refused],
-            ['Błędy procesów kupujących', (string) count($report['errors'])],
-            ['Opłacone', (string) $report['paid']],
-            ['Odrzucone', (string) $report['rejected']],
-            ['W innym statusie', $report['other'].($other === '' ? '' : " ({$other})")],
-            ['offer.stock końcowy', (string) $report['stock']],
-            ['Aktywne rezerwacje', (string) $report['active_reservations']],
-            ['Overselling (opłacone − stock)', (string) $report['overselling']],
-            ['Konflikty wersji (oferta / zamówienie)', "{$report['conflicts']['offer']} / {$report['conflicts']['order']}"],
-            ['Złożenie p50 / p95 (ms)', sprintf('%.1f / %.1f', $report['p50'], $report['p95'])],
-            ['Nieudane joby (failed_jobs)', (string) $report['failed_jobs']],
+            ['Złożone zamówienia', (string) $placements['placed']],
+            ['Odmowy przy składaniu', $placements['refused'] === [] ? '0' : self::counts($placements['refused'])],
+            ['Błędy procesów kupujących', (string) count($placements['errors'])],
+            ['Opłacone', (string) $outcome->paid],
+            ['Odrzucone', (string) $rejected],
+            ['W innym statusie', array_sum($other).($other === [] ? '' : ' ('.self::counts($other).')')],
+            ['offer.stock końcowy', (string) DB::table('offers')->where('id', $fixture->offerId)->value('stock')],
+            ['Aktywne rezerwacje', (string) self::activeReservations($fixture)],
+            ['Overselling (opłacone − stock)', (string) $outcome->overselling()],
+            ['Konflikty wersji (oferta / zamówienie)', "{$conflicts['offer']} / {$conflicts['order']}"],
+            ['Złożenie p50 / p95 (ms)', sprintf('%.1f / %.1f', RaceOutcome::percentile($ms, 50), RaceOutcome::percentile($ms, 95))],
+            ['failed_jobs od startu (wszystkie joby, nie tylko fixture)', (string) DB::table((string) config('queue.failed.table', 'failed_jobs'))
+                ->where('failed_at', '>=', $startedAt)
+                ->count()],
         ]);
 
-        foreach ($report['errors'] as $error) {
+        foreach ($placements['errors'] as $error) {
             $this->error("Kupujący: {$error}");
         }
     }
 
-    /**
-     * @param  array{stock: int, expected_paid: int}  $plan
-     * @param  array<string, mixed>  $report
-     */
-    private function verdict(array $plan, array $report): int
+    private function verdict(RaceOutcome $outcome): int
     {
-        if ($report['overselling'] > 0) {
-            $this->error("OVERSELLING: opłacono {$report['paid']} przy stanie {$plan['stock']}.");
+        $failure = $outcome->failure();
+
+        if ($failure !== null) {
+            $this->error($failure);
 
             return self::FAILURE;
         }
 
-        if ($report['paid'] !== $plan['expected_paid']) {
-            $this->error("Opłacone {$report['paid']}, oczekiwane {$plan['expected_paid']}.");
-
-            return self::FAILURE;
-        }
-
-        $this->info("OK: opłacone {$report['paid']}, overselling 0.");
+        $this->info("OK: opłacone {$outcome->paid}, overselling 0.");
 
         return self::SUCCESS;
     }
 
-    /**
-     * Kasuje wyłącznie wiersze fixture, po ID z `createFixture`. Query
-     * Builder, a nie modele: modele z outboxem przy kasowaniu wysłałyby
-     * zdarzenia o danych, których nikt poza testem nie widział.
-     *
-     * @param  array{users: list<int>, seller: int, product: int, offer: int}  $fixture
-     */
-    private function cleanUp(array $fixture): void
+    private static function ordersInStatus(RaceFixture $fixture, string $status): int
     {
-        DB::transaction(function () use ($fixture): void {
-            $orderIds = DB::table('orders')->whereIn('buyer_user_id', $fixture['users'])->pluck('id')->all();
+        return DB::table('orders')->whereIn('buyer_user_id', $fixture->userIds)->where('status', $status)->count();
+    }
 
-            foreach (['order_events', 'order_lines', 'order_refunds'] as $table) {
-                DB::table($table)->whereIn('order_id', $orderIds)->delete();
-            }
-
-            DB::table('orders')->whereIn('id', $orderIds)->delete();
-            DB::table('cart_items')->whereIn('user_id', $fixture['users'])->delete();
-
-            foreach (['offer_reservations', 'offer_price_changes', 'cart_items'] as $table) {
-                DB::table($table)->where('offer_id', $fixture['offer'])->delete();
-            }
-
-            DB::table('outbox')
-                ->where(fn ($q) => $q->where('aggregate_type', 'offer')->where('aggregate_id', (string) $fixture['offer']))
-                ->orWhere(fn ($q) => $q->where('aggregate_type', 'product')->where('aggregate_id', (string) $fixture['product']))
-                ->orWhere(fn ($q) => $q->where('aggregate_type', 'seller')->where('aggregate_id', (string) $fixture['seller']))
-                ->delete();
-
-            DB::table('offers')->where('id', $fixture['offer'])->delete();
-            DB::table('products')->where('id', $fixture['product'])->delete();
-            DB::table('sellers')->where('id', $fixture['seller'])->delete();
-            DB::table('users')->whereIn('id', $fixture['users'])->delete();
-        });
+    private static function activeReservations(RaceFixture $fixture): int
+    {
+        return DB::table('offer_reservations')->where('offer_id', $fixture->offerId)->where('status', 'active')->count();
     }
 
     /**
-     * @param  array{users: list<int>}  $fixture
-     */
-    private function ordersInStatus(array $fixture, string $status): int
-    {
-        return DB::table('orders')->whereIn('buyer_user_id', $fixture['users'])->where('status', $status)->count();
-    }
-
-    /**
-     * @param  array{offer: int}  $fixture
-     */
-    private function activeReservations(array $fixture): int
-    {
-        return DB::table('offer_reservations')->where('offer_id', $fixture['offer'])->where('status', 'active')->count();
-    }
-
-    /**
-     * @return array{path: string, offset: int}
-     */
-    private function conflictLogOffset(): array
-    {
-        $path = (string) config('logging.channels.concurrency.path');
-        clearstatcache(true, $path);
-
-        return ['path' => $path, 'offset' => is_file($path) ? (int) filesize($path) : 0];
-    }
-
-    /**
-     * Liczy wpisy dopisane od startu przebiegu. Inne procesy na tej samej
-     * bazie (np. `catalog-worker`) też tu piszą, więc to górna granica.
-     *
-     * @param  array{path: string, offset: int}  $log
      * @return array{offer: int, order: int}
      */
-    private function conflictsSince(array $log): array
+    private function conflictCounts(): array
     {
         $counts = ['offer' => 0, 'order' => 0];
-        clearstatcache(true, $log['path']);
 
-        if (! is_file($log['path'])) {
+        if ($this->conflictLog === null || ! is_file($this->conflictLog)) {
             return $counts;
         }
 
-        $appended = (string) file_get_contents($log['path'], offset: $log['offset']);
+        $log = (string) file_get_contents($this->conflictLog);
 
         foreach (array_keys($counts) as $aggregate) {
-            $counts[$aggregate] = substr_count($appended, 'concurrency_conflict {"aggregate":"'.$aggregate.'"');
+            $counts[$aggregate] = substr_count($log, 'concurrency_conflict {"aggregate":"'.$aggregate.'"');
         }
 
         return $counts;
@@ -505,28 +430,15 @@ class OrdersRaceTestCommand extends Command
     }
 
     /**
-     * Percentyl metodą najbliższej rangi: przy kilkudziesięciu próbkach
-     * interpolacja udawałaby precyzję, której pomiar nie ma.
-     *
-     * @param  list<float>  $sorted
-     */
-    private static function percentile(array $sorted, int $p): float
-    {
-        if ($sorted === []) {
-            return 0.0;
-        }
-
-        $rank = (int) ceil($p / 100 * count($sorted));
-
-        return $sorted[max(0, $rank - 1)];
-    }
-
-    /**
      * @param  list<string>  $arguments
      */
     private function artisanProcess(array $arguments): Process
     {
-        $process = new Process([PHP_BINARY, base_path('artisan'), ...$arguments], base_path());
+        $process = new Process(
+            [PHP_BINARY, base_path('artisan'), ...$arguments],
+            base_path(),
+            [ConcurrencyConflictTrace::ENV => (string) $this->conflictLog],
+        );
         $process->setTimeout(self::DRAIN_TIMEOUT_SECONDS * 2);
 
         return $process;

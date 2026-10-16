@@ -2,10 +2,10 @@
 
 namespace Ordering\Infrastructure\Persistence;
 
+use App\Support\ConcurrencyConflictTrace;
 use DateInterval;
 use DateTimeImmutable;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Ordering\Domain\BuyerId;
 use Ordering\Domain\Cancellation;
 use Ordering\Domain\CancelledBy;
@@ -99,12 +99,7 @@ final class SqlOrderRepository implements OrderRepository
                     ->update($this->row($order) + ['version' => $newVersion, 'updated_at' => $now]);
 
                 if ($updated === 0) {
-                    // Ślad dla `orders:race-test` (jak w `SqlOfferRepository`).
-                    Log::channel('concurrency')->info('concurrency_conflict', [
-                        'aggregate' => 'order',
-                        'id' => $order->id()->value(),
-                        'version' => $order->version(),
-                    ]);
+                    ConcurrencyConflictTrace::record('order', $order->id()->value(), $order->version());
 
                     throw new ConcurrencyConflict;
                 }

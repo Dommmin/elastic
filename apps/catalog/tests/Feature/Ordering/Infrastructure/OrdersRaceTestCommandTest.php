@@ -3,6 +3,7 @@
 use App\Models\Offer as OfferRow;
 use App\Models\Seller as SellerRow;
 use App\Models\User;
+use App\Support\ConcurrencyConflictTrace;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Ordering\Domain\OrderId;
@@ -31,12 +32,15 @@ function raceConflictLog(): string
 {
     $path = storage_path('framework/testing/concurrency-'.getmypid().'.log');
     @unlink($path);
-    config(['logging.channels.concurrency.path' => $path]);
+    putenv(ConcurrencyConflictTrace::ENV.'='.$path);
 
     return $path;
 }
 
-afterEach(fn () => @unlink(storage_path('framework/testing/concurrency-'.getmypid().'.log')));
+afterEach(function () {
+    putenv(ConcurrencyConflictTrace::ENV);
+    @unlink(storage_path('framework/testing/concurrency-'.getmypid().'.log'));
+});
 
 test('na SQLite odmawia z kodem 1 i niczego nie tworzy', function () {
     $before = raceTableCounts();
@@ -117,7 +121,7 @@ test('komenda kupującego zgłasza odmowę złożenia jako wynik, nie błąd', f
         ->and($result['reason'])->toBe('offer_no_longer_available');
 });
 
-test('konflikt wersji oferty trafia do kanału logu concurrency', function () {
+test('konflikt wersji oferty trafia do pliku z LOG_CONCURRENCY_PATH', function () {
     $path = raceConflictLog();
     $row = OfferRow::factory()->create([
         'seller_id' => SellerRow::factory()->forUser(User::factory()->create())->create()->id,
@@ -130,7 +134,7 @@ test('konflikt wersji oferty trafia do kanału logu concurrency', function () {
         ->and(file_get_contents($path))->toContain('concurrency_conflict')->toContain('"aggregate":"offer"');
 });
 
-test('konflikt wersji zamówienia trafia do kanału logu concurrency', function () {
+test('konflikt wersji zamówienia trafia do pliku z LOG_CONCURRENCY_PATH', function () {
     $path = raceConflictLog();
     $offer = OfferRow::factory()->create([
         'seller_id' => SellerRow::factory()->forUser(User::factory()->create())->create()->id,
