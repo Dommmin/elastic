@@ -103,3 +103,36 @@ export interface OrderTimelineEvent {
     type: string;
     occurred_at: string;
 }
+
+/**
+ * Zamówienia sprzedawcy (App\Http\Controllers\Seller\SellerOrderController,
+ * Ordering\Infrastructure\ReadModel\{SellerOrderList, SellerOrderDetails}).
+ */
+
+export type SellerOrderTab = 'to_ship' | 'all';
+
+export type SellerOrderActionName = 'ship' | 'cancel_by_seller';
+
+export interface SellerOrderListItem {
+    id: number;
+    status: OrderStatus;
+    status_label: string;
+    buyer: string;
+    total_cents: number;
+    placed_at: string;
+    lines_count: number;
+    first_product: string | null;
+}
+
+export interface SellerOrderDetails {
+    id: number;
+    status: OrderStatus;
+    status_label: string;
+    buyer: string;
+    placed_at: string;
+    lines: OrderDetailsLine[];
+    total_cents: number;
+    refunds: OrderRefund[];
+    tracking_number: string | null;
+    cancellation_label: string | null;
+}

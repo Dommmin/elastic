@@ -37,6 +37,7 @@ import {
     dashboard as sellerDashboard,
     status as sellerStatus,
 } from '@/routes/seller';
+import { index as sellerOrdersIndex } from '@/routes/seller/orders';
 import type { NavItem } from '@/types';
 
 const page = usePage();
@@ -74,6 +75,16 @@ const mainNavItems = computed<NavItem[]>(() => [
                         href: sellerApply(),
                         icon: Store,
                     },
+              ...(page.props.auth.seller &&
+              hasSellerPortal(page.props.auth.seller.status)
+                  ? [
+                        {
+                            title: 'Zamówienia sprzedawcy',
+                            href: sellerOrdersIndex(),
+                            icon: PackageCheck,
+                        },
+                    ]
+                  : []),
           ]
         : []),
     ...(page.props.auth.user?.is_admin

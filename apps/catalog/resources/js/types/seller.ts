@@ -101,7 +101,7 @@ export type OfferTimelineEvent = {
 };
 
 export type SellerDashboardStats = Record<
-    OfferStatus | 'sold_out' | 'pending_price',
+    OfferStatus | 'sold_out' | 'pending_price' | 'orders_to_ship',
     number
 >;
 

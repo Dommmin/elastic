@@ -369,6 +369,7 @@ test('pulpit liczy oferty według statusu, wyprzedane i oczekujące ceny', funct
                 'withdrawn' => 1,
                 'sold_out' => 1,
                 'pending_price' => 1,
+                'orders_to_ship' => 0,
             ]));
 });
 

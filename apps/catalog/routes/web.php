@@ -10,6 +10,7 @@ use App\Http\Controllers\Seller\ProductLookupController;
 use App\Http\Controllers\Seller\SellerApplicationController;
 use App\Http\Controllers\Seller\SellerDashboardController;
 use App\Http\Controllers\Seller\SellerOfferController;
+use App\Http\Controllers\Seller\SellerOrderController;
 use App\Http\Controllers\Shop\CartController;
 use App\Http\Controllers\Shop\OrderController;
 use App\Http\Controllers\Shop\ProductPageController;
@@ -72,6 +73,14 @@ Route::middleware(['auth', 'seller', 'seller.approved'])->prefix('seller')->name
         Route::put('offers/{offer}/stock', [SellerOfferController::class, 'updateStock'])->name('offers.stock');
         Route::put('offers/{offer}/details', [SellerOfferController::class, 'updateDetails'])->name('offers.details');
         Route::post('offers/{offer}/withdraw', [SellerOfferController::class, 'withdraw'])->name('offers.withdraw');
+    });
+
+    Route::get('orders', [SellerOrderController::class, 'index'])->name('orders.index');
+
+    Route::whereNumber('order')->group(function () {
+        Route::get('orders/{order}', [SellerOrderController::class, 'show'])->name('orders.show');
+        Route::post('orders/{order}/ship', [SellerOrderController::class, 'ship'])->name('orders.ship');
+        Route::post('orders/{order}/cancel', [SellerOrderController::class, 'cancel'])->name('orders.cancel');
     });
 });
 
