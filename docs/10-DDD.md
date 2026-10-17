@@ -1248,12 +1248,13 @@ identycznych testach HTTP i tym samym koszcie nowej reguły; nie sprawdza
 wierszy z bazy, nie ma testu architektury, a testy reguł chodzą ~35× wolniej.
 Drugie porównanie, dla zamówień (saga kontra jedna transakcja z blokadami):
 [`docs/blog/saga-vs-transakcja.md`](blog/saga-vs-transakcja.md) (gałąź
-`zamowienia-ddd-lite`). Wynik: lite to 1389 linii zamiast 4155, reguła
+`zamowienia-ddd-lite`). Wynik: lite to 1407 linii zamiast 4231, reguła
 „najwyżej 3 nieopłacone” kosztuje 7 plików zamiast 12, wyścigi R1, R2, R7
 i R10 znikają; za to zapomniany `lockForUpdate()` po cichu skleja dwa stany
-zamówienia, a wiersze z bazy nie są sprawdzane. Prognoza „pełne DDD dla
-zamówień” potwierdza się dla agregatu, nie dla sagi (race-test i awaria
-w połowie czekają na kontener).
+zamówienia, a wiersze z bazy nie są sprawdzane. Na Postgresie
+(`orders:race-test`, 50 kupujących na 10 sztuk) oba style dały 0
+oversellingu w 3/3 przebiegach. Prognoza „pełne DDD dla zamówień”
+potwierdza się dla agregatu, nie dla sagi.
 
 **Co DDD tu dało** (też zmierzone): 130 testów domeny i aplikacji w 44 ms
 bez bazy i frameworka; każda reguła ma jedno miejsce (próg 30% to stała

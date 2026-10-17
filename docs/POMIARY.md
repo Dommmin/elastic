@@ -240,3 +240,97 @@ k3s v1.36.5, ECK 3.5.0, ES 3 nody heap 1500m / limit 3Gi.
 | Powrót do D1 (killall + start + zdrowie) | — | ~14 min łącznie | kontenery D1 healthy po ~2 min; reszta do rozdzielenia (k3s-killall / compose --wait) |
 | Burza startowa ES+Kibana obok działającego D1 | — | SSH/API niedostępne ~25 min | bez OOM; 4 vCPU (RUNBOOK #037) |
 | Dysk | 12 GB | 20 GB | obrazy w dwóch runtime'ach (Docker + containerd k3s) |
+
+---
+
+<a id="zamowienia-2026-10-17"></a>
+## 11. Zamówienia: współbieżność i E2E (2026-10-17)
+
+Lokalny stack (`main` @ `c7a956b`: Postgres, `catalog-worker`,
+`catalog-scheduler`), maszyna współdzielona z innymi projektami, VM Dockera
+15,6 GB. Surowe wyjścia race-testu:
+`.superpowers/sdd/2026-10-16-zamowienia-ddd/measurements/race-*.out` (lokalnie, katalog poza gitem).
+
+### `orders:race-test` — 50 kupujących, 10 sztuk, 4 workery, oba style
+
+Uruchomione w jednorazowym kontenerze z `--memory 3g`, bo w `catalog-app`
+(512m) 50 procesów PHP się nie mieści (RUNBOOK [#049](RUNBOOK.md#049)):
+
+```bash
+env_file=$(mktemp)
+docker inspect marketplace-catalog-app-1 --format '{{range .Config.Env}}{{println .}}{{end}}' > "$env_file"
+docker run --rm --memory 3g --network marketplace_marketplace --env-file "$env_file" \
+  -v <checkout mierzonej gałęzi>/apps/catalog:/app -w /app marketplace-catalog-app \
+  php artisan orders:race-test --buyers=50 --stock=10 --workers=4
+rm "$env_file"
+```
+
+| Przebieg | Opłacone | Odrzucone (saga) | Odmowy przy składaniu | Overselling | Konflikty wersji oferta / zamówienie | p50 / p95 złożenia (ms) |
+|---|---|---|---|---|---|---|
+| saga (DDD) 1 | 10 | 40 | 0 | 0 | 61 / 0 | 613,6 / 776,8 |
+| saga (DDD) 2 | 10 | 40 | 0 | 0 | 24 / 0 | 2451,0 / 2747,2 |
+| saga (DDD) 3 | 10 | 40 | 0 | 0 | 12 / 0 | 6968,8 / 7435,5 |
+| jedna transakcja (lite) 1 | 10 | 0 | `offer_no_longer_available`: 40 | 0 | 0 / 0 | 2992,7 / 3652,1 |
+| jedna transakcja (lite) 2 | 10 | 0 | `offer_no_longer_available`: 40 | 0 | 0 / 0 | 4450,4 / 13411,2 |
+| jedna transakcja (lite) 3 | 10 | 0 | `offer_no_longer_available`: 40 | 0 | 0 / 0 | 7950,7 / 11523,2 |
+
+We wszystkich sześciu: końcowy `offer.stock` 0, aktywne rezerwacje 0,
+`failed_jobs` od startu 0, kod wyjścia 0.
+
+**Wniosek o poprawności:** oba style 6/6 bez oversellingu, dokładnie 10
+opłaconych. Saga wchłania wyścig jako 40 asynchronicznych odrzuceń
+z konfliktami wersji oferty (ponawianymi); jedna transakcja jako 40
+natychmiastowych odmów bez ani jednego konfliktu (kupujący czekają na
+blokadzie wiersza).
+
+**Wniosek o latencji: brak.** Czasy rosły z przebiegu na przebieg w obu
+stylach, bo w trakcie węzły ES restartowały się pod presją pamięci VM
+(es03: 20 restartów) obok cudzych kontenerów. p50/p95 z tej tabeli nie
+nadają się do porównania stylów ani przebiegów.
+
+Dlaczego lite odmawia kodem `offer_no_longer_available`, a nie
+`out_of_stock`: po rezerwacji ostatniej sztuki oferta przestaje być
+`listed` (dostępne = 0), więc snapshot oferty odmawia, zanim
+składanie dojdzie do rezerwacji, gdzie padłoby `OutOfStock`.
+
+### Wyszukiwarka: ostatnia sztuka znika i wraca
+
+| Pomiar | Wynik |
+|---|---|
+| klik „Złóż zamówienia” → oferta znika z dokumentu ES | 1,3 s |
+| zdarzenie `stock_reserved` w katalogu → zaindeksowane (`doc_version`) | 0,53 s (16:03:22,151 → 22,685) |
+| zdarzenie `reservation_released` po anulowaniu → zaindeksowane | 0,57 s (16:03:25,202 → 25,770) |
+
+Jeden wcześniejszy pomiar powrotu (26,7 s) był artefaktem: okno `confirm`
+w przeglądarce blokowało klik. Zamówienie bez płatności wygasło przez
+sweep po 15 + 5 min i oferta wróciła do indeksu.
+
+### Saga po awarii workera
+
+`docker compose stop catalog-worker`, złożone zamówienie: po 10 s dalej
+`placed`, jeden job w `jobs`. `docker compose start catalog-worker` →
+`awaiting_payment` po **28,1 s**, wliczając start kontenera. Normalne
+przejście z działającym workerem: ~1 s (historia zamówienia: 17:10:21 →
+17:10:22). Awarii w połowie żądania dla jednej transakcji **nie mierzyłem**
+(wymaga ubicia procesu PHP w trakcie transakcji); jej atomowość pokrywa
+`OrderTransactionsTest` na gałęzi `zamowienia-ddd-lite`.
+
+### E2E w przeglądarce (kryteria 1–6 ze specu)
+
+| Scenariusz | Wynik |
+|---|---|
+| koszyk u 2 sprzedawców → 2 zamówienia → płatność → wysyłka | „Sprawdzamy dostępność” → po ~1 s „Czeka na płatność” → bramka → „Czekamy na potwierdzenie płatności” → po webhooku „Opłacone”; numer przesyłki ze spacji odrzucony, `INPOST-123456789` → „Wysłane”; stany ofert 3→1 i 5→4 |
+| brak towaru w trakcie (sprzedawca zmniejsza stan) | „Odrzucone: Zabrakło towaru: …”, rezerwacja drugiej pozycji `released`, jej stan bez zmian |
+| zmiana ceny po dodaniu do koszyka | „Cena zmieniona z 19,99 zł na 21,99 zł”, składanie zablokowane (zamówień 5 → 5); po akceptacji złożone za 21,99 zł |
+| wygaśnięcie + wpłata po terminie | sweep ~30 s po cofniętym terminie: `Expired`, rezerwacja `released`; „Zapłać mimo wygaśnięcia” → zwrot `late_payment` 21,99 zł `completed` |
+| zdublowany webhook | job `DONE`, dalej 1 zwrot i 7 zdarzeń |
+| sprzedawca schodzi poniżej zarezerwowanych | „Nie możesz zejść poniżej liczby zarezerwowanych sztuk”, stan bez zmian |
+
+### Znalezione na stacku
+
+- `catalog-scheduler` z `mem_limit: 128m`: każdy przebieg sweepu ginął z OOM
+  (137), zamówienia nie wygasały. Poprawka: 256m (RUNBOOK [#048](RUNBOOK.md#048)).
+- Race-test w `catalog-app` ginie po ~2 s (RUNBOOK [#049](RUNBOOK.md#049)).
+- search-consumer po restartach ES: „No alive nodes” przy klastrze `green`,
+  76 wiadomości w failure transport; `make reproject` przeliczył 1500
+  dokumentów w 76 s. Problem istniejący wcześniej w search (RUNBOOK [#050](RUNBOOK.md#050)).

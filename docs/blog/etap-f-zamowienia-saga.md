@@ -8,18 +8,19 @@ a sprzedawca wysyła albo anuluje ze zwrotem pieniędzy. Portal sprzedawcy
 które obejmują **kilka agregatów naraz**: process manager (saga), spójność
 ostateczna, kompensacja, idempotencja i wyścigi.*
 
-> **Stan:** kod zrobiony lokalnie na gałęzi `zamowienia` (Taski 1–14 planu,
-> kroki 1–4 Taska 14). Testy na hoście zielone: domena Orderingu 80 testów
-> w 41 ms, domena + aplikacja 122 testy w 48 ms, `tests/Feature/Ordering`
-> 144 testy, cały catalog 740 testów (725 zielonych, 15 pominiętych).
-> **Jeszcze nie zrobione:** uruchomienie na żywym stacku. Kontener
-> `catalog-app` montuje główny checkout, więc E2E (Task 15) i
-> `orders:race-test` na Postgresie (Task 14, krok 5) czekają na merge
-> `zamowienia` do `main`, który musi zatwierdzić użytkownik. Gałąź porównawcza
-> `zamowienia-ddd-lite` (Task 17) jest zrobiona lokalnie, porównanie:
-> [`saga-vs-transakcja.md`](saga-vs-transakcja.md). Wdrożenie na k3s jeszcze nie istnieje.
-> Wszystkie miejsca na liczby z pomiarów są oznaczone „Do uzupełnienia po
-> pomiarze”; żadna liczba w tym przewodniku nie jest zgadnięta.
+> **Stan:** gałąź `zamowienia` zmergowana do `main` (PR #1, `c7a956b`)
+> i **sprawdzona na żywym stacku 2026-10-17**: E2E w przeglądarce
+> (kryteria 1–6 ze specu), `orders:race-test` na Postgresie (3 przebiegi,
+> 0 oversellingu), awaria workera, czas zniknięcia ostatniej sztuki
+> z `/search`. Wyniki są w krokach 13 i 14 oraz w
+> [POMIARY, sekcja 11](../POMIARY.md#zamowienia-2026-10-17). Pomiar wyłapał
+> jeden błąd konfiguracji (limit pamięci `catalog-scheduler`, RUNBOOK
+> [#048](../RUNBOOK.md#048)). Testy na hoście: cały catalog 764 testy
+> (749 zielonych, 15 pominiętych), domena Orderingu 94 testy w ~32 ms.
+> Gałąź porównawcza `zamowienia-ddd-lite` jest zrobiona lokalnie,
+> porównanie: [`saga-vs-transakcja.md`](saga-vs-transakcja.md).
+> Wdrożenie na k3s jeszcze nie istnieje. Żadna liczba w tym przewodniku nie
+> jest zgadnięta.
 >
 > Moduły nauki: [`10-DDD.md`](../10-DDD.md), moduły 11 (process manager
 > i spójność ostateczna) i 12 (kompensacja i idempotencja), oba z prawdziwymi
@@ -561,27 +562,57 @@ złapał błąd, który na Postgresie wywróciłby każdą rezerwację: sprzedaw
 w fixture nie miał miasta, a `SqlSellerRepository::hydrate` odrzuca taki
 wiersz.
 
-> **Do uzupełnienia po pomiarze (Task 14/15):** wynik `orders:race-test` na
-> prawdziwym Postgresie z workerami. Po merge `zamowienia` do `main`
-> (zgoda użytkownika) i `make up-apps`:
-> ```bash
-> docker compose exec catalog-app php artisan migrate --force
-> docker compose exec catalog-app php artisan orders:race-test --dry-run
-> docker compose exec catalog-app php artisan orders:race-test --buyers=50 --stock=10 --workers=4
-> ```
-> Zapisać cały raport: opłacone (oczekiwane dokładnie 10), odrzucone,
-> overselling (oczekiwane 0), konflikty wersji oferta/zamówienie, p50/p95
-> złożenia, `failed_jobs` od startu, czas całego przebiegu. Liczba konfliktów
-> jest dolną granicą: joby przejęte przez działający równolegle
-> `catalog-worker` nie mają `LOG_CONCURRENCY_PATH`.
+### Wynik na Postgresie (2026-10-17)
+
+Trzy przebiegi `--buyers=50 --stock=10 --workers=4` na lokalnym stacku po
+merge do `main` (surowe wyjścia w
+`.superpowers/sdd/2026-10-16-zamowienia-ddd/measurements/race-ddd*.out`, lokalnie, katalog poza gitem):
+
+| Przebieg | Złożone | Opłacone | Odrzucone | Overselling | Konflikty wersji oferta / zamówienie | p50 / p95 złożenia (ms) |
+|---|---|---|---|---|---|---|
+| 1 | 50 | 10 | 40 | 0 | 61 / 0 | 613,6 / 776,8 |
+| 2 | 50 | 10 | 40 | 0 | 24 / 0 | 2451,0 / 2747,2 |
+| 3 | 50 | 10 | 40 | 0 | 12 / 0 | 6968,8 / 7435,5 |
+
+Za każdym razem: końcowy `stock` 0, aktywne rezerwacje 0, `failed_jobs`
+od startu 0, kod wyjścia 0. Saga przyjmuje wszystkie 50 zamówień, a nadmiar
+odrzuca krok rezerwacji; konflikty wersji oferty to kroki rezerwacji tej
+samej oferty, które przegrały i się ponowiły. Liczba konfliktów jest dolną
+granicą: joby przejęte przez działający równolegle `catalog-worker` nie mają
+`LOG_CONCURRENCY_PATH`.
+
+**Czasów nie porównuj.** p50 rosło z przebiegu na przebieg przy tym samym
+kodzie, bo maszyna jest współdzielona, a w trakcie węzły ES restartowały
+się pod presją pamięci VM Dockera (es03: 20 restartów). Wniosek z tej
+tabeli jest o poprawności (0 oversellingu, dokładnie 10 opłaconych), nie
+o wydajności.
+
+**Jak to faktycznie trzeba było uruchomić.** `docker compose exec catalog-app
+php artisan orders:race-test …` ginie po ~2 s bez komunikatu z kodem 137:
+50 procesów PHP nie mieści się w 512m `catalog-app` (RUNBOOK
+[#049](../RUNBOOK.md#049)). Działa jednorazowy kontener z tego samego
+obrazu, z katalogu głównego checkoutu:
+```bash
+docker compose exec catalog-app php artisan migrate --force
+docker compose exec catalog-app php artisan orders:race-test --dry-run      # plan, bez procesów, mieści się w 512m
+env_file=$(mktemp)
+docker inspect marketplace-catalog-app-1 --format '{{range .Config.Env}}{{println .}}{{end}}' > "$env_file"
+docker run --rm --memory 3g --network marketplace_marketplace --env-file "$env_file" \
+  -v "$PWD/apps/catalog:/app" -w /app marketplace-catalog-app \
+  php artisan orders:race-test --buyers=50 --stock=10 --workers=4
+rm "$env_file"
+```
+Na współdzielonej maszynie taki przebieg dociąża VM Dockera; po nim
+sprawdź ES i search-consumera (RUNBOOK [#050](../RUNBOOK.md#050)).
 
 ---
 
 ## Krok 14 — Jak uruchomić i co zobaczyć
 
-Wszystko poniżej wymaga kodu w głównym checkoucie (kontener `catalog-app`
-montuje `apps/catalog` z `/Users/…/elastic`, nie z worktree), czyli merge
-`zamowienia` do `main`. Do tego czasu sprawdzaj zachowanie testami.
+Wszystko poniżej działa na kodzie z głównego checkoutu (kontener
+`catalog-app` montuje `apps/catalog` z `/Users/…/elastic`, nie z worktree).
+Po merge do `main` tak właśnie to sprawdziłem; wyniki są w „Co zobaczyłem
+na stacku” na końcu kroku.
 
 1. **Stack i migracje.**
    ```bash
@@ -624,17 +655,49 @@ montuje `apps/catalog` z `/Users/…/elastic`, nie z worktree), czyli merge
    `FAKE_GATEWAY_FAIL_FIRST_REFUND=true` zwrot najpierw jest „w toku”, a po
    ponowieniu joba „zwrócono”.
 
-> **Do uzupełnienia po pomiarze (Task 15):** obserwacje E2E z przeglądarki
-> dla scenariuszy ze specu (sekcja 8): zakup u dwóch sprzedawców → dwie
-> płatności → wysyłka; brak towaru; wygaśnięcie; wpłata po terminie → zwrot;
-> zdublowany webhook; zniknięcie ostatniej sztuki z `/search` i jej powrót.
-> Do zmierzenia: **czas od rezerwacji ostatniej sztuki do zniknięcia
-> z `/search`** (od `occurred_at` zdarzenia `offer.stock_reserved` w outboxie,
-> zapytanie z pkt 5, do chwili, w której
-> `curl -sk "https://catalog.localhost/api/search?q=<nazwa produktu>"`
-> przestaje zwracać tę ofertę; powtórzyć kilka razy) i ten sam czas
-> w drugą stronę po anulowaniu przez kupującego. Wyniki do
-> [POMIARY](../POMIARY.md) i [ADR-0006](../adr/0006-rezerwacje-w-ofercie.md).
+### Co zobaczyłem na stacku (E2E, 2026-10-17)
+
+Przeglądarka (`agent-browser`, `https://catalog.localhost:8443`),
+scenariusze ze specu (sekcja 8). Pełne liczby: [POMIARY, sekcja 11](../POMIARY.md#zamowienia-2026-10-17).
+
+1. **Dwóch sprzedawców, dwie płatności, wysyłka.** Koszyk pokazał
+   „zostaną złożone 2 zamówienia”; oba zamówienia przez chwilę
+   „Sprawdzamy dostępność”, po ~1 s „Czeka na płatność” (historia:
+   złożono 17:10:21, zarezerwowano 17:10:22). Po bramce powrót z
+   `?payment=returned` pokazuje „Czekamy na potwierdzenie płatności” bez
+   „Zapłać”, a po webhooku (worker → wewnętrzny Caddy `/webhooks/*`)
+   „Opłacone”. U sprzedawcy „Do wysłania 1”; numer przesyłki ze spacji
+   odrzucony („Podaj numer przesyłki”, zamówienie zostaje opłacone),
+   `INPOST-123456789` → „Wysłane”. Stany ofert po potwierdzeniu 3→1 i 5→4.
+2. **Ostatnia sztuka znika i wraca.** Od kliknięcia „Złóż zamówienia” do
+   zniknięcia oferty z dokumentu ES: **1,3 s**. Od zdarzenia w katalogu do
+   zaindeksowania: **0,53 s** przy rezerwacji, **0,57 s** przy zwolnieniu
+   po anulowaniu. (Pierwszy pomiar powrotu, 26,7 s, był artefaktem: okno
+   `confirm` blokowało klik.) Zamówienie bez płatności wygasło przez sweep
+   po 15 + 5 min i oddało sztukę.
+3. **Brak towaru.** Zamówienie 1× oferta A + 3× oferta B; sprzedawca zmniejszył
+   stan B do 2 → „Odrzucone: Zabrakło towaru: …”, rezerwacja A `released`,
+   stan A bez zmian (kompensacja zadziałała).
+4. **Zmiana ceny po dodaniu do koszyka.** „Cena zmieniona z 19,99 zł na
+   21,99 zł”, „Złóż zamówienia” zablokowane, liczba zamówień bez zmian;
+   po „Akceptuję nową cenę” złożone za 21,99 zł.
+5. **Wygaśnięcie, wpłata po terminie, zdublowany webhook.** Termin cofnięty
+   w bazie dev o 6 min → sweep ~30 s później: „Wygasło”, rezerwacja
+   `released`. „Zapłać mimo wygaśnięcia” → `late_payment_received`,
+   `refund_requested`, `refund_completed` (zwrot 21,99 zł). „Wyślij webhook
+   ponownie” → job `DONE`, dalej jeden zwrot i siedem zdarzeń (R4).
+6. **Stan poniżej zarezerwowanych.** Oferta: stan 1, zarezerwowane 1;
+   sprzedawca ustawia 0 → „Nie możesz zejść poniżej liczby zarezerwowanych
+   sztuk”, stan bez zmian.
+7. **Awaria workera.** `docker compose stop catalog-worker`, złożone
+   zamówienie: po 10 s dalej `placed`, jeden job w `jobs`. Po `start` →
+   `awaiting_payment` po **28,1 s** (w tym start kontenera). Saga domknęła
+   się sama.
+
+Przy pierwszym uruchomieniu wyszedł błąd, którego testy nie mogły złapać:
+`catalog-scheduler` z limitem 128m zabijał każdy przebieg sweepu (OOM,
+kod 137), więc nic nie wygasało. Limit jest teraz 256m (`compose.yaml`,
+RUNBOOK [#048](../RUNBOOK.md#048)).
 
 ---
 
@@ -750,14 +813,18 @@ jako warunek działania; dwanaście wyścigów do przemyślenia, z których jede
 (R18) spec rozstrzygnął źle, a jeden (R1 + R2 naraz) wyszedł dopiero
 w przeglądzie; dwie definicje karencji.
 
-Porównanie z gałęzią `zamowienia-ddd-lite` (zmierzone 2026-10-16): kod
-zamówień 4155 linii w DDD kontra 1389 w lite, testy reguł 27 ms kontra
-~1 s, nowa reguła 12 plików (+113/−3) kontra 7 (+86/−4). Szczegóły, sondy
+Porównanie z gałęzią `zamowienia-ddd-lite` (kod i testy zmierzone ponownie
+2026-10-17, po końcowym przeglądzie): kod zamówień 4231 linii w DDD kontra
+1407 w lite, testy reguł 32 ms kontra ~1,2 s, nowa reguła (2026-10-16) 12 plików (+113/−3) kontra 7 (+86/−4). Szczegóły, sondy
 obejścia i werdykt: [`saga-vs-transakcja.md`](saga-vs-transakcja.md).
 
-> **Do uzupełnienia po pomiarze (Task 17):** `orders:race-test` na obu
-> gałęziach i awaria w połowie (ubity worker kontra ubite żądanie) —
-> komendy w [`saga-vs-transakcja.md`](saga-vs-transakcja.md), rozdziały 6 i 7.
+Na żywym stacku (2026-10-17) oba style przeszły `orders:race-test` 3/3 bez
+oversellingu: saga odrzuca nadmiar asynchronicznie (40 `Rejected`,
+konflikty wersji oferty), jedna transakcja odmawia od razu (40 odmów
+`offer_no_longer_available`, zero konfliktów). Ubity worker: saga sama
+dokończyła po powrocie (28,1 s z restartem). Ubitego żądania w lite nie
+mierzyłem. Szczegóły: [`saga-vs-transakcja.md`](saga-vs-transakcja.md),
+rozdziały 6 i 7.
 
 ---
 

@@ -551,7 +551,11 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
-    mem_limit: 128m
+    # 256m, nie 128m: `schedule:work` (~63 MB) uruchamia przy każdym przebiegu
+    # pełny osobny proces Laravela (`orders:expire-overdue`). Przy 128m sweep
+    # ginął z OOM (kod 137) i zamówienia nigdy nie wygasały — znalezione w E2E
+    # 2026-10-17 (RUNBOOK #048).
+    mem_limit: 256m
     networks: [marketplace]
     restart: unless-stopped
 

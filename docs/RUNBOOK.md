@@ -48,6 +48,9 @@
 | [045](#045) | Zamówienie wisi w „Sprawdzamy dostępność” (`placed`) | Kolejka / Zamówienia | Zamówienia |
 | [046](#046) | Krok sagi w `failed_jobs`: diagnoza i ręczne ponowienie | Kolejka / Zamówienia | Zamówienia |
 | [047](#047) | Bramka płatności: przyciski deweloperskie i webhook, który nie dochodzi | Caddy / Kolejka / Zamówienia | Zamówienia |
+| [048](#048) | `catalog-scheduler` biegnie, a sweep ginie z kodem 137 i nic nie wygasa | Docker / Scheduler / Zamówienia | Zamówienia |
+| [049](#049) | `orders:race-test` w `catalog-app` milknie po ~2 s (kod 137) | Docker / Zamówienia | Zamówienia |
+| [050](#050) | search-consumer po restarcie węzłów ES: „No alive nodes” przy klastrze `green`, indeks stoi | Elasticsearch / Symfony (search) | Zamówienia (istniało wcześniej) |
 
 ---
 
@@ -2044,9 +2047,13 @@ wydanie i usunąć ją w następnym.
 <a id="044"></a>
 ## 044 — Zamówienia nie wygasają, towar wisi zarezerwowany (catalog-scheduler)
 
-> Wpis przygotowany przed pierwszym uruchomieniem zamówień na żywym stacku
-> (etap „Zamówienia”, Task 16). Komendy są sprawdzone na kodzie, objawy
-> wynikają z projektu, a nie z incydentu. Uzupełnij po pierwszym prawdziwym.
+> Wpis napisany przed pierwszym uruchomieniem zamówień (Task 16), na
+> żywym stacku sprawdzony 2026-10-17. Objaw wystąpił naprawdę już przy
+> pierwszym uruchomieniu, ale z przyczyną, której tu nie było: scheduler
+> żył, a każdy przebieg sweepu zabijał OOM (#048). Po podniesieniu limitu
+> sweep działa: zamówienie bez płatności wygasło po 15 + 5 min i oddało
+> rezerwację (oferta wróciła do indeksu), a zamówienie z terminem cofniętym
+> w bazie o 6 min wygasło ~30 s później, przy najbliższym przebiegu.
 
 **Objaw**
 Zamówienie „Czeka na płatność” albo „Sprawdzamy dostępność” długo po
@@ -2083,6 +2090,7 @@ każdy kolejny przebieg jest pomijany.
 
 **Naprawa**
 1. Scheduler nie działa: `docker compose --profile apps up -d catalog-scheduler`.
+   Działa, a `ordering_sweep_last_run_at` stoi: sprawdź OOM (#048).
 2. Jednorazowo, bez czekania: `docker compose exec catalog-app php artisan orders:expire-overdue`
    (idempotentne: wygaszone zamówienie przy drugim przebiegu to no-op).
 3. Zablokowany `withoutOverlapping`: `docker compose exec catalog-app php artisan schedule:clear-cache`.
@@ -2099,7 +2107,9 @@ przebiegu w `/health`.
 <a id="045"></a>
 ## 045 — Zamówienie wisi w „Sprawdzamy dostępność” (`placed`)
 
-> Wpis przygotowany przed pierwszym uruchomieniem na żywym stacku, jak #044.
+> Wpis napisany przed pierwszym uruchomieniem (Task 16), na żywym stacku
+> sprawdzony 2026-10-17 przez celowo zatrzymany worker (wynik niżej, w
+> „Ile to normalnie trwa”).
 
 **Objaw**
 Kupujący złożył zamówienie, strona `/orders/{id}` odświeża się co sekundę
@@ -2150,12 +2160,21 @@ więc przejście trwa dłużej, ale nie stoi.
    zamówieniu (R10). Kosztem jest kupujący, który 20 minut patrzy na
    „Sprawdzamy dostępność”.
 
-> **Do uzupełnienia po pomiarze (Task 15):** normalny czas od złożenia do
-> „Czeka na płatność” na lokalnym stacku (z `order_events`:
-> `occurred_at` zdarzenia `order.awaiting_payment` minus `order.placed`,
-> kilka zamówień), żeby wiedzieć, od ilu sekund „wisi” jest objawem, a nie
-> zwykłą spójnością ostateczną. Oraz to samo pod obciążeniem
-> `orders:race-test --buyers=50 --stock=10`.
+**Ile to normalnie trwa (zmierzone 2026-10-17, lokalny stack)**
+- Zwykłe złożenie z działającym workerem: ~1 s. Koszyk u dwóch sprzedawców,
+  historia zamówienia: złożono 17:10:21, zarezerwowano 17:10:22 (UI pokazuje
+  pełne sekundy, więc to „poniżej 2 s”, nie dokładna latencja).
+- Worker zatrzymany (`docker compose stop catalog-worker`): po 10 s
+  zamówienie dalej `placed`, w `jobs` jeden job. Po
+  `docker compose start catalog-worker` → `awaiting_payment` po **28,1 s**,
+  wliczając start kontenera. Saga domknęła się sama, bez ręcznego kroku.
+- Pod obciążeniem (`orders:race-test`, 50 kupujących, 10 sztuk): czasu
+  `placed` → `awaiting_payment` osobno **nie mierzyłem**. Race-test podaje
+  tylko latencję samego złożenia, a i ta na współdzielonej maszynie była
+  nieporównywalna między przebiegami (p50 od 0,6 s do 7 s, [POMIARY](POMIARY.md#zamowienia-2026-10-17)).
+
+Próg praktyczny: kilka sekund w `placed` przy działającym workerze to już
+objaw; pół minuty bywa normalne tylko tuż po starcie workera.
 
 **Czego się nauczyłem**
 Spójność ostateczna, którą widzi użytkownik, potrzebuje progu „to już nie
@@ -2164,7 +2183,11 @@ jest normalne”. Bez zmierzonego czasu przejścia każde „wisi” to zgadywan
 <a id="046"></a>
 ## 046 — Krok sagi w `failed_jobs`: diagnoza i ręczne ponowienie
 
-> Wpis przygotowany przed pierwszym uruchomieniem na żywym stacku, jak #044.
+> Wpis napisany przed pierwszym uruchomieniem (Task 16). Na żywym stacku
+> 2026-10-17 do `failed_jobs` nie trafiło nic: sześć przebiegów
+> `orders:race-test` (oba style) skończyło się z `failed_jobs` = 0, a krok
+> rezerwacji po zatrzymanym workerze dokończył się sam (#045). Tabela
+> wyjątków niżej dalej wynika z kodu, nie z incydentu.
 
 **Objaw**
 W `failed_jobs` jest job z przestrzeni `Ordering\Infrastructure\Job\`
@@ -2231,7 +2254,14 @@ naprawiłaby rekonsyliacja; dopóki jej nie ma, robi to człowiek z tym wpisem.
 <a id="047"></a>
 ## 047 — Bramka płatności: przyciski deweloperskie i webhook, który nie dochodzi
 
-> Wpis przygotowany przed pierwszym uruchomieniem na żywym stacku, jak #044.
+> Wpis napisany przed pierwszym uruchomieniem (Task 16), na żywym stacku
+> sprawdzony 2026-10-17 w przeglądarce: webhook z workera przez wewnętrzny
+> Caddy (`/webhooks/*`) przestawił zamówienie na „Opłacone”; po powrocie
+> z bramki strona pokazywała „Czekamy na potwierdzenie płatności” bez
+> „Zapłać”; „Zapłać mimo wygaśnięcia” dało zwrot `late_payment`, a „Wyślij
+> webhook ponownie” zakończył job bez skutku (dalej jeden zwrot i siedem
+> zdarzeń na osi). Objaw (b) nie wystąpił, więc przyczyny niżej to dalej
+> lista z kodu.
 
 **Objaw**
 (a) Na stronie bramki `/fake-gateway/payments/{id}` nie ma przycisków
@@ -2292,6 +2322,154 @@ pusty sekret odrzucamy celowo, bo HMAC z pustym kluczem policzy każdy).
 ACL webhooka odpowiada 200 na wszystko poza złym podpisem i brakiem sekretu, więc błędy
 „po naszej stronie” widać tylko w logu. Test w pamięci nie złapie trasy w
 Caddy ani różnicy sekretów między kontenerami; to wychodzi dopiero na stacku.
+
+<a id="048"></a>
+## 048 — `catalog-scheduler` biegnie, a sweep ginie z kodem 137 i nic nie wygasa
+
+> Incydent z pierwszego uruchomienia zamówień na żywym stacku, 2026-10-17.
+
+**Objaw**
+`docker compose ps catalog-scheduler` pokazuje `healthy`, a zamówienia po
+terminie zostają „Czeka na płatność” i towar wisi zarezerwowany (jak w
+#044). `ordering_sweep_last_run_at` w `/api/health` się nie przesuwa.
+Proces `orders:expire-overdue` uruchomiony przez scheduler kończy się
+kodem **137**, bez żadnego wyjątku PHP.
+
+**Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`,
+z którego `docker compose` i `make` biorą nazwy i porty):
+```bash
+make scheduler-logs                                   # czy przebiegi kończą się DONE, czy błędem
+docker inspect marketplace-catalog-scheduler-1 --format 'mem={{.HostConfig.Memory}}'   # limit w bajtach
+docker stats --no-stream marketplace-catalog-scheduler-1   # MEM USAGE względem LIMIT w chwili przebiegu
+```
+Kod 137 = 128 + 9, proces dostał SIGKILL. Bez wyjątku w logu to prawie
+zawsze OOM killer (ten sam mechanizm co w [#001](#001)). Healthcheck
+patrzy tylko, czy PID 1 to `schedule:work`, a ten przeżywa: ginie dziecko.
+
+**Przyczyna**
+`schedule:work` (~63 MB) przy każdym przebiegu uruchamia **osobny, pełny
+proces Laravela** dla `orders:expire-overdue` i obie rzeczy liczą się do
+jednego limitu kontenera. Przy `mem_limit: 128m` dziecko się nie mieściło,
+więc sweep nie przeszedł ani razu i nic nie wygasało. W testach tego nie
+widać: tam komenda biegnie w procesie testu, bez limitu pamięci.
+
+**Naprawa**
+Jak wyżej, z katalogu głównego checkoutu.
+1. Na już, bez restartu: `docker update --memory 256m marketplace-catalog-scheduler-1`.
+   Sprawdzone: kolejne przebiegi co minutę kończyły się `DONE` (2 s, 11 s).
+2. Na stałe: `compose.yaml`, `catalog-scheduler` → `mem_limit: 256m`
+   (z komentarzem dlaczego), potem
+   `docker compose --profile apps up -d catalog-scheduler`.
+3. Jeśli przebieg zginął w połowie, blokada `withoutOverlapping` może
+   pomijać kolejne przebiegi: `docker compose exec catalog-app php artisan schedule:clear-cache` (#044, pkt 3).
+
+**Czego się nauczyłem**
+Limit pamięci liczy się dla całego drzewa procesów kontenera, nie dla PID 1.
+Proces, który „tylko planuje”, przy każdym tyknięciu staje się dwoma
+procesami Laravela. Healthcheck „proces żyje” nie mówi, czy praca się
+wykonuje; prawdziwy sygnał to czas ostatniego udanego przebiegu w `/health`.
+
+<a id="049"></a>
+## 049 — `orders:race-test` w `catalog-app` milknie po ~2 s (kod 137)
+
+> Incydent z pomiarów zamówień na żywym stacku, 2026-10-17.
+
+**Objaw**
+`docker compose exec catalog-app php artisan orders:race-test --buyers=50 --stock=10 --workers=4`
+po ~2 s milknie: bez komunikatu, bez raportu, kod wyjścia 137.
+
+**Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`,
+z którego `docker compose` i `make` biorą nazwy i porty):
+```bash
+echo $?                                              # 137 po exec
+docker stats --no-stream marketplace-catalog-app-1   # limit 512 MiB
+```
+
+**Przyczyna**
+Race-test startuje 50 procesów kupujących (`orders:race-test:buyer`, każdy
+to pełny Laravel) i 4 workery naraz, w tym samym kontenerze co aplikacja.
+`catalog-app` ma `mem_limit: 512m`; 50 procesów PHP się w nim nie mieści
+i OOM killer zabija komendę. Podnosić limitu aplikacji dla jednego pomiaru
+nie warto.
+
+**Naprawa**
+Jednorazowy kontener z tego samego obrazu, z większym limitem, w sieci
+stacku i z tymi samymi zmiennymi co `catalog-app`. Z katalogu głównego
+checkoutu:
+```bash
+env_file=$(mktemp)
+docker inspect marketplace-catalog-app-1 --format '{{range .Config.Env}}{{println .}}{{end}}' > "$env_file"
+docker run --rm --memory 3g --network marketplace_marketplace --env-file "$env_file" \
+  -v "$PWD/apps/catalog:/app" -w /app marketplace-catalog-app \
+  php artisan orders:race-test --buyers=50 --stock=10 --workers=4
+rm "$env_file"
+```
+`-v` wskazuje checkout, którego kod mierzysz: dla gałęzi porównawczej
+podaj `apps/catalog` z jej worktree zamiast `$PWD/apps/catalog`, bez
+przełączania głównego checkoutu.
+
+**Uwaga, maszyna współdzielona:** 50 procesów PHP w jednym przebiegu mocno
+dociąża VM Dockera (15,6 GB, obok igrit i startera). W pomiarach
+2026-10-17 węzły ES restartowały się w trakcie (es03: 20 restartów, [#025](#025)),
+a po nich search-consumer przestał indeksować ([#050](#050)). Po
+race-teście sprawdź klaster (`docker compose ps es01 es02 es03` albo
+`make es-health`) i indeks. Czasy p50/p95 z takiego
+przebiegu nie nadają się do porównań.
+
+**Czego się nauczyłem**
+Narzędzie obciążeniowe nie powinno biec w kontenerze, który mierzy. Cichy
+koniec bez komunikatu to w Dockerze najpierw pytanie o kod wyjścia, a 137
+to pamięć.
+
+<a id="050"></a>
+## 050 — search-consumer po restarcie węzłów ES: „No alive nodes” przy klastrze `green`, indeks stoi
+
+> Zauważone przy pomiarach zamówień 2026-10-17, ale to **problem
+> istniejący wcześniej, w search**, nie spowodowany przez Ordering:
+> zamówienia tylko generują więcej zdarzeń ofert, więc szybciej go widać.
+
+**Objaw**
+Klaster ES wrócił do `green`, a zmiany ofert (rezerwacja, zwolnienie,
+zmiana stanu) nie trafiają do `/search`. W logu search-consumera
+„No alive nodes”, a wiadomości lądują w failure transport (w tym
+incydencie 76).
+
+**Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`,
+z którego `docker compose` i `make` biorą nazwy i porty):
+```bash
+set -a; . ./.env; set +a
+curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://localhost:$ES_PORT/_cluster/health?pretty"   # "status": "green", 3 węzły (to samo: make es-health)
+docker compose ps es01 es02 es03                                # czas „Up” — świeże restarty węzłów
+docker compose logs --tail=100 search-consumer                  # „No alive nodes” mimo green
+docker compose exec search-consumer php bin/console messenger:failed:show   # ile i jakie
+```
+
+**Przyczyna**
+Najpewniej (hipoteza z objawu, nie sprawdzona w kodzie klienta): długo
+żyjący proces konsumenta trzyma klienta ES, który po restartach węzłów
+oznaczył wszystkie jako martwe i nie próbuje ich ponownie, choć klaster
+jest już zdrowy. Za tym przemawia, że sam restart konsumenta naprawia. Messenger traktuje to jak zwykły błąd obsługi: po
+ponowieniach wiadomość idzie do transportu `failed`, a indeks zostaje
+nieaktualny bez żadnego alarmu.
+
+**Naprawa**
+Z katalogu głównego checkoutu:
+1. `docker restart marketplace-search-consumer-1` (nowy proces, nowy klient ES).
+2. Odzyskaj odrzucone zdarzenia:
+   `docker compose exec search-consumer php bin/console messenger:failed:retry --force`,
+   **albo** przelicz cały indeks: `make reproject` (1500 dokumentów w 76 s
+   na tym stacku). `reproject` jest pewniejsze, gdy nie wiadomo, ile zdarzeń
+   przepadło.
+3. Sprawdź jedną ofertę, której stan się zmieniał, w `/api/search`.
+
+**Czego się nauczyłem**
+„Klaster zdrowy” i „konsument zdrowy” to dwie różne rzeczy: klient ES
+w długim procesie ma własny, nieaktualny obraz klastra. Do zrobienia
+w search (poza zakresem zamówień): restart konsumenta przy tym błędzie
+zamiast odrzucania wiadomości albo alarm na rosnący failure transport.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 
