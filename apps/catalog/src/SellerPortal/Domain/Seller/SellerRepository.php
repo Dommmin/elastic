@@ -2,8 +2,8 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Port: jak domena widzi "kolekcję sprzedawców". Interfejs żyje w domenie,

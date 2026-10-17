@@ -4,9 +4,9 @@ namespace SellerPortal\Domain\Seller\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\DomainEvent;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\DomainEvent;
 
 /**
  * Moderator zablokował aktywnego sprzedawcę. Reakcję (zawieszenie jego ofert) zleca polityka w warstwie aplikacji, nie sam agregat.

@@ -8,19 +8,22 @@ use SellerPortal\Domain\Offer\Offer;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\Quantity;
+use SellerPortal\Domain\Offer\Reservation;
+use SellerPortal\Domain\Offer\ReservationKey;
 use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Offer\SuspensionReason;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\InvalidValue;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\InvalidValue;
+use SharedKernel\Money;
 
 function offerStockOffer(OfferStatus $status, int $stock): Offer
 {
     return Offer::reconstitute(
         OfferId::fromInt(10), SellerId::fromInt(1), ProductId::fromInt(99), Money::fromCents(10000),
         Stock::fromInt($stock), Condition::New, ShippingTime::fromInt(3), $status,
-        $status === OfferStatus::Suspended ? SuspensionReason::sellerBlocked() : null, null, [], 2,
+        $status === OfferStatus::Suspended ? SuspensionReason::sellerBlocked() : null, null, [], [], 2,
     );
 }
 
@@ -104,4 +107,44 @@ test('ten sam stan nie generuje zdarzenia', function () {
     $offer->changeStock(Stock::fromInt(3), offerStockNow());
 
     expect($offer->pendingEvents())->toBe([]);
+});
+
+/**
+ * @param  array<string, int>  $reservations  klucz => ilość
+ */
+function offerStockReserved(int $stock, array $reservations): Offer
+{
+    $reservationList = [];
+    foreach ($reservations as $key => $quantity) {
+        $reservationList[] = new Reservation(ReservationKey::fromString((string) $key), Quantity::fromInt($quantity), offerStockNow());
+    }
+
+    return Offer::reconstitute(
+        OfferId::fromInt(10), SellerId::fromInt(1), ProductId::fromInt(99), Money::fromCents(10000),
+        Stock::fromInt($stock), Condition::New, ShippingTime::fromInt(3), OfferStatus::Published,
+        null, null, [], $reservationList, 2,
+    );
+}
+
+test('powrót towaru liczony od dostępności', function () {
+    $offer = offerStockReserved(2, ['order-1' => 2]);
+    expect($offer->isSoldOut())->toBeTrue();
+
+    $offer->changeStock(Stock::fromInt(3), offerStockNow());
+
+    expect($offer->isListed())->toBeTrue()
+        ->and($offer->pendingEvents())->toHaveCount(1)
+        ->and($offer->pendingEvents()[0])->toBeInstanceOf(OfferBackInStock::class)
+        ->and($offer->pendingEvents()[0]->new->value())->toBe(3);
+});
+
+test('wyprzedanie liczone od dostępności', function () {
+    $offer = offerStockReserved(5, ['order-1' => 2]);
+
+    $offer->changeStock(Stock::fromInt(2), offerStockNow());
+
+    expect($offer->isSoldOut())->toBeTrue()
+        ->and($offer->pendingEvents())->toHaveCount(1)
+        ->and($offer->pendingEvents()[0])->toBeInstanceOf(OfferSoldOut::class)
+        ->and($offer->pendingEvents()[0]->old->value())->toBe(5);
 });

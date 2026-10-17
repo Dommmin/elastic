@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Próba przejścia, którego maszyna stanów sprzedawcy nie dopuszcza

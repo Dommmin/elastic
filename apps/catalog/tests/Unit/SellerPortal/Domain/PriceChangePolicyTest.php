@@ -3,7 +3,7 @@
 use SellerPortal\Domain\Offer\PriceChangeDecision;
 use SellerPortal\Domain\Offer\PriceChangeLimitExceeded;
 use SellerPortal\Domain\Offer\PriceChangePolicy;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\Money;
 
 function priceChangePolicyNow(): DateTimeImmutable
 {

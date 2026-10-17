@@ -3,7 +3,7 @@
 namespace SellerPortal\Application;
 
 use SellerPortal\Domain\Offer\Offer;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Porównanie wersji, którą człowiek widział na ekranie, z wersją wczytaną teraz.

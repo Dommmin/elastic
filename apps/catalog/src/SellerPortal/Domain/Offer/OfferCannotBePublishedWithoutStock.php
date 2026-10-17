@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Publikacja oferty ze stanem 0. DLACZEGO reguła w agregacie: oferta, której nie da się kupić, nie powinna pojawić się w sprzedaży.

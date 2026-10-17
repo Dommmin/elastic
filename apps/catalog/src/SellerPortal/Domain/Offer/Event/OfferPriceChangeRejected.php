@@ -4,10 +4,10 @@ namespace SellerPortal\Domain\Offer\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
-use SellerPortal\Domain\Shared\DomainEvent;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\DomainEvent;
+use SharedKernel\Money;
 
 /**
  * Moderator odrzucił oczekującą zmianę ceny; obowiązuje stara cena.

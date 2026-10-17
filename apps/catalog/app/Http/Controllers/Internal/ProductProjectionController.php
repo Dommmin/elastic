@@ -33,7 +33,7 @@ class ProductProjectionController extends Controller
         // starsze dane nowszą wersją i zablokować aktualizację.
         $projectedAtUs = $clock->nowMicros();
 
-        $product = Product::with(['brand', 'category', 'listedOffers.seller'])
+        $product = Product::with(['brand', 'category', 'listedOffers' => fn ($query) => $query->withAvailable(), 'listedOffers.seller'])
             ->withCount('reviews')
             ->withAvg('reviews', 'rating')
             ->find($id);
@@ -66,7 +66,7 @@ class ProductProjectionController extends Controller
             'attributes' => $product->attributes ?? [],
             'price_min' => $offers->isNotEmpty() ? $offers->min('price_cents') : null,
             'price_max' => $offers->isNotEmpty() ? $offers->max('price_cents') : null,
-            'in_stock' => $offers->contains(fn ($offer) => $offer->stock > 0),
+            'in_stock' => $offers->contains(fn ($offer) => $offer->available > 0),
             'rating_avg' => $product->reviews_avg_rating !== null
                 ? round((float) $product->reviews_avg_rating, 2)
                 : null,
@@ -76,7 +76,8 @@ class ProductProjectionController extends Controller
                 'seller_id' => (string) $offer->seller_id,
                 'seller' => $offer->seller->name,
                 'price' => $offer->price_cents,
-                'stock' => $offer->stock,
+                // DLACZEGO `available`: wyszukiwarka pokazuje to, co da się kupić, nie deklarację sprzedawcy.
+                'stock' => (int) $offer->available,
                 'location' => $offer->seller->lat !== null && $offer->seller->lon !== null
                     ? ['lat' => (float) $offer->seller->lat, 'lon' => (float) $offer->seller->lon]
                     : null,

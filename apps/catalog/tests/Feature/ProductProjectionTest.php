@@ -4,6 +4,7 @@ use App\Models\Offer;
 use App\Models\Product;
 use App\Models\Review;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 /**
  * search-service (Symfony) buduje dokument Elasticsearcha WYŁĄCZNIE na
@@ -96,4 +97,38 @@ test('brak produktu: 404 z projected_at_us', function () {
         ->json();
 
     expect($json['projected_at_us'])->toBeInt()->toBeGreaterThan(1_700_000_000_000_000);
+});
+
+test('projekcja pokazuje dostępne zamiast stanu', function () {
+    $product = Product::factory()->create();
+    $offer = Offer::factory()->create(['product_id' => $product->id, 'stock' => 5]);
+    DB::table('offer_reservations')->insert([
+        'offer_id' => $offer->id,
+        'reservation_key' => 'order-1',
+        'quantity' => 2,
+        'status' => 'active',
+        'reserved_at' => '2026-10-16 12:00:00.000000',
+    ]);
+
+    $this->getJson("/api/internal/products/{$product->id}/projection")
+        ->assertOk()
+        ->assertJsonPath('offers.0.stock', 3)
+        ->assertJsonPath('in_stock', true);
+});
+
+test('produkt z całym stanem zarezerwowanym nie jest w magazynie', function () {
+    $product = Product::factory()->create();
+    $offer = Offer::factory()->create(['product_id' => $product->id, 'stock' => 2]);
+    DB::table('offer_reservations')->insert([
+        'offer_id' => $offer->id,
+        'reservation_key' => 'order-1',
+        'quantity' => 2,
+        'status' => 'active',
+        'reserved_at' => '2026-10-16 12:00:00.000000',
+    ]);
+
+    $this->getJson("/api/internal/products/{$product->id}/projection")
+        ->assertOk()
+        ->assertJsonPath('in_stock', false)
+        ->assertJsonCount(0, 'offers');
 });

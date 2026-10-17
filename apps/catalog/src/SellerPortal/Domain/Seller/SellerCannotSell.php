@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Sprzedawca, który nie jest aktywny (oczekuje, odrzucony, zablokowany),

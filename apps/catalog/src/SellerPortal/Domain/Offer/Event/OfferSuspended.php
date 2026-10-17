@@ -5,7 +5,7 @@ namespace SellerPortal\Domain\Offer\Event;
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\SuspensionReason;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Oferta została zawieszona (przez moderatora albo przez blokadę sprzedawcy).

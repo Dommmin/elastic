@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Application\Port;
 
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Port rozsyłania zdarzeń domeny do słuchaczy w procesie (polityki między

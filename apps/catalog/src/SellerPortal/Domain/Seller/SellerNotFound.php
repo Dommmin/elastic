@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Repozytorium nie znalazło sprzedawcy o danym identyfikatorze.

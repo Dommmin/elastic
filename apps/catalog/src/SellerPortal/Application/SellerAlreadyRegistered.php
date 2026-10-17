@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Application;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Użytkownik ma już konto sprzedawcy. DLACZEGO w aplikacji, a nie w agregacie: reguła dotyczy WSZYSTKICH sprzedawców, a pojedynczy agregat o innych nie wie (ostatnią gwarancją jest unikalny `sellers.user_id`).

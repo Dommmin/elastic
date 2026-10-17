@@ -9,7 +9,7 @@ use SellerPortal\Application\Port\TransactionManager;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferRepository;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\Money;
 
 /**
  * Handler komendy ApprovePriceChange: wczytaj → zmień agregat → zapisz → roześlij zdarzenia, wszystko w jednej transakcji.

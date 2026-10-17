@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { Link } from '@inertiajs/vue3';
 import { Star } from '@lucide/vue';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatPriceCents } from '@/lib/currency';
+import { show } from '@/routes/products';
 import type { ProductHit } from '@/types/search';
 
 defineProps<{
@@ -27,7 +29,12 @@ defineProps<{
             </div>
 
             <h3 class="line-clamp-2 leading-snug font-semibold">
-                {{ product.name }}
+                <Link
+                    :href="show(product.id)"
+                    class="underline-offset-4 hover:underline"
+                >
+                    {{ product.name }}
+                </Link>
             </h3>
 
             <div

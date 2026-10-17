@@ -237,6 +237,10 @@ const timeFormat = new Intl.DateTimeFormat('pl-PL', {
                 <dd class="text-lg font-semibold tabular-nums">
                     {{ offer.stock }}
                 </dd>
+                <dd class="text-xs text-muted-foreground">
+                    Na stanie {{ offer.stock }} · zarezerwowane
+                    {{ offer.reserved }} · dostępne {{ offer.available }}
+                </dd>
             </div>
             <div>
                 <dt class="text-muted-foreground">Stan egzemplarza</dt>

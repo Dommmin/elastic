@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Identyfikator produktu z katalogu. Oferta tylko się do niego ODWOŁUJE (po ID, nie po obiekcie): produkt należy do innego kontekstu, a agregaty łączymy identyfikatorami.

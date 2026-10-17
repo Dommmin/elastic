@@ -110,7 +110,7 @@ class EventTrace
     private function comparison(Product $product, bool $esAvailable, ?array $source): array
     {
         $product->loadMissing('category');
-        $listedOffers = $product->listedOffers()->get(['price_cents', 'stock']);
+        $listedOffers = $product->listedOffers()->withAvailable()->get();
 
         $postgresPath = $product->category?->path;
         $esPath = $source['category']['path'] ?? null;
@@ -120,7 +120,7 @@ class EventTrace
             'name' => $product->name,
             'category' => $postgresPath !== null ? $labels[$postgresPath] : null,
             'price_min' => $listedOffers->isNotEmpty() ? (int) $listedOffers->min('price_cents') : null,
-            'in_stock' => $listedOffers->contains(fn ($offer) => $offer->stock > 0),
+            'in_stock' => $listedOffers->contains(fn ($offer) => $offer->available > 0),
         ];
 
         $es = $source === null ? array_fill_keys(array_keys($postgres), null) : [

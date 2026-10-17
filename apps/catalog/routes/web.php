@@ -1,5 +1,6 @@
 <?php
 
+use App\FakePaymentGateway\Http\FakeGatewayController;
 use App\Http\Controllers\Panel\Moderation\OfferModerationController;
 use App\Http\Controllers\Panel\Moderation\PriceChangeModerationController;
 use App\Http\Controllers\Panel\Moderation\SellerModerationController;
@@ -9,6 +10,11 @@ use App\Http\Controllers\Seller\ProductLookupController;
 use App\Http\Controllers\Seller\SellerApplicationController;
 use App\Http\Controllers\Seller\SellerDashboardController;
 use App\Http\Controllers\Seller\SellerOfferController;
+use App\Http\Controllers\Seller\SellerOrderController;
+use App\Http\Controllers\Shop\CartController;
+use App\Http\Controllers\Shop\OrderController;
+use App\Http\Controllers\Shop\ProductPageController;
+use App\Http\Controllers\Webhooks\PaymentWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::inertia('/', 'Welcome')->name('home');
@@ -16,6 +22,24 @@ Route::inertia('/', 'Welcome')->name('home');
 // ETAP 7 — nazwana, więc Wayfinder generuje typed `search()` do użycia
 // w Vue (`resources/js/routes`), patrz docs/06-PLAN-WDROZENIA.md.
 Route::get('search', [SearchController::class, 'index'])->name('search');
+
+// Strona produktu jest publiczna (oferty z bazy); dodanie do koszyka wymaga logowania.
+Route::get('products/{product}', [ProductPageController::class, 'show'])->whereNumber('product')->name('products.show');
+
+// Koszyk i składanie zamówień: tylko zalogowany kupujący. `{offer}` to ID oferty w koszyku.
+Route::middleware('auth')->group(function () {
+    Route::get('cart', [CartController::class, 'index'])->name('cart.index');
+    Route::post('cart/items', [CartController::class, 'store'])->name('cart.items.store');
+    Route::patch('cart/items/{offer}', [CartController::class, 'update'])->whereNumber('offer')->name('cart.items.update');
+    Route::delete('cart/items/{offer}', [CartController::class, 'destroy'])->whereNumber('offer')->name('cart.items.destroy');
+    Route::post('cart/checkout', [CartController::class, 'checkout'])->name('cart.checkout');
+
+    // Zamówienia kupującego. Cudze lub nieistniejące → 404 (OrderAccess), nie 403.
+    Route::get('orders', [OrderController::class, 'index'])->name('orders.index');
+    Route::get('orders/{order}', [OrderController::class, 'show'])->whereNumber('order')->name('orders.show');
+    Route::post('orders/{order}/pay', [OrderController::class, 'pay'])->whereNumber('order')->name('orders.pay');
+    Route::post('orders/{order}/cancel', [OrderController::class, 'cancel'])->whereNumber('order')->name('orders.cancel');
+});
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::inertia('dashboard', 'Dashboard')->name('dashboard');
@@ -50,6 +74,14 @@ Route::middleware(['auth', 'seller', 'seller.approved'])->prefix('seller')->name
         Route::put('offers/{offer}/details', [SellerOfferController::class, 'updateDetails'])->name('offers.details');
         Route::post('offers/{offer}/withdraw', [SellerOfferController::class, 'withdraw'])->name('offers.withdraw');
     });
+
+    Route::get('orders', [SellerOrderController::class, 'index'])->name('orders.index');
+
+    Route::whereNumber('order')->group(function () {
+        Route::get('orders/{order}', [SellerOrderController::class, 'show'])->name('orders.show');
+        Route::post('orders/{order}/ship', [SellerOrderController::class, 'ship'])->name('orders.ship');
+        Route::post('orders/{order}/cancel', [SellerOrderController::class, 'cancel'])->name('orders.cancel');
+    });
 });
 
 // Panel edycji katalogu: `can:panel` (flaga is_admin), bo rejestracja jest
@@ -72,5 +104,12 @@ Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group
     Route::post('offers/{offer}/suspend', [OfferModerationController::class, 'suspend'])->whereNumber('offer')->name('offers.suspend');
     Route::post('offers/{offer}/reinstate', [OfferModerationController::class, 'reinstate'])->whereNumber('offer')->name('offers.reinstate');
 });
+
+// Symulowana bramka płatności: „zewnętrzny” serwis, więc bez `auth`. Kupujący
+// trafia tu z przekierowania, a webhook przychodzi z workera bez sesji
+// (autoryzuje go podpis HMAC, nie CSRF — wyjątek w bootstrap/app.php).
+Route::get('fake-gateway/payments/{payment}', [FakeGatewayController::class, 'show'])->name('fake-gateway.show');
+Route::post('fake-gateway/payments/{payment}/decide', [FakeGatewayController::class, 'decide'])->name('fake-gateway.decide');
+Route::post('webhooks/payments', PaymentWebhookController::class)->name('webhooks.payments');
 
 require __DIR__.'/settings.php';

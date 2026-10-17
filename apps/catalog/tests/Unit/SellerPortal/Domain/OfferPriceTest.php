@@ -20,11 +20,11 @@ use SellerPortal\Domain\Offer\ProductId;
 use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\Currency;
-use SellerPortal\Domain\Shared\CurrencyMismatch;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\Currency;
+use SharedKernel\CurrencyMismatch;
+use SharedKernel\Money;
 
 function offerPriceNow(): DateTimeImmutable
 {
@@ -38,7 +38,7 @@ function offerPriceOffer(OfferStatus $status = OfferStatus::Published, int $cent
 {
     return Offer::reconstitute(
         OfferId::fromInt(10), SellerId::fromInt(1), ProductId::fromInt(99), Money::fromCents($cents), Stock::fromInt(5),
-        Condition::New, ShippingTime::fromInt(3), $status, null, $pending, $recent, 4,
+        Condition::New, ShippingTime::fromInt(3), $status, null, $pending, $recent, [], 4,
     );
 }
 

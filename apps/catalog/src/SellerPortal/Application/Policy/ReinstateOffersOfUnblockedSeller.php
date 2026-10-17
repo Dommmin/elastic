@@ -11,7 +11,7 @@ use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerRepository;
 use SellerPortal\Domain\Seller\SellerStatus;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Odwrotność `SuspendOffersOfBlockedSeller`: po odblokowaniu przywraca oferty.

@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Seller;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Tożsamość agregatu Seller. Osobny typ od UserId: konto logowania i profil

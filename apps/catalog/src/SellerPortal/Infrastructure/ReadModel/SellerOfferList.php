@@ -16,10 +16,16 @@ use Illuminate\Support\Facades\DB;
  */
 final class SellerOfferList
 {
+    /**
+     * Dostępność pochodna (stan − aktywne rezerwacje), jak `Offer::available()`.
+     * DLACZEGO nie samo `stock`: w pełni zarezerwowana oferta jest dla kupującego wyprzedana.
+     */
+    public const string AVAILABLE_SQL = "offers.stock - COALESCE((SELECT SUM(quantity) FROM offer_reservations WHERE offer_reservations.offer_id = offers.id AND offer_reservations.status = 'active'), 0)";
+
     public const array FILTERS = ['draft', 'published', 'sold_out', 'suspended', 'withdrawn', 'pending_price'];
 
     /**
-     * @return LengthAwarePaginator<int, array{id: int, product: array{id: int, name: string}, price_cents: int, currency: string, stock: int, status: string, is_listed: bool, is_sold_out: bool, pending_price_cents: int|null, updated_at: string|null}>
+     * @return LengthAwarePaginator<int, array{id: int, product: array{id: int, name: string}, price_cents: int, currency: string, stock: int, available: int, status: string, is_listed: bool, is_sold_out: bool, pending_price_cents: int|null, updated_at: string|null}>
      */
     public function paginate(int $sellerId, ?string $filter, int $perPage = 25): LengthAwarePaginator
     {
@@ -32,6 +38,7 @@ final class SellerOfferList
                 'offers.id', 'offers.product_id', 'products.name as product_name', 'offers.price_cents',
                 'offers.currency', 'offers.stock', 'offers.status', 'offers.pending_price_cents', 'offers.updated_at',
             ])
+            ->selectRaw(self::AVAILABLE_SQL.' as available')
             ->paginate($perPage)
             ->withQueryString()
             ->through(fn (object $row): array => [
@@ -40,9 +47,10 @@ final class SellerOfferList
                 'price_cents' => (int) $row->price_cents,
                 'currency' => (string) $row->currency,
                 'stock' => (int) $row->stock,
+                'available' => (int) $row->available,
                 'status' => (string) $row->status,
-                'is_listed' => $row->status === 'published' && (int) $row->stock > 0,
-                'is_sold_out' => $row->status === 'published' && (int) $row->stock === 0,
+                'is_listed' => $row->status === 'published' && (int) $row->available > 0,
+                'is_sold_out' => $row->status === 'published' && (int) $row->available === 0,
                 'pending_price_cents' => $row->pending_price_cents === null ? null : (int) $row->pending_price_cents,
                 'updated_at' => $row->updated_at,
             ]);
@@ -51,7 +59,7 @@ final class SellerOfferList
     private static function applyFilter(Builder $query, string $filter): void
     {
         match ($filter) {
-            'sold_out' => $query->where('offers.status', 'published')->where('offers.stock', 0),
+            'sold_out' => $query->where('offers.status', 'published')->whereRaw(self::AVAILABLE_SQL.' = 0'),
             'pending_price' => $query->whereNotNull('offers.pending_price_cents'),
             default => $query->where('offers.status', $filter),
         };

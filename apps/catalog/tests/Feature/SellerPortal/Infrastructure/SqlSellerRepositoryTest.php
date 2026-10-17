@@ -9,11 +9,11 @@ use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerNotFound;
 use SellerPortal\Domain\Seller\SellerStatus;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
 use SellerPortal\Infrastructure\Persistence\SqlSellerRepository;
+use SharedKernel\ConcurrencyConflict;
 
 function sellerRepoRegister(SqlSellerRepository $repo, ?User $user = null, string $name = 'Sklep Śródmieście', ?DateTimeImmutable $at = null): Seller
 {

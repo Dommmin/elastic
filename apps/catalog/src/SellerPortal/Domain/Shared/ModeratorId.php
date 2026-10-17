@@ -2,6 +2,8 @@
 
 namespace SellerPortal\Domain\Shared;
 
+use SharedKernel\InvalidValue;
+
 /**
  * Identyfikator moderatora wykonującego decyzję. Osobny typ od UserId, żeby kompilator (i PHPStan) nie pozwolił pomylić sprzedawcy z moderatorem w sygnaturze.
  */

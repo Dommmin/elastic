@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Application\Offer;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Sprzedawca sięga po ofertę innego sprzedawcy (np. ID podmienione w URL).

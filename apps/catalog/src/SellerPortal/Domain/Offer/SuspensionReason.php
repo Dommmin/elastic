@@ -2,9 +2,9 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\InvalidValue;
 
 /**
  * Powód zawieszenia oferty: rodzaj + (dla ręcznej moderacji) kto i dlaczego.

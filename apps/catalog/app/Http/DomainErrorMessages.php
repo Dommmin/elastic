@@ -2,7 +2,7 @@
 
 namespace App\Http;
 
-use SellerPortal\Domain\Shared\DomainException;
+use SharedKernel\DomainException;
 
 /**
  * Jedyne miejsce, które tłumaczy kody reguł domeny na polskie komunikaty.
@@ -27,7 +27,17 @@ final class DomainErrorMessages
         // Bez „Twoje”: ten sam kod widzi sprzedawca (własne konto) i moderator
         // (przywrócenie oferty zablokowanego sprzedawcy, `Offer::reinstate`).
         'seller_cannot_sell' => 'Konto sprzedawcy nie jest aktywne',
+        'stock_below_reserved' => 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk',
         'seller_already_registered' => 'To konto ma już profil sprzedawcy',
+        'price_changed_since_cart' => 'Ceny w koszyku się zmieniły — sprawdź i złóż zamówienie ponownie',
+        'offer_no_longer_available' => 'Część ofert w koszyku nie jest już dostępna',
+        'cannot_buy_own_offer' => 'Nie możesz kupić własnej oferty',
+        'invalid_order_transition' => 'Tej operacji nie można wykonać na zamówieniu w obecnym stanie',
+        'cart_empty' => 'Koszyk jest pusty',
+        // Jeden komunikat na dwie reguły osiągalne z koszyka (`InvalidOrderLines`:
+        // ponad 20 ofert jednego sprzedawcy, oferty w dwóch walutach); pozostałe
+        // (pusta lista, duplikat oferty) koszyk wyklucza wcześniej.
+        'invalid_order_lines' => 'Tego koszyka nie da się złożyć — u jednego sprzedawcy zamówisz najwyżej 20 różnych ofert, wszystkie w jednej walucie',
     ];
 
     public static function for(DomainException $exception): string

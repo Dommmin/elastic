@@ -2,9 +2,9 @@
 
 use SellerPortal\Domain\Offer\SuspensionKind;
 use SellerPortal\Domain\Offer\SuspensionReason;
-use SellerPortal\Domain\Shared\InvalidValue;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
+use SharedKernel\InvalidValue;
 
 test('restore odrzuca blokadę sprzedawcy z moderatorem lub notatką', function () {
     expect(fn () => SuspensionReason::restore(SuspensionKind::SellerBlocked, ModeratorId::fromInt(1), null))->toThrow(InvalidValue::class)

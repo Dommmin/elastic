@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Czas wysyłki w dniach (1–30). DLACZEGO VO: zakres to reguła biznesowa, nie walidacja formularza — obowiązuje też, gdy ofertę zmienia kod, a nie człowiek.

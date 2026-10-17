@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Wiersz oferty dla odczytu, fabryk i seedera. Zapis z regułami idzie przez
@@ -20,6 +21,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Offer extends Model
 {
     use HasFactory;
+
+    private const string RESERVED_SQL = "COALESCE((SELECT SUM(quantity) FROM offer_reservations WHERE offer_reservations.offer_id = offers.id AND offer_reservations.status = 'active'), 0)";
 
     protected $fillable = [
         'version',
@@ -61,14 +64,34 @@ class Offer extends Model
         return $this->belongsTo(Seller::class);
     }
 
+    public function activeReservations(): HasMany
+    {
+        return $this->hasMany(OfferReservation::class)->where('status', 'active');
+    }
+
     /**
      * Jedyna definicja „widoczna w wyszukiwarce” po stronie odczytu; zgodna
      * z `Offer::isListed()` w domenie. Zastępuje dawne `where('active', true)`
      * w projekcji, panelu produktów i śladzie zdarzenia.
+     *
+     * DLACZEGO podzapytanie, a nie kolumna: dostępność jest pochodną stanu
+     * i aktywnych rezerwacji (jak `Offer::available()`), więc nie ma czego
+     * synchronizować. Zwykły SQL działa tak samo na Postgresie i SQLite.
      */
     #[Scope]
     protected function listed(Builder $query): void
     {
-        $query->where('status', 'published')->where('stock', '>', 0);
+        $query->where('status', 'published')
+            ->whereRaw('stock > '.self::RESERVED_SQL);
+    }
+
+    /**
+     * Dodaje kolumnę `available` (stan − aktywne rezerwacje), ta sama definicja co w `listed`.
+     */
+    #[Scope]
+    protected function withAvailable(Builder $query): void
+    {
+        $query->select($query->getModel()->getTable().'.*')
+            ->selectRaw('stock - '.self::RESERVED_SQL.' as available');
     }
 }

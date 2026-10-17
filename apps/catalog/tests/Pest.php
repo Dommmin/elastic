@@ -3,6 +3,14 @@
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
+// Cały zestaw idzie w jednym procesie, a testy architektury (suite „Arch”,
+// uruchamiana po Feature) parsują docblocki każdej klasy z badanych
+// przestrzeni nazw. Z domyślnym limitem PHP 128M zestaw kończył się
+// „Allowed memory size exhausted”, gdy doszła domena Orderingu, choć sam
+// `tests/Arch` mieści się w 60M. Podnosimy limit tylko dla testów,
+// bez dotykania phpunit.xml.
+ini_set('memory_limit', '512M');
+
 /*
 |--------------------------------------------------------------------------
 | Test Case
@@ -17,6 +25,13 @@ use Tests\TestCase;
 pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
     ->in('Feature');
+
+// Saga zamówień jedzie w testach HTTP synchronicznie: po złożeniu zamówienia
+// rezerwacja od razu przesuwa je do AwaitingPayment, bez workera. Testy,
+// które sprawdzają wiersze w tabeli `jobs`, ustawiają `database` same
+// (konfiguracja w teście wygrywa z tym hakiem, bo biegnie później).
+pest()->beforeEach(fn () => config(['queue.ordering_process_connection' => 'sync']))
+    ->in('Feature/Ordering');
 
 /*
 |--------------------------------------------------------------------------

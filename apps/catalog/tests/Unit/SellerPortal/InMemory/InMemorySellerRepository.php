@@ -6,8 +6,8 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerNotFound;
 use SellerPortal\Domain\Seller\SellerRepository;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
 use SellerPortal\Domain\Shared\UserId;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Ten sam kontrakt co SqlSellerRepository: optymistyczna wersja (nowy

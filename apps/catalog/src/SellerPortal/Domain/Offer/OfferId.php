@@ -2,7 +2,7 @@
 
 namespace SellerPortal\Domain\Offer;
 
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\InvalidValue;
 
 /**
  * Tożsamość agregatu Offer. Osobny typ, żeby nie pomylić go w sygnaturze z SellerId czy ProductId.

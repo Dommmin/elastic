@@ -13,6 +13,7 @@ import {
 import { offerFilterLabels } from '@/lib/offer';
 import { dashboard } from '@/routes/seller';
 import { create, index } from '@/routes/seller/offers';
+import { index as ordersIndex } from '@/routes/seller/orders';
 import type { OfferFilter, SellerDashboardStats } from '@/types';
 
 defineProps<{ stats: SellerDashboardStats }>();
@@ -53,6 +54,9 @@ const tiles: { filter: OfferFilter; hint: string }[] = [
                 <Button as-child variant="outline">
                     <Link :href="index()">Wszystkie oferty</Link>
                 </Button>
+                <Button as-child variant="outline">
+                    <Link :href="ordersIndex()">Zamówienia</Link>
+                </Button>
                 <Button v-if="!isBlocked" as-child>
                     <Link :href="create()"><Plus /> Nowa oferta</Link>
                 </Button>
@@ -60,6 +64,22 @@ const tiles: { filter: OfferFilter; hint: string }[] = [
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Link
+                :href="ordersIndex()"
+                class="rounded-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+                <Card class="h-full transition-colors hover:bg-muted/50">
+                    <CardHeader>
+                        <CardDescription>Do wysłania</CardDescription>
+                        <CardTitle class="text-3xl tabular-nums">
+                            {{ stats.orders_to_ship }}
+                        </CardTitle>
+                        <CardDescription class="text-xs">
+                            opłacone zamówienia czekają na Ciebie
+                        </CardDescription>
+                    </CardHeader>
+                </Card>
+            </Link>
             <Link
                 v-for="tile in tiles"
                 :key="tile.filter"

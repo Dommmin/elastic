@@ -6,7 +6,7 @@ use DateTimeImmutable;
 use SellerPortal\Domain\Offer\Condition;
 use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\ShippingTime;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Zmieniono stan egzemplarza lub czas wysyłki.

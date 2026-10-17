@@ -176,7 +176,7 @@ publikuje), `DomainException` ze stałym `CODE` (domena mówi kodem reguły,
 UI tłumaczy go na zdanie), `Money` w groszach, `Reason`, identyfikatory.
 
 ```bash
-php artisan test --compact tests/Arch tests/Unit/SellerPortal/Domain/MoneyTest.php
+php artisan test --compact tests/Arch tests/Unit/SharedKernel/MoneyTest.php
 ```
 
 ### Co się zepsuło: przegląd bezpieczeństwa znalazł dwie dziury w VO

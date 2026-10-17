@@ -2,6 +2,8 @@
 
 namespace SellerPortal\Domain\Shared;
 
+use SharedKernel\InvalidValue;
+
 /**
  * Identyfikator użytkownika (konto sprzedawcy). Domena zna tylko numer, nie model Eloquenta — dzięki temu nie ciągnie za sobą frameworka.
  */

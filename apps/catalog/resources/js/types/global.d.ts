@@ -20,6 +20,8 @@ declare module '@inertiajs/core' {
             auth: Auth;
             /** Tylko dla admina (`can:panel`), dla innych `null`. */
             moderation: { pending_price_changes: number } | null;
+            /** Liczba pozycji w koszyku zalogowanego kupującego (gość: 0). */
+            cart: { count: number };
             sidebarOpen: boolean;
             [key: string]: unknown;
         };

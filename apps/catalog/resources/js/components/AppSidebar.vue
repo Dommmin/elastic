@@ -4,8 +4,10 @@ import {
     BookOpen,
     FolderGit2,
     LayoutGrid,
+    PackageCheck,
     PackageSearch,
     Scale,
+    ShoppingCart,
     Store,
     Users,
 } from '@lucide/vue';
@@ -25,6 +27,8 @@ import {
 } from '@/components/ui/sidebar';
 import { hasSellerPortal } from '@/lib/sellerStatus';
 import { dashboard } from '@/routes';
+import { index as cartIndex } from '@/routes/cart';
+import { index as ordersIndex } from '@/routes/orders';
 import { priceChanges as panelPriceChanges } from '@/routes/panel/moderation';
 import { index as panelProducts } from '@/routes/panel/products';
 import { index as panelSellers } from '@/routes/panel/sellers';
@@ -33,6 +37,7 @@ import {
     dashboard as sellerDashboard,
     status as sellerStatus,
 } from '@/routes/seller';
+import { index as sellerOrdersIndex } from '@/routes/seller/orders';
 import type { NavItem } from '@/types';
 
 const page = usePage();
@@ -46,6 +51,17 @@ const mainNavItems = computed<NavItem[]>(() => [
     },
     ...(page.props.auth.user
         ? [
+              {
+                  title: 'Koszyk',
+                  href: cartIndex(),
+                  icon: ShoppingCart,
+                  badge: page.props.cart.count || undefined,
+              },
+              {
+                  title: 'Moje zamówienia',
+                  href: ordersIndex(),
+                  icon: PackageCheck,
+              },
               page.props.auth.seller
                   ? {
                         title: 'Portal sprzedawcy',
@@ -59,6 +75,16 @@ const mainNavItems = computed<NavItem[]>(() => [
                         href: sellerApply(),
                         icon: Store,
                     },
+              ...(page.props.auth.seller &&
+              hasSellerPortal(page.props.auth.seller.status)
+                  ? [
+                        {
+                            title: 'Zamówienia sprzedawcy',
+                            href: sellerOrdersIndex(),
+                            icon: PackageCheck,
+                        },
+                    ]
+                  : []),
           ]
         : []),
     ...(page.props.auth.user?.is_admin

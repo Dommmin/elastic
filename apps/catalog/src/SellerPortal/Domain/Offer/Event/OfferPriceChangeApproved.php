@@ -4,9 +4,9 @@ namespace SellerPortal\Domain\Offer\Event;
 
 use DateTimeImmutable;
 use SellerPortal\Domain\Offer\OfferId;
-use SellerPortal\Domain\Shared\DomainEvent;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\DomainEvent;
+use SharedKernel\Money;
 
 /**
  * Moderator zaakceptował oczekującą zmianę ceny; nowa cena obowiązuje.

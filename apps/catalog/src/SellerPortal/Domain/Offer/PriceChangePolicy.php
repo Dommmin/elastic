@@ -3,7 +3,7 @@
 namespace SellerPortal\Domain\Offer;
 
 use DateTimeImmutable;
-use SellerPortal\Domain\Shared\Money;
+use SharedKernel\Money;
 
 /**
  * Reguły strażnika ceny: próg 30% i limit 5 zmian w kroczącym oknie 24 h.

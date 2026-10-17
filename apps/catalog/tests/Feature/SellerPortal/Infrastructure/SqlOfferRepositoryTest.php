@@ -11,6 +11,9 @@ use SellerPortal\Domain\Offer\OfferId;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Offer\OfferStatus;
 use SellerPortal\Domain\Offer\ProductId;
+use SellerPortal\Domain\Offer\Quantity;
+use SellerPortal\Domain\Offer\ReservationKey;
+use SellerPortal\Domain\Offer\ReservationStatus;
 use SellerPortal\Domain\Offer\ShippingTime;
 use SellerPortal\Domain\Offer\Stock;
 use SellerPortal\Domain\Offer\SuspensionKind;
@@ -20,12 +23,12 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
 use SellerPortal\Domain\Shared\ModeratorId;
-use SellerPortal\Domain\Shared\Money;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Infrastructure\Persistence\SqlOfferRepository;
 use SellerPortal\Infrastructure\SystemClock;
+use SharedKernel\ConcurrencyConflict;
+use SharedKernel\Money;
 
 const OFFER_REPO_NOW = '2026-10-15 12:00:00';
 
@@ -256,3 +259,102 @@ function offerRepoRawRow(int $sellerId, array $overrides = []): array
         'version' => 1,
     ];
 }
+
+function offerRepoActiveSeller(Offer $offer): Seller
+{
+    return Seller::reconstitute($offer->sellerId(), null, SellerName::fromString('Sklep testowy'), City::fromString('Poznań'), SellerStatus::Active, null, 1);
+}
+
+/**
+ * Opublikowana oferta zapisana w bazie, przeładowana z repozytorium.
+ */
+function offerRepoSavedPublished(int $stock = 10, int $price = 10000): Offer
+{
+    $repo = offerRepo();
+    $offer = $repo->get(offerRepoSavedDraft(price: $price, stock: $stock));
+    $offer->publish(offerRepoActiveSeller($offer), offerRepoNow());
+    $repo->save($offer);
+
+    return $repo->get($offer->id());
+}
+
+function offerRepoReserve(Offer $offer, string $key, int $quantity, int $price = 10000): void
+{
+    $offer->reserve(offerRepoActiveSeller($offer), ReservationKey::fromString($key), Quantity::fromInt($quantity), Money::fromCents($price), offerRepoNow());
+}
+
+test('rezerwacje wracają z bazy, tylko aktywne', function () {
+    $repo = offerRepo();
+    $offer = offerRepoSavedPublished();
+    offerRepoReserve($offer, 'order-a', 2);
+    offerRepoReserve($offer, 'order-b', 3);
+    $repo->save($offer);
+
+    $offer = $repo->get($offer->id());
+    $offer->releaseReservation(ReservationKey::fromString('order-a'), offerRepoNow('+1 minute'));
+    $repo->save($offer);
+
+    $loaded = $repo->get($offer->id());
+
+    expect($loaded->reservations())->toHaveCount(1)
+        ->and($loaded->reservations()[0]->key->value())->toBe('order-b')
+        ->and($loaded->reservations()[0]->quantity->value())->toBe(3)
+        ->and($loaded->reservations()[0]->reservedAt->format('c'))->toBe(offerRepoNow()->format('c'))
+        ->and($loaded->reserved())->toBe(3)
+        ->and($loaded->available())->toBe(7);
+});
+
+test('reservationStatus rozróżnia active, confirmed, released i brak', function () {
+    $repo = offerRepo();
+    $offer = offerRepoSavedPublished();
+    foreach (['order-a', 'order-b', 'order-c'] as $key) {
+        offerRepoReserve($offer, $key, 1);
+    }
+    $repo->save($offer);
+
+    $offer = $repo->get($offer->id());
+    $offer->releaseReservation(ReservationKey::fromString('order-a'), offerRepoNow('+1 minute'));
+    $offer->confirmReservation(ReservationKey::fromString('order-b'), offerRepoNow('+1 minute'));
+    $repo->save($offer);
+
+    $id = $offer->id();
+
+    expect($repo->reservationStatus($id, ReservationKey::fromString('order-a')))->toBe(ReservationStatus::Released)
+        ->and($repo->reservationStatus($id, ReservationKey::fromString('order-b')))->toBe(ReservationStatus::Confirmed)
+        ->and($repo->reservationStatus($id, ReservationKey::fromString('order-c')))->toBe(ReservationStatus::Active)
+        ->and($repo->reservationStatus($id, ReservationKey::fromString('order-z')))->toBeNull();
+
+    $settled = DB::table('offer_reservations')->where('reservation_key', 'order-b')->first();
+    expect($settled->settled_at)->not->toBeNull()
+        ->and(DB::table('offer_reservations')->where('reservation_key', 'order-c')->value('settled_at'))->toBeNull()
+        ->and($repo->get($id)->stock()->value())->toBe(9);
+});
+
+test('zapis oferty bez zdarzeń rezerwacji nie rusza zapisanych rezerwacji', function () {
+    $repo = offerRepo();
+    $offer = offerRepoSavedPublished();
+    offerRepoReserve($offer, 'order-a', 4);
+    $repo->save($offer);
+
+    $reloaded = $repo->get($offer->id());
+    $reloaded->changeStock(Stock::fromInt(20), offerRepoNow('+1 minute'));
+    $repo->save($reloaded);
+
+    expect(DB::table('offer_reservations')->where('offer_id', $offer->id()->value())->get())->toHaveCount(1)
+        ->and(DB::table('offer_reservations')->where('reservation_key', 'order-a')->value('status'))->toBe('active')
+        ->and($repo->get($offer->id())->reserved())->toBe(4);
+});
+
+test('konflikt wersji cofa też zapis rezerwacji', function () {
+    $repo = offerRepo();
+    $offer = offerRepoSavedPublished();
+    $stale = $repo->get($offer->id());
+
+    offerRepoReserve($offer, 'order-a', 1);
+    $repo->save($offer);
+
+    offerRepoReserve($stale, 'order-b', 1);
+
+    expect(fn () => $repo->save($stale))->toThrow(ConcurrencyConflict::class)
+        ->and(DB::table('offer_reservations')->pluck('reservation_key')->all())->toBe(['order-a']);
+});

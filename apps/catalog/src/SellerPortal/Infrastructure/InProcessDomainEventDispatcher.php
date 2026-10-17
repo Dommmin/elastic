@@ -3,7 +3,7 @@
 namespace SellerPortal\Infrastructure;
 
 use SellerPortal\Application\Port\DomainEventDispatcher;
-use SellerPortal\Domain\Shared\DomainEvent;
+use SharedKernel\DomainEvent;
 
 /**
  * Rozsyłanie zdarzeń w procesie, synchronicznie, w kolejności rejestracji.

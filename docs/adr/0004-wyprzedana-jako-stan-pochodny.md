@@ -1,6 +1,6 @@
 # ADR-0004: „Wyprzedana” to stan pochodny, nie status oferty
 
-- **Status:** przyjęta
+- **Status:** przyjęta, **zaktualizowana przez [ADR-0006](0006-rezerwacje-w-ofercie.md)** (2026-10-16: „wyprzedana” i „widoczna” liczą się od dostępności = stan − zarezerwowane, nie od samego stanu)
 - **Data:** 2026-10-15
 - **Kontekst decyzji:** etap „Portal sprzedawcy” ([spec, język wszechobecny](../superpowers/specs/2026-10-15-portal-sprzedawcy-ddd-design.md), [moduł 1 i 5 w `10-DDD.md`](../10-DDD.md))
 

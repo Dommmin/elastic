@@ -131,6 +131,23 @@ return [
             'handler' => NullHandler::class,
         ],
 
+        /*
+        | Ślad konfliktów wersji dla `orders:race-test` (App\Support\ConcurrencyConflictTrace).
+        | Domyślnie wyłączony (null); włącza go LOG_CONCURRENCY_PATH, który
+        | komenda ustawia sobie i swoim procesom potomnym na czas przebiegu.
+        */
+        'concurrency' => env('LOG_CONCURRENCY_PATH')
+            ? [
+                'driver' => 'single',
+                'path' => env('LOG_CONCURRENCY_PATH'),
+                'level' => 'info',
+                'replace_placeholders' => true,
+            ]
+            : [
+                'driver' => 'monolog',
+                'handler' => NullHandler::class,
+            ],
+
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
         ],

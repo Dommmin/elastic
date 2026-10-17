@@ -369,6 +369,7 @@ test('pulpit liczy oferty według statusu, wyprzedane i oczekujące ceny', funct
                 'withdrawn' => 1,
                 'sold_out' => 1,
                 'pending_price' => 1,
+                'orders_to_ship' => 0,
             ]));
 });
 
@@ -414,4 +415,58 @@ test('lookup po EAN i po nazwie, max 10, bez produktów z własną żywą ofert�
         ->getJson('/seller/products/lookup?q=l')
         ->assertUnprocessable()
         ->assertJsonValidationErrors('q');
+});
+
+test('sprzedawca nie zejdzie ze stanem poniżej zarezerwowanego', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $offer = Offer::factory()->for($seller)->create(['stock' => 5]);
+    DB::table('offer_reservations')->insert([
+        'offer_id' => $offer->id, 'reservation_key' => 'order-1', 'quantity' => 3, 'status' => 'active', 'reserved_at' => now(),
+    ]);
+    $show = "/seller/offers/{$offer->id}";
+
+    $this->actingAs($user)->from($show)->put("{$show}/stock", ['stock' => 2, 'version' => 1])
+        ->assertSessionHasErrors(['domain' => 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk']);
+
+    expect($offer->fresh()->stock)->toBe(5);
+});
+
+test('szczegóły oferty pokazują zarezerwowane i dostępne', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $offer = Offer::factory()->for($seller)->create(['stock' => 5]);
+    DB::table('offer_reservations')->insert([
+        ['offer_id' => $offer->id, 'reservation_key' => 'order-1', 'quantity' => 2, 'status' => 'active', 'reserved_at' => now()],
+        // Potwierdzona nie wlicza się do rezerwacji: jej sztuki są już odjęte od stanu.
+        ['offer_id' => $offer->id, 'reservation_key' => 'order-2', 'quantity' => 1, 'status' => 'confirmed', 'reserved_at' => now()],
+    ]);
+
+    $this->actingAs($user)
+        ->get("/seller/offers/{$offer->id}")
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('seller/offers/Show')
+            ->where('offer.stock', 5)
+            ->where('offer.reserved', 2)
+            ->where('offer.available', 3));
+});
+
+test('w pełni zarezerwowana oferta jest wyprzedana na liście, w filtrze, w szczegółach i na pulpicie', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $offer = Offer::factory()->for($seller)->create(['stock' => 2]);
+    DB::table('offer_reservations')->insert([
+        'offer_id' => $offer->id, 'reservation_key' => 'order-1', 'quantity' => 2, 'status' => 'active', 'reserved_at' => now(),
+    ]);
+
+    $this->actingAs($user)->get('/seller/offers?status=sold_out')
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('offers.data', 1)
+            ->where('offers.data.0.id', $offer->id)
+            ->where('offers.data.0.available', 0)
+            ->where('offers.data.0.is_sold_out', true)
+            ->where('offers.data.0.is_listed', false));
+
+    $this->actingAs($user)->get("/seller/offers/{$offer->id}")
+        ->assertInertia(fn (Assert $page) => $page->where('offer.is_sold_out', true)->where('offer.is_listed', false));
+
+    $this->actingAs($user)->get('/seller')
+        ->assertInertia(fn (Assert $page) => $page->where('stats.sold_out', 1));
 });

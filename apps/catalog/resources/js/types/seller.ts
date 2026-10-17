@@ -56,6 +56,8 @@ export type SellerOfferRow = {
     price_cents: number;
     currency: string;
     stock: number;
+    /** `stock − reserved`. */
+    available: number;
     status: OfferStatus;
     is_listed: boolean;
     is_sold_out: boolean;
@@ -70,6 +72,10 @@ export type SellerOfferDetails = {
     price_cents: number;
     currency: string;
     stock: number;
+    /** Sztuki zarezerwowane przez trwające zamówienia. */
+    reserved: number;
+    /** `stock − reserved`: tyle da się jeszcze kupić. */
+    available: number;
     condition: OfferCondition;
     shipping_days: number;
     status: OfferStatus;
@@ -95,7 +101,7 @@ export type OfferTimelineEvent = {
 };
 
 export type SellerDashboardStats = Record<
-    OfferStatus | 'sold_out' | 'pending_price',
+    OfferStatus | 'sold_out' | 'pending_price' | 'orders_to_ship',
     number
 >;
 

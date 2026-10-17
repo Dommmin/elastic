@@ -3,7 +3,7 @@
 namespace SellerPortal\Domain\Offer;
 
 use SellerPortal\Domain\Seller\SellerId;
-use SellerPortal\Domain\Shared\ConcurrencyConflict;
+use SharedKernel\ConcurrencyConflict;
 
 /**
  * Port: jak domena widzi "kolekcję ofert". Implementacja (SQL) żyje w Infrastructure.
@@ -26,6 +26,11 @@ interface OfferRepository
      * Czy sprzedawca ma już na ten produkt ofertę w statusie Draft, Published lub Suspended.
      */
     public function hasLiveOffer(SellerId $sellerId, ProductId $productId): bool;
+
+    /**
+     * Los rezerwacji, także zakończonej (agregat zna tylko aktywne). `null` = taka rezerwacja nigdy nie istniała.
+     */
+    public function reservationStatus(OfferId $offerId, ReservationKey $key): ?ReservationStatus;
 
     /**
      * Stronicowanie po ID dla polityk masowych (np. zawieszenie ofert zablokowanego

@@ -10,11 +10,12 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
 use Illuminate\Http\Request;
+use Ordering\Domain\OrderNotFound;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Seller\SellerNotFound;
-use SellerPortal\Domain\Shared\DomainException;
-use SellerPortal\Domain\Shared\InvalidValue;
+use SharedKernel\DomainException;
+use SharedKernel\InvalidValue;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -32,6 +33,9 @@ return Application::configure(basePath: dirname(__DIR__))
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
         ]);
+
+        // Webhook bramki nie ma sesji ani tokenu CSRF; wiarygodność daje podpis HMAC.
+        $middleware->preventRequestForgery(except: ['webhooks/*']);
 
         $middleware->alias([
             'seller' => EnsureHasSeller::class,
@@ -60,10 +64,10 @@ return Application::configure(basePath: dirname(__DIR__))
                 && ! app()->runningInConsole(),
         );
 
-        // Cudza lub nieistniejąca oferta / sprzedawca → 404, nie 403: nie
+        // Cudza lub nieistniejąca oferta / sprzedawca / zamówienie → 404, nie 403: nie
         // zdradzamy, że zasób o tym ID istnieje. `map` działa przed renderem,
         // więc poniższy handler błędów domeny już ich nie widzi.
-        foreach ([OfferNotOwned::class, OfferNotFound::class, SellerNotFound::class] as $notFound) {
+        foreach ([OfferNotOwned::class, OfferNotFound::class, SellerNotFound::class, OrderNotFound::class] as $notFound) {
             $exceptions->map($notFound, fn (DomainException $e) => new NotFoundHttpException($e->getMessage(), $e));
         }
 
