@@ -2336,6 +2336,8 @@ Proces `orders:expire-overdue` uruchomiony przez scheduler kończy się
 kodem **137**, bez żadnego wyjątku PHP.
 
 **Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`,
+z którego `docker compose` i `make` biorą nazwy i porty):
 ```bash
 make scheduler-logs                                   # czy przebiegi kończą się DONE, czy błędem
 docker inspect marketplace-catalog-scheduler-1 --format 'mem={{.HostConfig.Memory}}'   # limit w bajtach
@@ -2353,6 +2355,7 @@ więc sweep nie przeszedł ani razu i nic nie wygasało. W testach tego nie
 widać: tam komenda biegnie w procesie testu, bez limitu pamięci.
 
 **Naprawa**
+Jak wyżej, z katalogu głównego checkoutu.
 1. Na już, bez restartu: `docker update --memory 256m marketplace-catalog-scheduler-1`.
    Sprawdzone: kolejne przebiegi co minutę kończyły się `DONE` (2 s, 11 s).
 2. Na stałe: `compose.yaml`, `catalog-scheduler` → `mem_limit: 256m`
@@ -2377,6 +2380,8 @@ wykonuje; prawdziwy sygnał to czas ostatniego udanego przebiegu w `/health`.
 po ~2 s milknie: bez komunikatu, bez raportu, kod wyjścia 137.
 
 **Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`,
+z którego `docker compose` i `make` biorą nazwy i porty):
 ```bash
 echo $?                                              # 137 po exec
 docker stats --no-stream marketplace-catalog-app-1   # limit 512 MiB
@@ -2409,7 +2414,8 @@ przełączania głównego checkoutu.
 dociąża VM Dockera (15,6 GB, obok igrit i startera). W pomiarach
 2026-10-17 węzły ES restartowały się w trakcie (es03: 20 restartów, [#025](#025)),
 a po nich search-consumer przestał indeksować ([#050](#050)). Po
-race-teście sprawdź `make doctor` i indeks. Czasy p50/p95 z takiego
+race-teście sprawdź klaster (`docker compose ps es01 es02 es03` albo
+`make es-health`) i indeks. Czasy p50/p95 z takiego
 przebiegu nie nadają się do porównań.
 
 **Czego się nauczyłem**
@@ -2431,9 +2437,13 @@ zmiana stanu) nie trafiają do `/search`. W logu search-consumera
 incydencie 76).
 
 **Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`,
+z którego `docker compose` i `make` biorą nazwy i porty):
 ```bash
-make doctor                                                     # ES green 3/3
-make logs s=search-consumer                                     # „No alive nodes” mimo green
+set -a; . ./.env; set +a
+curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://localhost:$ES_PORT/_cluster/health?pretty"   # "status": "green", 3 węzły (to samo: make es-health)
+docker compose ps es01 es02 es03                                # czas „Up” — świeże restarty węzłów
+docker compose logs --tail=100 search-consumer                  # „No alive nodes” mimo green
 docker compose exec search-consumer php bin/console messenger:failed:show   # ile i jakie
 ```
 
@@ -2446,6 +2456,7 @@ ponowieniach wiadomość idzie do transportu `failed`, a indeks zostaje
 nieaktualny bez żadnego alarmu.
 
 **Naprawa**
+Z katalogu głównego checkoutu:
 1. `docker restart marketplace-search-consumer-1` (nowy proces, nowy klient ES).
 2. Odzyskaj odrzucone zdarzenia:
    `docker compose exec search-consumer php bin/console messenger:failed:retry --force`,
