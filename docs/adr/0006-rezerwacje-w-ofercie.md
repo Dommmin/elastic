@@ -127,15 +127,17 @@ Orderingu. Projekcja produktu podaje wyszukiwarce `offers[].stock` jako
   sekcja 5). Rezerwacja, której potwierdzenie padło na stałe, wisi do
   ręcznej interwencji ([RUNBOOK #046](../RUNBOOK.md#046)).
 
-> **Do uzupełnienia po pomiarze (Task 14/15):** dwie liczby, których jeszcze
-> nie ma, bo wymagają kodu w głównym checkoucie i prawdziwego Postgresa
-> z workerami (merge czeka na zgodę użytkownika).
-> 1. **Wyścig o ostatnie sztuki**: `docker compose exec catalog-app php artisan orders:race-test --buyers=50 --stock=10 --workers=4`.
->    Zapisać: opłacone (oczekiwane 10), odrzucone, overselling (oczekiwane 0),
->    konflikty wersji oferta/zamówienie, p50/p95 złożenia, `failed_jobs` od startu.
-> 2. **Czas zniknięcia ostatniej sztuki z `/search`**: oferta ze stanem 1,
->    kupujący składa zamówienie; od `occurred_at` zdarzenia
->    `offer.stock_reserved` (`select event_type, occurred_at, published_at from outbox where aggregate_type = 'offer' and aggregate_id = '<ID>' order by id desc limit 3`)
->    do chwili, w której `GET /api/search?q=<nazwa produktu>` przestaje
->    zwracać tę ofertę. Potem to samo w drugą stronę po anulowaniu.
-> Wyniki trafią tu, do [POMIARY](../POMIARY.md) i do przewodnika etapu.
+**Zmierzone 2026-10-17** na lokalnym stacku (Postgres, workery;
+szczegóły i surowe wyjścia: [POMIARY, sekcja 11](../POMIARY.md#zamowienia-2026-10-17)):
+1. **Wyścig o ostatnie sztuki** (`orders:race-test --buyers=50 --stock=10 --workers=4`,
+   3 przebiegi): za każdym razem 10 opłaconych, 40 odrzuconych przez krok
+   rezerwacji, overselling 0, `failed_jobs` 0. Konflikty wersji oferty
+   61 / 24 / 12 (wszystkie wchłonięte przez ponowienia), konflikty wersji
+   zamówienia 0. Gorąca oferta kosztuje więc konflikty i ponowienia, nie
+   poprawność. Latencji z tych przebiegów nie wyciągam: maszyna była
+   współdzielona i węzły ES restartowały się w trakcie (p50 rosło od 0,6 s
+   do 7 s między przebiegami tego samego kodu).
+2. **Ostatnia sztuka w `/search`:** od kliknięcia „Złóż zamówienia” do
+   zniknięcia oferty z dokumentu ES 1,3 s; od zdarzenia w katalogu do
+   zaindeksowania 0,53 s przy rezerwacji i 0,57 s przy zwolnieniu po
+   anulowaniu. Wygasłe przez sweep zamówienie też oddało sztukę do indeksu.

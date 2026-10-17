@@ -9,29 +9,33 @@ sprawdzenia: „dla zamówień pełne DDD, bo reguły obejmują kilka agregatów
 naraz”. Tu ta prognoza idzie pod pomiar. To samo zachowanie napisałem drugi
 raz jako DDD-lite: modele Eloquenta z metodami reguł i **jedna transakcja
 z blokadami** zamiast sagi. Testy HTTP są te same, liczby są zmierzone.
-Wynik w skrócie: lite to **33% kodu** (1389 zamiast 4155 linii), nowa
+Wynik w skrócie: lite to **33% kodu** (1407 zamiast 4231 linii), nowa
 reguła kosztuje w nim mniej (7 plików zamiast 12), a połowa wyścigów sagi
-w ogóle nie istnieje. Za to lite nie sprawdza wierszy z bazy, a zapomniany
+w ogóle nie istnieje. Na Postgresie (50 kupujących na 10 sztuk) **oba style
+dały 0 oversellingu** w 3/3 przebiegach: saga odrzuca nadmiar asynchronicznie
+z konfliktami wersji, jedna transakcja odmawia od razu, bez konfliktów.
+Za to lite nie sprawdza wierszy z bazy, a zapomniany
 `lockForUpdate()` po cichu skleja dwa stany zamówienia (pełne DDD rzuca
 wtedy konflikt wersji). Testy reguł chodzą w nim ~37× wolniej. Prognoza
 z poprzedniego porównania potwierdza się dla agregatu, ale **nie** dla sagi.*
 
-> **Stan:** gałąź `zamowienia-ddd-lite` zrobiona lokalnie (commit `65df43f`,
-> od `zamowienia` @ `01fe299`), **nie wypchnięta**: `git push -u origin
+> **Stan:** gałąź `zamowienia-ddd-lite` zrobiona lokalnie (`65df43f`, od
+> `zamowienia` @ `01fe299`; po końcowym przeglądzie zsynchronizowana
+> poprawkami w `0b44155`), **nie wypchnięta**: `git push -u origin
 > zamowienia-ddd-lite` czeka na Twoją zgodę. Gałąź nie będzie scalana, to
 > materiał do porównania. Gałęzie pomiarowe nowej reguły
 > (`zamowienia-pomiar-reguly-ddd` @ `5dba825`,
 > `zamowienia-pomiar-reguly-lite` @ `eae6915`) też są tylko lokalne.
-> Pomiary z 2026-10-16, Herd PHP 8.5, SQLite w pamięci (`phpunit.xml`).
+> Liczby kodu i testów zmierzone ponownie 2026-10-17 (DDD @ `c7a956b` po
+> merge do `main`, lite @ `0b44155`), Herd PHP 8.5, SQLite w pamięci
+> (`phpunit.xml`); surowe wyjścia:
+> `.superpowers/sdd/2026-10-16-zamowienia-ddd/measurements/remeasure.txt` (lokalnie, katalog poza gitem).
+> Rozdział 4 (nowa reguła) jest z 2026-10-16, z gałęzi pomiarowych.
 >
-> **Czego jeszcze nie zmierzyłem:** dwóch pomiarów, które wymagają Postgresa
-> i workerów w kontenerze (`orders:race-test` na obu gałęziach oraz awaria
-> w połowie: ubity worker kontra ubite żądanie). Kontener `catalog-app`
-> montuje główny checkout, więc te pomiary czekają na merge `zamowienia` do
-> `main`, który musi zatwierdzić użytkownik. W rozdziałach 6 i 7 są bloki
-> „Do uzupełnienia po pomiarze” z dokładnymi komendami. To, co tam piszę
-> o oczekiwanym wyniku, wynika z czytania kodu i jest **hipotezą, nie
-> pomiarem**.
+> **Na żywym stacku (2026-10-17, Postgres, workery):** `orders:race-test`
+> na obu gałęziach po 3 razy (rozdział 6) i ubity worker w sadze
+> (rozdział 7). **Nie zmierzyłem** ubitego żądania w połowie transakcji
+> lite; to, co o nim piszę, wynika z kodu i z testu na SQLite.
 
 ---
 
@@ -81,14 +85,15 @@ git diff zamowienia zamowienia-ddd-lite -- apps/catalog/tests/Feature/Ordering/H
 # (pusto)
 ```
 
-Wszystkie 67 testów HTTP zamówień przechodzi na obu gałęziach.
+Wszystkie 70 testów HTTP zamówień przechodzi na obu gałęziach.
 
-> **Stan po końcowym przeglądzie `zamowienia`:** poprawki z przeglądu
+> **Po końcowym przeglądzie `zamowienia`:** poprawki z przeglądu
 > (komunikat `invalid_order_lines`, toast sprzedawcy, utwardzenie webhooka)
 > zmieniły `CheckoutTest`, `SellerOrdersTest` i dodały
-> `PaymentWebhookHardeningTest`. Dopóki te same poprawki nie trafią na
-> `zamowienia-ddd-lite`, `git diff` powyżej nie jest pusty; liczby w tym
-> dokumencie są sprzed tych poprawek.
+> `PaymentWebhookHardeningTest` (67 → 70 testów). Te same poprawki
+> kontrolerów i te same pliki testów trafiły na lite w `0b44155`, więc
+> `git diff` powyżej znów jest pusty (sprawdzone 2026-10-17, gałąź
+> `zamowienia-pomiary` kontra `zamowienia-ddd-lite`).
 
 **Historia, bo uczy (ta sama lekcja co przy portalu):** pierwsza wersja
 `PaymentWebhookTest` budowała stan agregatem (`Order::place`,
@@ -116,7 +121,7 @@ Celem było napisać to tak, jak napisałby dobry zespół Laravela, a nie
 zbudować słabą wersję, żeby saga wypadła lepiej. Co jest w środku
 (`apps/catalog` na gałęzi `zamowienia-ddd-lite`):
 
-- **`app/Models/Order.php`** (534 linie) — metody o nazwach z języka domeny:
+- **`app/Models/Order.php`** (540 linii) — metody o nazwach z języka domeny:
   `open()` (od razu `awaiting_payment`, pozycje `reserved`), `recordPayment()`
   (z prywatnym `markPaid()`, ta sama kolejność warunków co w agregacie:
   duplikat → przyjęcie → zwrot), `recordPaymentFailure()`, `expire($now)`,
@@ -128,7 +133,7 @@ zbudować słabą wersję, żeby saga wypadła lepiej. Co jest w środku
   prywatnymi metodami modelu. `$fillable` nie zawiera `status` ani pól
   wpłaty, anulowania i wysyłki, więc `update([...])` z tablicy nie zmieni
   stanu z pominięciem metod.
-- **`app/Services/Ordering/PlaceOrders.php`** (188 linii) — jedna transakcja:
+- **`app/Services/Ordering/PlaceOrders.php`** (189 linii) — jedna transakcja:
   `Offer::query()->whereIn('id', …)->orderBy('id')->lockForUpdate()` (blokady
   w stałej kolejności, przeciw zakleszczeniom), te same odmowy co w sadze
   (niedostępna, własna, zmieniona cena — pod blokadą, więc bez okna wyścigu),
@@ -142,7 +147,7 @@ zbudować słabą wersję, żeby saga wypadła lepiej. Co jest w środku
   i wysyłka), **`OrderRefunds`** (bramka przed transakcją, potem
   `completeRefund` pod blokadą), **`OrderStock`** (blokada ofert i handlery
   portalu `ReleaseReservation` / `ConfirmReservation`). Razem 5 serwisów,
-  479 linii.
+  491 linii.
 - **`app/Jobs/Ordering/RefundPaymentJob.php`** — jedyny job (`tries` 5,
   `backoff` [5, 30, 120]), na połączeniu `queue.ordering_process_connection`
   (kolejka w bazie, więc job powstaje albo ginie razem z wierszem zwrotu),
@@ -181,58 +186,73 @@ bramki).
 ### Kod produkcyjny zamówień (pliki / linie PHP)
 
 Bez modeli odczytu, kontrolerów i komend, które są wspólne
-(`git ls-tree` + `git show … | wc -l`, skrypt w [rozdziale 10](#10-jak-odtworzyć-pomiary)):
+(`find … -name '*.php'` + `wc -l` w worktree każdej gałęzi, skrypt w
+[rozdziale 10](#10-jak-odtworzyć-pomiary); stan 2026-10-17, po końcowym
+przeglądzie i synchronizacji lite):
 
-| Warstwa | Pełne DDD (`zamowienia`) | DDD-lite (`zamowienia-ddd-lite`) |
+| Warstwa | Pełne DDD (`zamowienia` → `main` @ `c7a956b`) | DDD-lite (`zamowienia-ddd-lite` @ `0b44155`) |
 |---|---|---|
-| `src/Ordering/Domain` | 42 / 1643 (w tym `Order.php` 530, 12 klas zdarzeń 315) | — |
-| `src/Ordering/Application` | 42 / 1537 (komendy, handlery, wyjątki 815; 12 portów 247; proces 435; `RetryOnConflict` 40) | — |
+| `src/Ordering/Domain` | 42 / 1674 (w tym `Order.php` 552, 12 klas zdarzeń 315) | — |
+| `src/Ordering/Application` | 44 / 1578 (komendy, handlery, wyjątki 861; 12 portów 255; proces 422; `RetryOnConflict` 40) | — |
 | `Infrastructure/Persistence` (repozytorium, dziennik zdarzeń) | 2 / 423 | 0 / 0 |
-| adaptery portów + provider | 9 / 343 + 1 / 74 | 0 / 0 |
+| adaptery portów + provider | 9 / 347 + 1 / 74 | 0 / 0 |
 | joby | 4 / 135 | 1 / 35 |
 | słownik: enumy + wyjątki | (w Domain i Application) | 12 / 226 |
-| modele `Order`, `OrderLine`, `OrderRefund` | — | 3 / 649 (`Order` 534) |
-| serwisy `App\Services\Ordering` | — | 5 / 479 |
-| **razem** | **100 / 4155** | **21 / 1389** |
+| modele `Order`, `OrderLine`, `OrderRefund` | — | 3 / 655 (`Order` 540) |
+| serwisy `App\Services\Ordering` | — | 5 / 491 |
+| **razem** | **102 / 4231** | **21 / 1407** |
 | bez zmian w obu: `ReadModel` | 6 / 381 | 6 / 381 |
-| kontrolery, `CheckoutRequest`, 3 komendy | 8 / 1025 | 8 / 1016 |
+| kontrolery, `CheckoutRequest`, 3 komendy | 8 / 1059 | 8 / 1037 |
 
-**Lite to 33% kodu pełnego DDD** (1389 / 4155). Przy portalu było 50%.
+**Lite to 33% kodu pełnego DDD** (1407 / 4231). Przy portalu było 50%.
 Różnica jest większa, bo tu odpada nie tylko mapowanie (423 linie) i porty
-(247), ale cały process manager z krokami (435 linii procesu, 135 linii
+(255), ale cały process manager z krokami (422 linie procesu, 135 linii
 jobów, 4 adaptery): to, co saga rozkłada na kroki i kompensacje, jedna
 transakcja robi w miejscu. Same reguły kosztują podobnie: `Order.php` w DDD
-530 linii, w lite 534 (bo niesie też zapis, oś czasu i strażników wartości,
-które w DDD są osobnymi value objectami).
+552 linie, w lite 540 (bo niesie też zapis, oś czasu i strażników wartości,
+które w DDD są osobnymi value objectami). Końcowy przegląd dołożył DDD 76
+linii (`holdsReservations`, wynik sweepu z listą błędów, strażnik numeru
+przesyłki), a lite 18; proporcja się nie zmieniła.
 
 ### Testy
 
 | | Pełne DDD | DDD-lite |
 |---|---|---|
-| testy reguł | `tests/Unit/Ordering/Domain`: 6 plików, 790 linii, **80 testów** | `tests/Feature/Lite/OrderRulesTest.php`: 1 plik, 544 linie, **73 testy** |
-| czas testów reguł (Pest `duration_ms`, mediana z 5) | **27 ms** (26–41) | **1015 ms** (958–1139) — ~37× wolniej |
-| czas ściany z bootem (mediana z 5) | 0,28 s | 1,26 s — ~4,5× wolniej |
-| na jeden test | ~0,34 ms | ~14 ms (RefreshDatabase + SQLite + fabryki) |
-| testy aplikacji i sagi na fałszywych portach | 17 plików, 1607 linii, 42 testy w 45 ms (w tym 11 testów wyścigów R1–R10) | brak (nie ma czego podmieniać) |
-| testy transakcji na bazie | — | `OrderTransactionsTest.php`: 194 linie, 11 testów, 347 ms |
-| `tests/Feature/Ordering/Infrastructure` | 8 plików, 922 linie, 76 testów | 4 pliki, 271 linii, 15 testów |
-| testy HTTP (`Feature/Ordering/Http`) | 6 plików, 998 linii, 67 testów | **te same pliki, bajt w bajt** |
+| testy reguł | `tests/Unit/Ordering/Domain`: 6 plików, 814 linii, **94 testy** | `tests/Feature/Lite/OrderRulesTest.php`: 1 plik, 544 linie, **73 testy** |
+| czas testów reguł (Pest `duration_ms`, mediana z 5) | **32 ms** (32–35) | **1179 ms** (1166–2221) — ~37× wolniej |
+| czas ściany z bootem (mediana z 5) | 0,31 s (0,29–0,57) | 1,44 s (1,42–1,69) — ~4,6× wolniej |
+| na jeden test | ~0,34 ms | ~16 ms (RefreshDatabase + SQLite + fabryki) |
+| testy aplikacji i sagi na fałszywych portach | 17 plików, 1682 linie, 45 testów (w tym 14 w `OrderRacesTest`: 13 o wyścigach, 1 o kolejce kroków); cały `tests/Unit/Ordering` (139 testów) w 61 ms | brak (nie ma czego podmieniać) |
+| testy transakcji na bazie | — | `OrderTransactionsTest.php`: 194 linie, 11 testów, 334 ms |
+| `tests/Feature/Ordering/Infrastructure` | 9 plików, 1008 linii, 78 testów | 4 pliki, 271 linii, 15 testów |
+| testy HTTP (`Feature/Ordering/Http`) | 7 plików, 1090 linii, 70 testów | **te same pliki, bajt w bajt** |
 | test architektury Orderingu | 1 plik, 4 testy | 0 — świadoma strata, nie ma czystej domeny do pilnowania |
-| cały catalog | 740 testów (725 + 15 pominiętych), 8,5 s | 638 testów (623 + 15 pominiętych), 8,6 s |
-| PHPStan (poziom z `phpstan.neon`, ścieżka `app/`) | 133 błędy | 148 (+15; 17 zgłoszeń w nowych plikach lite, głównie typy generyczne kolekcji). **Nieporównywalne:** Ordering z DDD leży w `src/`, poza ścieżkami PHPStana |
+| cały catalog (Pest `duration_ms`, mediana z 3) | 764 testy (749 + 15 pominiętych), 9,4 s (9,35–9,79) | 642 testy (627 + 15 pominiętych), 9,2 s (9,18–9,79) |
+| PHPStan (poziom z `phpstan.neon`, ścieżka `app/`; **z 2026-10-16, sprzed końcowego przeglądu, nie mierzone ponownie**) | 133 błędy | 148 (+15; 17 zgłoszeń w nowych plikach lite, głównie typy generyczne kolekcji). **Nieporównywalne:** Ordering z DDD leży w `src/`, poza ścieżkami PHPStana |
 
-Skąd 80 kontra 73 przypadki: 12 przypadków rezerwacji (`markLineReserved`,
+Cały suite trwa w obu stylach tyle samo: ~9 s to w większości testy
+wspólne (portal, katalog, HTTP), a różnica w testach reguł (~1 s) ginie
+w rozrzucie między przebiegami. Wcześniejsze „8,5 s / 8,6 s” w tym
+dokumencie nie miały surowego wyjścia, więc zastąpiłem je pomiarem.
+
+Skąd 94 kontra 73 przypadki: 12 przypadków rezerwacji (`markLineReserved`,
 `reject`) w lite nie ma odpowiednika w modelu, bo nie ma statusu
 pośredniego; te same reguły (wszystko zarezerwowane → czeka na płatność,
 pierwsza odmowa kończy całe złożenie) sprawdzają 3 testy w
 `OrderTransactionsTest`. Wypadło też 6 przypadków identyfikatorów jako
-value objectów (lite używa intów i stringów). Strażnicy wartości dostali za
+value objectów (lite używa intów i stringów). Końcowy przegląd dołożył
+w DDD 14 przypadków: 8 dla `holdsReservations` (lite nie ma kroku
+rezerwacji, który by tę regułę potrzebował) i 6 dla znaków sterujących
+w numerze przesyłki. Ten strażnik (`\p{C}`) trafił do modelu lite przy
+synchronizacji, ale **bez** nowych przypadków w `OrderRulesTest`, więc
+w lite nie jest pokryty testem reguł. Strażnicy wartości lite dostali za
 to więcej wierszy danych (ilość, numer przesyłki, powód). Reszta to te
 same przypadki jeden do jednego, z tymi samymi oczekiwaniami.
 
 Profil (`pest --profile`, najwolniejsze testy): w DDD najwolniejszy test to
-0,01 s, w lite pierwszy test pliku 0,27 s (migracja SQLite), kolejne
-0,01–0,03 s. Surowe wyjścia są w raporcie zadania.
+0,02 s, cały katalog (6 plików) 0,13 s; w lite pierwszy test pliku 0,17 s (migracja
+SQLite), kolejne 0,02–0,03 s, cały plik 1,17 s. Surowe wyjścia są w
+`remeasure.txt`.
 
 ---
 
@@ -369,7 +389,7 @@ Dwa wyniki, które warto zapamiętać:
    `DB::table('orders')`, który na przeglądzie kodu wygląda podejrzanie.
 2. **Ostatni wiersz to najdroższa dziura lite.** Bezpieczeństwo lite stoi na
    tym, że *każde* wejście do zamówienia przechodzi przez `lockForUpdate()`
-   (serwisy to robią: `OrderPayments.php:64`, `:81`, `:112`,
+   (serwisy to robią: `OrderPayments.php:65`, `:82`, `:119`,
    `Order::lockedForBuyer`, `lockedForSellerUser`, `OrderRefunds.php:41`).
    Ktoś, kto jutro napisze `Order::find($id)->cancelByBuyer()` w nowym
    kontrolerze, nie dostanie błędu, tylko po cichu przegrany wyścig. W DDD
@@ -387,8 +407,10 @@ i sondę 3 w obu.
 
 ## 6. Wyścigi: co znika, co zostaje
 
-Saga ma 12 testów w `tests/Unit/Ordering/Application/OrderRacesTest.php`
-(11 wyścigów R1–R10 ze specu i 1 o kolejce kroków), wszystkie w pamięci. W lite żadnego z nich nie da się napisać tak samo, bo nie
+Saga ma 14 testów w `tests/Unit/Ordering/Application/OrderRacesTest.php`
+(11 wyścigów R1–R10 ze specu, 2 dopisane po końcowym przeglądzie: R1+R2
+naraz i „ponowiony krok po opłaceniu niczego nie zwalnia”, oraz 1 o kolejce
+kroków), wszystkie w pamięci. W lite żadnego z nich nie da się napisać tak samo, bo nie
 ma fałszywych portów i ręcznego przeplotu. Część wyścigów po prostu nie
 istnieje:
 
@@ -408,48 +430,96 @@ pośrednim, a 4 zamieniają się w czekanie na blokadę, którego **SQLite nie
 sprawdzi** (SQLite blokuje całą bazę, `FOR UPDATE` nic tam nie znaczy).
 Jedyny test kolejności blokad w lite (`OrderTransactionsTest`, „oferty są
 czytane do blokady rosnąco po ID”) sprawdza tylko `ORDER BY` w SQL. Czy
-blokady faktycznie trzymają przy 50 równoległych kupujących, pokaże dopiero
-race-test na Postgresie.
+blokady faktycznie trzymają przy 50 równoległych kupujących, pokazał
+dopiero race-test na Postgresie.
 
-> **Do uzupełnienia po pomiarze:** `orders:race-test` na obu gałęziach
-> w kontenerze. Po merge `zamowienia` do `main` (zgoda użytkownika),
-> `make up-apps` i migracjach. Kontener montuje główny checkout, a gałęzie
-> są wyewidencjonowane w worktree, więc główny checkout przełączamy w trybie
-> detached i po pomiarze wracamy na `main`:
-> ```bash
-> # 1. saga (stan po merge)
-> git -C /Users/domin/projects/elastic switch main
-> docker compose exec catalog-app php artisan optimize:clear
-> docker compose restart catalog-app catalog-worker catalog-scheduler
-> docker compose exec catalog-app php artisan orders:race-test --buyers=50 --stock=10 --workers=4
->
-> # 2. jedna transakcja
-> git -C /Users/domin/projects/elastic switch --detach zamowienia-ddd-lite
-> docker compose exec catalog-app php artisan optimize:clear
-> docker compose restart catalog-app catalog-worker catalog-scheduler
-> docker compose exec catalog-app php artisan orders:race-test --buyers=50 --stock=10 --workers=4
->
-> # 3. powrót
-> git -C /Users/domin/projects/elastic switch main
-> docker compose exec catalog-app php artisan optimize:clear
-> docker compose restart catalog-app catalog-worker catalog-scheduler
-> ```
-> Porównać w tabeli: opłacone (oba: dokładnie 10), overselling (oba: 0),
-> odmowy i ich kody (saga: odmowy przy składaniu + `rejected` po rezerwacji;
-> lite: same odmowy `out_of_stock`, 0 `rejected`), konflikty wersji oferty
-> i zamówienia (saga: > 0 ofert, ponawiane; lite: oczekiwane 0, bo kupujący
-> czekają na blokadzie), p50/p95 złożenia (lite trzyma blokadę oferty przez
-> całe składanie, saga tylko przez jedną rezerwację: hipoteza, że p95 lite
-> rośnie z liczbą kupujących), `failed_jobs` od startu, czas całego
-> przebiegu (saga czeka na workery, lite nie). Powtórzyć 3 razy, podać
-> rozrzut. Oczekiwania w nawiasach to hipotezy z kodu.
+### Race-test na Postgresie (2026-10-17)
+
+`orders:race-test --buyers=50 --stock=10 --workers=4`, po 3 przebiegi na
+gałąź, lokalny stack (Postgres, `catalog-worker`, `catalog-scheduler`).
+Surowe wyjścia: `.superpowers/sdd/2026-10-16-zamowienia-ddd/measurements/race-ddd*.out`
+i `race-lite*.out` (lokalnie, katalog poza gitem).
+
+| Przebieg | Złożone | Opłacone | Odrzucone (saga) | Odmowy przy składaniu | Overselling | Konflikty wersji oferta / zamówienie | p50 / p95 złożenia (ms) |
+|---|---|---|---|---|---|---|---|
+| saga 1 | 50 | 10 | 40 | 0 | 0 | 61 / 0 | 613,6 / 776,8 |
+| saga 2 | 50 | 10 | 40 | 0 | 0 | 24 / 0 | 2451,0 / 2747,2 |
+| saga 3 | 50 | 10 | 40 | 0 | 0 | 12 / 0 | 6968,8 / 7435,5 |
+| transakcja 1 | 10 | 10 | 0 | `offer_no_longer_available`: 40 | 0 | 0 / 0 | 2992,7 / 3652,1 |
+| transakcja 2 | 10 | 10 | 0 | `offer_no_longer_available`: 40 | 0 | 0 / 0 | 4450,4 / 13411,2 |
+| transakcja 3 | 10 | 10 | 0 | `offer_no_longer_available`: 40 | 0 | 0 / 0 | 7950,7 / 11523,2 |
+
+We wszystkich sześciu: końcowy `offer.stock` 0, aktywne rezerwacje 0,
+`failed_jobs` od startu 0, kod wyjścia 0.
+
+Co z tego wynika:
+
+1. **Poprawność: remis.** Oba style 6/6 bez oversellingu, dokładnie 10
+   opłaconych. Blokady w lite trzymają przy 50 równoległych kupujących, a
+   kontrola wersji w sadze też.
+2. **Ten sam wyścig, dwa różne kształty.** Saga przyjmuje wszystkie 50
+   zamówień i nadmiar odrzuca asynchronicznie krok rezerwacji (40
+   `Rejected`), płacąc konfliktami wersji oferty (61 / 24 / 12), które
+   ponawia. Jedna transakcja odmawia od razu w koszyku (40 odmów) i nie ma
+   ani jednego konfliktu: kupujący czekają w kolejce na blokadzie wiersza
+   oferty, więc nie ma z kim przegrać wersji. Liczba konfliktów sagi to dolna
+   granica: joby przejęte przez działający obok `catalog-worker` nie
+   zapisują śladu.
+3. **Kod odmowy w lite to `offer_no_longer_available`, nie `out_of_stock`**
+   (przed pomiarem spodziewałem się `out_of_stock`). Po rezerwacji dziesiątej sztuki
+   dostępne = 0, a scope `listed()` wymaga `stock > zarezerwowane`
+   (`app/Models/Offer.php:82` na lite). `PlaceOrders` sprawdza listę
+   `listed` pod blokadą (`app/Services/Ordering/PlaceOrders.php:65`, `:67`
+   na lite) **przed** rezerwacją, więc odmawia „oferta niedostępna”, zanim
+   dojdzie do `ReserveStockHandler`, gdzie padłoby `OutOfStock`. Przy
+   ilości 1 na kupującego `out_of_stock` jest osiągalne tylko wtedy, gdy
+   dostępnych jest mniej niż zamawiana ilość, ale więcej niż 0. Dla
+   kupującego różnica jest w treści komunikatu: „oferta niedostępna” zamiast
+   „zmniejsz ilość”, co tutaj jest prawdą.
+4. **Latencja: brak wniosku.** p50 i p95 rosły z przebiegu na przebieg
+   w obu stylach przy tym samym kodzie, bo maszyna jest współdzielona
+   (inne projekty na tych samych zasobach), a w trakcie węzły ES
+   restartowały się pod presją pamięci VM Dockera 15,6 GB (es03: 20
+   restartów). Hipotezy „p95 lite rośnie z liczbą kupujących, bo blokada
+   oferty trwa przez całe składanie” ten pomiar **ani nie potwierdza, ani
+   nie obala**. Do tego potrzebny jest przebieg na maszynie bez innych
+   projektów.
+
+Jak to uruchomić (tak to faktycznie trzeba było zrobić). `docker compose
+exec catalog-app php artisan orders:race-test …` ginie po ~2 s bez komunikatu
+z kodem 137: `catalog-app` ma 512m, a 50 procesów PHP się w nim nie mieści
+([RUNBOOK #049](../RUNBOOK.md#049)). Zamiast tego jednorazowy kontener z
+tego samego obrazu, z limitem 3g, w sieci stacku i ze zmiennymi
+`catalog-app`. `-v` wskazuje checkout mierzonej gałęzi, więc głównego
+checkoutu nie trzeba przełączać:
+```bash
+# z katalogu głównego checkoutu; stack: make up-apps, migracje zrobione
+env_file=$(mktemp)
+docker inspect marketplace-catalog-app-1 --format '{{range .Config.Env}}{{println .}}{{end}}' > "$env_file"
+
+# 1. saga (main)
+docker run --rm --memory 3g --network marketplace_marketplace --env-file "$env_file" \
+  -v "$PWD/apps/catalog:/app" -w /app marketplace-catalog-app \
+  php artisan orders:race-test --buyers=50 --stock=10 --workers=4
+
+# 2. jedna transakcja (worktree gałęzi zamowienia-ddd-lite)
+docker run --rm --memory 3g --network marketplace_marketplace --env-file "$env_file" \
+  -v "$PWD/.claude/worktrees/zamowienia-lite/apps/catalog:/app" -w /app marketplace-catalog-app \
+  php artisan orders:race-test --buyers=50 --stock=10 --workers=4
+
+rm "$env_file"
+```
+Ścieżka worktree lite jest z tej maszyny; podaj swoją. Każdy przebieg
+powtórz 3 razy. Na współdzielonej maszynie po przebiegach
+sprawdź ES i search-consumera: w tym pomiarze konsument po restartach
+węzłów przestał indeksować ([RUNBOOK #050](../RUNBOOK.md#050)).
 
 ---
 
 ## 7. Awaria w połowie
 
 Najciekawsza różnica jest tam, gdzie proces pada w trakcie. Z kodu wynika
-(**hipoteza, nie pomiar**):
+(to jest hipoteza; co z niej zmierzyłem, jest niżej):
 
 - **Saga, ubity worker w trakcie `ReserveOrderLinesJob`:** pozycje
   zarezerwowane przed śmiercią zostają w ofertach (każda w osobnej,
@@ -464,36 +534,56 @@ Najciekawsza różnica jest tam, gdzie proces pada w trakcie. Z kodu wynika
   outboxu, koszyk jest nietknięty. Kupujący dostaje błąd połączenia i klika
   jeszcze raz. Nic nie trzeba sprzątać i nic nie czeka na worker.
 
-> **Do uzupełnienia po pomiarze:** awaria w połowie na obu gałęziach,
-> w kontenerze, z przełączaniem głównego checkoutu jak w rozdziale 6.
-> Żeby trafić „w połowę” powtarzalnie, przytrzymujemy blokadę w psql
-> i zabijamy proces, który na niej czeka:
-> ```bash
-> # Saga: ubity worker między rezerwacją pierwszej a drugiej pozycji.
-> # 1) zamówienie z dwiema ofertami jednego sprzedawcy (UI albo tinker), worker zatrzymany:
-> docker compose stop catalog-worker
-> # 2) w psql przytrzymaj DRUGĄ ofertę:
-> docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "BEGIN; SELECT id FROM offers WHERE id = <druga> FOR UPDATE; SELECT pg_sleep(30); COMMIT;" &
-> # 3) jeden worker ręcznie, zabity po 5 s (pierwsza pozycja już zarezerwowana, druga czeka):
-> docker compose exec catalog-app sh -c 'php artisan queue:work database --once & sleep 5; pkill -9 -f "queue:work"'
-> # 4) stan po awarii:
-> docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "SELECT status FROM orders WHERE id = <id>; SELECT offer_id, status FROM order_lines WHERE order_id = <id>; SELECT offer_id, status, quantity FROM offer_reservations WHERE reservation_key = 'order-<id>'; SELECT attempts, reserved_at FROM jobs;"
-> # 5) restart i stan po retry_after:
-> docker compose start catalog-worker
->
-> # Lite: ubite żądanie w trakcie transakcji składania.
-> # 1) w psql przytrzymaj ofertę z koszyka:
-> docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "BEGIN; SELECT id FROM offers WHERE id = <oferta> FOR UPDATE; SELECT pg_sleep(30); COMMIT;" &
-> # 2) checkout w przeglądarce (żądanie wisi na blokadzie), po 5 s:
-> docker compose restart catalog-app
-> # 3) stan po awarii:
-> docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "SELECT count(*) FROM orders WHERE buyer_user_id = <kupujący>; SELECT count(*) FROM offer_reservations WHERE reserved_at > now() - interval '5 minutes'; SELECT count(*) FROM cart_items WHERE user_id = <kupujący>;"
-> ```
-> (`CATALOG_DB_USER` i `CATALOG_DB` z `.env`, jak w `compose.yaml`;
-> maszyna jest współdzielona, nie zatrzymywać cudzych kontenerów.)
-> Porównać: stan zamówienia, pozycji i rezerwacji tuż po awarii i po
-> restarcie, czas do stanu spójnego, czy cokolwiek wymagało ręcznego
-> sprzątania, co widział kupujący.
+### Co zmierzyłem na stacku (2026-10-17)
+
+**Saga, worker nieobecny w chwili złożenia.** `docker compose stop
+catalog-worker`, kupujący składa zamówienie. Po 10 s zamówienie dalej
+`placed`, w tabeli `jobs` jeden job (`ReserveOrderLinesJob`), kupujący
+widzi „Sprawdzamy dostępność”. `docker compose start catalog-worker` →
+`awaiting_payment` po **28,1 s** od startu, wliczając start kontenera.
+Nic nie wymagało ręcznego sprzątania: saga domknęła się sama, bo stan
+procesu jest w zamówieniu, a krok czekał w kolejce w bazie. Dla porównania
+z działającym workerem to samo przejście trwało ~1 s.
+
+Uczciwie: to jest awaria **przed** krokiem, nie **w połowie** kroku.
+Wariantu „worker ubity między rezerwacją pierwszej a drugiej pozycji”
+(niżej, z blokadą trzymaną w psql) nie uruchamiałem. Ten przeplot pokrywają
+testy w pamięci R2 i R1+R2 w `OrderRacesTest`.
+
+**Jedna transakcja, ubite żądanie w trakcie składania: nie mierzone.**
+Trzeba by zabić proces PHP w trakcie otwartej transakcji. Atomowość
+wycofania na gałęzi lite pokrywa `OrderTransactionsTest` (na SQLite),
+a nie żywy Postgres. Wniosek „nic do sprzątania” zostaje hipotezą z kodu.
+
+Komendy dla obu wariantów, gdybyś chciał je domknąć. Wszystkie z katalogu
+głównego checkoutu; zmienne bazy wczytaj z `.env` najpierw, bo zwykła
+powłoka ich nie zna (`$CATALOG_DB_USER` byłby pusty i `psql` połączyłby
+się jako zły użytkownik):
+```bash
+set -a; . ./.env; set +a
+
+# Saga: ubity worker między rezerwacją pierwszej a drugiej pozycji.
+# 1) zamówienie z dwiema ofertami jednego sprzedawcy (UI albo tinker), worker zatrzymany:
+docker compose stop catalog-worker
+# 2) w psql przytrzymaj DRUGĄ ofertę:
+docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "BEGIN; SELECT id FROM offers WHERE id = <druga> FOR UPDATE; SELECT pg_sleep(30); COMMIT;" &
+# 3) jeden worker ręcznie, zabity po 5 s (pierwsza pozycja już zarezerwowana, druga czeka):
+docker compose exec catalog-app sh -c 'php artisan queue:work database --once & sleep 5; pkill -9 -f "queue:work"'
+# 4) stan po awarii:
+docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "SELECT status FROM orders WHERE id = <id>; SELECT offer_id, status FROM order_lines WHERE order_id = <id>; SELECT offer_id, status, quantity FROM offer_reservations WHERE reservation_key = 'order-<id>'; SELECT attempts, reserved_at FROM jobs;"
+# 5) restart i stan po retry_after:
+docker compose start catalog-worker
+
+# Lite: ubite żądanie w trakcie transakcji składania
+# (wymaga kodu lite w catalog-app, czyli głównego checkoutu na tej gałęzi).
+# 1) w psql przytrzymaj ofertę z koszyka:
+docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "BEGIN; SELECT id FROM offers WHERE id = <oferta> FOR UPDATE; SELECT pg_sleep(30); COMMIT;" &
+# 2) checkout w przeglądarce (żądanie wisi na blokadzie), po 5 s:
+docker compose restart catalog-app
+# 3) stan po awarii:
+docker compose exec postgres psql -U "$CATALOG_DB_USER" "$CATALOG_DB" -c "SELECT count(*) FROM orders WHERE buyer_user_id = <kupujący>; SELECT count(*) FROM offer_reservations WHERE reserved_at > now() - interval '5 minutes'; SELECT count(*) FROM cart_items WHERE user_id = <kupujący>;"
+```
+Maszyna jest współdzielona: nie zatrzymuj cudzych kontenerów.
 
 ---
 
@@ -508,7 +598,7 @@ Najciekawsza różnica jest tam, gdzie proces pada w trakcie. Z kodu wynika
    numer przesyłki, waluta, powody. Lite łapie tylko nieznany status (cast
    enuma).
 3. **Nie ma modelu Eloquenta zamówień**, więc nie ma `save()` do nadużycia.
-4. **Reguły i wyścigi są czystymi funkcjami.** 80 testów reguł w 27 ms,
+4. **Reguły i wyścigi są czystymi funkcjami.** 94 testy reguł w 32 ms,
    a każdy wyścig ze specu jest testem z ręcznym przeplotem w pamięci
    (moduły 11–12), który można zepsuć i zobaczyć. W lite wyścigi da się
    sprawdzić tylko na Postgresie.
@@ -549,9 +639,9 @@ Poprzednie porównanie rekomendowało dla zamówień „**pełne DDD dla agregat
 
 | Powód z `ddd-vs-ddd-lite.md`, rozdz. 7 | Pomiar | Werdykt |
 |---|---|---|
-| „Reguły obejmują kilka agregatów naraz; lite nie złoży »zarezerwuj stan + utwórz zamówienie« w jedną zmianę bez ręcznego `DB::transaction` i dwóch wersji” | Lite składa to w **jednym** `DB::transaction` z blokadami, w 188 liniach `PlaceOrders`, reużywając handler portalu. Wyszło prościej niż saga, a nie trudniej. Dwie wersje (oferty i zamówienia) w lite po prostu nie przeszkadzają, bo wiersze są zablokowane | **nie potwierdzony** dla tego repo, gdzie oba konteksty dzielą jedną bazę |
+| „Reguły obejmują kilka agregatów naraz; lite nie złoży »zarezerwuj stan + utwórz zamówienie« w jedną zmianę bez ręcznego `DB::transaction` i dwóch wersji” | Lite składa to w **jednym** `DB::transaction` z blokadami, w 189 liniach `PlaceOrders`, reużywając handler portalu. Wyszło prościej niż saga, a nie trudniej. Dwie wersje (oferty i zamówienia) w lite po prostu nie przeszkadzają, bo wiersze są zablokowane | **nie potwierdzony** dla tego repo, gdzie oba konteksty dzielą jedną bazę |
 | „Niesprawdzane wiersze” | sondy 3b–3c: lite wczytuje pozycję z ilością 50 i numer przesyłki `x`; DDD odrzuca | **potwierdzony** |
-| „Siatka stanów to setki przypadków; 0,3 ms vs 11 ms na test robi różnicę” | 0,34 ms vs ~14 ms; 80 przypadków to 27 ms vs ~1 s | **potwierdzony co do proporcji, nie co do skali:** przy dzisiejszych 80 przypadkach to sekunda; zaboli przy setkach |
+| „Siatka stanów to setki przypadków; 0,3 ms vs 11 ms na test robi różnicę” | 0,34 ms vs ~16 ms; 94 przypadki w 32 ms vs 73 w ~1,2 s | **potwierdzony co do proporcji, nie co do skali:** przy dzisiejszych kilkudziesięciu przypadkach to sekunda; zaboli przy setkach |
 
 Do tego dochodzi pomiar, którego poprzednie porównanie nie miało: **sonda 4**
 (zapomniany `lockForUpdate()` zlepia „anulowane” z „opłaconym”). To jest
@@ -566,10 +656,15 @@ Decyzje dla tego repo:
 | **Koordynacja zamówienie ↔ oferta** | **saga zostaje na `zamowienia`, bo jest już zrobiona, przetestowana i uczy procesów; gdybym zaczynał od zera z tą samą bazą, wybrałbym jedną transakcję** | jedna transakcja: 1/3 kodu, 4 wyścigi mniej, natychmiastowa odmowa, brak zależności od workera przy składaniu. Saga zarabia na siebie dopiero, gdy oferty i zamówienia przestaną dzielić bazę albo gdy krok rezerwacji zacznie wołać coś zewnętrznego i wolnego |
 | **Zwroty** | job w obu wersjach | bramka to system zewnętrzny; tego nie da się wciągnąć do transakcji w żadnym stylu |
 
-**Uczciwie:** to, czy jedna transakcja wytrzyma 50 równoległych kupujących
-na jednej ofercie bez wzrostu p95, nie jest jeszcze zmierzone (rozdział 6).
-Jeśli race-test pokaże, że blokada oferty trzymana przez całe składanie
-dławi przepustowość, ten werdykt trzeba będzie poprawić. Hybryda „agregat
+**Po pomiarze na Postgresie (rozdział 6) werdykt się nie zmienia.** Jedna
+transakcja wytrzymała 50 równoległych kupujących na jednej ofercie bez
+oversellingu i bez konfliktów, tak samo poprawnie jak saga. To, czy przy tym
+nie rośnie p95, **dalej nie jest zmierzone**: na współdzielonej maszynie
+czasy rosły z przebiegu na przebieg w obu stylach i nie dają się porównać.
+Jeśli czysty przebieg pokaże, że blokada oferty trzymana przez całe
+składanie dławi przepustowość, ten werdykt trzeba będzie poprawić. Ubity
+worker w sadze zmierzyłem (sama się domyka, rozdział 7); ubitego żądania
+w lite nie. Hybryda „agregat
 `Order` z kontrolą wersji + jedna transakcja z blokadą ofert” wygląda na
 najlepsze z obu, ale jej nie napisałem, więc to **hipoteza, nie pomiar**.
 
@@ -577,15 +672,21 @@ najlepsze z obu, ale jej nie napisałem, więc to **hipoteza, nie pomiar**.
 
 ## 10. Jak odtworzyć pomiary
 
-Wszystko z `apps/catalog` na hoście (Herd PHP 8.5, SQLite w pamięci), bez
-przełączania gałęzi w głównym checkoutcie.
+Rozdziały 3–5: z `apps/catalog` na hoście (Herd PHP 8.5, SQLite
+w pamięci), w worktree każdej gałęzi, bez przełączania gałęzi w głównym
+checkoutcie. Rozdziały 6–7: komendy są tam, przy wynikach. Surowe wyjścia
+pomiaru z 2026-10-17: `.superpowers/sdd/2026-10-16-zamowienia-ddd/measurements/remeasure.txt` (lokalnie, katalog poza gitem).
 
 ```bash
-# 1. pliki i linie per warstwa, bez przełączania gałęzi
-ref=zamowienia-ddd-lite   # albo zamowienia
-git ls-tree -r --name-only ${ref} -- apps/catalog/app/Models/Order.php apps/catalog/app/Models/OrderLine.php \
-  apps/catalog/app/Models/OrderRefund.php | grep '\.php$' | while read f; do git show "${ref}:${f}"; done | wc -l
-#    (w zsh pisz ${ref}:, nie $ref: — `:a`, `:h` itd. to modyfikatory zmiennej)
+# 1. pliki i linie per warstwa (w worktree danej gałęzi, w apps/catalog)
+find src/Ordering/Domain -name '*.php' | xargs wc -l | tail -1                  # DDD
+find src/Ordering/Application -name '*.php' | xargs wc -l | tail -1             # DDD
+find src/Ordering/Infrastructure -maxdepth 1 -name '*.php' | xargs wc -l | tail -1   # DDD: adaptery portów
+find app/Services/Ordering -name '*.php' | xargs wc -l | tail -1                # lite
+wc -l app/Models/Order.php app/Models/OrderLine.php app/Models/OrderRefund.php  # lite
+#    bez worktree, z samego gita (w zsh pisz ${ref}:, nie $ref: — `:a`, `:h` to modyfikatory zmiennej):
+ref=zamowienia-ddd-lite
+git ls-tree -r --name-only ${ref} -- apps/catalog/app/Services/Ordering | while read f; do git show "${ref}:${f}"; done | wc -l
 
 # 2. czas testów reguł (5 przebiegów; Pest w trybie agenta podaje duration_ms)
 #    worktree zamowienia:
@@ -606,7 +707,7 @@ git show --stat eae6915   # lite
 # katalogi testów HTTP i bramki identyczne na obu gałęziach (wynik: pusto)
 git diff zamowienia zamowienia-ddd-lite -- apps/catalog/tests/Feature/Ordering/Http apps/catalog/tests/Feature/FakePaymentGateway
 
-# 5. cały catalog
+# 5. cały catalog (3 przebiegi, brać duration_ms Pesta, nie czas ściany)
 php artisan test --compact
 ```
 
