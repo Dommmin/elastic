@@ -609,6 +609,42 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # Metryki serwisu search dla Prometheusa. Konsument (search-consumer) to
+  # proces CLI bez HTTP, więc nie ma jak wystawić /metrics — stąd osobny,
+  # lekki kontener z tym samym kodem, który serwuje wyłącznie GET /metrics
+  # (MetricsController). Gauge'e liczone są przy scrape z Postgresa i
+  # RabbitMQ, dlatego te same DATABASE_URL i MESSENGER_TRANSPORT_DSN co
+  # konsument. Bez `ports:` — Prometheus scrape'uje search-metrics:80 po sieci
+  # `marketplace`, endpoint nie jest publikowany na hosta (ADR-0005, zasada 4).
+  search-metrics:
+    profiles: [obs]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["frankenphp", "php-server", "--root", "/app/public", "--listen", ":80"]
+    environment:
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+    volumes:
+      - ./apps/search:/app
+    # Healthcheck z obrazu bazowego sprawdza proces `messenger:consume`, którego
+    # tu nie ma — kontener byłby wiecznie unhealthy. Pytamy więc sam endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/metrics >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 128m
+    networks: [marketplace]
+    restart: unless-stopped
+
   # ==========================================================================
   #  Profil `tools`
   # ==========================================================================
