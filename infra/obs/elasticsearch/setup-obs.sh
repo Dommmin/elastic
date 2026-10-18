@@ -188,6 +188,13 @@ check $S 'log.level'         '"level":"warn"'                                 'l
 check $S 'log.logger'        '"logger":"tls"'                                 'log.logger z logger'
 check $S 'message'           '"message":"stapling OCSP"'                      'message z msg'
 
+# 7. Linia Caddy bez pola logger (logger główny) — nie jako nieznany JSON
+S=7-caddy-runtime-no-logger
+check $S 'message'           '"message":"Caddy serving PHP app on :80"'       'message z msg'
+check $S 'log.logger'        '"logger":"caddy"'                               'log.logger=caddy, gdy brak pola logger'
+check $S 'log.level'         '"level":"info"'                                 'log.level z level'
+check $S '@timestamp'        '"@timestamp":"2026-10-17T20:00:01.500'          '@timestamp z ts'
+
 if [ "${FAILED}" -ne 0 ]; then
   log "BŁĄD: ${FAILED} asercji nie przeszło."
   exit 1

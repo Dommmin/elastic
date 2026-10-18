@@ -14,6 +14,14 @@
     },
 
     {
+      "set": {
+        "field": "_j.logger",
+        "value": "caddy",
+        "description": "Część linii Caddy/FrankenPHP (np. 'Caddy serving PHP app', 'autosaved config') nie ma pola logger: to logger główny. Bez tego wpadały do gałęzi nieznanego JSON-u (message = surowa linia, bez log.level). Znalezione na żywym stacku, Task 12",
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger == null && ctx._j.ts != null && ctx._j.msg instanceof String"
+      }
+    },
+    {
       "script": {
         "description": "Monolog: trace.id, error.*, app.context/app.extra",
         "if": "ctx._j instanceof Map && ctx._j.level_name != null",
