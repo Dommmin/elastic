@@ -27,7 +27,10 @@ class CatalogProjectionClient
         private readonly TraceContext $trace,
         ?HttpClientInterface $client = null,
     ) {
-        $this->client = $client ?? HttpClient::create(['timeout' => 3.0]);
+        // Timeout 3 s stosujemy ZAWSZE, także do klienta wstrzykniętego przez
+        // kontener (autowiring podstawia domyślny klient frameworka z timeoutem
+        // ~60 s) — inaczej wolny catalog blokowałby workera na minutę.
+        $this->client = ($client ?? HttpClient::create())->withOptions(['timeout' => 3.0]);
     }
 
     /**

@@ -8,6 +8,7 @@ use App\Messenger\AckAfterHandOffTransport;
 use App\Messenger\ExternalJsonEnvelopeSerializer;
 use App\Repository\ProcessedEventRepository;
 use App\Service\CatalogProjectionClient;
+use App\Tracing\TraceContext;
 use App\Service\ElasticsearchIndexer;
 use App\Service\ProductSynchronizer;
 use Elastic\Elasticsearch\ClientBuilder;
@@ -259,7 +260,7 @@ final class ProductSyncRetryTest extends TestCase
             // refused" -> TransportException -> ProjectionUnavailableException,
             // dokładnie ta gałąź co "Idle timeout" przy make seed.
             new ProductSynchronizer(
-                new CatalogProjectionClient('http://127.0.0.1:9', new \App\Tracing\TraceContext),
+                new CatalogProjectionClient('http://127.0.0.1:9', new TraceContext),
                 new ElasticsearchIndexer(ClientBuilder::create()->build()),
             ),
             new NullLogger(),

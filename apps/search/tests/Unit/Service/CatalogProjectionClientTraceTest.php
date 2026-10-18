@@ -42,4 +42,18 @@ final class CatalogProjectionClientTraceTest extends TestCase
     {
         $this->assertStringNotContainsString('traceparent', implode("\n", $this->capture(new TraceContext)));
     }
+
+    public function test_wstrzyknietemu_klientowi_wymusza_timeout_3s(): void
+    {
+        $timeout = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$timeout) {
+            $timeout = $options['timeout'];
+
+            return new MockResponse(json_encode(['projected_at_us' => 1]), ['response_headers' => ['content-type: application/json']]);
+        });
+
+        (new CatalogProjectionClient('http://catalog', new TraceContext, $http))->fetchProductProjection('7');
+
+        $this->assertSame(3.0, $timeout);
+    }
 }
