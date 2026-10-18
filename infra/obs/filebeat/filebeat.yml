@@ -1,0 +1,69 @@
+# Filebeat — wysyła logi JSON kontenerów marketplace do data streamów
+# logs-app-catalog i logs-app-search (szablony, pipeline i ILM: obs-setup).
+#
+# Autodiscover (zamiast statycznych ścieżek): ID kontenera zmienia się przy
+# każdym odtworzeniu, więc ścieżkę do pliku logu składamy z metadanych Dockera.
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      # Domyślnie true — kropki w nazwach etykiet zamieniane na `_`, stąd
+      # `com_docker_compose_service` (pipeline czyta to pole z container.labels).
+      labels.dedot: true
+      templates:
+    - condition:
+        and:
+          # Tylko projekt marketplace — maszyna współdzieli Dockera z igrit-*
+          # i starter-*, ich logi nie mogą trafić do naszego ES.
+          - equals.docker.container.labels.com_docker_compose_project: marketplace
+          - or:
+            - equals.docker.container.labels.com_docker_compose_service: catalog-app
+            - equals.docker.container.labels.com_docker_compose_service: catalog-worker
+            - equals.docker.container.labels.com_docker_compose_service: catalog-scheduler
+            - equals.docker.container.labels.com_docker_compose_service: outbox-publisher
+      config:
+        - type: container
+          paths:
+            - /var/lib/docker/containers/${data.docker.container.id}/*.log
+          # Linie JSON zaczynają się od `{`. Zwykły tekst (stack trace PHP,
+          # logi startowe supervisora, stare logi sprzed JSON) odrzucamy już tu,
+          # bo pipeline logs-app i tak oczekuje JSON-a w polu message.
+          include_lines: ['^\{']
+          fields:
+            app: catalog
+          fields_under_root: false
+    - condition:
+        and:
+          # Tylko projekt marketplace — maszyna współdzieli Dockera z igrit-*
+          # i starter-*, ich logi nie mogą trafić do naszego ES.
+          - equals.docker.container.labels.com_docker_compose_project: marketplace
+          - or:
+            - equals.docker.container.labels.com_docker_compose_service: search-consumer
+            - equals.docker.container.labels.com_docker_compose_service: search-metrics
+      config:
+        - type: container
+          paths:
+            - /var/lib/docker/containers/${data.docker.container.id}/*.log
+          # Linie JSON zaczynają się od `{`. Zwykły tekst (stack trace PHP,
+          # logi startowe supervisora, stare logi sprzed JSON) odrzucamy już tu,
+          # bo pipeline logs-app i tak oczekuje JSON-a w polu message.
+          include_lines: ['^\{']
+          fields:
+            app: search
+          fields_under_root: false
+
+output.elasticsearch:
+  hosts: ["es01:9200"]
+  username: filebeat_writer
+  password: "${FILEBEAT_WRITER_PASSWORD}"
+  # Data stream wybierany po fields.app; pipeline podpina default_pipeline
+  # z szablonu (logs-app), więc tu `pipeline:` jest zbędne.
+  index: "logs-app-%{[fields.app]}"
+
+# Szablonem, ILM i pipeline'em zarządza obs-setup (jedno miejsce prawdy);
+# filebeat_writer i tak nie ma uprawnień do ich zakładania.
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+logging.level: info
+# Bez endpointu HTTP — nic go nie scrape'uje, a otwarty port to zbędna powierzchnia.
+http.enabled: false

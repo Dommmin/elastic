@@ -71,7 +71,10 @@
 	# zewnątrz nie czytał wewnętrznych liczników. Prometheus czyta go z portu
 	# 2020 (blok na końcu pliku). Kolejność w pliku nie ma znaczenia: Caddy
 	# sam sortuje dyrektywy i `respond` wykonuje się przed `php_server`.
-	@metrics path /prometheus /prometheus/*
+	# `/index.php/prometheus` też: php_server dzieli ścieżkę na `.php`, więc
+	# Laravel dostaje PATH_INFO `/prometheus` i bez tych wariantów oddałby
+	# metryki na publicznym hoście.
+	@metrics path /prometheus /prometheus/* /index.php/prometheus /index.php/prometheus/*
 	respond @metrics 404
 
 	php_server
@@ -87,10 +90,14 @@
 #
 # Zamiast zmuszać wewnętrzny ruch serwis-serwis do TLS z certyfikatem
 # wystawionym pod inną nazwę (i tak nieprzydatnym poza tą siecią), ten blok
-# słucha zwykłego HTTP na porcie 80 pod nazwą kontenera. Nie jest wystawiony
-# na hosta (compose.yaml publikuje tylko 80/443 spod głównego bloku) — patrz
-# `ports:` w compose.yaml: to jest ruch, który NIGDY nie opuszcza sieci
-# `marketplace`, więc brak TLS tutaj nie jest realnym ryzykiem.
+# słucha zwykłego HTTP na porcie 80 pod nazwą kontenera. UWAGA: port 80
+# kontenera JEST opublikowany (dev: 127.0.0.1:${CATALOG_HTTP_PORT}, prod: na
+# serwerze), więc o tym bloku decyduje tylko nagłówek Host — kto go sfałszuje
+# (`Host: catalog-app`), ten tu trafi z zewnątrz. Dlatego niczego wrażliwego
+# (metryki) tu nie wystawiamy; metryki mają osobny, nieopublikowany port 2020
+# (blok na końcu pliku). Zamierzony ruch serwis-serwis
+# nigdy nie opuszcza sieci `marketplace`, więc dla NIEGO brak TLS nie jest
+# ryzykiem; ruch z zewnątrz przez sfałszowany Host to osobna sprawa.
 #
 # Świadomie tylko prefiks /api/ — to jedyne, czego wewnętrzni klienci
 # (search-service, ETAP 6) powinni móc dotknąć.

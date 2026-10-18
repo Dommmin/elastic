@@ -1,0 +1,27 @@
+# Metricbeat — zasila Stack Monitoring w Kibanie metrykami klastra ES.
+metricbeat.modules:
+  - module: elasticsearch
+    # xpack.enabled: dokumenty trafiają do .monitoring-es-*, które czyta
+    # Stack Monitoring (bez tego byłyby zwykłe metricbeat-*, niewidoczne tam).
+    xpack.enabled: true
+    # scope: cluster — wystarczy odpytać jeden węzeł (es01), który zna stan
+    # całego klastra; scope: node wymagałby wpisu na każdy węzeł.
+    scope: cluster
+    period: 10s
+    hosts: ["http://es01:9200"]
+    username: remote_monitoring_user
+    password: "${REMOTE_MONITORING_PASSWORD}"
+
+output.elasticsearch:
+  hosts: ["http://es01:9200"]
+  username: remote_monitoring_user
+  password: "${REMOTE_MONITORING_PASSWORD}"
+
+# Szablony i dashboardy beatów są zbędne (monitoring ma własne indeksy
+# .monitoring-es-*), a remote_monitoring_user nie ma uprawnień do ich założenia.
+setup.template.enabled: false
+setup.ilm.enabled: false
+setup.dashboards.enabled: false
+
+logging.level: info
+http.enabled: false
