@@ -1,0 +1,12 @@
+{
+  "_meta": { "description": "Ustawienia indeksów logs-app: 1 shard, 1 replika, domyślny pipeline ECS." },
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_shards": 1,
+        "number_of_replicas": 1,
+        "default_pipeline": "logs-app"
+      }
+    }
+  }
+}

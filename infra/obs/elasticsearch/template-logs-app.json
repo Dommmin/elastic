@@ -1,0 +1,10 @@
+{
+  "index_patterns": ["logs-app-*"],
+  "data_stream": {},
+  "priority": 200,
+  "composed_of": ["logs-app@mappings", "logs-app@settings"],
+  "template": {
+    "settings": { "index.lifecycle.name": "logs-app" }
+  },
+  "_meta": { "description": "Logi aplikacji (catalog, search). Priorytet 200 wygrywa z wbudowanym `logs` (100)." }
+}

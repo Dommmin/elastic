@@ -1,0 +1,152 @@
+{
+  "description": "Surowa linia JSON (Monolog / Caddy) -> ECS. Spec D4, ETAP 11.",
+  "processors": [
+    {
+      "json": {
+        "field": "message",
+        "target_field": "_j",
+        "description": "Parsujemy do pola tymczasowego _j (nie add_to_root), żeby message Monologa nie nadpisało surowej linii zanim ją zachowamy",
+        "on_failure": [
+          { "append": { "field": "tags", "value": "json_parse_failure" } },
+          { "set": { "field": "event.original", "copy_from": "message" } }
+        ]
+      }
+    },
+
+    {
+      "script": {
+        "description": "Monolog: trace.id, error.*, app.context/app.extra",
+        "if": "ctx._j instanceof Map && ctx._j.level_name != null",
+        "lang": "painless",
+        "source": "Map j = ctx._j;\nMap c = j.context instanceof Map ? j.context : new HashMap();\nMap x = j.extra instanceof Map ? j.extra : new HashMap();\nObject tid = x.trace_id != null ? x.trace_id : c.trace_id;\nif (tid instanceof String) { ctx.trace = ['id': tid]; }\nif (c.exception instanceof Map) {\n  Map e = c.exception;\n  Map err = new HashMap();\n  if (e['class'] != null) { err.type = e['class']; }\n  if (e.message != null) { err.message = e.message; }\n  if (e.trace instanceof List) {\n    StringBuilder sb = new StringBuilder();\n    for (def l : e.trace) { if (sb.length() > 0) { sb.append((char) 10); } sb.append(l); }\n    err.stack_trace = sb.toString();\n  } else if (e.trace != null) {\n    err.stack_trace = e.trace.toString();\n  }\n  ctx.error = err;\n}\nMap rest = new HashMap(c);\nrest.remove('trace_id');\nrest.remove('exception');\nMap xrest = new HashMap(x);\nxrest.remove('trace_id');\nMap app = new HashMap();\nif (!rest.isEmpty()) { app.context = rest; }\nif (!xrest.isEmpty()) { app.extra = xrest; }\nif (!app.isEmpty()) { ctx.app = app; }"
+      }
+    },
+    {
+      "date": {
+        "field": "_j.datetime",
+        "formats": ["ISO8601"],
+        "if": "ctx._j instanceof Map && ctx._j.level_name != null && ctx._j.datetime != null"
+      }
+    },
+    {
+      "set": {
+        "field": "message",
+        "copy_from": "_j.message",
+        "ignore_empty_value": true,
+        "if": "ctx._j instanceof Map && ctx._j.level_name != null"
+      }
+    },
+    {
+      "set": {
+        "field": "log.level",
+        "copy_from": "_j.level_name",
+        "ignore_empty_value": true,
+        "if": "ctx._j instanceof Map && ctx._j.level_name != null"
+      }
+    },
+    {
+      "set": {
+        "field": "log.logger",
+        "copy_from": "_j.channel",
+        "ignore_empty_value": true,
+        "if": "ctx._j instanceof Map && ctx._j.level_name != null"
+      }
+    },
+
+    {
+      "date": {
+        "field": "_j.ts",
+        "formats": ["UNIX"],
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String && ctx._j.ts != null"
+      }
+    },
+    {
+      "set": {
+        "field": "message",
+        "copy_from": "_j.msg",
+        "ignore_empty_value": true,
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String"
+      }
+    },
+    {
+      "set": {
+        "field": "log.level",
+        "copy_from": "_j.level",
+        "ignore_empty_value": true,
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String"
+      }
+    },
+    {
+      "set": {
+        "field": "log.logger",
+        "copy_from": "_j.logger",
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String"
+      }
+    },
+    {
+      "script": {
+        "description": "Access log Caddy: http.*, url.*, event.duration (s -> ns), trace.id z resp_headers",
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String && ctx._j.logger.startsWith('http.log.access')",
+        "lang": "painless",
+        "source": "Map j = ctx._j;\nMap r = j.request instanceof Map ? j.request : new HashMap();\nMap http = new HashMap();\nif (r.method != null) { http.request = ['method': r.method]; }\nif (j.status instanceof Number) { http.response = ['status_code': j.status]; }\nif (!http.isEmpty()) { ctx.http = http; }\nif (r.uri instanceof String) {\n  String u = r.uri;\n  int q = u.indexOf('?');\n  ctx.url = ['original': u, 'path': q >= 0 ? u.substring(0, q) : u];\n}\nif (j.duration instanceof Number) {\n  if (ctx.event == null) { ctx.event = new HashMap(); }\n  ctx.event.duration = Math.round(j.duration.doubleValue() * 1000000000.0);\n}\nif (j.resp_headers instanceof Map) {\n  def h = j.resp_headers['X-Trace-Id'];\n  if (h instanceof List && h.size() > 0) { ctx.trace = ['id': h[0]]; }\n  else if (h instanceof String) { ctx.trace = ['id': h]; }\n}"
+      }
+    },
+    {
+      "set": {
+        "field": "event.dataset",
+        "value": "{{fields.app}}.access",
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String && ctx._j.logger.startsWith('http.log.access') && ctx.fields?.app != null"
+      }
+    },
+    {
+      "set": {
+        "field": "event.dataset",
+        "value": "access",
+        "override": false,
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String && ctx._j.logger.startsWith('http.log.access')"
+      }
+    },
+
+    {
+      "set": {
+        "field": "app.context",
+        "copy_from": "_j",
+        "description": "JSON, który nie jest ani Monologiem, ani Caddy: nic nie gubimy",
+        "if": "ctx._j != null && !(ctx._j instanceof Map && (ctx._j.level_name != null || ctx._j.logger instanceof String))"
+      }
+    },
+    {
+      "set": {
+        "field": "event.original",
+        "copy_from": "message",
+        "if": "ctx._j != null && !(ctx._j instanceof Map && (ctx._j.level_name != null || ctx._j.logger instanceof String))"
+      }
+    },
+
+    {
+      "lowercase": { "field": "log.level", "ignore_missing": true }
+    },
+    {
+      "set": {
+        "field": "service.name",
+        "copy_from": "container.labels.com_docker_compose_service",
+        "ignore_empty_value": true,
+        "if": "ctx.container?.labels?.com_docker_compose_service != null"
+      }
+    },
+    {
+      "set": {
+        "field": "event.dataset",
+        "value": "{{fields.app}}.{{service.name}}",
+        "override": false,
+        "if": "ctx.fields?.app != null && ctx.service?.name != null"
+      }
+    },
+    { "remove": { "field": "_j", "ignore_missing": true } }
+  ],
+  "on_failure": [
+    { "set": { "field": "error.message", "value": "{{ _ingest.on_failure_message }}" } },
+    { "append": { "field": "tags", "value": "pipeline_error" } },
+    { "remove": { "field": "_j", "ignore_missing": true } }
+  ]
+}

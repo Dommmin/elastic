@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"{\"foo\":1}",
+  "fields":{"app":"catalog"},
+  "container":{"labels":{"com_docker_compose_service":"catalog-app"}}
+}}]}

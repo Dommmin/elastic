@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"{\"message\":\"Nie udało się zaindeksować oferty\",\"context\":{\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"offer_id\":42,\"exception\":{\"class\":\"Symfony\\\\Component\\\\Messenger\\\\Exception\\\\HandlerFailedException\",\"message\":\"Elasticsearch jest niedostępny\",\"code\":0,\"file\":\"/app/src/Indexer.php:42\",\"trace\":[\"#0 /app/src/Indexer.php(42): index()\",\"#1 {main}\"]}},\"level\":400,\"level_name\":\"ERROR\",\"channel\":\"app\",\"datetime\":\"2026-10-17T20:00:01.500000+00:00\",\"extra\":[]}",
+  "fields":{"app":"search"},
+  "container":{"labels":{"com_docker_compose_service":"search-consumer"}}
+}}]}

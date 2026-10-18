@@ -645,6 +645,29 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # Kontener jednorazowy ETAPU 11: szablony, pipeline ECS, ILM, rola i użytkownik
+  # Filebeata, hasło remote_monitoring_user, data view w Kibanie. Kończy się
+  # kodem != 0, gdy asercje `_simulate` na próbkach nie przejdą.
+  # Domyślne hasła (`:-`) zgadzają się z .env.example — starszy .env ich nie ma.
+  obs-setup:
+    profiles: [obs]
+    image: marketplace/elasticsearch:${ES_VERSION}
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      FILEBEAT_WRITER_PASSWORD: ${FILEBEAT_WRITER_PASSWORD:-filebeat_dev_2026}
+      REMOTE_MONITORING_PASSWORD: ${REMOTE_MONITORING_PASSWORD:-remote_monitoring_dev_2026}
+      ES_URL: http://es01:9200
+      KIBANA_URL: http://kibana:5601
+    command: ["bash", "/obs/setup-obs.sh"]
+    volumes:
+      - ./infra/obs/elasticsearch:/obs:ro
+    depends_on:
+      es01: { condition: service_healthy }
+      kibana: { condition: service_healthy }
+    mem_limit: 128m
+    networks: [marketplace]
+    restart: "no"
+
   # ==========================================================================
   #  Profil `tools`
   # ==========================================================================

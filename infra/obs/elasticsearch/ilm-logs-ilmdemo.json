@@ -1,0 +1,22 @@
+{
+  "policy": {
+    "phases": {
+      "hot": {
+        "actions": {
+          "rollover": { "max_age": "2m" }
+        }
+      },
+      "warm": {
+        "min_age": "3m",
+        "actions": {
+          "forcemerge": { "max_num_segments": 1 },
+          "readonly": {}
+        }
+      },
+      "delete": {
+        "min_age": "8m",
+        "actions": { "delete": {} }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "cluster": ["monitor"],
+  "indices": [
+    {
+      "names": ["logs-app-*", "logs-ilmdemo-*"],
+      "privileges": ["create_doc", "auto_configure", "view_index_metadata"]
+    }
+  ]
+}
