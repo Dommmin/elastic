@@ -11,6 +11,13 @@
 	# z Let's Encrypt (co lokalnie i tak by się nie udało).
 	local_certs
 
+	# Metryki serwera HTTP (caddy_http_*), z podziałem na host (per_host), żeby
+	# odróżnić ruch publiczny (catalog.localhost) od wewnętrznego (catalog-app).
+	# Samo włączenie niczego nie wystawia — endpoint to osobny blok :2020 niżej.
+	metrics {
+		per_host
+	}
+
 	frankenphp {
 		# Worker mode włączamy zmienną OCTANE_ENABLED (decyzja D-07b).
 		# Odkomentujemy w ETAPIE 4, po zmierzeniu wariantu klasycznego.
@@ -59,6 +66,14 @@
 	# To jedna z przewag nad php-fpm, gdzie każdy request przechodzi przez PHP.
 	file_server
 
+	# /prometheus (metryki aplikacji Laravel) jest tylko dla Prometheusa w sieci
+	# dockerowej — ADR-0005, zasada 4. Publicznie ma dawać 404, żeby nikt z
+	# zewnątrz nie czytał wewnętrznych liczników. Prometheus łączy się przez
+	# blok `http://catalog-app` niżej. Ten matcher MUSI stać przed php_server,
+	# bo php_server obsłużyłby ścieżkę jako zwykły route Laravela.
+	@metrics path /prometheus /prometheus/*
+	respond @metrics 404
+
 	php_server
 }
 
@@ -99,5 +114,27 @@ http://catalog-app {
 		root * public/
 		php_server
 	}
+	# Metryki aplikacji dla Prometheusa (spatie/laravel-prometheus). Dostępne
+	# tylko tu, w sieci wewnętrznej — publiczny host zwraca na to 404 (wyżej).
+	route /prometheus {
+		root * public/
+		php_server
+	}
 	respond 404
+}
+
+# --- Metryki serwera Caddy/FrankenPHP (caddy_http_*, frankenphp_*) ---------
+#
+# DLACZEGO osobny port :2020, a nie admin API na :2019: admin API pozwala
+# ZMIENIAĆ konfigurację serwera (POST /load, /config), więc wystawianie go
+# Prometheusowi w sieci byłoby dawaniem prawa zapisu komuś, kto ma tylko
+# czytać liczby. Blok z samym handlerem `metrics` daje wyłącznie odczyt
+# /metrics. Port nie jest publikowany na hosta (brak w `ports:`), Prometheus
+# scrape'uje catalog-app:2020 po sieci `marketplace`.
+#
+# Jawny `http://` z tego samego powodu co przy `http://catalog-app`: bez
+# schematu Caddy włączyłby automatyczne HTTPS i przekierowanie na certyfikat
+# lokalnego CA, a scraper łączy się zwykłym HTTP.
+http://:2020 {
+	metrics
 }
