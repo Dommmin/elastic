@@ -13,6 +13,16 @@
 
 name: ${COMPOSE_PROJECT_NAME:-marketplace}
 
+# --- sterownik logów dla usług z logami JSON (czytanych przez Filebeat) -----
+# Docker Desktop domyślnie używa sterownika `local` (format binarny), którego
+# Filebeat nie umie czytać. json-file zapisuje zwykłe linie, które filestream
+# z parserem `container` rozpakowuje. Rotacja chroni dysk VM przed rozrostem.
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 # --- wspólna konfiguracja node'ów Elasticsearcha ----------------------------
 x-es-common: &es-common
   image: marketplace/elasticsearch:${ES_VERSION}
@@ -369,6 +379,7 @@ services:
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     mem_limit: 512m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -448,6 +459,7 @@ services:
       rabbitmq: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
     mem_limit: 256m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -507,6 +519,7 @@ services:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
     mem_limit: 256m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -556,6 +569,7 @@ services:
     # ginął z OOM (kod 137) i zamówienia nigdy nie wygasały — znalezione w E2E
     # 2026-10-17 (RUNBOOK #048).
     mem_limit: 256m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -606,6 +620,7 @@ services:
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     mem_limit: 512m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -642,6 +657,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 128m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -667,6 +683,51 @@ services:
     mem_limit: 128m
     networks: [marketplace]
     restart: "no"
+
+  # Filebeat: logi JSON kontenerów marketplace -> data streamy logs-app-*.
+  # `user: root` — pliki /var/lib/docker/containers/*/*-json.log są własnością
+  # roota (0640), a socket Dockera wymaga grupy docker; UID 1000 obrazu tego nie czyta.
+  # `--strict.perms=false` — filebeat.yml z bind mounta ma właściciela hosta,
+  # a Filebeat odmawia configu, którego nie posiada root.
+  # Wolumen filebeat-data trzyma rejestr pozycji: po restarcie nie czytamy
+  # logów od nowa (duplikaty) ani nie gubimy tego, co wpadło w międzyczasie.
+  filebeat:
+    profiles: [obs]
+    image: docker.elastic.co/beats/filebeat:${ES_VERSION}
+    user: root
+    command: ["-e", "--strict.perms=false"]
+    environment:
+      FILEBEAT_WRITER_PASSWORD: ${FILEBEAT_WRITER_PASSWORD:-filebeat_dev_2026}
+    volumes:
+      - ./infra/obs/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      obs-setup:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Metricbeat: metryki klastra ES dla Stack Monitoring (bez socketu Dockera —
+  # nie zbiera metryk kontenerów).
+  metricbeat:
+    profiles: [obs]
+    image: docker.elastic.co/beats/metricbeat:${ES_VERSION}
+    user: root
+    command: ["-e", "--strict.perms=false"]
+    environment:
+      REMOTE_MONITORING_PASSWORD: ${REMOTE_MONITORING_PASSWORD:-remote_monitoring_dev_2026}
+    volumes:
+      - ./infra/obs/metricbeat/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro
+      - metricbeat-data:/usr/share/metricbeat/data
+    depends_on:
+      obs-setup:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    networks: [marketplace]
+    restart: unless-stopped
 
   # ==========================================================================
   #  Profil `tools`
@@ -698,3 +759,5 @@ volumes:
   caddy-data:
   caddy-config:
   catalog-node-modules:
+  filebeat-data:
+  metricbeat-data:
