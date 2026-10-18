@@ -733,9 +733,51 @@ services:
   #  Profil `tools`
   # ==========================================================================
 
+  # Prometheus: reguły i konfiguracja z repo (infra/obs/prometheus), dane w
+  # wolumenie. --web.enable-lifecycle pozwala przeładować reguły przez
+  # POST /-/reload bez restartu kontenera (port nie wychodzi poza 127.0.0.1).
+  prometheus:
+    profiles: [obs]
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.15.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-19090}:9090"
+    volumes:
+      - ./infra/obs/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    mem_limit: 512m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Alertmanager wysyła maile do mailpita (SMTP mailpit:1025, bez TLS).
+  # depends_on tylko porządkuje start; przy `up --no-deps` nie działa, a
+  # Alertmanager i tak ponawia wysyłkę, gdy mailpit jeszcze nie słucha.
+  alertmanager:
+    profiles: [obs]
+    image: prom/alertmanager:${ALERTMANAGER_VERSION:-v0.34.1}
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-19093}:9093"
+    volumes:
+      - ./infra/obs/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    depends_on:
+      - mailpit
+    mem_limit: 64m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # mailpit w dwóch profilach: `tools` (ręczne testy maili) i `obs`
+  # (odbiorca alertów). Wersja przypięta jak reszta obrazów.
   mailpit:
-    profiles: [tools]
-    image: axllent/mailpit:latest
+    profiles: [tools, obs]
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.4}
     ports:
       - "127.0.0.1:${MAILPIT_UI_PORT}:8025"
     mem_limit: 256m
@@ -761,3 +803,5 @@ volumes:
   catalog-node-modules:
   filebeat-data:
   metricbeat-data:
+  prometheus-data:
+  alertmanager-data:

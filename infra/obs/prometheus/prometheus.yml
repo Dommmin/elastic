@@ -1,0 +1,62 @@
+# Prometheus — scrape i reguły (spec D7). Wszystkie cele leżą w sieci
+# `marketplace`; żaden z endpointów metryk nie jest publikowany na hosta.
+global:
+  scrape_interval: 15s
+  # 15 s także dla reguł: alert z `for: 1m` to dokładnie 4 kolejne oceny.
+  evaluation_interval: 15s
+
+# Plik wskazany wprost, nie glob `*.yml`: obok leży marketplace.test.yml
+# (testy promtool), którego Prometheus nie umie wczytać jako reguł i odmówiłby
+# startu.
+rule_files:
+  - /etc/prometheus/rules/marketplace.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # Metryki brokera: pamięć, alarmy, połączenia (wtyczka rabbitmq_prometheus).
+  - job_name: rabbitmq
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  # Metryki per kolejka. Endpoint /metrics/detailed oddaje tylko żądane
+  # rodziny — bez `family` dostalibyśmy (prawie) nic, a z całym zestawem
+  # tysiące serii. Dwie rodziny wystarczą do alertów: gotowość i konsumenci.
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  # Caddy (FrankenPHP) w kontenerze catalog-app: wewnętrzny blok http://:2020,
+  # nieopublikowany na hosta. Wystawia żądania per host i kod odpowiedzi.
+  - job_name: caddy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["catalog-app:2020"]
+
+  # Gauge'e domenowe catalog (spatie/laravel-prometheus). Ten sam port 2020,
+  # nie 80: port 80 jest opublikowany, a nagłówek Host można sfałszować.
+  - job_name: catalog
+    metrics_path: /prometheus
+    static_configs:
+      - targets: ["catalog-app:2020"]
+
+  # search nie ma HTTP, więc metryki daje osobny kontener search-metrics.
+  - job_name: search
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["search-metrics:80"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
