@@ -4,8 +4,9 @@
 #
 # `runbook`: link do wpisu w docs/RUNBOOK.md. Kotwica to slug nagłówka
 # wygenerowany przez GitHub (np. `## 031 — Tytuł` → `#031--tytuł`), więc
-# zmiana tytułu wpisu zrywa kotwicę (link nadal otwiera RUNBOOK). Alerty bez
-# kotwicy czekają na własne wpisy (ETAP 11, Task 13).
+# zmiana tytułu wpisu zrywa kotwicę (link nadal otwiera RUNBOOK). Każdy
+# alert ma wpis: #052 SearchConsumerDown, #062–#066 pozostałe nowe (ETAP 11),
+# starsze wpisy dla outboxu, sagi i search (#031, #044–#046, #050).
 groups:
   - name: marketplace
     rules:
@@ -17,7 +18,7 @@ groups:
         annotations:
           summary: "Target {{ $labels.job }} ({{ $labels.instance }}) nie odpowiada"
           description: "Prometheus nie zebrał metryk z {{ $labels.instance }} od minuty (4 nieudane scrape co 15 s). Bez metryk inne alerty tego celu milczą."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#062--alert-targetdown-prometheus-nie-zbiera-metryk-z-celu"
       - alert: OutboxStale
         expr: 'catalog_outbox_oldest_pending_age_seconds > 60'
         for: 1m
@@ -41,7 +42,7 @@ groups:
         annotations:
           summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
           description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
       - alert: SearchSyncBacklog
         expr: 'rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} > 1000'
         for: 5m
@@ -50,7 +51,7 @@ groups:
         annotations:
           summary: "Zaległość w search.product.sync: {{ $value }} wiadomości"
           description: "Seed 1500 zdarzeń konsument przerabia w niecałą minutę; ponad 1000 gotowych wiadomości przez 5 min oznacza, że konsument nie nadąża."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#006--licznik-wiadomości-w-kolejce-nie-nadąża"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#064--alert-searchsyncbacklog-ponad-1000-wiadomości-w-searchproductsync"
       - alert: DeadLetterNotEmpty
         expr: 'rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"} > 0'
         # 5m: `0m` flapowało przy każdej przerwie w scrape; DLQ to i tak ręczna
@@ -61,7 +62,7 @@ groups:
         annotations:
           summary: "Kolejka {{ $labels.queue }} nie jest pusta ({{ $value }})"
           description: "DLQ ma być pusta poza awarią; każda wiadomość to ręczna decyzja (ponowić albo odrzucić)."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#063--alert-deadletternotempty-wiadomości-w-kolejce-dlq"
       - alert: SearchFailedMessages
         expr: 'search_messenger_failed_messages > 0'
         for: 1m
@@ -84,7 +85,7 @@ groups:
         annotations:
           summary: "catalog.localhost: {{ $value | humanizePercentage }} odpowiedzi 5xx"
           description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
       - alert: OrdersStuckPlaced
         expr: 'catalog_orders_stuck_placed > 0'
         for: 2m
@@ -138,7 +139,7 @@ groups:
         annotations:
           summary: "Zmiana oferty czeka na moderatora ponad dobę"
           description: "SLA biznesowe: najstarsza zmiana ceny czeka na decyzję {{ $value | humanizeDuration }}."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"
       - alert: SellerApprovalOverdue
         expr: 'catalog_sellers_pending_approval_oldest_age_seconds > 86400'
         for: 0m
@@ -147,4 +148,4 @@ groups:
         annotations:
           summary: "Sprzedawca czeka na akceptację ponad dobę"
           description: "SLA biznesowe: najstarszy sprzedawca czeka na decyzję {{ $value | humanizeDuration }}."
-          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"

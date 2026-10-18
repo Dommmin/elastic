@@ -29,7 +29,7 @@ tests:
             exp_annotations:
               summary: "Target search (search-metrics:80) nie odpowiada"
               description: "Prometheus nie zebrał metryk z search-metrics:80 od minuty (4 nieudane scrape co 15 s). Bez metryk inne alerty tego celu milczą."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#062--alert-targetdown-prometheus-nie-zbiera-metryk-z-celu"
   - name: TargetDown milczy, gdy target żyje
     interval: 15s
     input_series:
@@ -95,7 +95,7 @@ tests:
             exp_annotations:
               summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
               description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
   - name: SearchConsumerDown milczy, gdy pusta kolejka jest odpytywana 60 razy/min
     interval: 15s
     input_series:
@@ -153,7 +153,7 @@ tests:
             exp_annotations:
               summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
               description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
   - name: SearchConsumerDown odpala, gdy istnieje tylko stojąca seria get_empty (brak get_ack)
     interval: 15s
     input_series:
@@ -170,7 +170,7 @@ tests:
             exp_annotations:
               summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
               description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
   - name: SearchConsumerDown milczy, gdy rośnie tylko get_empty (brak get_ack)
     interval: 15s
     input_series:
@@ -213,7 +213,7 @@ tests:
             exp_annotations:
               summary: "Zaległość w search.product.sync: 1001 wiadomości"
               description: "Seed 1500 zdarzeń konsument przerabia w niecałą minutę; ponad 1000 gotowych wiadomości przez 5 min oznacza, że konsument nie nadąża."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#006--licznik-wiadomości-w-kolejce-nie-nadąża"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#064--alert-searchsyncbacklog-ponad-1000-wiadomości-w-searchproductsync"
   - name: SearchSyncBacklog milczy przy równo 1000
     interval: 15s
     input_series:
@@ -241,7 +241,7 @@ tests:
             exp_annotations:
               summary: "Kolejka search.product.sync.dlq nie jest pusta (1)"
               description: "DLQ ma być pusta poza awarią; każda wiadomość to ręczna decyzja (ponowić albo odrzucić)."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#063--alert-deadletternotempty-wiadomości-w-kolejce-dlq"
   - name: DeadLetterNotEmpty milczy przed upływem 5 min (for)
     interval: 15s
     input_series:
@@ -318,7 +318,7 @@ tests:
             exp_annotations:
               summary: "catalog.localhost: 10% odpowiedzi 5xx"
               description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
   - name: CatalogHttpErrorRate liczy też host z portem (ruch z przeglądarki na :8443)
     interval: 15s
     input_series:
@@ -335,7 +335,7 @@ tests:
             exp_annotations:
               summary: "catalog.localhost: 10% odpowiedzi 5xx"
               description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
   - name: CatalogHttpErrorRate milczy przy 100 % błędów, ale znikomym ruchu
     interval: 15s
     input_series:
@@ -528,7 +528,7 @@ tests:
             exp_annotations:
               summary: "Zmiana oferty czeka na moderatora ponad dobę"
               description: "SLA biznesowe: najstarsza zmiana ceny czeka na decyzję 1d 0h 0m 1s."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"
   - name: OfferModerationOverdue milczy równo przy dobie
     interval: 15s
     input_series:
@@ -555,7 +555,7 @@ tests:
             exp_annotations:
               summary: "Sprzedawca czeka na akceptację ponad dobę"
               description: "SLA biznesowe: najstarszy sprzedawca czeka na decyzję 1d 0h 0m 1s."
-              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"
   - name: SellerApprovalOverdue milczy równo przy dobie
     interval: 15s
     input_series:
