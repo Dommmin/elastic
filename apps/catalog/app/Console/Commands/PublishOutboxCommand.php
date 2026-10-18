@@ -135,12 +135,15 @@ class PublishOutboxCommand extends Command
                 if ($row->trace_id !== null) {
                     Context::add(TraceId::CONTEXT_KEY, $row->trace_id);
                 }
-                Log::debug('Opublikowano zdarzenie do RabbitMQ', [
-                    'event_id' => $row->event_id,
-                    'type' => $row->event_type,
-                    'aggregate_id' => $row->aggregate_id,
-                ]);
-                Context::forget(TraceId::CONTEXT_KEY);
+                try {
+                    Log::debug('Opublikowano zdarzenie do RabbitMQ', [
+                        'event_id' => $row->event_id,
+                        'type' => $row->event_type,
+                        'aggregate_id' => $row->aggregate_id,
+                    ]);
+                } finally {
+                    Context::forget(TraceId::CONTEXT_KEY);
+                }
             }
 
             try {

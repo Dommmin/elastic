@@ -20,3 +20,13 @@ test('seed zapisuje occurred_at zdarzeń z mikrosekundami', function () {
     expect($raw)->toHaveCount(2)
         ->and($raw->all())->each->toContain('12:00:00.123456');
 });
+
+test('seed zapisuje zdarzenia z jednym wspólnym trace_id', function () {
+    $this->artisan('marketplace:seed', ['--n' => 3, '--no-publish' => true])->assertSuccessful();
+
+    $traceIds = DB::table('outbox')->pluck('trace_id')->unique();
+
+    expect(DB::table('outbox')->count())->toBe(3)
+        ->and($traceIds)->toHaveCount(1)
+        ->and($traceIds->first())->toMatch('/^[0-9a-f]{32}$/');
+});
