@@ -10,6 +10,8 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
 use Symfony\Component\Messenger\Event\WorkerMessageReceivedEvent;
+use Symfony\Component\Messenger\Event\WorkerRunningEvent;
+use Symfony\Component\Messenger\Worker;
 
 final class TraceContextSubscriberTest extends TestCase
 {
@@ -20,7 +22,7 @@ final class TraceContextSubscriberTest extends TestCase
         return new Envelope(new \stdClass, [new TraceIdStamp(self::TRACE)]);
     }
 
-    public function test_received_ustawia_a_handled_czysci(): void
+    public function test_slad_zyje_przez_listenery_handled_i_failed_a_znika_po_worker_running(): void
     {
         $trace = new TraceContext;
         $subscriber = new TraceContextSubscriber($trace);
@@ -28,17 +30,14 @@ final class TraceContextSubscriberTest extends TestCase
         $subscriber->onReceived(new WorkerMessageReceivedEvent($this->envelope(), 'product_sync'));
         $this->assertSame(self::TRACE, $trace->get());
 
-        $subscriber->onFinished(new WorkerMessageHandledEvent($this->envelope(), 'product_sync'));
-        $this->assertNull($trace->get());
-    }
+        // Subskrybent nie nasłuchuje Handled/Failed: log "acknowledging" i
+        // "Rejected message … failure transport" muszą jeszcze widzieć ślad.
+        $events = array_keys(TraceContextSubscriber::getSubscribedEvents());
+        $this->assertNotContains(WorkerMessageHandledEvent::class, $events);
+        $this->assertNotContains(WorkerMessageFailedEvent::class, $events);
+        $this->assertSame(self::TRACE, $trace->get());
 
-    public function test_failed_czysci(): void
-    {
-        $trace = new TraceContext;
-        $subscriber = new TraceContextSubscriber($trace);
-
-        $subscriber->onReceived(new WorkerMessageReceivedEvent($this->envelope(), 'product_sync'));
-        $subscriber->onFinished(new WorkerMessageFailedEvent($this->envelope(), 'product_sync', new \RuntimeException));
+        $subscriber->onRunning(new WorkerRunningEvent($this->createStub(Worker::class), false));
         $this->assertNull($trace->get());
     }
 

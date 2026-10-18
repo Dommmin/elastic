@@ -5,7 +5,7 @@
 # `runbook`: link do wpisu w docs/RUNBOOK.md. Kotwica to slug nagłówka
 # wygenerowany przez GitHub (np. `## 031 — Tytuł` → `#031--tytuł`), więc
 # zmiana tytułu wpisu zrywa kotwicę (link nadal otwiera RUNBOOK). Każdy
-# alert ma wpis: #052 SearchConsumerDown, #062–#066 pozostałe nowe (ETAP 11),
+# alert ma wpis: #052 SearchConsumerDown, #062–#067 pozostałe nowe (ETAP 11),
 # starsze wpisy dla outboxu, sagi i search (#031, #044–#046, #050).
 groups:
   - name: marketplace
@@ -72,6 +72,18 @@ groups:
           summary: "search: wiadomości w failure transport ({{ $value }})"
           description: "Każda wiadomość w failure transport to zmiana oferty, której nie ma w /search; bez tego alertu indeks stoi po cichu."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+      - alert: SearchMetricsScrapeError
+        # search-metrics odpowiada 200 także wtedy, gdy nie umie odczytać
+        # failure transportu (zamiast serii podaje search_metrics_scrape_error 1),
+        # więc `up` jest 1, a SearchFailedMessages nie ma na czym liczyć.
+        expr: 'search_metrics_scrape_error > 0'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "search-metrics nie odczytał failure transportu"
+          description: "Endpoint /metrics działa, ale nie umie odczytać failure transportu (RabbitMQ/Messenger). W tym czasie krytyczny alert SearchFailedMessages milczy, bo seria search_messenger_failed_messages nie istnieje, więc wiadomości mogą lądować w failure transport niezauważone."
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
       - alert: CatalogHttpErrorRate
         # Host z portem: przeglądarka na https://catalog.localhost:8443 wysyła
         # `Host: catalog.localhost:8443` i z tym `per_host` Caddy etykietuje
@@ -131,6 +143,17 @@ groups:
           summary: "catalog: zadania w failed_jobs ({{ $value }})"
           description: "Krok sagi w failed_jobs czeka na ręczne queue:retry."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#046--krok-sagi-w-failed_jobs-diagnoza-i-ręczne-ponowienie"
+      - alert: CatalogMetricsScrapeErrors
+        # Gauge, którego SQL padł, znika z /prometheus (200, bez serii), więc
+        # alerty na nim po cichu milkną; ta metryka liczy takie awarie.
+        expr: 'catalog_metrics_scrape_errors > 0'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "catalog: gauge'e niepoliczone przy scrape ({{ $value }})"
+          description: "Co najmniej jeden gauge domenowy catalog nie dał się policzyć przy scrape (np. baza niedostępna lub brak tabeli); jego seria zniknęła, więc alerty na niej (OutboxStale, CatalogFailedJobs, OrdersStuckPlaced…) milczą. Nazwę gauge'a podaje warning w logu catalog-app."
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
       - alert: OfferModerationOverdue
         expr: 'catalog_offers_pending_moderation_oldest_age_seconds > 86400'
         for: 0m

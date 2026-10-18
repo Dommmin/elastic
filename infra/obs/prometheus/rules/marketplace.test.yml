@@ -297,6 +297,42 @@ tests:
         alertname: SearchFailedMessages
         exp_alerts: []
 
+  # ------------------------------------------------------ SearchMetricsScrapeError
+  - name: SearchMetricsScrapeError odpala przy błędzie utrzymanym ponad 2 min
+    interval: 15s
+    input_series:
+      - series: 'search_metrics_scrape_error{job="search"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SearchMetricsScrapeError
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: search
+            exp_annotations:
+              summary: "search-metrics nie odczytał failure transportu"
+              description: "Endpoint /metrics działa, ale nie umie odczytać failure transportu (RabbitMQ/Messenger). W tym czasie krytyczny alert SearchFailedMessages milczy, bo seria search_messenger_failed_messages nie istnieje, więc wiadomości mogą lądować w failure transport niezauważone."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
+  - name: SearchMetricsScrapeError milczy przy 0 (tuż pod progiem)
+    interval: 15s
+    input_series:
+      - series: 'search_metrics_scrape_error{job="search"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SearchMetricsScrapeError
+        exp_alerts: []
+  - name: SearchMetricsScrapeError milczy, gdy błąd trwa krócej niż for
+    interval: 15s
+    input_series:
+      - series: 'search_metrics_scrape_error{job="search"}'
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SearchMetricsScrapeError
+        exp_alerts: []
+
   # ------------------------------------------------------ CatalogHttpErrorRate
   # Liczniki rosną liniowo (kolejne próbki co 15 s), więc rate()[5m] to stała:
   # wartości są dobrane tak, by udział 5xx i ruch były jednoznacznie po jednej
@@ -510,6 +546,42 @@ tests:
     alert_rule_test:
       - eval_time: 2m
         alertname: CatalogFailedJobs
+        exp_alerts: []
+
+  # ------------------------------------------------------ CatalogMetricsScrapeErrors
+  - name: CatalogMetricsScrapeErrors odpala przy błędzie utrzymanym ponad 2 min
+    interval: 15s
+    input_series:
+      - series: 'catalog_metrics_scrape_errors{job="catalog"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CatalogMetricsScrapeErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: catalog
+            exp_annotations:
+              summary: "catalog: gauge'e niepoliczone przy scrape (1)"
+              description: "Co najmniej jeden gauge domenowy catalog nie dał się policzyć przy scrape (np. baza niedostępna lub brak tabeli); jego seria zniknęła, więc alerty na niej (OutboxStale, CatalogFailedJobs, OrdersStuckPlaced…) milczą. Nazwę gauge'a podaje warning w logu catalog-app."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
+  - name: CatalogMetricsScrapeErrors milczy przy 0 (tuż pod progiem)
+    interval: 15s
+    input_series:
+      - series: 'catalog_metrics_scrape_errors{job="catalog"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CatalogMetricsScrapeErrors
+        exp_alerts: []
+  - name: CatalogMetricsScrapeErrors milczy, gdy błąd trwa krócej niż for
+    interval: 15s
+    input_series:
+      - series: 'catalog_metrics_scrape_errors{job="catalog"}'
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CatalogMetricsScrapeErrors
         exp_alerts: []
 
   # ------------------------------------------------------ OfferModerationOverdue

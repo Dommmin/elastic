@@ -17,8 +17,10 @@ use Symfony\Component\Routing\Attribute\Route;
  * zniknie na rzecz jej renderera. Nie ciągniemy zależności dla jednej linii.
  *
  * DLACZEGO błąd odczytu to 200 + `search_metrics_scrape_error 1`, a nie 500:
- * Prometheus i tak dostaje sygnał (alert na tę metrykę), a wykres nie ma
- * dziury z powodu `up == 0`, która maskowałaby prawdziwą przyczynę.
+ * Prometheus i tak dostaje sygnał (alert SearchMetricsScrapeError na tę
+ * metrykę; bez niego zniknęłaby seria search_messenger_failed_messages, a
+ * krytyczny SearchFailedMessages zamilkłby), a wykres nie ma dziury
+ * z powodu `up == 0`, która maskowałaby prawdziwą przyczynę.
  */
 final class MetricsController
 {
