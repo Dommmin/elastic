@@ -5,6 +5,7 @@ use App\Models\Product;
 use App\Models\Seller;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Inertia\Testing\AssertableInertia as Assert;
 
 /**
@@ -469,4 +470,18 @@ test('w pełni zarezerwowana oferta jest wyprzedana na liście, w filtrze, w szc
 
     $this->actingAs($user)->get('/seller')
         ->assertInertia(fn (Assert $page) => $page->where('stats.sold_out', 1));
+});
+
+test('zmiana ceny zostawia log aplikacji z decyzją (ślad w Kibanie, ETAP 11)', function () {
+    [$user, $seller] = sellerOfferTestAccount();
+    $offer = Offer::factory()->for($seller)->create(['price_cents' => 10000, 'stock' => 3, 'condition' => 'new', 'shipping_days' => 2]);
+    Log::spy();
+
+    $this->actingAs($user)->from("/seller/offers/{$offer->id}")
+        ->put("/seller/offers/{$offer->id}/price", ['price' => '105', 'version' => 1])
+        ->assertSessionHasNoErrors();
+
+    Log::shouldHaveReceived('info')
+        ->once()
+        ->with('Zmiana ceny oferty', ['offer_id' => $offer->id, 'price_cents' => 10500, 'decision' => 'AppliedNow']);
 });

@@ -112,6 +112,15 @@
 # Naprawa: JAWNY schemat `http://` w adresie site'a. To jedyny pewny sposób
 # na całkowite wypisanie się z automatycznego HTTPS dla danego bloku.
 http://catalog-app {
+	# Access log także tu (ETAP 11): bez niego żądanie projekcji
+	# search -> catalog (/api/internal/products/…/projection) nie miało
+	# śladu w ES, choć niesie ten sam trace.id (traceparent -> X-Trace-Id).
+	# Znalezione na żywym stacku w Task 12.
+	log {
+		output stdout
+		format json
+	}
+
 	route /api/* {
 		root * public/
 		php_server
