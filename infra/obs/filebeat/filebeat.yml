@@ -14,6 +14,9 @@ filebeat.autodiscover:
       # Do dokumentu trafiają one zdedotowane (container.labels.com_docker_compose_*),
       # co czyta pipeline logs-app.
       labels.dedot: true
+      # DWA szablony muszą zostać zsynchronizowane: różnią się wyłącznie listą
+      # serwisów w warunku i `fields.app` (catalog / search). Zmiana ścieżek,
+      # parsera czy procesorów w jednym wymaga tej samej zmiany w drugim.
       templates:
         - condition:
             and:

@@ -646,6 +646,12 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # ==========================================================================
+  #  Profil `obs` (ETAP 11)
+  #  Obserwowalność: logi (Filebeat -> ES), metryki (Prometheus, Grafana),
+  #  alerty (Alertmanager -> mailpit). Start: `--profile obs`.
+  # ==========================================================================
+
   # Metryki serwisu search dla Prometheusa. Konsument (search-consumer) to
   # proces CLI bez HTTP, więc nie ma jak wystawić /metrics — stąd osobny,
   # lekki kontener z tym samym kodem, który serwuje wyłącznie GET /metrics
@@ -733,11 +739,15 @@ services:
     restart: unless-stopped
 
   # Metricbeat: metryki klastra ES dla Stack Monitoring (bez socketu Dockera —
-  # nie zbiera metryk kontenerów).
+  # nie zbiera metryk kontenerów). Bez `user: root`: nie czyta ani socketu, ani
+  # plików roota; --strict.perms=false zostaje, bo plik konfiguracji z
+  # bind-mounta ma właściciela hosta, a nie użytkownika beata. Wolumen danych
+  # założony wcześniej przez roota trzeba raz przepisać na uid 1000, inaczej
+  # start kończy się „meta.json: permission denied": `docker run --rm --user root
+  # --entrypoint chown -v marketplace_metricbeat-data:/d <obraz metricbeat> -R 1000:1000 /d`.
   metricbeat:
     profiles: [obs]
     image: docker.elastic.co/beats/metricbeat:${ES_VERSION}
-    user: root
     command: ["-e", "--strict.perms=false"]
     environment:
       REMOTE_MONITORING_PASSWORD: ${REMOTE_MONITORING_PASSWORD:-remote_monitoring_dev_2026}
@@ -750,10 +760,6 @@ services:
     mem_limit: 256m
     networks: [marketplace]
     restart: unless-stopped
-
-  # ==========================================================================
-  #  Profil `tools`
-  # ==========================================================================
 
   # Prometheus: reguły i konfiguracja z repo (infra/obs/prometheus), dane w
   # wolumenie. --web.enable-lifecycle pozwala przeładować reguły przez
@@ -818,6 +824,10 @@ services:
     mem_limit: 512m
     networks: [marketplace]
     restart: unless-stopped
+
+  # ==========================================================================
+  #  Profil `tools` (mailpit jest też w `obs`)
+  # ==========================================================================
 
   # mailpit w dwóch profilach: `tools` (ręczne testy maili) i `obs`
   # (odbiorca alertów). Wersja przypięta jak reszta obrazów.
