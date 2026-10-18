@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Metrics\CatalogGauges;
+use App\Metrics\ScrapeErrors;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use Spatie\Prometheus\Facades\Prometheus;
@@ -18,6 +19,8 @@ class PrometheusServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->scoped(ScrapeErrors::class);
+
         $gauges = [
             'outbox_pending' => ['Liczba zdarzeń w outboxie czekających na publikację', 'outboxPending'],
             'outbox_oldest_pending_age_seconds' => ['Wiek najstarszego niepublikowanego zdarzenia w outboxie (s)', 'outboxOldestPendingAgeSeconds'],
@@ -36,6 +39,12 @@ class PrometheusServiceProvider extends ServiceProvider
                 ->helpText($help)
                 ->value(fn () => $this->sample($name, fn () => app(CatalogGauges::class)->{$method}()));
         }
+
+        // Rejestrowany OSTATNI: pakiet liczy wartości w kolejności rejestracji,
+        // więc przy tym callbacku wszystkie powyższe gauge'e już się wykonały.
+        Prometheus::addGauge('metrics_scrape_errors')
+            ->helpText('Liczba gauge\'ów catalog, których nie udało się policzyć w tym scrape (0 = wszystkie ok)')
+            ->value(fn () => (float) app(ScrapeErrors::class)->pull());
     }
 
     /**
@@ -43,7 +52,9 @@ class PrometheusServiceProvider extends ServiceProvider
      * zrobić 500 z całego /prometheus: Prometheus odrzuciłby wtedy wszystkie
      * metryki naraz, a alert o martwym scrape'ie nie powie, co poszło nie tak.
      * Zwracamy brak próbki (pusta tablica: pakiet pomija wtedy linię metryki),
-     * a przyczynę zostawiamy w logu.
+     * przyczynę zostawiamy w logu, a awarię liczymy w `catalog_metrics_scrape_errors`
+     * (alert CatalogMetricsScrapeErrors) — bo zniknięta seria sama niczego nie
+     * zaalarmuje.
      *
      * @return array{}|float
      */
@@ -52,6 +63,8 @@ class PrometheusServiceProvider extends ServiceProvider
         try {
             return $read() ?? [];
         } catch (Throwable $e) {
+            app(ScrapeErrors::class)->record();
+
             Log::warning('Gauge Prometheusa nie policzony, pomijam próbkę', [
                 'metric' => $metric,
                 'exception' => $e::class,

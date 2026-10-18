@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\OnlyMetricsPort;
 use Spatie\Prometheus\Actions\RenderCollectorsAction;
 
 return [
@@ -27,10 +28,18 @@ return [
     'default_namespace' => 'catalog',
 
     /*
+     * Wewnętrzny port metryk (Caddyfile: `http://:2020`). Middleware
+     * OnlyMetricsPort odpowiada 404 na każdym innym porcie.
+     */
+    'internal_port' => (int) env('PROMETHEUS_INTERNAL_PORT', 2020),
+
+    /*
      * The middleware that will be applied to the urls above
      */
     'middleware' => [
-        // Bez filtra IP: endpoint chroni Caddy (nie publikuje /prometheus na zewnątrz).
+        // Bez filtra IP: główną ochroną jest to, że Caddy nie publikuje portu 2020;
+        // OnlyMetricsPort to dodatkowa warstwa (obrona w głębi).
+        OnlyMetricsPort::class,
     ],
 
     /*
