@@ -1,6 +1,9 @@
 # ETAP 11: tor observability (logi w ES, metryki i alerty w Prometheusie)
 
-Data: 2026-10-17 · Status: projekt do przeglądu, przed planem
+Data: 2026-10-17 · Status: zrealizowany (gałąź `observability`, 2026-10-18).
+Tekst poprawiony po implementacji tam, gdzie kod odszedł od projektu
+(oznaczone „po implementacji”); źródłem prawdy jest kod. Przewodnik:
+[`docs/blog/etap-11-observability.md`](../../blog/etap-11-observability.md).
 
 ## Cel
 
@@ -66,10 +69,16 @@ na przykładowych liniach z obu aplikacji i z Caddy (skrypt w `infra/obs/elastic
 Autodiscover dockera z warunkiem na etykietę
 `com.docker.compose.project=marketplace` i listę serwisów (`catalog-app`,
 `catalog-worker`, `catalog-scheduler`, `outbox-publisher`, `search-consumer`,
-`search-metrics`). `include_lines: ['^\{']` — tekst dla człowieka (np. `-vv`
+`search-metrics`). Wejście `filestream` z parserem `container` (wejście `container` jest
+w Filebeacie 9.x wycofane); warunki działają na etykietach zagnieżdżonych
+`docker.container.labels.com.docker.compose.*`. `include_lines: ['^\{']` — tekst dla człowieka (np. `-vv`
 konsumenta, `info()` komend artisan) zostaje w `docker logs`, do ES idzie
 tylko JSON. Kontenery innych projektów na tej maszynie (igrit, starter)
 nie są czytane.
+
+Po implementacji: kontenery z logami dla Filebeata mają sterownik
+`json-file` (`x-json-logging` w `compose.yaml`). Domyślny sterownik Docker
+Desktop (`local`) jest binarny i Filebeat go nie czyta (RUNBOOK #051).
 
 Pole `fields.app` (`catalog` / `search`) wybiera data stream:
 `index: logs-app-%{[fields.app]}`. `setup.template` i `setup.ilm` w Filebeacie
@@ -118,6 +127,9 @@ surowych pól po mapowaniu.
 Moduł `elasticsearch`, `xpack.enabled: true`, `scope: cluster`,
 `hosts: [http://es01:9200]` — ta sama konfiguracja dla 1 i 3 węzłów.
 Użytkownik wbudowany `remote_monitoring_user` (hasło ustawia `obs-setup`).
+Po implementacji: `period: 30s` (domyślne 10 s dawało ~66 MB na godzinę
+w `.monitoring-es-*`) i `drop_event` dla zdarzeń z `error.message`, które
+trafiały do obcego indeksu `metricbeat-<wersja>` (RUNBOOK #056).
 Wynik: Kibana → Stack Monitoring. **Żadnych** alertów w Kibanie (ADR, zasada 5).
 
 ### D6. `trace_id` od żądania do ES
@@ -162,7 +174,10 @@ i wynik indeksowania.
 Logi: catalog `LOG_STACK=single,stderr` + `LOG_STDERR_FORMATTER=Monolog\Formatter\JsonFormatter`
 (ustawione w `compose.yaml`, testy i host bez zmian); search — handler
 `stderr_json` (`php://stderr`, `monolog.formatter.json`, poziom `info`)
-w `when@dev` i `when@prod`.
+w `when@dev` i `when@prod`. Po implementacji: kanał `request` wykluczony
+z `stderr_json` (log „Matched route” przy każdym scrape i healthchecku
+`search-metrics` to było ~85 % dokumentów `logs-app-search`), a jego błędy
+płyną osobnym handlerem `stderr_json_request_errors` (poziom `error`).
 
 ### D7. Źródła metryk w Prometheusie
 
@@ -250,11 +265,11 @@ Plik `infra/obs/prometheus/rules/marketplace.yml`, każdy alert z
 |---|---|---|---|---|
 | `TargetDown` | `up == 0` | 1m | critical | standard; 4 nieudane scrape |
 | `OutboxStale` | `catalog_outbox_oldest_pending_age_seconds > 60` | 1m | critical | publisher pyta co 1 s (`--sleep=1`), partia 500; seed 1500 zdarzeń schodzi w kilka s; minuta = publisher martwy albo RabbitMQ blokuje publikację (flow control, `disk_free_limit`) |
-| `SearchConsumerDown` | `sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m]) + rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m])) == 0` | 1m | critical | **alert z DoD**; Symfony amqp-messenger pobiera przez `basic.get`, więc RabbitMQ nie rejestruje konsumenta (`queue_consumers` zawsze 0) i życie konsumenta widać tylko po tempie odpytywania kolejki; okno 1 m + `for` 1 m ≈ 2 min do odpalenia, restart (`--time-limit=3600`, sekundy) mieści się w oknie |
+| `SearchConsumerDown` | `(sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m])) or vector(0)) + (sum(rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m])) or vector(0)) == 0 and on() up{job="rabbitmq-queues"} == 1` | 1m | critical | **alert z DoD**; `or vector(0)`, bo brak jednej serii (świeży broker) gubił wynik sumy; brak kolejki przy żywym RabbitMQ też odpala; Symfony amqp-messenger pobiera przez `basic.get`, więc RabbitMQ nie rejestruje konsumenta (`queue_consumers` zawsze 0) i życie konsumenta widać tylko po tempie odpytywania kolejki; okno 1 m + `for` 1 m ≈ 2 min do odpalenia, restart (`--time-limit=3600`, sekundy) mieści się w oknie |
 | `SearchSyncBacklog` | `rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} > 1000` | 5m | warning | seed 1500 zdarzeń konsument przerabia w niecałą minutę; 5 min powyżej 1000 = nie nadąża |
 | `DeadLetterNotEmpty` | `rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"} > 0` | 5m | warning | DLQ ma nie być pusta tylko przez awarię; każda wiadomość to ręczna decyzja, a `0m` flapowało przy każdej przerwie w scrape |
 | `SearchFailedMessages` | `search_messenger_failed_messages > 0` | 1m | critical | RUNBOOK #050: każda wiadomość w failure transport to zmiana oferty, której nie ma w `/search`; bez alertu indeks stoi po cichu |
-| `CatalogHttpErrorRate` | 5xx / wszystkie odpowiedzi Caddy dla hosta `catalog.localhost` > 0.05 **i** ruch > 0.1 req/s | 5m | warning | bez progu ruchu jeden błąd przy pustym stacku daje 100 % |
+| `CatalogHttpErrorRate` | 5xx / wszystkie odpowiedzi Caddy dla `host=~"catalog\\.localhost(:[0-9]+)?"` > 0.05 **i** ruch > 0.1 req/s | 5m | warning | bez progu ruchu jeden błąd przy pustym stacku daje 100 %; po implementacji regex z portem, bo przeglądarka wysyła `Host: catalog.localhost:8443` (RUNBOOK #054) |
 | `OrdersStuckPlaced` | `catalog_orders_stuck_placed > 0` | 2m | warning | rezerwacja to krok workera (`--sleep=1`), zwykle kilka sekund; zamówienie `placed` ponad 60 s + 2 min = worker stoi albo krok wpada w retry (RUNBOOK #045) |
 | `SettledOrderHoldsReservation` | `catalog_orders_settled_with_active_reservation > 0` | 5m | warning | po płatności rezerwacja powinna być potwierdzona przez krok sagi; 5 min przeczeka ponowienia joba; dłużej = towar zablokowany na zawsze (wyciek stanu) |
 | `OrderingSweepStale` | `catalog_ordering_sweep_last_run_age_seconds > 180` | 0m | warning | sweep co minutę; 3 opuszczone przebiegi (RUNBOOK #044, #048) |
@@ -300,13 +315,14 @@ Logowanie: admin z hasłem z `.env` (`GRAFANA_ADMIN_PASSWORD`), bez anonimowego 
 | `metricbeat` | `docker.elastic.co/beats/metricbeat:${ES_VERSION}` | 256m | — |
 | `prometheus` | `prom/prometheus:${PROMETHEUS_VERSION}` | 512m | `PROMETHEUS_PORT=19090` |
 | `alertmanager` | `prom/alertmanager:${ALERTMANAGER_VERSION}` | 64m | `ALERTMANAGER_PORT=19093` |
-| `grafana` | `grafana/grafana:${GRAFANA_VERSION}` | 256m | `GRAFANA_PORT=13000` (3000 zajęty przez inny projekt) |
+| `grafana` | `grafana/grafana:${GRAFANA_VERSION}` | 512m (po implementacji; przy 256m Grafana 13 nie wstawała, RUNBOOK #055) | `GRAFANA_PORT=13000` (3000 zajęty przez inny projekt) |
 | `search-metrics` | obraz search | 128m | — |
 | `mailpit` | jak dziś, profile `[tools, obs]`, wersja przypięta | 256m | `MAILPIT_UI_PORT` |
 
 Wersje przypięte w `.env.example` i `docs/07-WERSJE.md` (zasada repo).
 Filebeat montuje `/var/lib/docker/containers:ro` i `/var/run/docker.sock:ro`
-(Docker Desktop: ścieżki z VM). Suma limitów ~1,7 GB; na maszynie wolne
+(Docker Desktop: ścieżki z VM). Suma limitów ~2 GB (1984 MiB po
+podniesieniu limitu Grafany; zmierzone zużycie ~450–600 MiB, POMIARY §12); na maszynie wolne
 ok. 3,9 GB z 15,6 GB VM (pomiar 2026-10-17). Realne zużycie mierzymy
 i zapisujemy w `POMIARY.md`.
 
@@ -351,7 +367,8 @@ katalogu worktree z `.env` z głównego checkoutu, tylko dla serwisów `obs`.
 2. Prometheus → Status → Targets: wszystkie joby `UP`; zapytania zwracają
    każdą metrykę z D7–D9.
 3. **Alert celowo:** `docker stop marketplace-search-consumer-1` →
-   `SearchConsumerDown` w Prometheusie `firing` po ~1 min → mail w mailpicie;
+   `SearchConsumerDown` w Prometheusie `firing` po ~2 min (okno `rate` 1 m
+   + `for` 1 m; zmierzone 2:01) → mail w mailpicie;
    `docker start` → mail „RESOLVED”. Czasy zapisane w przewodniku.
 4. Drugi alert: zamówienie zostawione z zatrzymanym workerem →
    `OrdersStuckPlaced` (pokazuje sygnał z Orderingu).

@@ -319,6 +319,40 @@ po jednym `trace_id`; ILM przenosi indeksy między fazami na Twoich oczach;
 zatrzymany `search-consumer` wywołuje alert w mailpicie, a po wznowieniu alert
 się zamyka; zmierzony narzut RAM profilu `obs` w `POMIARY.md`.
 
+**Stan (2026-10-18): część 1 zrobiona** na gałęzi `observability`, DoD
+sprawdzone na żywym stacku. Przewodnik:
+[`blog/etap-11-observability.md`](blog/etap-11-observability.md), spec:
+[`superpowers/specs/2026-10-17-observability-design.md`](superpowers/specs/2026-10-17-observability-design.md).
+
+Zrobione:
+- `trace_id` (W3C, 32 hex): middleware catalog → Context Laravela → kolumna
+  `outbox.trace_id` → nagłówek AMQP → `TraceIdStamp` w search → `traceparent`
+  z powrotem do wewnętrznego API catalog; jedna zmiana ceny = 9 dokumentów
+  z tym samym `trace.id` w 1,1 s;
+- Filebeat (tylko JSON z kontenerów marketplace), pipeline ECS `logs-app`
+  testowany `_simulate`, data streams `logs-app-catalog`/`logs-app-search`,
+  szablony z priorytetem 200, ILM produkcyjna i minutowa demonstracyjna;
+- Metricbeat → Stack Monitoring (co 30 s);
+- Prometheus: RabbitMQ (`rabbitmq_prometheus`, per kolejka z tempem
+  `basic.get`), Caddy/FrankenPHP (`:2020`, nieopublikowany), 10 gauge catalog
+  liczonych przy scrape (`spatie/laravel-prometheus`), failure transport
+  search (`search-metrics`);
+- 14 reguł alertów z testami `promtool` (`make obs-check`), Alertmanager →
+  mailpit; `SearchConsumerDown` firing po 2:01, RESOLVED po 0:21;
+- dwa dashboardy Grafany z repo; RUNBOOK #051–#066; narzut RAM w POMIARY §12.
+
+Przeniesione do kolejnego PR (świadomie, z „Poza zakresem” specu):
+- `promphp/prometheus_client_php` z Redisem w search (liczniki bulka,
+  błędy pozycji, histogram czasu bulka, gauge opóźnienia synchronizacji),
+  podpięte pod istniejący `search-metrics`;
+- `postgres_exporter`, `elasticsearch_exporter`, `node_exporter`;
+- ćwiczenie porównawcze Metricbeat (moduł `prometheus`) → ES vs Prometheus;
+- manifesty k3s i VPS (retencja 7 dni, regex hosta w `CatalogHttpErrorRate`);
+- APM/ślady.
+
+Otwarte: węzły ES restartują się na współdzielonej maszynie (RUNBOOK #058,
+decyzja o pamięci ES do podjęcia).
+
 ### ETAP 12 — Tor analityki operacyjnej (3–4 dni) → **moduł 13a**
 - data stream `events-user-*`, lejek konwersji, raport „zero results"
 - Transforms → `search-stats-*`, pętla zwrotna do `rank_feature`

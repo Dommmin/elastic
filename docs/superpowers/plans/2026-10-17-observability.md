@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Każdy nowy kontener ma `mem_limit`: filebeat 256m, metricbeat 256m, prometheus 512m, alertmanager 64m, grafana 256m, search-metrics 128m, mailpit 256m.
+- Każdy nowy kontener ma `mem_limit`: filebeat 256m, metricbeat 256m, prometheus 512m, alertmanager 64m, grafana 256m (po implementacji 512m — przy 256m Grafana 13 nie wstawała, RUNBOOK #055), search-metrics 128m, mailpit 256m.
 - Nowe serwisy w profilu `obs`; `mailpit` w `[tools, obs]`.
 - Porty na hoście tylko `127.0.0.1`: `GRAFANA_PORT=13000`, `PROMETHEUS_PORT=19090`, `ALERTMANAGER_PORT=19093`. Endpointy `/metrics` i `/prometheus` **nie** są publikowane na hosta.
 - Wersje przypięte w `.env.example` i `docs/07-WERSJE.md`; beats = `${ES_VERSION}` (9.5.1, obrazy sprawdzone).
@@ -213,7 +213,7 @@ Próbki `_simulate` i oczekiwany wynik (asercje w skrypcie przez `jq`):
 
 **Files:**
 - Create: `infra/obs/filebeat/filebeat.yml` — autodiscover `docker` z `templates`: warunek `equals.docker.container.labels.com_docker_compose_project: marketplace` **i** `or` po `com_docker_compose_service` w `{catalog-app, catalog-worker, catalog-scheduler, outbox-publisher, search-consumer, search-metrics}`; wejście `container` (`paths: /var/lib/docker/containers/${data.docker.container.id}/*.log`), `include_lines: ['^\{']`, `fields.app` = `catalog` dla serwisów `catalog-*`/`outbox-publisher`, `search` dla `search-*` (dwa szablony); `output.elasticsearch` z `hosts: [es01:9200]`, `username: filebeat_writer`, `index: "logs-app-%{[fields.app]}"`, `pipeline: logs-app` nie jest potrzebny (default_pipeline w szablonie); `setup.template.enabled: false`, `setup.ilm.enabled: false`; `logging.level: info`; `http.enabled: false`.
-- Create: `infra/obs/metricbeat/metricbeat.yml` — moduł `elasticsearch`, `xpack.enabled: true`, `scope: cluster`, `period: 10s`, `hosts: [http://es01:9200]`, `username: remote_monitoring_user`; `output.elasticsearch` do es01 tym samym użytkownikiem; `setup.*` wyłączone.
+- Create: `infra/obs/metricbeat/metricbeat.yml` — moduł `elasticsearch`, `xpack.enabled: true`, `scope: cluster`, `period: 10s` (po Task 12: 30s i `drop_event` dla zdarzeń-błędów, RUNBOOK #056), `hosts: [http://es01:9200]`, `username: remote_monitoring_user`; `output.elasticsearch` do es01 tym samym użytkownikiem; `setup.*` wyłączone.
 - Modify: `compose.yaml` — serwisy `filebeat` (`user: root`, `command: ["-e", "--strict.perms=false"]`, montaże `./infra/obs/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro`, `/var/lib/docker/containers:/var/lib/docker/containers:ro`, `/var/run/docker.sock:/var/run/docker.sock:ro`, wolumen `filebeat-data:/usr/share/filebeat/data` — rejestr pozycji przeżywa restart), `metricbeat` (analogicznie, bez socketu); oba `depends_on: obs-setup: service_completed_successfully`, `mem_limit: 256m`, profil `obs`.
 
 - [ ] **Step 1:** `docker compose … --profile obs config -q` → bez błędów.
@@ -255,7 +255,7 @@ Próbki `_simulate` i oczekiwany wynik (asercje w skrypcie przez `jq`):
 - Create: `infra/obs/grafana/provisioning/datasources/datasources.yml` (Prometheus `uid: prometheus`, domyślny, `http://prometheus:9090`; Alertmanager `uid: alertmanager`, `implementation: prometheus`, `http://alertmanager:9093`)
 - Create: `infra/obs/grafana/provisioning/dashboards/dashboards.yml` (provider plikowy, folder „Marketplace”, `path: /var/lib/grafana/dashboards`)
 - Create: `infra/obs/grafana/dashboards/marketplace-overview.json`, `infra/obs/grafana/dashboards/ordering.json` — panele według spec D12; zapytania PromQL z tymi samymi nazwami metryk co Task 5/4/9; link dashboardu „Logi w Kibanie” → `http://localhost:${KIBANA_PORT}/app/discover#/?_g=(time:(from:'${__from:date:iso}',to:'${__to:date:iso}'))&_a=(dataSource:(dataViewId:logs-app,type:dataView))` (port wstawiony na sztywno z `.env.example` jest akceptowalny; zanotuj w przewodniku)
-- Modify: `compose.yaml` — `grafana` (`GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}`, `GF_AUTH_ANONYMOUS_ENABLED: "false"`, `GF_USERS_ALLOW_SIGN_UP: "false"`, montaże provisioningu i dashboardów `:ro`, wolumen `grafana-data`, port `127.0.0.1:${GRAFANA_PORT}:3000`, 256m, `depends_on: prometheus`)
+- Modify: `compose.yaml` — `grafana` (`GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}`, `GF_AUTH_ANONYMOUS_ENABLED: "false"`, `GF_USERS_ALLOW_SIGN_UP: "false"`, montaże provisioningu i dashboardów `:ro`, wolumen `grafana-data`, port `127.0.0.1:${GRAFANA_PORT}:3000`, 256m (po implementacji 512m), `depends_on: prometheus`)
 - Modify: `.env.example` (`GRAFANA_ADMIN_PASSWORD`)
 
 - [ ] **Step 1:** `docker compose … --profile obs up -d --no-deps grafana`; `curl -su admin:$GRAFANA_ADMIN_PASSWORD localhost:13000/api/search?query= | jq '.[].title'` → oba dashboardy; `…/api/datasources` → dwa źródła; `docker compose … logs grafana | grep -i "error"` bez błędów provisioningu.

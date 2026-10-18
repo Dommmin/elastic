@@ -5,10 +5,12 @@
 #    (brak)   -> postgres, redis, es01, kibana, rabbitmq        [ETAP 1-3]
 #    cluster  -> + es02, es03  (klaster 3-nodowy, tryb docelowy — D-12)
 #    apps     -> + catalog (Laravel) i search (Symfony)         [ETAP 4-5]
-#    obs      -> + filebeat, metricbeat, prometheus, grafana    [ETAP 11]
+#    obs      -> + obs-setup (jednorazowy), filebeat, metricbeat,         [ETAP 11]
+#                search-metrics, prometheus, alertmanager, grafana, mailpit
+#                (logi -> ES, metryki i alerty -> Prometheus, ADR-0005)
 #    tools    -> + mailpit, minio
 #
-#  Uruchomienie:  make up  |  make up-cluster
+#  Uruchomienie:  make up  |  make up-cluster  |  make up-obs (po make up-apps)
 # ============================================================================
 
 name: ${COMPOSE_PROJECT_NAME:-marketplace}

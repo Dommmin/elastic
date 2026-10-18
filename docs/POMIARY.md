@@ -382,7 +382,9 @@ z D10. OrdersStuckPlaced: 60 s progu w gauge + `for: 2m` + scrape.
 - `logs-app-*` po godzinie ruchu (od 08:50): catalog 599 dok. / 645 KB
   (primary), search 473 dok. / 505 KB. Najwięcej: access log Caddy (452,
   głównie healthcheck `/up`) i `search-metrics` (403 — log „Matched route”
-  przy każdym scrape i healthchecku, co 15 s).
+  przy każdym scrape i healthchecku, co 15 s). Po pomiarze kanał `request`
+  wyłączony z `stderr_json` w search (commit `4f999f3`), więc ten szum
+  znika; błędy z tego kanału zostają.
 - Ślad jednej zmiany ceny (`trace.id`): 9 dokumentów w 1,1 s — od logu
   kontrolera do „Zaindeksowano produkt.”.
 
@@ -413,4 +415,6 @@ Dockera była pełna (~15,4 z 15,6 GiB, w tym ~6,7 GiB innych projektów):
 w tej samej godzinie Prometheus miał ~14 min luk w scrape **wszystkich**
 celów, łącznie z samym sobą (`scrape_duration` do 141 s). Skutki widoczne
 w alertach: TargetDown, OrderingSweepStale i migający DeadLetterNotEmpty
-(`for: 0m` + luka w serii = RESOLVED/FIRING co kilka minut).
+(`for: 0m` + luka w serii = RESOLVED/FIRING co kilka minut; potem
+`for: 5m`, commit `10ab6c1`). Diagnoza i opcje: RUNBOOK
+[#058](RUNBOOK.md#058); decyzja o pamięci ES jeszcze nie zapadła.

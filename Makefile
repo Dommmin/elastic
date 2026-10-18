@@ -245,13 +245,18 @@ urls: ## Wypisz adresy usług
 	@echo "  Redis           localhost:$(REDIS_PORT)"
 	@echo "  Prometheus      http://localhost:$(PROMETHEUS_PORT)     (profil obs)"
 	@echo "  Alertmanager    http://localhost:$(ALERTMANAGER_PORT)     (profil obs)"
+	@echo "  Grafana         http://localhost:$(GRAFANA_PORT)     (profil obs, admin / GRAFANA_ADMIN_PASSWORD z .env)"
 	@echo "  Mailpit         http://localhost:$(MAILPIT_UI_PORT)      (profil obs/tools)"
 	@echo ""
 
 ## Obserwowalność (profil obs, ETAP 11)
 .PHONY: up-obs
-up-obs: ## Start warstwy obs: Prometheus, Alertmanager, mailpit (bez ruszania reszty)
-	$(DC) --profile obs up -d --no-deps mailpit alertmanager prometheus
+# Bez --no-deps: filebeat i metricbeat czekają na obs-setup
+# (service_completed_successfully), a obs-setup na zdrowe es01 i Kibanę. Compose
+# podniesie brakujące zależności (postgres, es01, kibana), działających nie rusza.
+# Kontenery aplikacji (profil apps) muszą już działać: `make up-apps`.
+up-obs: ## Start profilu obs: obs-setup, Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit, search-metrics
+	$(DC) --profile obs up -d obs-setup filebeat metricbeat search-metrics prometheus alertmanager grafana mailpit
 
 # Trzy sprawdzenia bez żywego stosu (docker run --rm + bind mount): składnia
 # prometheus.yml i reguł, testy reguł z marketplace.test.yml oraz config
