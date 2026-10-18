@@ -172,15 +172,16 @@ Scrape co 15 s, evaluation co 15 s, retencja 15 d (`--storage.tsdb.retention.tim
 |---|---|---|
 | `rabbitmq` | `rabbitmq:15692/metrics` | metryki brokera (pamięć, alarmy, połączenia) |
 | `rabbitmq-queues` | `rabbitmq:15692/metrics/detailed?family=queue_coarse_metrics&family=queue_consumer_count` | per kolejka: `rabbitmq_detailed_queue_messages_ready`, `rabbitmq_detailed_queue_consumers` |
-| `caddy` | `catalog-app:2020/metrics` | globalna opcja `metrics { per_host }` w Caddyfile + blok `http://:2020 { metrics }`; admin API zostaje na localhost (zmienia konfigurację, nie wystawiamy go) |
-| `catalog` | `catalog-app:80/prometheus` | `spatie/laravel-prometheus` ^1.7 (wspiera Laravel 13) |
+| `caddy` | `catalog-app:2020/metrics` | globalna opcja `metrics { per_host }` w Caddyfile + blok `http://:2020` (`/metrics` → handler `metrics`, `/prometheus` → `php_server`); admin API zostaje na localhost (zmienia konfigurację, nie wystawiamy go) |
+| `catalog` | `catalog-app:2020/prometheus` | `spatie/laravel-prometheus` ^1.7 (wspiera Laravel 13) |
 | `search` | `search-metrics:80/metrics` | nowy kontener, patrz D9 |
 | `prometheus`, `alertmanager` | self | |
 
 **Endpointy metryk nie wychodzą na hosta** (ADR, zasada 4): publiczny blok
 Caddy (`catalog.localhost`) odpowiada 404 na `/prometheus*`, a trasa jest
-w bloku `http://catalog-app` (tylko sieć `marketplace`). Port 2020 nie jest
-publikowany. Filtra `allowed_ips` ze spatie nie używamy: adresy w sieci
+w bloku `http://:2020` (tylko sieć `marketplace`). Port 2020 nie jest
+publikowany; blok `http://catalog-app` (port 80) się do tego nie nadaje, bo
+port 80 jest opublikowany, a nagłówek Host można sfałszować. Filtra `allowed_ips` ze spatie nie używamy: adresy w sieci
 dockera są zmienne, a ochroną jest routing Caddy.
 
 ### D8. Gauge catalog (liczone przy scrape)
