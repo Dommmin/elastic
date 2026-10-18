@@ -773,6 +773,30 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # Grafana: źródła i dashboardy tylko z repo (provisioning), nic nie jest
+  # klikane ręcznie. Dashboardy montujemy :ro, więc zmiana = edycja JSON w repo.
+  # Bez anonimowego dostępu i bez rejestracji; hasło admina z .env.
+  grafana:
+    profiles: [obs]
+    image: grafana/grafana:${GRAFANA_VERSION:-13.2.3}
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana_dev_2026}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-13000}:3000"
+    volumes:
+      - ./infra/obs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/obs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    # Grafana 13 (Go + migracje przy starcie) zajmuje ok. 300 MiB; przy 256m
+    # kontener mielił CPU i dysk w nieskończoność i nie wystartował.
+    mem_limit: 512m
+    networks: [marketplace]
+    restart: unless-stopped
+
   # mailpit w dwóch profilach: `tools` (ręczne testy maili) i `obs`
   # (odbiorca alertów). Wersja przypięta jak reszta obrazów.
   mailpit:
@@ -805,3 +829,4 @@ volumes:
   metricbeat-data:
   prometheus-data:
   alertmanager-data:
+  grafana-data:

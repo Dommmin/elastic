@@ -1,0 +1,21 @@
+# Źródła danych z repo. uid-y są stałe, bo dashboardy odwołują się do nich
+# po uid (a nie po nazwie), więc nie zepsują się po zmianie etykiety.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+  # Alertmanager mówi API Prometheusa (implementation: prometheus); dzięki
+  # niemu panel „Alert list” pokazuje alerty z zewnętrznego Alertmanagera.
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    editable: false
+    jsonData:
+      implementation: prometheus
