@@ -27,14 +27,16 @@ groups:
           summary: "Outbox: najstarsze zdarzenie czeka ponad minutę"
           description: "Najstarsze nieopublikowane zdarzenie ma {{ $value | humanizeDuration }}. Publisher pyta co 1 s i seed schodzi w kilka sekund, więc minuta oznacza martwy publisher albo blokadę publikacji w RabbitMQ (flow control, disk_free_limit)."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#031--zmiana-ceny-nigdy-nie-dociera-do-es-outbox-bez-przekaźnika"
+      # Sygnał to tempo odpytywania, nie liczba konsumentów: Messenger używa
+      # basic.get, więc kolumna consumers w RabbitMQ jest zawsze 0.
       - alert: SearchConsumerDown
-        expr: 'rabbitmq_detailed_queue_consumers{queue="search.product.sync"} == 0'
+        expr: 'sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m]) + rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m])) == 0'
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Brak konsumenta kolejki search.product.sync"
-          description: "Kolejka search.product.sync nie ma konsumenta od minuty. Konsument restartuje się co godzinę (--time-limit=3600) w kilka sekund, więc minuta to przeczeka; dłużej to awaria i indeks /search przestaje się aktualizować."
+          summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+          description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
       - alert: SearchSyncBacklog
         expr: 'rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} > 1000'

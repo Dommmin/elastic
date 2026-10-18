@@ -77,48 +77,65 @@ tests:
         exp_alerts: []
 
   # ---------------------------------------------------------- SearchConsumerDown
-  - name: SearchConsumerDown odpala przy zerze konsumentów
+  - name: SearchConsumerDown odpala, gdy liczniki basic.get stoją co najmniej 3 min
     interval: 15s
     input_series:
-      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-queues",queue="search.product.sync"}'
-        values: '0x10'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
     alert_rule_test:
-      - eval_time: 2m
+      - eval_time: 5m
         alertname: SearchConsumerDown
         exp_alerts:
           - exp_labels:
               severity: critical
-              job: rabbitmq-queues
-              queue: search.product.sync
             exp_annotations:
-              summary: "Brak konsumenta kolejki search.product.sync"
-              description: "Kolejka search.product.sync nie ma konsumenta od minuty. Konsument restartuje się co godzinę (--time-limit=3600) w kilka sekund, więc minuta to przeczeka; dłużej to awaria i indeks /search przestaje się aktualizować."
+              summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować."
               runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
-  - name: SearchConsumerDown milczy przy jednym konsumencie
+  - name: SearchConsumerDown milczy, gdy pusta kolejka jest odpytywana 60 razy/min
     interval: 15s
     input_series:
-      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-queues",queue="search.product.sync"}'
-        values: '1x10'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0+15x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
     alert_rule_test:
-      - eval_time: 2m
+      - eval_time: 5m
         alertname: SearchConsumerDown
         exp_alerts: []
-  - name: SearchConsumerDown milczy dla innej kolejki bez konsumentów
+  - name: SearchConsumerDown milczy przy zajętym konsumencie (rośnie tylko get_ack)
     interval: 15s
     input_series:
-      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-queues",queue="search.product.sync.dlq"}'
-        values: '0x10'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0+10x40'
     alert_rule_test:
-      - eval_time: 2m
+      - eval_time: 5m
         alertname: SearchConsumerDown
         exp_alerts: []
   - name: SearchConsumerDown przeczekuje restart konsumenta (--time-limit)
     interval: 15s
     input_series:
-      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-queues",queue="search.product.sync"}'
-        values: '1 1 0 0 1 1 1 1 1'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0 15 30 45 60 75 90 105 105 105 105 120 135 150 165 180 195 210 225 240'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
     alert_rule_test:
-      - eval_time: 2m
+      - eval_time: 4m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+  - name: SearchConsumerDown milczy dla innej kolejki z płaskimi licznikami
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.analytics.ingest"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.analytics.ingest"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
         alertname: SearchConsumerDown
         exp_alerts: []
 

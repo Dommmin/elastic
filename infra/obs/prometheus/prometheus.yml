@@ -25,11 +25,14 @@ scrape_configs:
 
   # Metryki per kolejka. Endpoint /metrics/detailed oddaje tylko żądane
   # rodziny — bez `family` dostalibyśmy (prawie) nic, a z całym zestawem
-  # tysiące serii. Dwie rodziny wystarczą do alertów: gotowość i konsumenci.
+  # tysiące serii. Trzy rodziny wystarczą do alertów: gotowość i DLQ
+  # (coarse), konsumenci oraz tempo basic.get (delivery) — to ostatnie jest
+  # jedynym śladem życia konsumenta Messengera, który nie rejestruje się
+  # w RabbitMQ (patrz SearchConsumerDown).
   - job_name: rabbitmq-queues
     metrics_path: /metrics/detailed
     params:
-      family: [queue_coarse_metrics, queue_consumer_count]
+      family: [queue_coarse_metrics, queue_consumer_count, queue_delivery_metrics]
     static_configs:
       - targets: ["rabbitmq:15692"]
 

@@ -171,7 +171,7 @@ Scrape co 15 s, evaluation co 15 s, retencja 15 d (`--storage.tsdb.retention.tim
 | Job | Cel | Uwagi |
 |---|---|---|
 | `rabbitmq` | `rabbitmq:15692/metrics` | metryki brokera (pamięć, alarmy, połączenia) |
-| `rabbitmq-queues` | `rabbitmq:15692/metrics/detailed?family=queue_coarse_metrics&family=queue_consumer_count` | per kolejka: `rabbitmq_detailed_queue_messages_ready`, `rabbitmq_detailed_queue_consumers` |
+| `rabbitmq-queues` | `rabbitmq:15692/metrics/detailed?family=queue_coarse_metrics&family=queue_consumer_count&family=queue_delivery_metrics` | per kolejka: `rabbitmq_detailed_queue_messages_ready`, `rabbitmq_detailed_queue_consumers`, tempo `basic.get`: `rabbitmq_detailed_queue_get_empty_total`, `rabbitmq_detailed_queue_get_ack_total` |
 | `caddy` | `catalog-app:2020/metrics` | globalna opcja `metrics { per_host }` w Caddyfile + blok `http://:2020` (`/metrics` → handler `metrics`, `/prometheus` → `php_server`); admin API zostaje na localhost (zmienia konfigurację, nie wystawiamy go) |
 | `catalog` | `catalog-app:2020/prometheus` | `spatie/laravel-prometheus` ^1.7 (wspiera Laravel 13) |
 | `search` | `search-metrics:80/metrics` | nowy kontener, patrz D9 |
@@ -250,7 +250,7 @@ Plik `infra/obs/prometheus/rules/marketplace.yml`, każdy alert z
 |---|---|---|---|---|
 | `TargetDown` | `up == 0` | 1m | critical | standard; 4 nieudane scrape |
 | `OutboxStale` | `catalog_outbox_oldest_pending_age_seconds > 60` | 1m | critical | publisher pyta co 1 s (`--sleep=1`), partia 500; seed 1500 zdarzeń schodzi w kilka s; minuta = publisher martwy albo RabbitMQ blokuje publikację (flow control, `disk_free_limit`) |
-| `SearchConsumerDown` | `rabbitmq_detailed_queue_consumers{queue="search.product.sync"} == 0` | 1m | critical | **alert z DoD**; konsument restartuje się co godzinę (`--time-limit=3600`) w kilka sekund, minuta to przeczeka |
+| `SearchConsumerDown` | `sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m]) + rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m])) == 0` | 1m | critical | **alert z DoD**; Symfony amqp-messenger pobiera przez `basic.get`, więc RabbitMQ nie rejestruje konsumenta (`queue_consumers` zawsze 0) i życie konsumenta widać tylko po tempie odpytywania kolejki; okno 1 m + `for` 1 m ≈ 2 min do odpalenia, restart (`--time-limit=3600`, sekundy) mieści się w oknie |
 | `SearchSyncBacklog` | `rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} > 1000` | 5m | warning | seed 1500 zdarzeń konsument przerabia w niecałą minutę; 5 min powyżej 1000 = nie nadąża |
 | `DeadLetterNotEmpty` | `rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"} > 0` | 0m | warning | DLQ ma nie być pusta tylko przez awarię; każda wiadomość to ręczna decyzja |
 | `SearchFailedMessages` | `search_messenger_failed_messages > 0` | 1m | critical | RUNBOOK #050: każda wiadomość w failure transport to zmiana oferty, której nie ma w `/search`; bez alertu indeks stoi po cichu |
