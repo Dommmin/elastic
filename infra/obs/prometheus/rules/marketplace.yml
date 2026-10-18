@@ -66,7 +66,12 @@ groups:
           description: "Każda wiadomość w failure transport to zmiana oferty, której nie ma w /search; bez tego alertu indeks stoi po cichu."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
       - alert: CatalogHttpErrorRate
-        expr: 'sum(rate(caddy_http_request_duration_seconds_count{host="catalog.localhost",code=~"5.."}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{host="catalog.localhost"}[5m])) > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{host="catalog.localhost"}[5m])) > 0.1'
+        # Host z portem: przeglądarka na https://catalog.localhost:8443 wysyła
+        # `Host: catalog.localhost:8443` i z tym `per_host` Caddy etykietuje
+        # serię; bez portu przychodzi tylko healthcheck z kontenera (443).
+        # Sprawdzone na żywym stacku (Task 12) — samo `host="catalog.localhost"`
+        # nie widziało ruchu użytkowników.
+        expr: 'sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?",code=~"5.."}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?"}[5m])) > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?"}[5m])) > 0.1'
         for: 5m
         labels:
           severity: warning

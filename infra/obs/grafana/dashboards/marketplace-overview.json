@@ -285,7 +285,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count[1m]))",
+          "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count{host!=\"_other\"}[1m]))",
           "legendFormat": "{{code}}",
           "refId": "A",
           "datasource": {
@@ -294,7 +294,7 @@
           }
         }
       ],
-      "description": "Z metryk Caddy (etykiety host, code).",
+      "description": "Z metryk Caddy (etykiety host, code). Bez host=_other, czyli scrape Prometheusa na porcie 2020.",
       "fieldConfig": {
         "defaults": {
           "unit": "reqps"
@@ -318,7 +318,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(caddy_http_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(caddy_http_request_duration_seconds_bucket{host!=\"_other\"}[5m])))",
           "legendFormat": "p95",
           "refId": "A",
           "datasource": {
@@ -327,7 +327,7 @@
           }
         }
       ],
-      "description": "p95 czasu odpowiedzi z histogramu Caddy.",
+      "description": "p95 czasu odpowiedzi z histogramu Caddy (bez scrape na porcie 2020, host=_other).",
       "fieldConfig": {
         "defaults": {
           "unit": "s"

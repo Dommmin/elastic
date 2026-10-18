@@ -253,6 +253,23 @@ tests:
               summary: "catalog.localhost: 10% odpowiedzi 5xx"
               description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
               runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+  - name: CatalogHttpErrorRate liczy też host z portem (ruch z przeglądarki na :8443)
+    interval: 15s
+    input_series:
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost:8443",code="200"}'
+        values: '0+3.6x60'
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost:8443",code="500"}'
+        values: '0+0.4x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "catalog.localhost: 10% odpowiedzi 5xx"
+              description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
   - name: CatalogHttpErrorRate milczy przy 100 % błędów, ale znikomym ruchu
     interval: 15s
     input_series:
