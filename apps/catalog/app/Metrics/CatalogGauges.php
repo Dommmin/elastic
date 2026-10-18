@@ -19,8 +19,9 @@ use Ordering\Domain\OrderStatus;
  * z Seller Portalu). Taki JOIN w którymkolwiek z nich złamałby granicę
  * kontekstów, a `app/` to warstwa, która widzi całą bazę (jak kontrolery).
  *
- * Konwencja zwrotu: `0.0` = nic nie czeka (też dla wieków), `null` = brak
- * próbki (np. sweep jeszcze nie biegł), czyli linia metryki nie pojawia się.
+ * Konwencja zwrotu: `0.0` = nic nie czeka (też dla wieków). Tylko
+ * `orderingSweepLastRunAgeSeconds()` bywa `null` (sweep jeszcze nie biegł):
+ * to brak próbki, czyli linia metryki nie pojawia się.
  */
 final class CatalogGauges
 {
@@ -31,41 +32,42 @@ final class CatalogGauges
      */
     public const STUCK_PLACED_AFTER_SECONDS = 60;
 
-    public function outboxPending(): ?float
+    public function outboxPending(): float
     {
         return (float) DB::table('outbox')->whereNull('published_at')->count();
     }
 
-    public function outboxOldestPendingAgeSeconds(): ?float
+    public function outboxOldestPendingAgeSeconds(): float
     {
         return $this->ageOf(DB::table('outbox')->whereNull('published_at')->min('occurred_at'));
     }
 
-    public function offersPendingModeration(): ?float
+    public function offersPendingModeration(): float
     {
         return (float) DB::table('offers')->whereNotNull('pending_requested_at')->count();
     }
 
-    public function offersPendingModerationOldestAgeSeconds(): ?float
+    public function offersPendingModerationOldestAgeSeconds(): float
     {
         return $this->ageOf(DB::table('offers')->whereNotNull('pending_requested_at')->min('pending_requested_at'));
     }
 
-    public function sellersPendingApproval(): ?float
+    public function sellersPendingApproval(): float
     {
         return (float) DB::table('sellers')->where('status', 'pending')->count();
     }
 
-    public function sellersPendingApprovalOldestAgeSeconds(): ?float
+    public function sellersPendingApprovalOldestAgeSeconds(): float
     {
         // `status_changed_at` jest puste, dopóki status się nie zmienił, więc
-        // czekanie liczymy wtedy od założenia konta.
+        // czekanie liczymy wtedy od założenia konta. coalesce miesza timestamptz
+        // z timestamp: zakładamy sesję bazy w UTC (tak jak reszta aplikacji).
         return $this->ageOf(
             DB::table('sellers')->where('status', 'pending')->min(DB::raw('coalesce(status_changed_at, created_at)')),
         );
     }
 
-    public function ordersStuckPlaced(): ?float
+    public function ordersStuckPlaced(): float
     {
         return (float) DB::table('orders')
             ->where('status', OrderStatus::Placed->value)
@@ -78,7 +80,7 @@ final class CatalogGauges
      * `active` (potwierdzenie stanu magazynowego nie doszło). Klucz rezerwacji
      * Orderingu to `order-{id}`.
      */
-    public function ordersSettledWithActiveReservation(): ?float
+    public function ordersSettledWithActiveReservation(): float
     {
         return (float) DB::table('orders')
             ->join('offer_reservations', 'offer_reservations.reservation_key', '=', DB::raw("('order-' || orders.id)"))
@@ -95,7 +97,7 @@ final class CatalogGauges
         return $lastRun === null ? null : $this->ageOf($lastRun);
     }
 
-    public function failedJobs(): ?float
+    public function failedJobs(): float
     {
         return (float) DB::table('failed_jobs')->count();
     }

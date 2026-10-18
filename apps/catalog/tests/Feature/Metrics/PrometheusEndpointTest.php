@@ -1,6 +1,7 @@
 <?php
 
 use App\Metrics\CatalogGauges;
+use Illuminate\Support\Facades\Log;
 
 // Linia próbki to nazwa na początku wiersza i wartość; `# HELP`/`# TYPE` też
 // zawierają nazwę, więc kotwiczymy wyrażenie na początku linii.
@@ -37,9 +38,14 @@ test('gauge, który rzuca, nie psuje endpointu', function () {
         }
     });
 
+    Log::spy();
+
     $response = $this->get('/prometheus');
 
     $response->assertOk();
+    Log::shouldHaveReceived('warning')
+        ->withArgs(fn (string $message, array $context) => $context['metric'] === 'failed_jobs')
+        ->once();
     $body = $response->getContent();
 
     expect(hasSampleLine($body, 'catalog_outbox_pending'))->toBeTrue()
