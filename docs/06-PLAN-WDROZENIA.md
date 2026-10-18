@@ -337,9 +337,9 @@ Zrobione:
   `basic.get`), Caddy/FrankenPHP (`:2020`, nieopublikowany), 10 gauge catalog
   liczonych przy scrape (`spatie/laravel-prometheus`), failure transport
   search (`search-metrics`);
-- 14 reguł alertów z testami `promtool` (`make obs-check`), Alertmanager →
+- 16 reguł alertów z testami `promtool` (`make obs-check`), Alertmanager →
   mailpit; `SearchConsumerDown` firing po 2:01, RESOLVED po 0:21;
-- dwa dashboardy Grafany z repo; RUNBOOK #051–#066; narzut RAM w POMIARY §12.
+- dwa dashboardy Grafany z repo; RUNBOOK #051–#067; narzut RAM w POMIARY §12.
 
 Przeniesione do kolejnego PR (świadomie, z „Poza zakresem” specu):
 - `promphp/prometheus_client_php` z Redisem w search (liczniki bulka,

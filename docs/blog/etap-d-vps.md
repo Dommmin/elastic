@@ -295,6 +295,16 @@ catalog-app:
 Wynik: zero `build:`, zero bind-mountów, każdy port na `127.0.0.1`,
 klucze Kibany z `.env` zamiast stałych z repo (**14/14**).
 
+### Logi na VPS (ETAP 11)
+
+`compose.prod.yaml` scala `environment` z `compose.yaml`, więc od ETAPU 11
+logi aplikacji catalog na VPS dziedziczą formatter JSON na stderr i rotację
+`json-file` 10m × 3. Zostawiamy to celowo: `docker logs` na serwerze to teraz
+JSON (czytelny dla `jq`, gotowy pod ewentualny Filebeat). Poziom jest jawnie
+`info` (`LOG_LEVEL` w nakładce dla `catalog-app`, `outbox-publisher`,
+`catalog-worker`, `catalog-scheduler`), bo dziedziczone `debug` z dev
+zalewałoby dysk VPS.
+
 ### `:80` zamiast HTTPS
 
 `SERVER_NAME: ":80"` sprawia, że Caddy (we FrankenPHP) słucha zwykłego HTTP

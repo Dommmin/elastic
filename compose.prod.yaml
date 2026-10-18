@@ -116,6 +116,9 @@ services:
       APP_DEBUG: "false"
       APP_KEY: ${CATALOG_APP_KEY:?}
       LOG_CHANNEL: stderr
+      # compose.yaml ustawia debug (ETAP 11, dev); w prod nadpisujemy, inaczej
+      # VPS pisałby każdy SQL i ack na poziomie debug do json-file.
+      LOG_LEVEL: info
     volumes: !reset []
 
   catalog-worker:
@@ -126,7 +129,17 @@ services:
       APP_DEBUG: "false"
       APP_KEY: ${CATALOG_APP_KEY:?}
       LOG_CHANNEL: stderr
+      # compose.yaml ustawia debug (ETAP 11, dev); w prod nadpisujemy, inaczej
+      # VPS pisałby każdy SQL i ack na poziomie debug do json-file.
+      LOG_LEVEL: info
     volumes: !reset []
+
+  # catalog-scheduler: nakładka nie zmienia go poza poziomem logów (dziedziczy
+  # LOG_LEVEL=debug z compose.yaml). Obraz/wolumeny schedulera w prod to osobna
+  # sprawa (RUNBOOK #044), tu tylko spójny poziom, gdyby kontener powstał.
+  catalog-scheduler:
+    environment:
+      LOG_LEVEL: info
 
   search-consumer:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}

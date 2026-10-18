@@ -67,6 +67,7 @@
 | [064](#064) | Alert `SearchSyncBacklog` | RabbitMQ / search | 11 |
 | [065](#065) | Alert `CatalogHttpErrorRate` | Caddy / catalog | 11 |
 | [066](#066) | Alerty `OfferModerationOverdue`, `SellerApprovalOverdue` | Portal sprzedawcy | 11 |
+| [067](#067) | Alerty `SearchMetricsScrapeError`, `CatalogMetricsScrapeErrors` | Prometheus / metryki | 11 |
 
 ---
 
@@ -3192,6 +3193,54 @@ dlatego, że jest jeden odbiorca (spec D11).
 Nie każdy alert jest o awarii. SLA biznesowe też da się mierzyć gauge'em
 liczonym przy scrape, bez zmian w domenie, i trzymać z dala od pagera
 przez `severity: info`.
+
+<a id="067"></a>
+## 067 — Alerty `SearchMetricsScrapeError` i `CatalogMetricsScrapeErrors`: metryki nie do odczytania
+
+**Objaw**
+Mail `[FIRING:1] SearchMetricsScrapeError (critical)` albo
+`CatalogMetricsScrapeErrors (critical)`. Cel w Prometheusie jest `UP`
+(`TargetDown` milczy), ale co najmniej jedna metryka nie jest liczona:
+dla search znika seria `search_messenger_failed_messages`, dla catalog znika
+próbka któregoś gauge (np. `catalog_outbox_pending`). Alerty zbudowane na
+brakującej serii (`SearchFailedMessages`, `OutboxStale`, `CatalogFailedJobs`…)
+w tym czasie nie odpalą, nawet jeśli problem, o którym mają mówić, trwa.
+
+**Diagnoza**
+Z kontenera Prometheusa pobierz surowe wyjście endpointu:
+```bash
+docker compose exec prometheus wget -qO- http://search-metrics/metrics
+docker compose exec prometheus wget -qO- http://catalog-app:2020/prometheus | grep -E 'scrape_error|^catalog_'
+```
+W search szukaj linii `search_metrics_scrape_error 1`; w catalog wartości
+`catalog_metrics_scrape_errors` (liczba gauge'ów, które padły) i brakujących
+linii `catalog_*`. Przyczynę zapisuje aplikacja jako `warning` w logach:
+```bash
+docker compose logs --since 10m search-metrics | grep "failure transportu"
+docker compose logs --since 10m catalog-app | grep "Gauge Prometheusa nie policzony"   # pole metric = nazwa gauge'a
+```
+W Kibanie: `log.level:warning` i `message:"Gauge Prometheusa nie policzony"`.
+
+**Przyczyna**
+Endpointy celowo odpowiadają `200` mimo błędu, żeby jeden zły odczyt nie
+zabrał wszystkich metryk (`up == 0` ukryłby przyczynę). Cena: brak serii nie
+wywołuje żadnego alertu, więc osobna metryka liczy awarie odczytu. Typowe
+przyczyny: search, bo transport `failed` (Doctrine, baza searchsvc) jest
+niedostępny (Postgres leży, zły `DATABASE_URL`, brak tabeli `messenger_messages`);
+catalog, bo baza nie odpowiada,
+brakuje tabeli (niezrobiona migracja) albo gauge rzuca wyjątek.
+
+**Naprawa**
+Usuń przyczynę z logu: przywróć Postgresa, uruchom brakującą
+migrację (`php artisan migrate --force`). Alert zamknie się po następnym
+udanym scrape (≤ 15 s), bo wartość wraca do 0. Gdy w odpowiedzi znów są
+wszystkie serie, sprawdź, czy nie czeka nieodpalony alert, który w międzyczasie
+milczał (`SearchFailedMessages`: `messenger:failed:show`).
+
+**Czego się nauczyłem**
+Tolerancja na błędy (200 zamiast 500) zamienia głośną awarię w cichą, więc musi
+iść w parze z metryką błędów i alertem na nią. Alert, który zależy od
+istnienia serii, nie powie nic, gdy seria znika.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

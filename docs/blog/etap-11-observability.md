@@ -12,8 +12,8 @@ i gauge liczone przy scrape jako sposób na metryki z PHP.*
 
 > **Stan:** gałąź `observability` (commity `4de3f0a..` z prefiksem
 > `ETAP 11`), **niewypchnięta i niezmergowana**. Testy na hoście zielone
-> (catalog 800 testów: 785 zielonych, 15 pominiętych; search
-> `tests/Unit` 18 testów), `make obs-check` zielone (14 reguł, 41 testów
+> (catalog 806 testów: 791 zielonych, 15 pominiętych; search
+> `tests/Unit` 17 testów), `make obs-check` zielone (16 reguł, 47 testów
 > `promtool`). **DoD sprawdzone na żywym stacku 2026-10-18** (godziny w UTC):
 > `SearchConsumerDown` po zatrzymaniu konsumenta `firing` po 2:01, mail po
 > 2:08, `RESOLVED` 21 s po starcie; `OrdersStuckPlaced` z zatrzymanym
@@ -122,7 +122,7 @@ infra/caddy/Caddyfile                                metrics { per_host }, blok 
 infra/obs/elasticsearch/                             obs-setup: komponenty, szablony, pipeline, ILM, rola, próbki
 infra/obs/filebeat/filebeat.yml                      autodiscover, filestream, tylko JSON z marketplace
 infra/obs/metricbeat/metricbeat.yml                  moduł elasticsearch, xpack, co 30 s
-infra/obs/prometheus/{prometheus.yml,rules/}         7 jobów, 14 reguł + 41 testów promtool
+infra/obs/prometheus/{prometheus.yml,rules/}         7 jobów, 16 reguł + 47 testów promtool
 infra/obs/alertmanager/alertmanager.yml              jedna trasa → mailpit
 infra/obs/grafana/{provisioning,dashboards}/         źródła danych i 2 dashboardy z repo
 compose.yaml                                         profil obs (8 kontenerów), x-json-logging, LOG_* w catalog
@@ -155,7 +155,7 @@ Prometheus (co 15 s) ◄── rabbitmq:15692 (/metrics, /metrics/detailed)
                      ◄── catalog-app:2020/metrics      (Caddy: caddy_http_*)
                      ◄── catalog-app:2020/prometheus   (gauge catalog_*)
                      ◄── search-metrics:80/metrics     (search_messenger_failed_messages)
-        │ 14 reguł ──► Alertmanager ──SMTP──► mailpit        Grafana ──► Prometheus, Alertmanager
+        │ 16 reguł ──► Alertmanager ──SMTP──► mailpit        Grafana ──► Prometheus, Alertmanager
 Metricbeat (co 30 s) ──► es01 ──► .monitoring-es-* ──► Kibana Stack Monitoring
 ```
 
@@ -296,7 +296,7 @@ z incydentu „No alive nodes” miała 3 ponowienia z tym samym `trace.id`.
 
 Stamp nie wystarczy loggerowi, który nie wie nic o kopercie. Most to serwis
 `TraceContext` (jedna wartość na proces) i subscriber, który go ustawia
-na `WorkerMessageReceivedEvent` i **czyści** na `Handled` i `Failed`:
+na `WorkerMessageReceivedEvent` i **czyści** na `WorkerRunningEvent`:
 
 ```php
 // apps/search/src/Tracing/TraceContextSubscriber.php
@@ -306,6 +306,14 @@ public function onReceived(WorkerMessageReceivedEvent $event): void
     $this->trace->set($event->getEnvelope()->last(TraceIdStamp::class)?->traceId);
 }
 ```
+
+Dlaczego `WorkerRunningEvent`, a nie `Handled`/`Failed`: w `Worker::ack()`
+Messenger wysyła te zdarzenia, a dopiero PO ich listenerach loguje „was
+handled successfully (acknowledging…)”; `SendFailedMessageToFailureTransportListener`
+(priorytet -100) loguje „Rejected message … failure transport” też po
+ewentualnym czyszczeniu na `Failed`. `WorkerRunningEvent` leci po całym
+`handleMessage()`, więc te linie zachowują `trace_id`, a ślad i tak znika
+przed następną wiadomością. (Tak było najpierw, wyszło w końcowym przeglądzie.)
 
 Procesor Monologa (`TraceIdLogProcessor`, `#[AsMonologProcessor]`) dopisuje
 `extra.trace_id`, gdy ślad jest ustawiony. Bez śladu klucza nie ma wcale
@@ -551,6 +559,13 @@ Filebeat kładzie etykietę w `docker.container.labels.*`, a pipeline czyta
 Filebeat działa jako `root`: pliki `*-json.log` mają `0640` i właściciela
 root. Metricbeat (krok 8) roota już nie potrzebuje.
 
+Autodiscover czyta etykiety kontenerów przez `/var/run/docker.sock`. Uwaga:
+mount `:ro` **nie jest ograniczeniem**; ro dotyczy pliku gniazda, a nie
+tego, co przez nie można zrobić, więc Filebeat dostaje pełne API Dockera
+(start, exec, usuwanie kontenerów). Akceptowalne wyłącznie lokalnie (dev);
+na serwerze potrzebny byłby proxy gniazda z allowlistą (`docker-socket-proxy`)
+albo ścieżki logów bez autodiscover.
+
 ---
 
 ## Krok 7 — ILM i demo na żywo
@@ -657,12 +672,12 @@ foreach ($gauges as $name => [$help, $method]) {
 Dziesięć gauge z przestrzenią nazw `catalog_`: zaległość i wiek outboxu,
 oferty i sprzedawcy czekający na decyzję (liczba i wiek najstarszego),
 zamówienia `placed` dłużej niż 60 s, zamówienia rozliczone z aktywną
-rezerwacją, wiek ostatniego sweepu, `failed_jobs`. Ok. 10 prostych
+rezerwacją, wiek ostatniego sweepu, `failed_jobs` (plus `metrics_scrape_errors`, patrz niżej). Ok. 10 prostych
 zapytań co 15 s. `EXPLAIN` na żywym Postgresie: `Index Only Scan using
 outbox_published_at_id_index`, 0,058 ms, więc dodatkowy indeks częściowy
 z planu okazał się niepotrzebny.
 
-Trzy decyzje, które warto zapamiętać:
+Cztery decyzje, które warto zapamiętać:
 
 1. **Awaria jednego gauge nie psuje odpowiedzi.** `sample()` łapie wyjątek,
    loguje `warning` i zwraca `[]` (spatie pomija wtedy linię próbki).
@@ -675,6 +690,17 @@ Trzy decyzje, które warto zapamiętać:
    `offer_reservations` z portalu, po `'order-' || orders.id`) mieszka
    w `app/Metrics`, nie w `src/<Kontekst>`. To diagnostyka niezmiennika
    **między** kontekstami (saga), nie logika domeny.
+4. **Awaria jednego gauge ma własny licznik.** Zniknięta seria nie alarmuje
+   sama (alerty na niej po prostu milkną), więc dochodzi jedenasty gauge
+   `catalog_metrics_scrape_errors` = ile gauge'ów nie dało się policzyć w tym
+   scrape, a alert `CatalogMetricsScrapeErrors` (`> 0`, 2m, critical)
+   odpala na nim. Działa to poprawnie pod Octane/FrankenPHP workerem, gdzie
+   proces żyje przez wiele żądań: licznik to obiekt `ScrapeErrors` w kontenerze
+   jako `scoped` (czyszczony po żądaniu), a gauge błędów jest zarejestrowany
+   OSTATNI i czyta licznik przez `pull()`, które go zeruje. Pakiet liczy
+   wartości po kolei w kolejności rejestracji, więc ostatni widzi awarie
+   wszystkich poprzednich, a kolejny scrape zaczyna od zera (test pilnuje, że
+   dwa żądania pod rząd nie kumulują błędów).
 
 Etykiety bez identyfikatorów (ADR-0005, zasada 3): żadnego `offer_id`
 w metryce. „Która oferta” to pytanie do logów.
@@ -695,7 +721,9 @@ należy do Messengera).
 Format składany ręcznie, bo to jedna linia, a `promphp` wejdzie w kolejnym
 PR i od razu zastąpi ten render. Błąd odczytu daje `200` z
 `search_metrics_scrape_error 1`, a nie `500`, z tego samego powodu co w
-kroku 9.
+kroku 9. Bez alertu na tę metrykę byłby to cichy błąd (seria
+`search_messenger_failed_messages` znika, `SearchFailedMessages` milczy), więc
+jest alert `SearchMetricsScrapeError` (`> 0`, 2m, critical).
 
 Zakres `mem_limit: 128m`, zmierzone 63 MiB (49 %). Healthcheck z obrazu
 bazowego sprawdzał proces `messenger:consume`, którego tu nie ma, więc
@@ -757,6 +785,16 @@ wszystkie te warianty dają 404 (sprawdzone na żywo), a port 2020 nie jest
 w żadnym `ports:`. Ten sam mechanizm dotyczy `/api/internal/*`
 i `/webhooks/*`; to istniało wcześniej i jest poza zakresem tego etapu.
 
+**Obrona w głębi w aplikacji.** Middleware `OnlyMetricsPort` (konfig
+`prometheus.internal_port`, env `PROMETHEUS_INTERNAL_PORT`, domyślnie 2020)
+odpowiada 404 na `/prometheus`, jeśli żądanie nie przyszło na port metryk.
+Sprawdzone na obrazie FrankenPHP: PHP **nie widzi portu gniazda**, tylko port
+z nagłówka `Host` (`SERVER_PORT` = port z `Host:`, bez niego 80/443). Prometheus
+wysyła `Host: catalog-app:2020`, więc przechodzi, ale `Host: x:2020` na porcie 80
+też by przeszedł. To zabezpieczenie łapie pomyłki (ktoś doda trasę do bloku
+publicznego), a nie atak ze sfałszowanym `Host`; prawdziwą ochroną zostaje
+nieopublikowany port 2020.
+
 **Co się zepsuło na żywo:** blok `http://catalog-app` nie miał access logu,
 więc żądanie projekcji z search nie miało śladu w ES (RUNBOOK
 [#059](../RUNBOOK.md#059)); a `per_host` etykietuje host **z portem**
@@ -782,12 +820,14 @@ bez uzasadnienia to zgadywanie, więc każdy ma swoje:
 | `SearchSyncBacklog` | `messages_ready` > 1000 | 5m | warning | seed 1500 zdarzeń schodzi w niecałą minutę |
 | `DeadLetterNotEmpty` | `messages` w `*.dlq` > 0 | 5m | warning | DLQ to ręczna decyzja; `0m` migało przy lukach w scrape |
 | `SearchFailedMessages` | failure transport > 0 | 1m | critical | każda wiadomość to oferta nieaktualna w `/search` (#050) |
+| `SearchMetricsScrapeError` | `search_metrics_scrape_error` > 0 | 2m | critical | endpoint żyje, ale nie czyta transportu; bez tego `SearchFailedMessages` milczy |
 | `CatalogHttpErrorRate` | 5xx > 5 % **i** ruch > 0,1 req/s | 5m | warning | bez progu ruchu jeden błąd na pustym stacku = 100 % |
 | `OrdersStuckPlaced` | `placed` > 60 s | 2m | warning | rezerwacja to sekundy; 60 s + 2 min = worker stoi (#045) |
 | `SettledOrderHoldsReservation` | opłacone z aktywną rezerwacją | 5m | warning | 5 min przeczeka ponowienia joba; dłużej = wyciek stanu |
 | `OrderingSweepStale` | wiek sweepu > 180 s | 0m | warning | sweep co minutę, 3 opuszczone przebiegi (#044, #048) |
 | `OrderingSweepNeverRan` | `absent(...)` przy żywym catalog | 10m | warning | 10 min na pierwszy przebieg po starcie |
 | `CatalogFailedJobs` | `failed_jobs` > 0 | 1m | warning | krok sagi czeka na `queue:retry` (#046) |
+| `CatalogMetricsScrapeErrors` | `catalog_metrics_scrape_errors` > 0 | 2m | critical | gauge, którego SQL padł, znika z `/prometheus`; alerty na nim milkną (#067) |
 | `OfferModerationOverdue`, `SellerApprovalOverdue` | wiek najstarszego > 24 h | 0m | info | SLA biznesowe, nie awaria |
 
 ### `SearchConsumerDown`, czyli alert, który nigdy by się nie zamknął
@@ -900,11 +940,24 @@ Link do Kibany ma port 5601 na sztywno.
 ## Krok 14 — Jak uruchomić
 
 Wszystko z katalogu głównego checkoutu (po merge'u), z `.env`.
-Stack aplikacji musi już działać:
+Domyślny stack (ES, Kibana, Postgres, RabbitMQ) i aplikacje muszą już
+działać, bo `make up-obs` celowo startuje tylko serwisy profilu `obs`
+(`--no-deps`, żeby nie odtwarzać cudzych zależności).
+
+**Najpierw migracja, bezwarunkowo.** Kod aplikacji jest zamontowany z hosta,
+więc po merge'u działające kontenery od razu widzą nowy kod, który pisze
+kolumnę `outbox.trace_id`. Dopóki nie zrobisz `migrate`, każdy zapis do outboxu
+kończy się błędem (brak kolumny):
 
 ```bash
-make up-apps                 # albo make up-cluster + aplikacje, jak zwykle
-make up-obs                  # obs-setup → filebeat/metricbeat, search-metrics, prometheus, alertmanager, grafana, mailpit
+docker compose exec catalog-app php artisan migrate --force      # outbox.trace_id; ZAWSZE pierwszy krok po merge'u
+```
+
+(Jeśli aplikacje jeszcze nie działają: `make up-apps`, a `migrate` zaraz po
+starcie.) Dopiero potem profil obs:
+
+```bash
+make up-obs                  # 1) obs-setup (run --rm --no-deps), 2) up -d --no-deps: mailpit alertmanager prometheus grafana filebeat metricbeat search-metrics
 docker compose --profile obs ps
 docker compose --profile obs logs obs-setup | tail -3      # „Wszystkie asercje przeszły”, kod 0
 make urls
@@ -916,8 +969,11 @@ logów i stary obraz Caddy; odtwórz je raz:
 ```bash
 docker compose --profile apps build catalog-app
 docker compose --profile apps up -d --force-recreate --no-deps catalog-app outbox-publisher catalog-worker catalog-scheduler search-consumer
-docker compose exec catalog-app php artisan migrate --force      # outbox.trace_id
 ```
+
+Na VPS jest inaczej: `tools/vps/deploy.sh` robi `migrate` PO `up`, więc przez
+kilka sekund nowy kod pisze do outboxu bez kolumny i te zapisy się nie udają.
+Świadomie to akceptujemy (jednorazowo, `deploy.sh` bez zmian).
 
 Adresy (domyślne z `.env.example`; lokalny `.env` może mieć inne porty,
 `make urls` pokaże prawdziwe):
@@ -1107,7 +1163,7 @@ ma oczekiwany wynik; jeśli go nie ma, link prowadzi do diagnozy.
 **Prometheus i alerty**
 - [ ] `http://localhost:19090/targets`: 7 jobów, wszystkie `UP`
   (inaczej [#062](../RUNBOOK.md#062)).
-- [ ] `http://localhost:19090/alerts`: 14 reguł, wszystkie `Inactive`
+- [ ] `http://localhost:19090/alerts`: 16 reguł, wszystkie `Inactive`
   (DLQ z wiadomościami da `DeadLetterNotEmpty`, [#063](../RUNBOOK.md#063)).
 - [ ] W Prometheusie wykonaj
   `sum by (queue) (rate({__name__=~"rabbitmq_detailed_queue_get_(empty|ack)_total"}[1m]))`:
@@ -1174,8 +1230,20 @@ Znane ograniczenia tej wersji:
 - **ES restartuje się na przepełnionej maszynie** (#058). Do decyzji:
   `ES_MEM_LIMIT` wyższy od `2× ES_HEAP`, jeden węzeł lokalnie albo mniej
   równoległych projektów.
-- **`search_metrics_scrape_error` nie ma alertu.** Gdy `search-metrics`
-  nie umie odczytać transportu, `SearchFailedMessages` milczy.
+- **Logi produkcyjne to JSON z poziomem `info`.** `compose.prod.yaml`
+  scala `environment` z `compose.yaml`, więc prod dziedziczy formatter JSON
+  i rotację `json-file` (10m × 3). To zamierzone (VPS czyta `docker logs`
+  tak samo jak dev), ale poziom `debug` z compose.yaml jest nadpisany na
+  `info` w `outbox-publisher`, `catalog-worker` i `catalog-scheduler`
+  (`catalog-app` miał go już ustawiony). Zob. też `etap-d-vps.md`.
+- **Strażnik `OnlyMetricsPort` nie chroni przed sfałszowanym `Host`**
+  (krok 11): PHP widzi port z nagłówka `Host`, nie z gniazda. Prawdziwa
+  ochrona to nieopublikowany port 2020.
+- **Mount `docker.sock:ro` w Filebeacie to pełne API Dockera** (krok 6);
+  tylko dev.
+- **`catalog-scheduler` w `compose.prod.yaml`** dziedziczy z `compose.yaml`
+  `build:` i bind-mount; ma tylko nadpisany poziom logów. Czy i jak
+  scheduler jedzie na VPS, to sprawa ETAPU D (RUNBOOK #044), nie tego etapu.
 - **Panel listy alertów w Grafanie pusty** (źródło Alertmanager), link do
   Kibany z portem 5601 na sztywno.
 - **`SearchConsumerDown` fałszywie odpali** przy wiadomości obsługiwanej
@@ -1199,14 +1267,14 @@ Znane ograniczenia tej wersji:
 |---|---|
 | Kontenery profilu `obs` | 8 (w tym jednorazowy `obs-setup`), limity razem ~2 GB |
 | Zużycie RAM profilu | ~585 MiB po starcie, ~443 MiB po godzinie |
-| Reguły alertów / testy `promtool` | 14 / 41 |
+| Reguły alertów / testy `promtool` | 16 / 47 |
 | Asercje `_simulate` w `obs-setup` | 39 na 8 próbkach + sprawdzenie `ignore_above` w szablonie |
-| Testy catalog / search Unit | 800 (785 zielonych, 15 pominiętych) / 18 |
+| Testy catalog / search Unit | 806 (791 zielonych, 15 pominiętych) / 17 |
 | Czas do alertu `SearchConsumerDown` | firing 2:01, mail 2:08, RESOLVED 0:21 po starcie |
 | Ślad jednej zmiany ceny | 9 dokumentów, 3 kontenery, 1,1 s |
 | Logi po godzinie | ~1,1 MB primary (catalog + search) |
 | Stack Monitoring | ~10 tys. dokumentów/h (przy 10 s: ~68 tys., 66 MB) |
-| Nowe wpisy RUNBOOK | 16 (#051–#066) |
+| Nowe wpisy RUNBOOK | 17 (#051–#067) |
 
 **Dało:** system sam mówi o pięciu klasach awarii, które wcześniej
 znajdował człowiek (martwy konsument, failure transport, outbox, saga,
@@ -1230,7 +1298,7 @@ i 14 problemów (tabela wyżej), z których większość wyszła dopiero na żyw
 | zobaczyć, co scrapuje Prometheus | `http://localhost:19090/targets` |
 | zobaczyć metryki catalog | `docker compose exec prometheus wget -qO- http://catalog-app:2020/prometheus` |
 | podejrzeć DLQ bez kasowania | `make mq-get q=search.product.sync.dlq` |
-| alert X przyszedł mailem | link `runbook` w mailu → RUNBOOK #052, #062–#066 i starsze |
+| alert X przyszedł mailem | link `runbook` w mailu → RUNBOOK #052, #062–#067 i starsze |
 | ILM demo | krok 7 |
 | Filebeat nic nie wysyła | RUNBOOK [#051](../RUNBOOK.md#051) |
 | węzły ES restartują się | RUNBOOK [#058](../RUNBOOK.md#058) |
@@ -1239,12 +1307,12 @@ i 14 problemów (tabela wyżej), z których większość wyszła dopiero na żyw
 
 ## Twoja kolej
 
-1. **Dopisz alert na `search_metrics_scrape_error`.** Dziś, gdy
-   `search-metrics` nie umie odczytać transportu, `SearchFailedMessages`
-   po cichu milknie. Napisz regułę, dwa testy (odpala / milczy) w
-   `marketplace.test.yml` i wpis w RUNBOOK. Zanim uruchomisz
-   `make obs-check`, zgadnij, czy wystarczy `> 0`, czy potrzebne jest też
-   `absent(search_messenger_failed_messages)`.
+1. **Wywołaj `SearchMetricsScrapeError` na żywo.** Zepsuj
+   `DATABASE_URL` w `search-metrics` (failure transport leży w Postgresie) i zobacz, jak
+   `search_metrics_scrape_error 1` odpala alert po 2 minutach, a
+   `SearchFailedMessages` milczy. Zgadnij, czy wystarczy `> 0`, czy potrzebne
+   byłoby też `absent(search_messenger_failed_messages)` (co by wtedy
+   znaczyło wyłączenie kontenera `search-metrics`? Podpowiedź: `TargetDown`).
 2. **Zepsuj próg i zobacz, co łapie test.** Zmień w `OutboxStale` `> 60`
    na `>= 60` i uruchom `make obs-check`. Który test pada? Gdyby nie było
    testu „tuż pod progiem”, co by się stało?

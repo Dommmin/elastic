@@ -298,7 +298,7 @@ Podział sygnałów według [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es
 logi aplikacji i metryki samego klastra ES idą do Elasticsearcha, pozostałe
 metryki i **wszystkie** alerty do Prometheusa. Opis krok po kroku:
 [`blog/etap-11-observability.md`](blog/etap-11-observability.md).
-Start: `make up-obs` (po `make up-apps`); sprawdzenie reguł bez stacku:
+Start: `make up-obs` (po `make up-apps`; startuje tylko serwisy `obs`, z `--no-deps`); sprawdzenie reguł bez stacku:
 `make obs-check`.
 
 | Kontener | Rola | `mem_limit` | Port na hoście (tylko 127.0.0.1) |
@@ -307,7 +307,7 @@ Start: `make up-obs` (po `make up-apps`); sprawdzenie reguł bez stacku:
 | `filebeat` | logi JSON kontenerów marketplace → `logs-app-catalog`, `logs-app-search` | 256m | — |
 | `metricbeat` | metryki klastra ES → `.monitoring-es-*` (Kibana → Stack Monitoring), co 30 s | 256m | — |
 | `search-metrics` | `GET /metrics` serwisu search (failure transport Messengera) | 128m | — (tylko sieć `marketplace`) |
-| `prometheus` | scrape co 15 s, 14 reguł alertów, retencja 15 dni | 512m | `PROMETHEUS_PORT=19090` |
+| `prometheus` | scrape co 15 s, 16 reguł alertów, retencja 15 dni | 512m | `PROMETHEUS_PORT=19090` |
 | `alertmanager` | alerty → e-mail do mailpita | 64m | `ALERTMANAGER_PORT=19093` |
 | `grafana` | dwa dashboardy z repo (provisioning) | 512m | `GRAFANA_PORT=13000` |
 | `mailpit` | skrzynka alertów (profile `tools` i `obs`) | 256m | `MAILPIT_UI_PORT` |

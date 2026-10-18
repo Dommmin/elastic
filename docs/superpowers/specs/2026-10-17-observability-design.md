@@ -159,7 +159,8 @@ OpenTelemetry bez zmiany pól.
    nagłówek do `TraceIdStamp`; `encode()` zapisuje go z powrotem
    (retry nie gubi śladu — ta sama lekcja co `RETRY_COUNT_HEADER`, RUNBOOK #027).
    Subscriber na `WorkerMessageReceivedEvent` ustawia serwis `TraceContext`,
-   na `WorkerMessageHandledEvent` / `WorkerMessageFailedEvent` go czyści.
+   na `WorkerRunningEvent` go czyści (po ack/reject, więc logi „acknowledging” i
+   „Rejected message … failure transport” jeszcze mają ślad; zmiana po przeglądzie).
    Procesor Monologa dopisuje `extra.trace_id`.
 6. **search → catalog** — `CatalogProjectionClient` wysyła
    `traceparent: 00-<trace_id>-<16 hex>-01`; middleware z punktu 1 przyjmuje
@@ -218,6 +219,7 @@ pusta kolejka = 0.
 | `catalog_orders_settled_with_active_reservation` | `offer_reservations.status = 'active'` złączone z `orders` po `reservation_key = 'order-' || id`, `orders.status IN ('paid','shipped')` |
 | `catalog_ordering_sweep_last_run_age_seconds` | `now - Cache::get('ordering:sweep:last_run_at')`; **brak próbki**, gdy klucza nie ma |
 | `catalog_failed_jobs` | `failed_jobs` |
+| `catalog_metrics_scrape_errors` | ile gauge'ów z powyższych nie dało się policzyć w BIEŻĄCYM scrape (0 = wszystkie ok); rejestrowany ostatni, licznik `ScrapeErrors` jest `scoped` i zerowany przy odczycie (poprawne pod Octane) |
 
 Złączenie po `reservation_key` łączy dwa konteksty (Ordering i SellerPortal)
 na poziomie SQL. To świadomy wyjątek: gauge jest diagnostyką niezmiennika
@@ -234,7 +236,11 @@ dodajemy, jeśli plan pokaże seq scan.
 Błąd zapytania (np. baza leży) nie może wywalić całej odpowiedzi
 `/prometheus`: Prometheus straciłby wtedy wszystkie metryki naraz.
 Każdy gauge łapie wyjątek, loguje `warning` i nie oddaje próbki;
-dostępność bazy pokazuje osobny alert `TargetDown`/HTTP.
+dostępność bazy pokazuje osobny alert `TargetDown`/HTTP. Zniknięta seria
+sama nie alarmuje, więc awarie liczy `catalog_metrics_scrape_errors`
+(alert `CatalogMetricsScrapeErrors`, D10). `/prometheus` ma dodatkowo
+middleware `OnlyMetricsPort` (404 poza portem 2020; PHP widzi port z
+nagłówka `Host`, więc to obrona w głębi, nie granica bezpieczeństwa).
 
 ### D9. `search-metrics`: failure transport przez Messengera
 
@@ -253,6 +259,11 @@ zapytaniem (`--extend.query-path` jest oznaczone jako przestarzałe);
 zmiana failure transportu na kolejkę RabbitMQ (`messenger:failed:show`
 nie działa z AMQP).
 
+Błąd odczytu transportu daje `200` z `search_metrics_scrape_error 1`; seria
+`search_messenger_failed_messages` znika, więc krytyczny
+`SearchFailedMessages` milknie. Dlatego alert `SearchMetricsScrapeError`
+(D10).
+
 `mem_limit: 128m`, profil `obs`, brak portu na hoście.
 
 ### D10. Reguły alertów
@@ -269,12 +280,14 @@ Plik `infra/obs/prometheus/rules/marketplace.yml`, każdy alert z
 | `SearchSyncBacklog` | `rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} > 1000` | 5m | warning | seed 1500 zdarzeń konsument przerabia w niecałą minutę; 5 min powyżej 1000 = nie nadąża |
 | `DeadLetterNotEmpty` | `rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"} > 0` | 5m | warning | DLQ ma nie być pusta tylko przez awarię; każda wiadomość to ręczna decyzja, a `0m` flapowało przy każdej przerwie w scrape |
 | `SearchFailedMessages` | `search_messenger_failed_messages > 0` | 1m | critical | RUNBOOK #050: każda wiadomość w failure transport to zmiana oferty, której nie ma w `/search`; bez alertu indeks stoi po cichu |
+| `SearchMetricsScrapeError` | `search_metrics_scrape_error > 0` | 2m | critical | endpoint odpowiada 200, ale nie czyta failure transportu; bez tego alertu `SearchFailedMessages` milczy po cichu (RUNBOOK #067) |
 | `CatalogHttpErrorRate` | 5xx / wszystkie odpowiedzi Caddy dla `host=~"catalog\\.localhost(:[0-9]+)?"` > 0.05 **i** ruch > 0.1 req/s | 5m | warning | bez progu ruchu jeden błąd przy pustym stacku daje 100 %; po implementacji regex z portem, bo przeglądarka wysyła `Host: catalog.localhost:8443` (RUNBOOK #054) |
 | `OrdersStuckPlaced` | `catalog_orders_stuck_placed > 0` | 2m | warning | rezerwacja to krok workera (`--sleep=1`), zwykle kilka sekund; zamówienie `placed` ponad 60 s + 2 min = worker stoi albo krok wpada w retry (RUNBOOK #045) |
 | `SettledOrderHoldsReservation` | `catalog_orders_settled_with_active_reservation > 0` | 5m | warning | po płatności rezerwacja powinna być potwierdzona przez krok sagi; 5 min przeczeka ponowienia joba; dłużej = towar zablokowany na zawsze (wyciek stanu) |
 | `OrderingSweepStale` | `catalog_ordering_sweep_last_run_age_seconds > 180` | 0m | warning | sweep co minutę; 3 opuszczone przebiegi (RUNBOOK #044, #048) |
 | `OrderingSweepNeverRan` | `absent(catalog_ordering_sweep_last_run_age_seconds) and on() up{job="catalog"} == 1` | 10m | warning | brak klucza w cache przy żywym catalog; 10 min na pierwszy przebieg po starcie |
 | `CatalogFailedJobs` | `catalog_failed_jobs > 0` | 1m | warning | krok sagi w `failed_jobs` czeka na ręczne `queue:retry` (RUNBOOK #046) |
+| `CatalogMetricsScrapeErrors` | `catalog_metrics_scrape_errors > 0` | 2m | critical | gauge z błędem SQL znika z `/prometheus`, a alerty na nim milkną; metryka liczy takie awarie (RUNBOOK #067) |
 | `OfferModerationOverdue` | `catalog_offers_pending_moderation_oldest_age_seconds > 86400` | 0m | info | SLA biznesowe: zmiana ceny czeka na moderatora dłużej niż dobę |
 | `SellerApprovalOverdue` | `catalog_sellers_pending_approval_oldest_age_seconds > 86400` | 0m | info | jw. dla sprzedawcy czekającego na akceptację |
 

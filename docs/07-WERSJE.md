@@ -34,7 +34,7 @@ stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nigh
 |---|---|---|---|
 | **Prometheus** | **3.15.0** | `prom/prometheus:v3.15.0` (`PROMETHEUS_VERSION`) | wydany 2026-09-25 |
 | **Alertmanager** | **0.34.1** | `prom/alertmanager:v0.34.1` (`ALERTMANAGER_VERSION`) | wydany 2026-09-17 |
-| **Grafana** | **13.2.3** | `grafana/grafana:13.2.3` (`GRAFANA_VERSION`) | 13.2.4 jest młodsza niż 2 tygodnie; kontener dochodzi w kolejnym zadaniu |
+| **Grafana** | **13.2.3** | `grafana/grafana:13.2.3` (`GRAFANA_VERSION`) | 13.2.4 jest młodsza niż 2 tygodnie; kontener `grafana` w profilu `obs` |
 | **Mailpit** | **1.31.4** | `axllent/mailpit:v1.31.4` (`MAILPIT_VERSION`) | wcześniej `:latest` |
 | Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
 

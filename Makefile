@@ -251,12 +251,14 @@ urls: ## Wypisz adresy usług
 
 ## Obserwowalność (profil obs, ETAP 11)
 .PHONY: up-obs
-# Bez --no-deps: filebeat i metricbeat czekają na obs-setup
-# (service_completed_successfully), a obs-setup na zdrowe es01 i Kibanę. Compose
-# podniesie brakujące zależności (postgres, es01, kibana), działających nie rusza.
-# Kontenery aplikacji (profil apps) muszą już działać: `make up-apps`.
-up-obs: ## Start profilu obs: obs-setup, Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit, search-metrics
-	$(DC) --profile obs up -d obs-setup filebeat metricbeat search-metrics prometheus alertmanager grafana mailpit
+# Domyślny stack (ES, Kibana, Postgres, RabbitMQ, aplikacje) MUSI już działać:
+# `make up` / `make up-apps`. Dwa kroki z --no-deps, bo `up` bez niego
+# potrafi odtworzyć zależności (es01, catalog-app…) z bieżącego katalogu, a to
+# kontenery współdzielone i działające. Krok 1: obs-setup (szablony, pipeline, role) kończy
+# się, zanim ruszą beaty; krok 2: reszta profilu, jawnie wymieniona.
+up-obs: ## Start profilu obs (stack i aplikacje muszą już działać): obs-setup, potem Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit, search-metrics
+	$(DC) --profile obs run --rm --no-deps obs-setup
+	$(DC) --profile obs up -d --no-deps mailpit alertmanager prometheus grafana filebeat metricbeat search-metrics
 
 # Trzy sprawdzenia bez żywego stosu (docker run --rm + bind mount): składnia
 # prometheus.yml i reguł, testy reguł z marketplace.test.yml oraz config
