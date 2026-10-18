@@ -33,7 +33,9 @@
       "date": {
         "field": "_j.datetime",
         "formats": ["ISO8601"],
-        "if": "ctx._j instanceof Map && ctx._j.level_name != null && ctx._j.datetime != null"
+        "description": "Zły znacznik czasu nie może przerwać mapowania reszty pól: lokalny on_failure tylko taguje, @timestamp zostaje z Filebeata",
+        "if": "ctx._j instanceof Map && ctx._j.level_name != null && ctx._j.datetime != null",
+        "on_failure": [{ "append": { "field": "tags", "value": "date_parse_failure" } }]
       }
     },
     {
@@ -65,7 +67,9 @@
       "date": {
         "field": "_j.ts",
         "formats": ["UNIX"],
-        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String && ctx._j.ts != null"
+        "description": "Zły znacznik czasu nie może przerwać mapowania reszty pól: lokalny on_failure tylko taguje, @timestamp zostaje z Filebeata",
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && ctx._j.logger instanceof String && ctx._j.ts != null",
+        "on_failure": [{ "append": { "field": "tags", "value": "date_parse_failure" } }]
       }
     },
     {
@@ -120,14 +124,14 @@
         "field": "app.context",
         "copy_from": "_j",
         "description": "JSON, który nie jest ani Monologiem, ani Caddy: nic nie gubimy",
-        "if": "ctx._j != null && !(ctx._j instanceof Map && (ctx._j.level_name != null || ctx._j.logger instanceof String))"
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && !(ctx._j.logger instanceof String)"
       }
     },
     {
       "set": {
         "field": "event.original",
         "copy_from": "message",
-        "if": "ctx._j != null && !(ctx._j instanceof Map && (ctx._j.level_name != null || ctx._j.logger instanceof String))"
+        "if": "ctx._j instanceof Map && ctx._j.level_name == null && !(ctx._j.logger instanceof String)"
       }
     },
 

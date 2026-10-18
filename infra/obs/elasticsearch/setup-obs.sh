@@ -139,6 +139,35 @@ check() {
   fi
 }
 
+# check_absent <próbka> <filter_path> <zakazany fragment> <opis> — odwrotność
+# check: FAIL, gdy fragment JEST w odpowiedzi.
+check_absent() {
+  local out
+  out="$(curl -sS -u "${AUTH}" -X POST \
+    "${ES}/_ingest/pipeline/logs-app/_simulate?filter_path=docs.doc._source.$2" \
+    -H 'Content-Type: application/json' \
+    --data-binary "@${DIR}/samples/$1.json" 2>&1 || true)"
+  if printf '%s' "${out}" | grep -qF -- "$3"; then
+    log "  FAIL  $1: $4 (nie powinno być: $3; jest: ${out})"
+    FAILED=$((FAILED + 1))
+  else
+    log "  OK    $1: $4"
+  fi
+}
+
+log "Asercje mapowań..."
+# flattened bez ignore_above: pojedynczy term > 32766 B odrzuca CAŁY dokument
+# (spec D4: dokument ma nie przepaść). _simulate nie indeksuje, więc tego
+# nie złapie — sprawdzamy sam szablon: ignore_above ma być na trzech polach.
+MAPPING="$(curl -sS -u "${AUTH}" "${ES}/_component_template/logs-app@mappings" 2>&1 || true)"
+IGN="$(printf '%s' "${MAPPING}" | grep -o '"ignore_above":8191' | wc -l | tr -d ' ')"
+if [ "${IGN}" = "3" ]; then
+  log "  OK    logs-app@mappings: ignore_above=8191 na labels, app.context, app.extra"
+else
+  log "  FAIL  logs-app@mappings: oczekiwano 3x ignore_above=8191, jest ${IGN}"
+  FAILED=$((FAILED + 1))
+fi
+
 log "Asercje _simulate..."
 
 # 1. Monolog z catalog: ECS z datetime/level_name/extra.trace_id/context
@@ -194,6 +223,17 @@ check $S 'message'           '"message":"Caddy serving PHP app on :80"'       'm
 check $S 'log.logger'        '"logger":"caddy"'                               'log.logger=caddy, gdy brak pola logger'
 check $S 'log.level'         '"level":"info"'                                 'log.level z level'
 check $S '@timestamp'        '"@timestamp":"2026-10-17T20:00:01.500'          '@timestamp z ts'
+
+# 8. Zły datetime w Monologu: pipeline nie przerywa mapowania reszty pól
+S=8-monolog-bad-datetime
+check $S 'tags'              'date_parse_failure'                             'tag date_parse_failure zamiast przerwania'
+check $S 'log.level'         '"level":"info"'                                 'log.level zmapowany mimo złego datetime'
+check $S 'message'           '"message":"Linia ze zlym znacznikiem czasu"'    'message zmapowany mimo złego datetime'
+
+# Asercje negatywne: poprawne próbki 1-3 nie mogą kończyć w on_failure pipeline'u
+for S in 1-monolog-catalog 2-monolog-search-exception 3-caddy-access; do
+  check_absent $S 'tags' 'pipeline_error' 'brak tagu pipeline_error'
+done
 
 if [ "${FAILED}" -ne 0 ]; then
   log "BŁĄD: ${FAILED} asercji nie przeszło."

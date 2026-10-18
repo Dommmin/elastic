@@ -48,11 +48,11 @@
             "stack_trace": { "type": "match_only_text" }
           }
         },
-        "labels": { "type": "flattened" },
+        "labels": { "type": "flattened", "ignore_above": 8191 },
         "app": {
           "properties": {
-            "context": { "type": "flattened" },
-            "extra": { "type": "flattened" }
+            "context": { "type": "flattened", "ignore_above": 8191 },
+            "extra": { "type": "flattened", "ignore_above": 8191 }
           }
         }
       }
