@@ -259,7 +259,7 @@ final class ProductSyncRetryTest extends TestCase
             // refused" -> TransportException -> ProjectionUnavailableException,
             // dokładnie ta gałąź co "Idle timeout" przy make seed.
             new ProductSynchronizer(
-                new CatalogProjectionClient('http://127.0.0.1:9'),
+                new CatalogProjectionClient('http://127.0.0.1:9', new \App\Tracing\TraceContext),
                 new ElasticsearchIndexer(ClientBuilder::create()->build()),
             ),
             new NullLogger(),

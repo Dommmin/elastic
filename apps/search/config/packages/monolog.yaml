@@ -14,6 +14,13 @@ when@dev:
                 type: console
                 process_psr_3_messages: false
                 channels: ["!event", "!doctrine", "!console"]
+            # JSON na stderr: Filebeat zbiera logi kontenerów z docker logs.
+            stderr_json:
+                type: stream
+                path: php://stderr
+                level: info
+                formatter: monolog.formatter.json
+                channels: ["!event", "!doctrine"]
 
 when@test:
     monolog:
@@ -35,15 +42,18 @@ when@prod:
             main:
                 type: fingers_crossed
                 action_level: error
-                handler: nested
+                handler: stderr_json
                 excluded_http_codes: [404, 405]
                 channels: ["!deprecation"]
                 buffer_size: 50 # How many messages should be saved? Prevent memory leaks
-            nested:
+            # Zastępuje dawny `nested` (ten sam stderr + JSON); poziom info zamiast
+            # debug, żeby do Kibany nie płynął szum. Wpisy niosą extra.trace_id.
+            stderr_json:
                 type: stream
                 path: php://stderr
-                level: debug
+                level: info
                 formatter: monolog.formatter.json
+                channels: ["!event", "!doctrine"]
             console:
                 type: console
                 process_psr_3_messages: false
