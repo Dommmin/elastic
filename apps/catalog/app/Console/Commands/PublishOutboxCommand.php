@@ -3,8 +3,12 @@
 namespace App\Console\Commands;
 
 use App\Models\Outbox;
+use App\Support\Outbox\OutboxMessageFactory;
+use App\Support\Tracing\TraceId;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Exception\AMQPTimeoutException;
@@ -115,13 +119,7 @@ class PublishOutboxCommand extends Command
             });
 
             foreach ($rows as $row) {
-                $message = new AMQPMessage(
-                    json_encode($this->toEventEnvelope($row), JSON_THROW_ON_ERROR),
-                    [
-                        'content_type' => 'application/json',
-                        'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-                    ],
-                );
+                $message = OutboxMessageFactory::make($row);
 
                 $messageToRowId[spl_object_id($message)] = $row->id;
 
@@ -130,6 +128,19 @@ class PublishOutboxCommand extends Command
                     config('services.rabbitmq.events_exchange'),
                     $row->event_type,
                 );
+
+                // Log z trace_id wiersza (nie publishera), żeby wysyłka
+                // wpadła w ten sam ślad co żądanie, które utworzyło zdarzenie.
+                // Niepotwierdzone zdarzenie wróci z tym samym trace_id.
+                if ($row->trace_id !== null) {
+                    Context::add(TraceId::CONTEXT_KEY, $row->trace_id);
+                }
+                Log::debug('Opublikowano zdarzenie do RabbitMQ', [
+                    'event_id' => $row->event_id,
+                    'type' => $row->event_type,
+                    'aggregate_id' => $row->aggregate_id,
+                ]);
+                Context::forget(TraceId::CONTEXT_KEY);
             }
 
             try {
@@ -144,30 +155,5 @@ class PublishOutboxCommand extends Command
 
             return count($confirmedIds);
         });
-    }
-
-    /**
-     * Koperta zdarzenia — dokładnie ten kształt co w docs/05-SPOJNOSC-DANYCH.md
-     * (sekcja 3) i docs/02-APLIKACJE.md (sekcja 3). `sequence` to kopia
-     * wersji agregatu z momentu zdarzenia — konsument użyje jej jako
-     * `version_type=external` przy zapisie do Elasticsearcha.
-     *
-     * @return array<string, mixed>
-     */
-    private function toEventEnvelope(Outbox $row): array
-    {
-        return [
-            'id' => $row->event_id,
-            'type' => $row->event_type,
-            'version' => 1,
-            'source' => 'catalog',
-            'occurred_at' => $row->occurred_at->toIso8601String(),
-            'aggregate' => [
-                'type' => $row->aggregate_type,
-                'id' => $row->aggregate_id,
-            ],
-            'sequence' => $row->sequence,
-            'data' => $row->payload,
-        ];
     }
 }
