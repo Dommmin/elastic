@@ -11,6 +11,7 @@ use App\Http\Requests\Seller\UpdateOfferPriceRequest;
 use App\Http\Requests\Seller\UpdateOfferStockRequest;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
 use Inertia\Response;
 use SellerPortal\Application\Offer\CancelPendingPriceChange;
@@ -114,6 +115,15 @@ class SellerOfferController extends Controller
     public function updatePrice(UpdateOfferPriceRequest $request, int $offer, ChangeOfferPriceHandler $handler): RedirectResponse
     {
         $decision = $handler->handle(new ChangeOfferPrice(self::userId($request), $offer, $request->priceCents(), $request->expectedVersion()));
+
+        // Log aplikacji w śladzie zmiany ceny (ETAP 11, spec D6): trace_id
+        // dopisuje Context z middleware AssignTraceId, więc w Kibanie filtr
+        // trace.id pokazuje obok access logu także decyzję (od razu / moderacja).
+        Log::info('Zmiana ceny oferty', [
+            'offer_id' => $offer,
+            'price_cents' => $request->priceCents(),
+            'decision' => $decision->name,
+        ]);
 
         return match ($decision) {
             PriceChangeDecision::AppliedNow => self::backWithToast('Cena zmieniona'),

@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"{\"message\":\"Linia ze zlym znacznikiem czasu\",\"context\":{},\"level\":200,\"level_name\":\"INFO\",\"channel\":\"app\",\"datetime\":\"nie-data\",\"extra\":{}}",
+  "fields":{"app":"catalog"},
+  "container":{"labels":{"com_docker_compose_service":"catalog-app"}}
+}}]}

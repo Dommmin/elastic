@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"{\"level\":\"info\",\"ts\":1792267201.5,\"msg\":\"Caddy serving PHP app on :80\"}",
+  "fields":{"app":"catalog"},
+  "container":{"labels":{"com_docker_compose_service":"catalog-app"}}
+}}]}

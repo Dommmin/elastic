@@ -3,6 +3,7 @@
 namespace App\Concerns;
 
 use App\Models\Outbox;
+use App\Support\Tracing\TraceId;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -126,6 +127,7 @@ trait EmitsOutboxEvents
             // poprawne — nie ma kolejności do ochrony, bo nie ma update'ów.
             'sequence' => $sequenceOverride ?? ($this->usesOutboxVersioning() ? $this->version : 1),
             'occurred_at' => now(),
+            'trace_id' => TraceId::current(),
         ]);
     }
 

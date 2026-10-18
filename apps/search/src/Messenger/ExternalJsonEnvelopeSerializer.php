@@ -47,6 +47,13 @@ final class ExternalJsonEnvelopeSerializer implements SerializerInterface
 {
     public const RETRY_COUNT_HEADER = 'X-Message-Retry-Count';
 
+    /**
+     * Nagłówek aplikacyjny AMQP ustawiany przez publisher w Laravelu
+     * (32 znaki [0-9a-f]). Niesiemy go jako TraceIdStamp i odsyłamy w
+     * encode(), żeby ślad przeżył także retry (jak RETRY_COUNT_HEADER).
+     */
+    public const TRACE_ID_HEADER = 'trace_id';
+
     public function decode(array $encodedEnvelope): Envelope
     {
         $body = $encodedEnvelope['body'] ?? '';
@@ -84,7 +91,18 @@ final class ExternalJsonEnvelopeSerializer implements SerializerInterface
         // Brak nagłówka = świeża wiadomość z Laravela (licznik 0).
         $retryCount = (int) ($encodedEnvelope['headers'][self::RETRY_COUNT_HEADER] ?? 0);
 
-        return $retryCount > 0 ? $envelope->with(new RedeliveryStamp($retryCount)) : $envelope;
+        if ($retryCount > 0) {
+            $envelope = $envelope->with(new RedeliveryStamp($retryCount));
+        }
+
+        // Nagłówek z zewnątrz to dane niezaufane: stampujemy tylko poprawny
+        // format, żeby śmieci nie trafiły do logów ani do traceparent.
+        $traceId = $encodedEnvelope['headers'][self::TRACE_ID_HEADER] ?? null;
+        if (\is_string($traceId) && preg_match('/^[0-9a-f]{32}$/', $traceId) === 1) {
+            $envelope = $envelope->with(new TraceIdStamp($traceId));
+        }
+
+        return $envelope;
     }
 
     /**
@@ -123,6 +141,11 @@ final class ExternalJsonEnvelopeSerializer implements SerializerInterface
         $retryCount = RedeliveryStamp::getRetryCountFromEnvelope($envelope);
         if ($retryCount > 0) {
             $headers[self::RETRY_COUNT_HEADER] = (string) $retryCount;
+        }
+
+        $traceId = $envelope->last(TraceIdStamp::class)?->traceId;
+        if ($traceId !== null) {
+            $headers[self::TRACE_ID_HEADER] = $traceId;
         }
 
         return [

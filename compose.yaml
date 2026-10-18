@@ -5,13 +5,25 @@
 #    (brak)   -> postgres, redis, es01, kibana, rabbitmq        [ETAP 1-3]
 #    cluster  -> + es02, es03  (klaster 3-nodowy, tryb docelowy — D-12)
 #    apps     -> + catalog (Laravel) i search (Symfony)         [ETAP 4-5]
-#    obs      -> + filebeat, metricbeat, prometheus, grafana    [ETAP 11]
+#    obs      -> + obs-setup (jednorazowy), filebeat, metricbeat,         [ETAP 11]
+#                search-metrics, prometheus, alertmanager, grafana, mailpit
+#                (logi -> ES, metryki i alerty -> Prometheus, ADR-0005)
 #    tools    -> + mailpit, minio
 #
-#  Uruchomienie:  make up  |  make up-cluster
+#  Uruchomienie:  make up  |  make up-cluster  |  make up-obs (po make up-apps)
 # ============================================================================
 
 name: ${COMPOSE_PROJECT_NAME:-marketplace}
+
+# --- sterownik logów dla usług z logami JSON (czytanych przez Filebeat) -----
+# Docker Desktop domyślnie używa sterownika `local` (format binarny), którego
+# Filebeat nie umie czytać. json-file zapisuje zwykłe linie, które filestream
+# z parserem `container` rozpakowuje. Rotacja chroni dysk VM przed rozrostem.
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 # --- wspólna konfiguracja node'ów Elasticsearcha ----------------------------
 x-es-common: &es-common
@@ -321,6 +333,13 @@ services:
       OCTANE_ENABLED: ${OCTANE_ENABLED}
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi: plik (jak dotąd, `make logs`) ORAZ JSON Monologa na stderr —
+      # stąd czyta je Filebeat (ETAP 11, spec D6). Tylko w kontenerach:
+      # testy i host zostają przy LOG_STACK=single z .env aplikacji.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       # DB_CONNECTION jest KLUCZOWE: .env Laravela ma domyślnie sqlite
       # (tak stawia installer). Bez tego nadpisania kontener po cichu
       # ignorowałby DB_HOST/DB_DATABASE poniżej i pisał do pliku SQLite,
@@ -369,6 +388,7 @@ services:
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     mem_limit: 512m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -421,6 +441,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -448,6 +473,7 @@ services:
       rabbitmq: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
     mem_limit: 256m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -470,6 +496,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -507,6 +538,7 @@ services:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
     mem_limit: 256m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -529,6 +561,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -556,6 +593,7 @@ services:
     # ginął z OOM (kod 137) i zamówienia nigdy nie wygasały — znalezione w E2E
     # 2026-10-17 (RUNBOOK #048).
     mem_limit: 256m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
@@ -606,16 +644,198 @@ services:
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     mem_limit: 512m
+    logging: *json-logging
     networks: [marketplace]
     restart: unless-stopped
 
   # ==========================================================================
-  #  Profil `tools`
+  #  Profil `obs` (ETAP 11)
+  #  Obserwowalność: logi (Filebeat -> ES), metryki (Prometheus, Grafana),
+  #  alerty (Alertmanager -> mailpit). Start: `--profile obs`.
   # ==========================================================================
 
+  # Metryki serwisu search dla Prometheusa. Konsument (search-consumer) to
+  # proces CLI bez HTTP, więc nie ma jak wystawić /metrics — stąd osobny,
+  # lekki kontener z tym samym kodem, który serwuje wyłącznie GET /metrics
+  # (MetricsController). Gauge'e liczone są przy scrape z Postgresa i
+  # RabbitMQ, dlatego te same DATABASE_URL i MESSENGER_TRANSPORT_DSN co
+  # konsument. Bez `ports:` — Prometheus scrape'uje search-metrics:80 po sieci
+  # `marketplace`, endpoint nie jest publikowany na hosta (ADR-0005, zasada 4).
+  search-metrics:
+    profiles: [obs]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["frankenphp", "php-server", "--root", "/app/public", "--listen", ":80"]
+    environment:
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+    volumes:
+      - ./apps/search:/app
+    # Healthcheck z obrazu bazowego sprawdza proces `messenger:consume`, którego
+    # tu nie ma — kontener byłby wiecznie unhealthy. Pytamy więc sam endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/metrics >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 128m
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Kontener jednorazowy ETAPU 11: szablony, pipeline ECS, ILM, rola i użytkownik
+  # Filebeata, hasło remote_monitoring_user, data view w Kibanie. Kończy się
+  # kodem != 0, gdy asercje `_simulate` na próbkach nie przejdą.
+  # Domyślne hasła (`:-`) zgadzają się z .env.example — starszy .env ich nie ma.
+  obs-setup:
+    profiles: [obs]
+    image: marketplace/elasticsearch:${ES_VERSION}
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      FILEBEAT_WRITER_PASSWORD: ${FILEBEAT_WRITER_PASSWORD:-filebeat_dev_2026}
+      REMOTE_MONITORING_PASSWORD: ${REMOTE_MONITORING_PASSWORD:-remote_monitoring_dev_2026}
+      ES_URL: http://es01:9200
+      KIBANA_URL: http://kibana:5601
+    command: ["bash", "/obs/setup-obs.sh"]
+    volumes:
+      - ./infra/obs/elasticsearch:/obs:ro
+    depends_on:
+      es01: { condition: service_healthy }
+      kibana: { condition: service_healthy }
+    mem_limit: 128m
+    networks: [marketplace]
+    restart: "no"
+
+  # Filebeat: logi JSON kontenerów marketplace -> data streamy logs-app-*.
+  # `user: root` — pliki /var/lib/docker/containers/*/*-json.log są własnością
+  # roota (0640), a socket Dockera wymaga grupy docker; UID 1000 obrazu tego nie czyta.
+  # `--strict.perms=false` — filebeat.yml z bind mounta ma właściciela hosta,
+  # a Filebeat odmawia configu, którego nie posiada root.
+  # Wolumen filebeat-data trzyma rejestr pozycji: po restarcie nie czytamy
+  # logów od nowa (duplikaty) ani nie gubimy tego, co wpadło w międzyczasie.
+  filebeat:
+    profiles: [obs]
+    image: docker.elastic.co/beats/filebeat:${ES_VERSION}
+    user: root
+    command: ["-e", "--strict.perms=false"]
+    environment:
+      FILEBEAT_WRITER_PASSWORD: ${FILEBEAT_WRITER_PASSWORD:-filebeat_dev_2026}
+    volumes:
+      - ./infra/obs/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      obs-setup:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Metricbeat: metryki klastra ES dla Stack Monitoring (bez socketu Dockera —
+  # nie zbiera metryk kontenerów). Bez `user: root`: nie czyta ani socketu, ani
+  # plików roota; --strict.perms=false zostaje, bo plik konfiguracji z
+  # bind-mounta ma właściciela hosta, a nie użytkownika beata. Wolumen danych
+  # założony wcześniej przez roota trzeba raz przepisać na uid 1000, inaczej
+  # start kończy się „meta.json: permission denied": `docker run --rm --user root
+  # --entrypoint chown -v marketplace_metricbeat-data:/d <obraz metricbeat> -R 1000:1000 /d`.
+  metricbeat:
+    profiles: [obs]
+    image: docker.elastic.co/beats/metricbeat:${ES_VERSION}
+    command: ["-e", "--strict.perms=false"]
+    environment:
+      REMOTE_MONITORING_PASSWORD: ${REMOTE_MONITORING_PASSWORD:-remote_monitoring_dev_2026}
+    volumes:
+      - ./infra/obs/metricbeat/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro
+      - metricbeat-data:/usr/share/metricbeat/data
+    depends_on:
+      obs-setup:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Prometheus: reguły i konfiguracja z repo (infra/obs/prometheus), dane w
+  # wolumenie. --web.enable-lifecycle pozwala przeładować reguły przez
+  # POST /-/reload bez restartu kontenera (port nie wychodzi poza 127.0.0.1).
+  prometheus:
+    profiles: [obs]
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.15.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-19090}:9090"
+    volumes:
+      - ./infra/obs/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    mem_limit: 512m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Alertmanager wysyła maile do mailpita (SMTP mailpit:1025, bez TLS).
+  # depends_on tylko porządkuje start; przy `up --no-deps` nie działa, a
+  # Alertmanager i tak ponawia wysyłkę, gdy mailpit jeszcze nie słucha.
+  alertmanager:
+    profiles: [obs]
+    image: prom/alertmanager:${ALERTMANAGER_VERSION:-v0.34.1}
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-19093}:9093"
+    volumes:
+      - ./infra/obs/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    depends_on:
+      - mailpit
+    mem_limit: 64m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Grafana: źródła i dashboardy tylko z repo (provisioning), nic nie jest
+  # klikane ręcznie. Dashboardy montujemy :ro, więc zmiana = edycja JSON w repo.
+  # Bez anonimowego dostępu i bez rejestracji; hasło admina z .env.
+  grafana:
+    profiles: [obs]
+    image: grafana/grafana:${GRAFANA_VERSION:-13.2.3}
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana_dev_2026}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-13000}:3000"
+    volumes:
+      - ./infra/obs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/obs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    # Grafana 13 (Go + migracje przy starcie) zajmuje ok. 300 MiB; przy 256m
+    # kontener mielił CPU i dysk w nieskończoność i nie wystartował.
+    mem_limit: 512m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # ==========================================================================
+  #  Profil `tools` (mailpit jest też w `obs`)
+  # ==========================================================================
+
+  # mailpit w dwóch profilach: `tools` (ręczne testy maili) i `obs`
+  # (odbiorca alertów). Wersja przypięta jak reszta obrazów.
   mailpit:
-    profiles: [tools]
-    image: axllent/mailpit:latest
+    profiles: [tools, obs]
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.4}
     ports:
       - "127.0.0.1:${MAILPIT_UI_PORT}:8025"
     mem_limit: 256m
@@ -639,3 +859,8 @@ volumes:
   caddy-data:
   caddy-config:
   catalog-node-modules:
+  filebeat-data:
+  metricbeat-data:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

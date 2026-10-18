@@ -14,6 +14,14 @@ ES_URL   := http://localhost:$(ES_PORT)
 ES_AUTH  := elastic:$(ELASTIC_PASSWORD)
 CURL_ES  := curl -sS -u $(ES_AUTH)
 
+# Wersje narzędzi obs z domyślną wartością: `make obs-check` ma działać także
+# ze starym .env, który ich jeszcze nie zna (te same domyślne co w compose.yaml).
+PROMETHEUS_VERSION   ?= v3.15.0
+ALERTMANAGER_VERSION ?= v0.34.1
+PROMETHEUS_PORT      ?= 19090
+ALERTMANAGER_PORT    ?= 19093
+GRAFANA_PORT         ?= 13000
+
 .PHONY: help
 help: ## Pokaż tę pomoc
 	@echo ""
@@ -235,7 +243,34 @@ urls: ## Wypisz adresy usług
 	@echo "  RabbitMQ UI     http://localhost:$(RABBITMQ_UI_PORT)     ($(RABBITMQ_USER) / $(RABBITMQ_PASSWORD))"
 	@echo "  Postgres        localhost:$(POSTGRES_PORT)"
 	@echo "  Redis           localhost:$(REDIS_PORT)"
+	@echo "  Prometheus      http://localhost:$(PROMETHEUS_PORT)     (profil obs)"
+	@echo "  Alertmanager    http://localhost:$(ALERTMANAGER_PORT)     (profil obs)"
+	@echo "  Grafana         http://localhost:$(GRAFANA_PORT)     (profil obs, admin / GRAFANA_ADMIN_PASSWORD z .env)"
+	@echo "  Mailpit         http://localhost:$(MAILPIT_UI_PORT)      (profil obs/tools)"
 	@echo ""
+
+## Obserwowalność (profil obs, ETAP 11)
+.PHONY: up-obs
+# Domyślny stack (ES, Kibana, Postgres, RabbitMQ, aplikacje) MUSI już działać:
+# `make up` / `make up-apps`. Dwa kroki z --no-deps, bo `up` bez niego
+# potrafi odtworzyć zależności (es01, catalog-app…) z bieżącego katalogu, a to
+# kontenery współdzielone i działające. Krok 1: obs-setup (szablony, pipeline, role) kończy
+# się, zanim ruszą beaty; krok 2: reszta profilu, jawnie wymieniona.
+up-obs: ## Start profilu obs (stack i aplikacje muszą już działać): obs-setup, potem Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit, search-metrics
+	$(DC) --profile obs run --rm --no-deps obs-setup
+	$(DC) --profile obs up -d --no-deps mailpit alertmanager prometheus grafana filebeat metricbeat search-metrics
+
+# Trzy sprawdzenia bez żywego stosu (docker run --rm + bind mount): składnia
+# prometheus.yml i reguł, testy reguł z marketplace.test.yml oraz config
+# Alertmanagera. Uruchamiać przed każdą zmianą w infra/obs/{prometheus,alertmanager}.
+.PHONY: obs-check
+obs-check: ## Sprawdź config Prometheusa, testy reguł alertów i config Alertmanagera
+	docker run --rm --entrypoint promtool -v "$(CURDIR)/infra/obs/prometheus:/etc/prometheus:ro" \
+		prom/prometheus:$(PROMETHEUS_VERSION) check config /etc/prometheus/prometheus.yml
+	docker run --rm --entrypoint promtool -v "$(CURDIR)/infra/obs/prometheus:/etc/prometheus:ro" \
+		prom/prometheus:$(PROMETHEUS_VERSION) test rules /etc/prometheus/rules/marketplace.test.yml
+	docker run --rm --entrypoint amtool -v "$(CURDIR)/infra/obs/alertmanager:/etc/alertmanager:ro" \
+		prom/alertmanager:$(ALERTMANAGER_VERSION) check-config /etc/alertmanager/alertmanager.yml
 
 ## VPS (ETAP D — docs/08-PLAN-ETAP-D-VPS.md)
 .PHONY: vps-verify

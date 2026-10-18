@@ -292,22 +292,35 @@ Rozdzielenie konsumentów na osobne kontenery to wzorzec produkcyjny: różne ko
 różny SLA i różną skalę. Przećwiczysz `docker compose up --scale search-consumer-sync=4`
 i zobaczysz w RabbitMQ, jak rozkłada się ruch (i co robi prefetch).
 
-### 3.9 Profil `obs` — obserwowalność (przy 32 GB: włączony **na stałe**)
+### 3.9 Profil `obs` — obserwowalność (ETAP 11, zrobione)
 
-Przy 16 GB byłby to dodatek „jak starczy pamięci". Przy 32 GB kosztuje ~1 GB i włączamy
-go od fazy I-10 na dobre — dzięki temu przez cały kurs masz przed oczami metryki klastra,
-na którym eksperymentujesz. To zmienia naukę tuningu z teorii w obserwację.
+Podział sygnałów według [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md):
+logi aplikacji i metryki samego klastra ES idą do Elasticsearcha, pozostałe
+metryki i **wszystkie** alerty do Prometheusa. Opis krok po kroku:
+[`blog/etap-11-observability.md`](blog/etap-11-observability.md).
+Start: `make up-obs` (po `make up-apps`; startuje tylko serwisy `obs`, z `--no-deps`); sprawdzenie reguł bez stacku:
+`make obs-check`.
 
-- `filebeat` lub `elastic-agent` — zbiera logi kontenerów (JSON z Laravela i Symfony)
-  i wysyła do ES przez **ingest pipeline**. Uczysz się: data streams, ILM, grok/dissect,
-  `@timestamp`, ECS (Elastic Common Schema).
-- `metricbeat` — metryki samego ES → gotowe dashboardy „Stack Monitoring".
-  To jest dokładnie to, czym diagnozuje się produkcję.
-- `prometheus`, `grafana`, `alertmanager`, `postgres-exporter`, `elasticsearch-exporter`
-  — pozostałe metryki i wszystkie alerty (RabbitMQ, Caddy, Postgres, aplikacje),
-  patrz [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md). Szacunkowo
-  +400–600 MB; do zmierzenia w ETAPIE 11.
-- opcjonalnie `apm-server` + agent PHP → traces zapytań do ES z poziomu Laravela.
+| Kontener | Rola | `mem_limit` | Port na hoście (tylko 127.0.0.1) |
+|---|---|---|---|
+| `obs-setup` | jednorazowy: szablony, pipeline ECS, ILM, użytkownicy beatów, data view, asercje `_simulate` | 128m | — |
+| `filebeat` | logi JSON kontenerów marketplace → `logs-app-catalog`, `logs-app-search` | 256m | — |
+| `metricbeat` | metryki klastra ES → `.monitoring-es-*` (Kibana → Stack Monitoring), co 30 s | 256m | — |
+| `search-metrics` | `GET /metrics` serwisu search (failure transport Messengera) | 128m | — (tylko sieć `marketplace`) |
+| `prometheus` | scrape co 15 s, 16 reguł alertów, retencja 15 dni | 512m | `PROMETHEUS_PORT=19090` |
+| `alertmanager` | alerty → e-mail do mailpita | 64m | `ALERTMANAGER_PORT=19093` |
+| `grafana` | dwa dashboardy z repo (provisioning) | 512m | `GRAFANA_PORT=13000` |
+| `mailpit` | skrzynka alertów (profile `tools` i `obs`) | 256m | `MAILPIT_UI_PORT` |
+
+Zmierzone zużycie całego profilu: ~450–600 MiB przy limitach ~2 GB
+([POMIARY §12](POMIARY.md)). Endpointy metryk (`catalog-app:2020`,
+`search-metrics:80`, `rabbitmq:15692`) **nie** są publikowane na hosta.
+Kontenery, których logi czyta Filebeat, mają sterownik `json-file`
+(`x-json-logging` w `compose.yaml`; RUNBOOK #051).
+
+Świadomie poza ETAPEM 11 (kolejny PR): `postgres_exporter`,
+`elasticsearch_exporter`, `node_exporter`, `promphp` w search, ćwiczenie
+porównawcze Metricbeat → ES vs Prometheus, APM.
 
 ### 3.10 Profil `tools`
 
@@ -333,6 +346,9 @@ Wystawione na hosta (tylko to, co potrzebne człowiekowi):
 | Elasticsearch | `http://localhost:9200` |
 | RabbitMQ panel | `http://localhost:15672` |
 | Mailpit | `http://localhost:8025` |
+| Prometheus (profil `obs`) | `http://localhost:19090` |
+| Alertmanager (profil `obs`) | `http://localhost:19093` |
+| Grafana (profil `obs`) | `http://localhost:13000` |
 | MinIO | `http://localhost:9001` |
 
 `*.localhost` rozwiązuje się na 127.0.0.1 automatycznie w większości przeglądarek i systemów

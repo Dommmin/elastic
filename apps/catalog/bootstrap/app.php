@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\DomainErrorMessages;
+use App\Http\Middleware\AssignTraceId;
 use App\Http\Middleware\EnsureHasSeller;
 use App\Http\Middleware\EnsureSellerApproved;
 use App\Http\Middleware\HandleAppearance;
@@ -26,6 +27,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Pierwszy w łańcuchu: trace_id ma istnieć, zanim ruszy cokolwiek, co loguje.
+        $middleware->prepend(AssignTraceId::class);
+
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
 
         $middleware->web(append: [

@@ -51,6 +51,23 @@
 | [048](#048) | `catalog-scheduler` biegnie, a sweep ginie z kodem 137 i nic nie wygasa | Docker / Scheduler / Zamówienia | Zamówienia |
 | [049](#049) | `orders:race-test` w `catalog-app` milknie po ~2 s (kod 137) | Docker / Zamówienia | Zamówienia |
 | [050](#050) | search-consumer po restarcie węzłów ES: „No alive nodes” przy klastrze `green`, indeks stoi | Elasticsearch / Symfony (search) | Zamówienia (istniało wcześniej) |
+| [051](#051) | Filebeat działa, a do `logs-app-*` nic nie dociera (sterownik logów `local`) | Docker / Filebeat | 11 |
+| [052](#052) | Alert `SearchConsumerDown`: nikt nie odpytuje `search.product.sync` (Messenger `basic.get`, `consumers` zawsze 0) | Prometheus / RabbitMQ / Symfony | 11 |
+| [053](#053) | Metryki osiągalne z zewnątrz przez sfałszowany `Host` i `/index.php/prometheus` | Caddy / bezpieczeństwo | 11 |
+| [054](#054) | `CatalogHttpErrorRate` nie widzi ruchu przeglądarki (etykieta `host` z portem) | Caddy / Prometheus | 11 |
+| [055](#055) | Grafana 13 przy `mem_limit: 256m` nie wstaje | Docker / Grafana | 11 |
+| [056](#056) | Metricbeat: ~66 MB/h w `.monitoring-es-*` i obcy indeks `metricbeat-9.5.1` | Metricbeat / Elasticsearch | 11 |
+| [057](#057) | Metricbeat bez `user: root`: `meta.json: permission denied` | Docker / Metricbeat | 11 |
+| [058](#058) | Węzły ES restartują się co kilka minut przy włączonym profilu `obs` (nierozwiązane) | Docker / Elasticsearch | 11 |
+| [059](#059) | Ślad `trace.id` w Kibanie niepełny | Caddy / Laravel | 11 |
+| [060](#060) | Logi Caddy w ES jako surowy JSON, bez `log.level` | Ingest pipeline | 11 |
+| [061](#061) | Build `catalog-app` z worktree podmienia Caddyfile w głównym checkoucie | Docker | 11 |
+| [062](#062) | Alert `TargetDown` | Prometheus | 11 |
+| [063](#063) | Alert `DeadLetterNotEmpty` | RabbitMQ | 11 |
+| [064](#064) | Alert `SearchSyncBacklog` | RabbitMQ / search | 11 |
+| [065](#065) | Alert `CatalogHttpErrorRate` | Caddy / catalog | 11 |
+| [066](#066) | Alerty `OfferModerationOverdue`, `SellerApprovalOverdue` | Portal sprzedawcy | 11 |
+| [067](#067) | Alerty `SearchMetricsScrapeError`, `CatalogMetricsScrapeErrors` | Prometheus / metryki | 11 |
 
 ---
 
@@ -2470,6 +2487,760 @@ Z katalogu głównego checkoutu:
 w długim procesie ma własny, nieaktualny obraz klastra. Do zrobienia
 w search (poza zakresem zamówień): restart konsumenta przy tym błędzie
 zamiast odrzucania wiadomości albo alarm na rosnący failure transport.
+
+**Dopisane w ETAPIE 11:** alarm już jest. Alert `SearchFailedMessages`
+(`search_messenger_failed_messages > 0` przez 1 min, critical; metrykę
+liczy kontener `search-metrics` przez `MessageCountAwareInterface`
+failure transportu) prowadzi tutaj. Na żywo 2026-10-18 złapał ten
+incydent sam: restart es01 09:00:21, `firing` 09:01:47, mail 09:02:57.
+Zostaje do zrobienia restart konsumenta przy „No alive nodes”. Gdy
+`search-metrics` nie umie odczytać transportu, wystawia
+`search_metrics_scrape_error 1` zamiast tej metryki, a na to alertu jeszcze
+nie ma (zadanie domowe w przewodniku ETAPU 11).
+
+<a id="051"></a>
+## 051 — Filebeat działa, a do `logs-app-*` nic nie dociera (sterownik logów `local`)
+
+> ETAP 11, Task 8 i 12 (2026-10-17/18). Przewodnik:
+> [`blog/etap-11-observability.md`](blog/etap-11-observability.md).
+
+**Objaw**
+`filebeat` jest `Up`, w `docker compose logs filebeat` nie ma błędów, data
+streamy `logs-app-catalog` / `logs-app-search` nie powstają albo nie rosną.
+`docker logs marketplace-catalog-app-1` pokazuje linie JSON, więc aplikacja
+loguje.
+
+**Diagnoza**
+Wszystkie komendy z katalogu głównego checkoutu (tam leży `.env`):
+```bash
+docker inspect marketplace-catalog-app-1 --format '{{.HostConfig.LogConfig.Type}}'   # local = Filebeat nic nie przeczyta
+docker compose logs --tail=100 filebeat | grep -iE 'error|harvester|filestream'
+set -a; . ./.env; set +a
+curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://localhost:$ES_PORT/_cat/indices/.ds-logs-app-*?v&h=index,docs.count"
+# czy w ES są dokumenty z prawdziwego serwisu (nie z sondy):
+curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://localhost:$ES_PORT/logs-app-*/_search?size=0" \
+  -H 'Content-Type: application/json' \
+  -d '{"aggs":{"s":{"terms":{"field":"service.name"}}}}'
+```
+
+**Przyczyna**
+Dwie warstwy naraz:
+1. Docker Desktop ma domyślny sterownik logów `local` (format binarny,
+   plik `local-logs/container.log`). Filebeat czyta tylko `<id>-json.log`
+   ze sterownika `json-file`, więc nie miał czego czytać, a błędu nie było:
+   autodiscover po prostu nie znajdował plików.
+2. Sterownik ustawia się przy **tworzeniu** kontenera. Dopisanie
+   `logging:` w `compose.yaml` nic nie zmienia dla kontenera, który już
+   działa, dopóki się go nie odtworzy.
+
+Przy okazji tego samego zadania wyszły jeszcze trzy różnice między
+dokumentacją a Filebeatem 9.5.1: wejście `type: container` jest wycofane
+(zastępuje je `filestream` z parserem `container`), warunki autodiscover
+działają na etykietach **zagnieżdżonych**
+(`docker.container.labels.com.docker.compose.service`), a etykieta
+`project` bywa liściem albo obiektem z kluczem `value` (stąd `or` z dwoma
+wariantami w `infra/obs/filebeat/filebeat.yml`).
+
+**Naprawa**
+1. `compose.yaml`: kotwica `x-json-logging` (`json-file`, 10m × 3) i
+   `logging: *json-logging` w sześciu serwisach, których logi czyta Filebeat.
+2. Odtworzenie kontenerów (z katalogu głównego checkoutu):
+   `docker compose --profile apps up -d --force-recreate --no-deps catalog-app outbox-publisher catalog-worker catalog-scheduler search-consumer`
+   i `docker compose --profile obs up -d --force-recreate --no-deps search-metrics`.
+3. Sprawdzenie: pierwsze polecenie z diagnozy daje `json-file`, a agregacja
+   po `service.name` pokazuje te serwisy.
+
+**Czego się nauczyłem**
+Shipper logów, który „działa i milczy”, najczęściej nie widzi plików. Zanim
+zaczniesz debugować pipeline, sprawdź najniższą warstwę: gdzie i w jakim
+formacie leży log na dysku. Ustawienia z etapu tworzenia kontenera
+(sterownik logów, sieć, wolumeny) wymagają odtworzenia, nie restartu.
+
+<a id="052"></a>
+## 052 — Alert `SearchConsumerDown`: nikt nie odpytuje kolejki `search.product.sync`
+
+> Wpis dla alertu (link `runbook` w regule). Historia: pierwsza wersja
+> alertu nigdy by się nie zamknęła; patrz „Przyczyna”.
+
+**Objaw**
+Mail `[FIRING:1] SearchConsumerDown (critical)` w mailpicie. Zmiany ofert
+nie trafiają do `/search`, rośnie `messages_ready` w `search.product.sync`.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+docker compose ps search-consumer                      # Up? healthy? świeży restart?
+docker compose logs --tail=100 search-consumer         # wyjątek, OOM, „No alive nodes” (#050)
+make mq-status                                         # messages_ready rośnie; consumers = 0 to NORMALNE (niżej)
+curl -sG "http://localhost:${PROMETHEUS_PORT:-19090}/api/v1/query" --data-urlencode \
+  'query=sum by (queue) (rate({__name__=~"rabbitmq_detailed_queue_get_(empty|ack)_total",queue="search.product.sync"}[1m]))'
+```
+Działający konsument daje tu ok. 0,4–1 zapytania na sekundę. Wynik pusty
+albo 0 przy żywym kontenerze: zajrzyj, czy kolejka w ogóle istnieje
+(`make mq-status`).
+
+**Przyczyna**
+Alert patrzy na **tempo odpytywania** kolejki, a nie na liczbę konsumentów.
+`symfony/amqp-messenger` pobiera wiadomości przez `basic.get` (pętla
+odpytywania), nie przez `basic.consume`, więc RabbitMQ nigdy nie rejestruje
+konsumenta: `rabbitmq_detailed_queue_consumers` i kolumna `consumers`
+w `make mq-status` są zawsze 0. Pierwsza wersja alertu (`consumers == 0`)
+odpalała więc na stałe i nie zamknęłaby się po `docker start`. Teraz:
+suma `rate()` liczników `get_empty` (pusta kolejka) i `get_ack` (pobrana
+wiadomość) równa 0 przez 1 min, po oknie 1 min, czyli ok. 2 min od awarii.
+
+Alert odpala w trzech sytuacjach:
+- konsument nie żyje albo wisi (najczęstsze);
+- **kolejka `search.product.sync` zniknęła**, a RabbitMQ działa: brak serii
+  traktujemy jak 0 (`or vector(0)`), bo zniknięcie kolejki to też awaria;
+- **fałszywie**: jedna wiadomość obsługiwana dłużej niż ok. 2 min (konsument
+  w trakcie pracy nie pyta kolejki). Przy obecnym kodzie (timeout klienta
+  katalogu 3 s) to mało prawdopodobne, ale przy dużych bulkach możliwe.
+
+Gdy RabbitMQ w ogóle nie jest scrapowany, ten alert milczy
+(`and on() up{job="rabbitmq-queues"} == 1`), a odpala `TargetDown` (#062).
+
+**Naprawa**
+Z katalogu głównego checkoutu:
+1. Kontener stoi: `docker compose --profile apps up -d --no-deps search-consumer`
+   (albo `docker start marketplace-search-consumer-1`). Na żywo (2026-10-18)
+   alert zamknął się 21 s po starcie, mail RESOLVED po 43 s.
+2. Kontener żyje, ale nie odpytuje: `docker restart marketplace-search-consumer-1`;
+   jeśli w logu jest „No alive nodes”, postępuj jak w [#050](#050).
+3. Brak kolejki: topologia jest w `infra/rabbitmq/definitions.template.json`
+   (entrypoint kontenera renderuje z niej `definitions.json`, a RabbitMQ
+   wczytuje go przy starcie: `load_definitions`), więc
+   `docker compose restart rabbitmq` odtwarza kolejkę; potem
+   `make mq-status` musi ją pokazać.
+
+**Czego się nauczyłem**
+„Konsument podłączony” to cecha protokołu, nie aplikacji. Zanim zbudujesz
+alert na metryce, sprawdź na żywym systemie, czy ta metryka w ogóle się
+zmienia, gdy wyłączysz to, co ma wykrywać. Sygnał życia worka odpytującego
+to tempo odpytywania, nie liczba połączeń.
+
+<a id="053"></a>
+## 053 — Metryki osiągalne z zewnątrz przez sfałszowany `Host` (port 80, `/index.php/prometheus`)
+
+> Znalezione w przeglądzie bezpieczeństwa Taska 6 (ETAP 11), przed
+> uruchomieniem na żywo.
+
+**Objaw**
+Pierwsza wersja wystawiała `/prometheus` (metryki Laravela) w bloku
+`http://catalog-app` Caddy. Ten blok miał być „tylko dla sieci dockerowej”,
+ale odpowiadał każdemu, kto podał nagłówek `Host: catalog-app` na
+**opublikowanym** porcie 80. Po przeniesieniu metryk drugi przegląd znalazł
+obejście publicznego 404: `https://catalog.localhost/index.php/prometheus`.
+
+**Diagnoza**
+Z katalogu głównego checkoutu (porty z `.env`); każde z tych poleceń ma
+dawać **404**:
+```bash
+set -a; . ./.env; set +a
+curl -sk -o /dev/null -w '%{http_code}\n' "https://catalog.localhost:$CATALOG_HTTPS_PORT/prometheus"
+curl -sk -o /dev/null -w '%{http_code}\n' "https://catalog.localhost:$CATALOG_HTTPS_PORT/index.php/prometheus"
+curl -s  -o /dev/null -w '%{http_code}\n' -H 'Host: catalog-app' "http://127.0.0.1:$CATALOG_HTTP_PORT/prometheus"
+curl -s  -o /dev/null -w '%{http_code}\n' -H 'Host: catalog-app' "http://127.0.0.1:$CATALOG_HTTP_PORT/metrics"
+# a z sieci dockerowej metryki są:
+docker compose exec prometheus wget -qO- http://catalog-app:2020/prometheus | head -3
+```
+
+**Przyczyna**
+1. Caddy wybiera blok po nagłówku `Host`, a nagłówek ustawia klient. Blok
+   `http://catalog-app` słucha na porcie 80, który compose publikuje
+   (`127.0.0.1:${CATALOG_HTTP_PORT}` w dev, port serwera w prod). „Nazwa
+   wewnętrzna” nie jest granicą bezpieczeństwa.
+2. `php_server` dzieli ścieżkę na `.php`: `/index.php/prometheus` to
+   skrypt `index.php` z `PATH_INFO=/prometheus`, a Laravel routuje po
+   `PATH_INFO`. Matcher `path /prometheus*` tego nie łapał.
+
+**Naprawa**
+`infra/caddy/Caddyfile`: osobny blok `http://:2020` (`/metrics` → handler
+Caddy, `/prometheus` → `php_server`, reszta 404). Portu 2020 nie ma w żadnym
+`ports:` w `compose*.yaml`, więc dostęp ma tylko sieć `marketplace`.
+Publiczny blok odpowiada 404 na `/prometheus /prometheus/* /index.php/prometheus /index.php/prometheus/*`.
+Prometheus scrapuje `catalog-app:2020/prometheus` i `catalog-app:2020/metrics`.
+Zmiana Caddyfile wymaga przebudowy obrazu (`docker compose --profile apps build catalog-app`, patrz [#061](#061)).
+
+**Uwaga, poza zakresem ETAPU 11:** ten sam mechanizm dotyczy `/api/internal/*`
+i `/webhooks/*` w bloku `http://catalog-app` (osiągalne z zewnątrz przez
+`Host: catalog-app`). Webhook ma podpis HMAC; wewnętrzne API do przejrzenia
+osobno.
+
+**Czego się nauczyłem**
+Granicą dostępu jest port, który nie wychodzi z sieci, nie nazwa hosta.
+Przy każdej trasie „tylko wewnętrznej” sprawdź dwa obejścia: inny `Host` na
+tym samym porcie i inną ścieżkę, która trafia w ten sam handler
+(`/index.php/...`, podwójny ukośnik, kodowanie znaków).
+
+<a id="054"></a>
+## 054 — `CatalogHttpErrorRate` nie widzi ruchu przeglądarki (etykieta `host` z portem)
+
+> ETAP 11, Task 12, żywy stack 2026-10-18.
+
+**Objaw**
+Panel „HTTP catalog: req/s per kod” w Grafanie pokazywał kilka zapytań na
+minutę mimo klikania po sklepie; reguła `CatalogHttpErrorRate` z
+`host="catalog.localhost"` nie widziałaby 5xx z przeglądarki.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+docker compose exec prometheus wget -qO- http://catalog-app:2020/metrics \
+  | grep '^caddy_http_request_duration_seconds_count' | grep -o 'host="[^"]*"' | sort | uniq -c
+```
+Wynik na żywo: `host="catalog.localhost:8443"` (przeglądarka i curl na
+porcie hosta), `host="catalog.localhost"` (tylko healthcheck z kontenera),
+`host="catalog-app"` (ruch wewnętrzny), `host="_other"` (scrape na :2020).
+
+**Przyczyna**
+`metrics { per_host }` bierze wartość z nagłówka `Host`, a przeglądarka
+wysyła go z portem, gdy port nie jest domyślny (`:8443`). Plan zakładał
+nazwę bez portu i nikt tego nie sprawdził przed żywym stackiem.
+
+**Naprawa**
+Reguła i panele: `host=~"catalog\\.localhost(:[0-9]+)?"`; test promtool
+„host z portem” w `marketplace.test.yml`. Panele HTTP w Grafanie pomijają
+`host="_other"` (scrape Prometheusa zawyżał ruch i p95). Na VPS host to
+prawdziwa domena: regex trzeba tam sparametryzować (poza zakresem).
+
+**Czego się nauczyłem**
+Wartości etykiet poznaje się z `/metrics` żywego systemu, nie z
+dokumentacji. Test jednostkowy reguły sprawdza logikę na danych, które sam
+wymyśliłeś; tylko żywy endpoint mówi, jakie dane naprawdę przyjdą.
+
+<a id="055"></a>
+## 055 — Grafana 13 przy `mem_limit: 256m` nie wstaje, mieli CPU i dysk
+
+> ETAP 11, Task 11 (2026-10-17).
+
+**Objaw**
+`docker compose ps grafana` pokazuje `Up`, ale `http://localhost:$GRAFANA_PORT`
+nie odpowiada. `docker stats` pokazuje Grafanę przy limicie pamięci,
+CPU ~600 % i ogromne `BLOCK I/O`.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+docker stats --no-stream marketplace-grafana-1
+docker inspect marketplace-grafana-1 --format 'oom={{.State.OOMKilled}} restarts={{.RestartCount}}'
+docker compose logs --tail=50 grafana        # migracje bazy przy starcie, bez komunikatu o gotowości
+```
+
+**Przyczyna**
+Grafana 13 (Go, migracje SQLite przy pierwszym starcie, wtyczki) potrzebuje
+ok. 300–350 MiB. Przy 256m jądro nie zabija procesu, tylko ciągle wyrzuca
+z pamięci jego strony (kod i pliki bazy) i czyta je z dysku od nowa:
+kontener żyje, ale nic nie robi (thrashing).
+
+**Naprawa**
+`compose.yaml`: `grafana` → `mem_limit: 512m` (z komentarzem), potem
+`docker compose --profile obs up -d --no-deps grafana`. Zmierzone: ~350 MiB
+po starcie, ~180 MiB po godzinie (POMIARY, sekcja 12).
+
+**Czego się nauczyłem**
+Za niski limit pamięci nie zawsze daje OOM (kod 137). Częściej daje proces,
+który żyje i nie odpowiada, z wysokim I/O. `docker stats` z CPU i
+`BLOCK I/O` mówi więcej niż sam status kontenera.
+
+<a id="056"></a>
+## 056 — Metricbeat: ~66 MB na godzinę w `.monitoring-es-*` i obcy indeks `metricbeat-9.5.1`
+
+> ETAP 11, Task 12, żywy stack 2026-10-18.
+
+**Objaw**
+`.monitoring-es-8-mb-*` rośnie o ~68 tys. dokumentów (~66 MB) na godzinę.
+W `_cat/indices` pojawia się `metricbeat-9.5.1` (575 dokumentów), którego
+nikt nie zakładał.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+set -a; . ./.env; set +a
+E="http://localhost:$ES_PORT"; A="elastic:$ELASTIC_PASSWORD"
+curl -sS -u "$A" "$E/_cat/indices/.monitoring-es-*,metricbeat-*?v&h=index,docs.count,store.size"
+# co zajmuje miejsce:
+curl -sS -u "$A" "$E/.monitoring-es-*/_search?size=0" -H 'Content-Type: application/json' \
+  -d '{"aggs":{"d":{"terms":{"field":"event.dataset"}}}}'
+# co jest w obcym indeksie:
+curl -sS -u "$A" "$E/metricbeat-*/_search?size=1&filter_path=hits.hits._source.error" 
+```
+
+**Przyczyna**
+1. `period: 10s` z `scope: cluster` przy ~100 indeksach i 3 węzłach: 60 %
+   to metricset `shard` (dokument na shard co 10 s). Wbudowana polityka
+   `.monitoring-8-ilm-policy` trzyma dane 6 dni, czyli kilka GB.
+2. Gdy ES nie odpowiada (restart węzła), metricset zwraca zdarzenie z samym
+   `error.message`, bez `@metadata.index` trybu xpack. Takie zdarzenie
+   trafia do domyślnego indeksu `metricbeat-<wersja>`, bez szablonu i ILM.
+
+**Naprawa**
+`infra/obs/metricbeat/metricbeat.yml`: `period: 30s` i procesor
+`drop_event` dla zdarzeń z `error.message`; potem
+`docker compose --profile obs up -d --force-recreate --no-deps metricbeat`.
+Po zmianie: ~10 tys. dokumentów na godzinę. Obcy indeks **nie** został
+usunięty automatycznie (usuwanie danych to Twoja decyzja); gdy go nie
+potrzebujesz: `curl -sS -u "$A" -X DELETE "$E/metricbeat-9.5.1"`.
+
+Skutek uboczny `drop_event`: błędy połączenia Metricbeata nie trafiają do
+ES, widać je tylko w `docker compose logs metricbeat`. Gdy w Stack
+Monitoring brakuje danych, zacznij od tego logu.
+
+**Czego się nauczyłem**
+Każdy shipper ma domyślną częstotliwość dobraną pod produkcję, nie pod
+laptopa. Policz wolumen po pierwszej godzinie i porównaj z retencją. Ścieżka
+błędu też produkuje dane i może je wysłać gdzie indziej niż ścieżka
+szczęśliwa.
+
+<a id="057"></a>
+## 057 — Metricbeat bez `user: root`: `meta.json: permission denied`
+
+> ETAP 11, utwardzenie po Tasku 12 (2026-10-18).
+
+**Objaw**
+Po usunięciu `user: root` z serwisu `metricbeat` kontener restartuje się
+w kółko, w logu `... /usr/share/metricbeat/data/meta.json: permission denied`.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+docker compose logs --tail=20 metricbeat
+docker run --rm -v marketplace_metricbeat-data:/d alpine ls -ln /d   # właściciel 0 (root), a beat działa jako 1000
+```
+
+**Przyczyna**
+Wolumen `metricbeat-data` założył wcześniej Metricbeat działający jako root,
+więc pliki należą do uid 0. Obraz beata działa domyślnie jako uid 1000 i nie
+może ich nadpisać. Nowy, pusty wolumen tego problemu nie ma.
+
+**Naprawa**
+Jednorazowo (dotyczy też VPS przy aktualizacji), z katalogu głównego checkoutu:
+```bash
+set -a; . ./.env; set +a
+docker run --rm --user root --entrypoint chown -v marketplace_metricbeat-data:/d \
+  docker.elastic.co/beats/metricbeat:$ES_VERSION -R 1000:1000 /d
+docker compose --profile obs up -d --no-deps metricbeat
+```
+Sprawdzone: 70 s logu bez błędów uprawnień, `.monitoring-es-*` rośnie,
+proces działa jako uid 1000.
+
+**Czego się nauczyłem**
+Zmiana użytkownika kontenera to migracja danych w wolumenie. Wolumen
+pamięta, kto go zapisał; obraz o tym nie wie.
+
+<a id="058"></a>
+## 058 — Węzły ES restartują się co kilka minut przy włączonym profilu `obs`
+
+> ETAP 11, Task 12, żywy stack 2026-10-18. **Nie rozwiązane** — wymaga
+> decyzji o zasobach (niżej).
+
+**Objaw**
+W czasie weryfikacji ETAPU 11 węzły restartowały się co 5–15 min
+(`RestartCount` es01 31 → 37, es02 27 → 30, es03 22 → 26 w ~1 h). Skutki
+w innych miejscach: search-consumer z „No alive nodes” ([#050](#050)) i
+`SearchFailedMessages`, luki w scrape Prometheusa (~14 min dla **wszystkich**
+celów, `scrape_duration` do 141 s), migający `DeadLetterNotEmpty`,
+`TargetDown`, `OrderingSweepStale`, opóźnione o 12 min usunięcie w ILM demo,
+`docker exec` wiszący ponad minutę.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+for n in es01 es02 es03; do
+  docker inspect marketplace-$n --format "$n restarts={{.RestartCount}} oom={{.State.OOMKilled}}"
+done
+# cgroup v2 węzła: bieżące zużycie, ile razy uderzył w limit, ile razy OOM killer
+docker exec marketplace-es01 sh -c 'cat /sys/fs/cgroup/memory.current; grep -E "^(max|oom_kill) " /sys/fs/cgroup/memory.events'
+docker exec marketplace-es01 sh -c 'grep -E "^(anon|file) " /sys/fs/cgroup/memory.stat'
+docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' | sort -k2 -h   # kto zajmuje VM (także inne projekty)
+docker info --format '{{.MemTotal}}'
+```
+Na żywo: `oom_kill 1` w `memory.events` es01 przed dwoma restartami
+(09:37:45, 09:52:25), `anon` 1,5–1,7 GB przy limicie 2 GB, `file` ~0; VM
+Dockera ~15,4 z 15,6 GiB, z czego ~6,7 GiB to inne projekty. Zatrzymanie
+Metricbeata i Filebeata (09:43) **nie** zatrzymało restartów (es02/es03
+09:49, es01 09:52), więc profil `obs` nie jest jedyną przyczyną.
+
+**Przyczyna**
+Dwa OOM-y naraz, ten sam mechanizm co w [#025](#025):
+- **OOM limitu kontenera:** `ES_HEAP=1g` przy `ES_MEM_LIMIT=2g` zostawia
+  ~1 GB na pamięć poza stertą (metaspace, bufory sieciowe Netty, wątki,
+  Lucene). Pod obciążeniem `anon` dochodzi do limitu i cgroup zabija JVM
+  (`oom_kill` w `memory.events`).
+- **pełna VM:** gdy cała VM nie ma wolnej pamięci, jądro zabija proces bez
+  flagi `OOMKilled` i bez logu zamknięcia, a dodatkowo wszystko zwalnia
+  (stąd luki w scrape i wiszący `docker exec`).
+
+Profil `obs` dokłada ~450–600 MiB (POMIARY, sekcja 12) i Metricbeat
+odpytuje klaster, ale restarty zdarzały się już 2026-10-17, bez `obs`
+(#049, #050).
+
+**Naprawa**
+Do decyzji (żadna nie jest zrobiona; każda ma koszt):
+1. Więcej miejsca poza stertą: `ES_MEM_LIMIT=2560m` przy `ES_HEAP=1g`
+   w `.env` (+1,5 GB dla 3 węzłów), potem odtworzenie węzłów
+   `docker compose --profile cluster up -d es01 es02 es03` (po jednym,
+   czekając na `green`, [#021](#021)).
+2. Jeden węzeł lokalnie (`make up` zamiast `make up-cluster`): ~4 GB mniej,
+   ale bez replik i bez nauki o shardach.
+3. Mniej równoległych projektów na maszynie albo więcej pamięci dla VM
+   Dockera.
+4. Doraźnie, w trakcie incydentu: zatrzymaj Metricbeat
+   (`docker compose stop metricbeat`), żeby nie dokładać zapytań do
+   odradzającego się klastra; po `green` zrestartuj search-consumer ([#050](#050)).
+
+**Czego się nauczyłem**
+Observability na tej samej maszynie co system obserwowany cierpi razem
+z nim: gdy VM jest pełna, gasną także metryki i alerty, które miały o tym
+powiedzieć. Luka w scrape **wszystkich** celów naraz, łącznie z samym
+Prometheusem, to sygnał problemu z hostem, nie z aplikacją.
+
+<a id="059"></a>
+## 059 — Ślad `trace.id` w Kibanie niepełny (brak logu kontrolera i żądania projekcji)
+
+> ETAP 11, Task 12, żywy stack 2026-10-18.
+
+**Objaw**
+Filtr `trace.id: <X-Trace-Id>` po zmianie ceny pokazywał 7 dokumentów:
+access log z `catalog-app`, publikację i kroki search-consumera. Brakowało
+logu aplikacji z kontrolera i wpisu catalog-app dla żądania
+`/api/internal/products/…/projection`, choć search wysyłał `traceparent`.
+
+**Diagnoza**
+Z katalogu głównego checkoutu (`<ID>` z nagłówka `X-Trace-Id` odpowiedzi):
+```bash
+set -a; . ./.env; set +a
+curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://localhost:$ES_PORT/logs-app-*/_search?size=50&sort=@timestamp:asc&filter_path=hits.hits._source.service.name,hits.hits._source.event.dataset,hits.hits._source.message,hits.hits._source.url.original" \
+  -H 'Content-Type: application/json' -d '{"query":{"term":{"trace.id":"<ID>"}}}'
+docker compose logs --tail=20 catalog-app | grep projection    # czy Caddy w ogóle loguje to żądanie
+```
+
+**Przyczyna**
+1. Blok `http://catalog-app` w Caddyfile nie miał dyrektywy `log`, więc
+   żądania wewnętrzne nie dawały access logu (blok publiczny miał).
+2. `updatePrice` w kontrolerze sprzedawcy nic nie logował; spec zakładał
+   „log kontrolera”, ale żaden test tego nie wymuszał.
+
+**Naprawa**
+`log { output stdout; format json }` w bloku `http://catalog-app` (obraz
+przebudowany, [#061](#061)) i `Log::info('Zmiana ceny oferty', [...])`
+z testem Pest (`Log::spy()`). Po zmianie: 9 dokumentów w 1,1 s, od logu
+kontrolera do „Zaindeksowano produkt.”.
+
+**Czego się nauczyłem**
+Korelacja po `trace_id` jest tak dobra, jak najsłabsze ogniwo: każdy krok,
+który nie loguje, jest dziurą w śladzie, której nie widać, dopóki nie
+prześledzisz jednego żądania od początku do końca.
+
+<a id="060"></a>
+## 060 — Logi Caddy w ES jako surowy JSON, bez `log.level`
+
+> ETAP 11, Task 12, żywy stack 2026-10-18.
+
+**Objaw**
+W Discover dokumenty `catalog.catalog-app` z `message` równym całej linii
+JSON (np. „autosaved config”, „Caddy serving PHP app”), bez `log.level`,
+z `event.original`.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+docker compose logs --no-log-prefix --tail=200 catalog-app | grep '^{' | grep -v '"logger"' | head -3
+```
+Linie bez pola `logger` to logi z głównego loggera Caddy.
+
+**Przyczyna**
+Gałąź Caddy w pipeline `logs-app` wymagała `logger instanceof String`.
+Główny logger Caddy go nie wypisuje (ma tylko `level`, `ts`, `msg`), więc
+linia wpadała do gałęzi „nieznany JSON” (cała treść do `app.context`
+i `event.original`).
+
+**Naprawa**
+`infra/obs/elasticsearch/pipeline-logs-app.json`: procesor `set`
+`_j.logger = caddy`, gdy jest `ts` i `msg`, a brak `level_name`
+i `logger`. Próbka `samples/7-caddy-runtime-no-logger.json` i asercje
+`_simulate`; pipeline wgrywa `docker compose --profile obs run --rm --no-deps obs-setup`.
+
+**Czego się nauczyłem**
+Próbki do `_simulate` pisane z dokumentacji pokazują tylko formaty, które
+znasz. Raz po uruchomieniu zrób agregację po `tags` i `event.original`
+w prawdziwym indeksie: to lista formatów, o których nie wiedziałeś.
+
+<a id="061"></a>
+## 061 — Build `catalog-app` z worktree podmienia Caddyfile w głównym checkoucie
+
+> ETAP 11, Task 12 (2026-10-18). Dotyczy pracy w worktree.
+
+**Objaw**
+Po weryfikacji gałęzi w worktree kontenery uruchomione z głównego
+checkoutu (`main`) zachowują się jak gałąź: Caddy ma blok `:2020`, którego
+`main` nie zna.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+docker compose exec catalog-app grep -c 2020 /etc/frankenphp/Caddyfile   # >0 = Caddyfile z gałęzi
+docker image ls marketplace-catalog-app
+```
+
+**Przyczyna**
+Caddyfile jest kopiowany do obrazu przy buildzie, a obraz ma jedną nazwę
+(`marketplace-catalog-app`) dla wszystkich checkoutów tego projektu
+compose. Build z worktree nadpisuje obraz, z którego startuje też `main`.
+Kod PHP się nie miesza (bind mount `./apps/catalog`), konfiguracja Caddy tak.
+
+**Naprawa**
+Po skończonej weryfikacji, z katalogu głównego checkoutu:
+`docker compose --profile apps build catalog-app` i
+`docker compose --profile apps up -d --no-deps catalog-app outbox-publisher catalog-worker catalog-scheduler search-consumer`.
+Sprawdzenie: polecenie z diagnozy daje `0`.
+
+**Czego się nauczyłem**
+Worktree izoluje pliki, nie obrazy, wolumeny ani bazę. Wszystko, co
+Docker nazywa po projekcie compose, jest wspólne dla wszystkich checkoutów.
+
+<a id="062"></a>
+## 062 — Alert `TargetDown`: Prometheus nie zbiera metryk z celu
+
+**Objaw**
+Mail `[FIRING:1] TargetDown (critical)` z etykietami `job` i `instance`.
+Wszystkie inne alerty tego celu milczą (nie ma danych, więc nie ma progu
+do przekroczenia).
+
+**Diagnoza**
+Z katalogu głównego checkoutu; zacznij od Prometheusa, który powie, *jak*
+scrape się nie udał:
+```bash
+curl -s "http://localhost:${PROMETHEUS_PORT:-19090}/api/v1/targets?state=active" \
+  | python3 -c 'import json,sys; [print(t["labels"]["job"], t["health"], t["lastError"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+docker compose ps catalog-app search-metrics rabbitmq   # żyje? healthy?
+docker compose exec prometheus wget -qO- http://catalog-app:2020/prometheus | head -3   # ten sam adres co scrape
+```
+Typowe `lastError`: `connection refused` / `no such host` (kontener nie
+żyje albo nie ma go w sieci), `context deadline exceeded` (cel odpowiada
+dłużej niż 10 s), `server returned HTTP status 404` (zła ścieżka albo
+obraz bez bloku `:2020`, [#061](#061)).
+
+**Przyczyna**
+Najczęściej: kontener zatrzymany, kontener z kodem bez endpointu metryk
+(np. `main` przed mergem ETAPU 11 nie ma `/prometheus` ani `:2020`;
+dlatego targety `caddy`, `catalog`, `search` są DOWN, gdy profil `obs`
+z gałęzi działa obok aplikacji z `main`), `search-metrics` nie uruchomiony
+(jest tylko w profilu `obs`), albo przeciążony host ([#058](#058): gdy
+DOWN są **wszystkie** cele naraz, łącznie z `prometheus`).
+
+**Naprawa**
+1. Uruchom brakujący kontener (`docker compose --profile apps up -d --no-deps catalog-app`,
+   `docker compose --profile obs up -d --no-deps search-metrics`).
+2. Endpoint 404: przebuduj obraz z właściwego checkoutu ([#061](#061)).
+3. Wszystkie cele naraz: problem z hostem, nie z celem; patrz [#058](#058).
+
+**Czego się nauczyłem**
+`up == 0` to alert o alertach: bez niego martwy cel wygląda jak zdrowy
+(brak danych to brak alarmu). `lastError` w `/api/v1/targets` mówi więcej
+niż status kontenera.
+
+<a id="063"></a>
+## 063 — Alert `DeadLetterNotEmpty`: wiadomości w kolejce `.dlq`
+
+**Objaw**
+Mail `[FIRING:1] DeadLetterNotEmpty (warning)`, etykieta `queue` wskazuje
+kolejkę `*.dlq` (np. `search.product.sync.dlq`). Alert ma `for: 5m`: odpala
+dopiero po pięciu minutach niepustej DLQ.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+make mq-status                                     # która DLQ i ile
+make mq-get q=search.product.sync.dlq              # podgląd BEZ usuwania (ack_requeue_true, #027)
+docker compose logs --since=1h search-consumer | grep -iE 'error|reject|dlq'
+```
+Uwaga: zwykłe `rabbitmqadmin get` bez `--ack-mode ack_requeue_true`
+**kasuje** wiadomości ([#027](#027)). Używaj `make mq-get`.
+
+**Przyczyna**
+Wiadomość, której konsument nie przyjął (zły JSON, nieznany typ, odrzucenie
+po stronie brokera), ląduje w DLQ przez dead-letter exchange. To nie to samo
+co failure transport Messengera (błąd obsługi po ponowieniach,
+`SearchFailedMessages`, [#050](#050)): DLQ to odrzucenie na poziomie
+RabbitMQ. Historia progu: przy `for: 0m` alert migał FIRING/RESOLVED przy
+każdej luce w scrape ([#058](#058)), stąd `for: 5m`.
+
+**Naprawa**
+Każda wiadomość to ręczna decyzja:
+1. Przeczytaj ją (`make mq-get`), znajdź przyczynę w logu konsumenta.
+2. Napraw przyczynę (kod, kontrakt zdarzenia), potem ponów: przenieś
+   wiadomości z DLQ do kolejki głównej (shovel w panelu RabbitMQ,
+   „Move messages”), **albo** przelicz indeks `make reproject`, jeśli
+   dotyczą ofert, a wiadomości same w sobie są niepotrzebne.
+3. Wiadomość bezwartościowa (np. test z `make mq-publish`): wyczyść kolejkę
+   w panelu RabbitMQ (Purge). To usuwa dane, zrób to świadomie.
+
+**Czego się nauczyłem**
+DLQ bez alertu to kosz, którego nikt nie wynosi. Ale alert na DLQ musi
+przeczekać luki w danych: pojedyncza próbka po przerwie w scrape to nie
+nowe zdarzenie.
+
+<a id="064"></a>
+## 064 — Alert `SearchSyncBacklog`: ponad 1000 wiadomości w `search.product.sync`
+
+**Objaw**
+Mail `[FIRING:1] SearchSyncBacklog (warning)`. W `/search` stare ceny
+i stany; `messages_ready` w `search.product.sync` powyżej 1000 przez 5 min.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+make mq-status                                         # messages_ready, messages_unacknowledged
+curl -sG "http://localhost:${PROMETHEUS_PORT:-19090}/api/v1/query" --data-urlencode \
+  'query=sum(rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[5m]))'   # ile/s konsument zdejmuje
+docker compose logs --tail=100 search-consumer         # wolne odpowiedzi projekcji? błędy ES?
+make es-health
+```
+Jeśli tempo zdejmowania jest 0, to nie zaległość, tylko martwy konsument:
+[#052](#052). Licznik kolejki ustala się z opóźnieniem ~6 s ([#006](#006)),
+więc patrz na trend, nie na jeden odczyt.
+
+**Przyczyna**
+Konsument żyje, ale nie nadąża: wolny ES (restarty węzłów, [#058](#058)),
+wolne wewnętrzne API catalog (timeout 3 s na projekcję), albo nagły zalew
+zdarzeń (seed, masowa zmiana ofert). Próg: seed 1500 zdarzeń schodzi
+w niecałą minutę, więc 5 min powyżej 1000 to nie zwykły szczyt.
+
+**Naprawa**
+1. Przyczyna po stronie ES albo catalog: napraw ją najpierw, zaległość
+   zejdzie sama.
+2. Zalew zdarzeń przy zdrowym systemie: poczekaj i patrz na trend
+   `messages_ready` w Grafanie („RabbitMQ: wiadomości gotowe”).
+3. Indeks trzeba odświeżyć od razu: `make reproject` przelicza wszystko
+   z projekcji, niezależnie od kolejki.
+
+**Czego się nauczyłem**
+Zaległość i martwy konsument dają ten sam objaw w `/search`, ale inną
+naprawę. Dlatego to dwa alerty: jeden na tempo odpytywania, drugi na
+głębokość kolejki.
+
+<a id="065"></a>
+## 065 — Alert `CatalogHttpErrorRate`: ponad 5% odpowiedzi 5xx
+
+**Objaw**
+Mail `[FIRING:1] CatalogHttpErrorRate (warning)`: przez 5 min ponad 5 %
+odpowiedzi `catalog.localhost` to 5xx przy ruchu powyżej 0,1 req/s.
+
+**Diagnoza**
+Z katalogu głównego checkoutu. Najpierw które żądania, potem dlaczego:
+```bash
+set -a; . ./.env; set +a
+curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://localhost:$ES_PORT/logs-app-catalog/_search?size=0" \
+  -H 'Content-Type: application/json' -d '{
+  "query":{"bool":{"filter":[{"term":{"event.dataset":"catalog.access"}},
+    {"range":{"http.response.status_code":{"gte":500}}},{"range":{"@timestamp":{"gte":"now-15m"}}}]}},
+  "aggs":{"p":{"terms":{"field":"url.path"}}}}'
+docker compose logs --since=15m catalog-app | grep -E '"level_name":"(ERROR|CRITICAL)"' | head
+```
+W Kibanie: Discover, `event.dataset: catalog.access and http.response.status_code >= 500`,
+weź `trace.id` jednego żądania i filtruj po nim: zobaczysz log aplikacji
+z wyjątkiem (`error.type`, `error.message`). Grafana ma przycisk „Logi
+w Kibanie” z tym samym zakresem czasu.
+
+**Przyczyna**
+Najczęściej: baza albo Redis niedostępne, ES niedostępny dla wyszukiwarki
+([#058](#058)), wyczerpana pamięć `catalog-app` (512m), błąd po wdrożeniu.
+Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100 %.
+Etykieta `host` ma port ([#054](#054)), stąd regex w regule.
+
+**Naprawa**
+Zależy od wyjątku w logu; po naprawie alert zamknie się po ~5 min
+(okno `rate[5m]` + `for: 5m` działa też w drugą stronę).
+
+**Czego się nauczyłem**
+Metryka mówi, że coś jest źle i jak bardzo; które żądanie i dlaczego mówią
+logi. Przejście metryka → log po czasie i `trace.id` to cały sens podziału
+z ADR-0005.
+
+<a id="066"></a>
+## 066 — Alerty `OfferModerationOverdue` i `SellerApprovalOverdue`: decyzja czeka ponad dobę
+
+**Objaw**
+Mail `[FIRING:1] OfferModerationOverdue (info)` albo `SellerApprovalOverdue (info)`.
+To nie awaria techniczna, tylko SLA biznesowe: zmiana ceny oferty czeka na
+moderatora albo sprzedawca czeka na akceptację dłużej niż 24 h.
+
+**Diagnoza**
+Z katalogu głównego checkoutu:
+```bash
+make psql db=catalog
+-- w psql:
+select id, pending_requested_at from offers where pending_requested_at is not null order by pending_requested_at limit 10;
+select id, status, coalesce(status_changed_at, created_at) from sellers where status = 'pending' order by 3 limit 10;
+```
+Panel „Oferty: wiek najstarszej” / „Sprzedawcy: wiek najstarszego” na
+dashboardzie „Marketplace: zamówienia” pokazuje, od kiedy rośnie.
+
+**Przyczyna**
+Nikt nie zajrzał do kolejki moderacji w panelu
+(`/panel/moderation/price-changes`, `/panel/sellers`). Gauge liczy wiek
+**najstarszej** oczekującej pozycji, więc alert trwa, dopóki ta jedna nie
+zostanie rozstrzygnięta. Na lokalnym stacku z seedem odpala zwykle po
+dniu bez klikania.
+
+**Naprawa**
+Rozstrzygnij najstarsze pozycje w panelu (akceptacja albo odrzucenie). Alert zamknie się przy następnej ewaluacji (`for: 0m`).
+Lokalnie można go zignorować: `info` trafia do tej samej skrzynki tylko
+dlatego, że jest jeden odbiorca (spec D11).
+
+**Czego się nauczyłem**
+Nie każdy alert jest o awarii. SLA biznesowe też da się mierzyć gauge'em
+liczonym przy scrape, bez zmian w domenie, i trzymać z dala od pagera
+przez `severity: info`.
+
+<a id="067"></a>
+## 067 — Alerty `SearchMetricsScrapeError` i `CatalogMetricsScrapeErrors`: metryki nie do odczytania
+
+**Objaw**
+Mail `[FIRING:1] SearchMetricsScrapeError (critical)` albo
+`CatalogMetricsScrapeErrors (critical)`. Cel w Prometheusie jest `UP`
+(`TargetDown` milczy), ale co najmniej jedna metryka nie jest liczona:
+dla search znika seria `search_messenger_failed_messages`, dla catalog znika
+próbka któregoś gauge (np. `catalog_outbox_pending`). Alerty zbudowane na
+brakującej serii (`SearchFailedMessages`, `OutboxStale`, `CatalogFailedJobs`…)
+w tym czasie nie odpalą, nawet jeśli problem, o którym mają mówić, trwa.
+
+**Diagnoza**
+Z kontenera Prometheusa pobierz surowe wyjście endpointu:
+```bash
+docker compose exec prometheus wget -qO- http://search-metrics/metrics
+docker compose exec prometheus wget -qO- http://catalog-app:2020/prometheus | grep -E 'scrape_error|^catalog_'
+```
+W search szukaj linii `search_metrics_scrape_error 1`; w catalog wartości
+`catalog_metrics_scrape_errors` (liczba gauge'ów, które padły) i brakujących
+linii `catalog_*`. Przyczynę zapisuje aplikacja jako `warning` w logach:
+```bash
+docker compose logs --since 10m search-metrics | grep "failure transportu"
+docker compose logs --since 10m catalog-app | grep "Gauge Prometheusa nie policzony"   # pole metric = nazwa gauge'a
+```
+W Kibanie: `log.level:warning` i `message:"Gauge Prometheusa nie policzony"`.
+
+**Przyczyna**
+Endpointy celowo odpowiadają `200` mimo błędu, żeby jeden zły odczyt nie
+zabrał wszystkich metryk (`up == 0` ukryłby przyczynę). Cena: brak serii nie
+wywołuje żadnego alertu, więc osobna metryka liczy awarie odczytu. Typowe
+przyczyny: search, bo transport `failed` (Doctrine, baza searchsvc) jest
+niedostępny (Postgres leży, zły `DATABASE_URL`, brak tabeli `messenger_messages`);
+catalog, bo baza nie odpowiada,
+brakuje tabeli (niezrobiona migracja) albo gauge rzuca wyjątek.
+
+**Naprawa**
+Usuń przyczynę z logu: przywróć Postgresa, uruchom brakującą
+migrację (`php artisan migrate --force`). Alert zamknie się po następnym
+udanym scrape (≤ 15 s), bo wartość wraca do 0. Gdy w odpowiedzi znów są
+wszystkie serie, sprawdź, czy nie czeka nieodpalony alert, który w międzyczasie
+milczał (`SearchFailedMessages`: `messenger:failed:show`).
+
+**Czego się nauczyłem**
+Tolerancja na błędy (200 zamiast 500) zamienia głośną awarię w cichą, więc musi
+iść w parze z metryką błędów i alertem na nią. Alert, który zależy od
+istnienia serii, nie powie nic, gdy seria znika.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

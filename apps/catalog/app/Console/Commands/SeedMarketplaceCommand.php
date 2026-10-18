@@ -8,6 +8,7 @@ use App\Models\Offer;
 use App\Models\Outbox;
 use App\Models\Product;
 use App\Models\Seller;
+use App\Support\Tracing\TraceId;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -241,6 +242,9 @@ class SeedMarketplaceCommand extends Command
                 // a droga zdarzenia w panelu porównuje je z `_version` w ES.
                 // Query builder uciąłby do sekundy (test: SeedMarketplaceCommandTest).
                 'occurred_at' => now(),
+                // Jeden ślad na przebieg seeda: current() generuje trace_id
+                // przy pierwszym wywołaniu i trzyma go w Context.
+                'trace_id' => TraceId::current(),
             ]);
         });
     }

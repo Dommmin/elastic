@@ -1,0 +1,639 @@
+# Testy reguł alertów (`promtool test rules`, uruchamiane przez `make obs-check`).
+# Dla każdego alertu dwa przypadki: seria NAD progiem przez ≥ `for` (odpala)
+# i seria tuż POD progiem (milczy). Test progu „tuż pod” jest ważniejszy niż
+# test odpalenia: łapie przesunięcie `>` na `>=` i literówki w liczbach.
+#
+# W oczekiwanych alertach wpisujemy też etykiety serii, z której alert wyrasta
+# (job, queue), żeby test łapał zgubione etykiety, nie tylko nazwę i severity.
+
+rule_files:
+  - marketplace.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ---------------------------------------------------------------- TargetDown
+  - name: TargetDown odpala po minucie martwego scrape
+    interval: 15s
+    input_series:
+      - series: 'up{job="search",instance="search-metrics:80"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: search
+              instance: "search-metrics:80"
+            exp_annotations:
+              summary: "Target search (search-metrics:80) nie odpowiada"
+              description: "Prometheus nie zebrał metryk z search-metrics:80 od minuty (4 nieudane scrape co 15 s). Bez metryk inne alerty tego celu milczą."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#062--alert-targetdown-prometheus-nie-zbiera-metryk-z-celu"
+  - name: TargetDown milczy, gdy target żyje
+    interval: 15s
+    input_series:
+      - series: 'up{job="search",instance="search-metrics:80"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TargetDown
+        exp_alerts: []
+  - name: TargetDown milczy przy krótszym zaniku niż for (1m)
+    interval: 15s
+    input_series:
+      - series: 'up{job="search",instance="search-metrics:80"}'
+        values: '1 1 0 0 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TargetDown
+        exp_alerts: []
+
+  # --------------------------------------------------------------- OutboxStale
+  - name: OutboxStale odpala przy wieku > 60 s
+    interval: 15s
+    input_series:
+      - series: 'catalog_outbox_oldest_pending_age_seconds{job="catalog"}'
+        values: '61x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: OutboxStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: catalog
+            exp_annotations:
+              summary: "Outbox: najstarsze zdarzenie czeka ponad minutę"
+              description: "Najstarsze nieopublikowane zdarzenie ma 1m 1s. Publisher pyta co 1 s i seed schodzi w kilka sekund, więc minuta oznacza martwy publisher albo blokadę publikacji w RabbitMQ (flow control, disk_free_limit)."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#031--zmiana-ceny-nigdy-nie-dociera-do-es-outbox-bez-przekaźnika"
+  - name: OutboxStale milczy przy wieku równo 60 s
+    interval: 15s
+    input_series:
+      - series: 'catalog_outbox_oldest_pending_age_seconds{job="catalog"}'
+        values: '60x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: OutboxStale
+        exp_alerts: []
+
+  # ---------------------------------------------------------- SearchConsumerDown
+  - name: SearchConsumerDown odpala, gdy liczniki basic.get stoją co najmniej 3 min
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
+  - name: SearchConsumerDown milczy, gdy pusta kolejka jest odpytywana 60 razy/min
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0+15x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+  - name: SearchConsumerDown milczy przy zajętym konsumencie (rośnie tylko get_ack)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+  - name: SearchConsumerDown przeczekuje restart konsumenta (--time-limit)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0 15 30 45 60 75 90 105 105 105 105 120 135 150 165 180 195 210 225 240'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+  - name: SearchConsumerDown odpala, gdy target żyje, a search.product.sync nie ma serii (inna kolejka nie maskuje braku)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.analytics.ingest"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.analytics.ingest"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
+  - name: SearchConsumerDown odpala, gdy istnieje tylko stojąca seria get_empty (brak get_ack)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync"
+  - name: SearchConsumerDown milczy, gdy rośnie tylko get_empty (brak get_ack)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0+15x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+  - name: SearchConsumerDown milczy, gdy target rabbitmq-queues nie odpowiada (to sprawa TargetDown)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '0x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+
+  # ---------------------------------------------------------- SearchSyncBacklog
+  - name: SearchSyncBacklog odpala przy > 1000 przez 5 min
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '1001x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SearchSyncBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: rabbitmq-queues
+              queue: search.product.sync
+            exp_annotations:
+              summary: "Zaległość w search.product.sync: 1001 wiadomości"
+              description: "Seed 1500 zdarzeń konsument przerabia w niecałą minutę; ponad 1000 gotowych wiadomości przez 5 min oznacza, że konsument nie nadąża."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#064--alert-searchsyncbacklog-ponad-1000-wiadomości-w-searchproductsync"
+  - name: SearchSyncBacklog milczy przy równo 1000
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '1000x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SearchSyncBacklog
+        exp_alerts: []
+
+  # ------------------------------------------------------- DeadLetterNotEmpty
+  - name: DeadLetterNotEmpty odpala po 5 min z jedną wiadomością w DLQ
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{job="rabbitmq-queues",queue="search.product.sync.dlq"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: DeadLetterNotEmpty
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: rabbitmq-queues
+              queue: search.product.sync.dlq
+            exp_annotations:
+              summary: "Kolejka search.product.sync.dlq nie jest pusta (1)"
+              description: "DLQ ma być pusta poza awarią; każda wiadomość to ręczna decyzja (ponowić albo odrzucić)."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#063--alert-deadletternotempty-wiadomości-w-kolejce-dlq"
+  - name: DeadLetterNotEmpty milczy przed upływem 5 min (for)
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{job="rabbitmq-queues",queue="search.product.sync.dlq"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DeadLetterNotEmpty
+        exp_alerts: []
+  - name: DeadLetterNotEmpty milczy przy pustej DLQ
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{job="rabbitmq-queues",queue="search.product.sync.dlq"}'
+        values: '0x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: DeadLetterNotEmpty
+        exp_alerts: []
+  - name: DeadLetterNotEmpty milczy dla kolejki nie-DLQ z wiadomościami
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '50x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: DeadLetterNotEmpty
+        exp_alerts: []
+
+  # ------------------------------------------------------ SearchFailedMessages
+  - name: SearchFailedMessages odpala przy wiadomości w failure transport
+    interval: 15s
+    input_series:
+      - series: 'search_messenger_failed_messages{job="search"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SearchFailedMessages
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: search
+            exp_annotations:
+              summary: "search: wiadomości w failure transport (1)"
+              description: "Każda wiadomość w failure transport to zmiana oferty, której nie ma w /search; bez tego alertu indeks stoi po cichu."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+  - name: SearchFailedMessages milczy przy pustym failure transport
+    interval: 15s
+    input_series:
+      - series: 'search_messenger_failed_messages{job="search"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SearchFailedMessages
+        exp_alerts: []
+
+  # ------------------------------------------------------ SearchMetricsScrapeError
+  - name: SearchMetricsScrapeError odpala przy błędzie utrzymanym ponad 2 min
+    interval: 15s
+    input_series:
+      - series: 'search_metrics_scrape_error{job="search"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SearchMetricsScrapeError
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: search
+            exp_annotations:
+              summary: "search-metrics nie odczytał failure transportu"
+              description: "Endpoint /metrics działa, ale nie umie odczytać failure transportu (RabbitMQ/Messenger). W tym czasie krytyczny alert SearchFailedMessages milczy, bo seria search_messenger_failed_messages nie istnieje, więc wiadomości mogą lądować w failure transport niezauważone."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
+  - name: SearchMetricsScrapeError milczy przy 0 (tuż pod progiem)
+    interval: 15s
+    input_series:
+      - series: 'search_metrics_scrape_error{job="search"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SearchMetricsScrapeError
+        exp_alerts: []
+  - name: SearchMetricsScrapeError milczy, gdy błąd trwa krócej niż for
+    interval: 15s
+    input_series:
+      - series: 'search_metrics_scrape_error{job="search"}'
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SearchMetricsScrapeError
+        exp_alerts: []
+
+  # ------------------------------------------------------ CatalogHttpErrorRate
+  # Liczniki rosną liniowo (kolejne próbki co 15 s), więc rate()[5m] to stała:
+  # wartości są dobrane tak, by udział 5xx i ruch były jednoznacznie po jednej
+  # ze stron progów (0.05 i 0.1 req/s).
+  - name: CatalogHttpErrorRate odpala przy 10 % błędów i ruchu > 0.1 req/s
+    interval: 15s
+    input_series:
+      # 200: +3.6 / 15 s = 0.24 req/s; 500: +0.4 / 15 s ≈ 0.027 req/s (10 %)
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="200"}'
+        values: '0+3.6x60'
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="500"}'
+        values: '0+0.4x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "catalog.localhost: 10% odpowiedzi 5xx"
+              description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
+  - name: CatalogHttpErrorRate liczy też host z portem (ruch z przeglądarki na :8443)
+    interval: 15s
+    input_series:
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost:8443",code="200"}'
+        values: '0+3.6x60'
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost:8443",code="500"}'
+        values: '0+0.4x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "catalog.localhost: 10% odpowiedzi 5xx"
+              description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
+  - name: CatalogHttpErrorRate milczy przy 100 % błędów, ale znikomym ruchu
+    interval: 15s
+    input_series:
+      # 0.01 req/s, wszystko 5xx: bez progu ruchu byłoby 100 %
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="500"}'
+        values: '0+0.15x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts: []
+  - name: CatalogHttpErrorRate milczy przy 4 % błędów
+    interval: 15s
+    input_series:
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="200"}'
+        values: '0+4.8x60'
+      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="503"}'
+        values: '0+0.2x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts: []
+  - name: CatalogHttpErrorRate ignoruje inne hosty
+    interval: 15s
+    input_series:
+      - series: 'caddy_http_request_duration_seconds_count{host="search.localhost",code="500"}'
+        values: '0+15x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts: []
+
+  # ------------------------------------------------------------ OrdersStuckPlaced
+  - name: OrdersStuckPlaced odpala przy > 0 przez 2 min
+    interval: 15s
+    input_series:
+      - series: 'catalog_orders_stuck_placed{job="catalog"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OrdersStuckPlaced
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: catalog
+            exp_annotations:
+              summary: "Zamówienia w statusie placed ponad 60 s: 1"
+              description: "Rezerwacja to krok workera (--sleep=1), zwykle kilka sekund. Zamówienie placed ponad 60 s plus 2 min oznacza, że worker stoi albo krok wpada w retry."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#045--zamówienie-wisi-w-sprawdzamy-dostępność-placed"
+  - name: OrdersStuckPlaced milczy przy zerze
+    interval: 15s
+    input_series:
+      - series: 'catalog_orders_stuck_placed{job="catalog"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OrdersStuckPlaced
+        exp_alerts: []
+
+  # --------------------------------------------------- SettledOrderHoldsReservation
+  - name: SettledOrderHoldsReservation odpala po 5 min
+    interval: 15s
+    input_series:
+      - series: 'catalog_orders_settled_with_active_reservation{job="catalog"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SettledOrderHoldsReservation
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: catalog
+            exp_annotations:
+              summary: "Opłacone zamówienie trzyma aktywną rezerwację (1)"
+              description: "Po płatności rezerwacja powinna zostać potwierdzona krokiem sagi; 5 min przeczeka ponowienia joba. Dłużej to towar zablokowany na zawsze (wyciek stanu)."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#046--krok-sagi-w-failed_jobs-diagnoza-i-ręczne-ponowienie"
+  - name: SettledOrderHoldsReservation milczy przy zerze
+    interval: 15s
+    input_series:
+      - series: 'catalog_orders_settled_with_active_reservation{job="catalog"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SettledOrderHoldsReservation
+        exp_alerts: []
+
+  # ---------------------------------------------------------- OrderingSweepStale
+  - name: OrderingSweepStale odpala przy wieku > 180 s
+    interval: 15s
+    input_series:
+      - series: 'catalog_ordering_sweep_last_run_age_seconds{job="catalog"}'
+        values: '181x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: OrderingSweepStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: catalog
+            exp_annotations:
+              summary: "Sweep zamówień nie biegł od 3m 1s"
+              description: "Sweep wygaszający zamówienia biegnie co minutę; ponad 180 s to trzy opuszczone przebiegi (catalog-scheduler)."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#044--zamówienia-nie-wygasają-towar-wisi-zarezerwowany-catalog-scheduler"
+  - name: OrderingSweepStale milczy przy wieku równo 180 s
+    interval: 15s
+    input_series:
+      - series: 'catalog_ordering_sweep_last_run_age_seconds{job="catalog"}'
+        values: '180x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: OrderingSweepStale
+        exp_alerts: []
+
+  # ------------------------------------------------------ OrderingSweepNeverRan
+  - name: OrderingSweepNeverRan odpala, gdy catalog żyje, a sweepu brak 10 min
+    interval: 15s
+    input_series:
+      - series: 'up{job="catalog"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OrderingSweepNeverRan
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Sweep zamówień nigdy nie biegł, choć catalog działa"
+              description: "Brak klucza w cache przy żywym catalog. 10 min wystarcza na pierwszy przebieg po starcie; dłużej scheduler nie działa."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#044--zamówienia-nie-wygasają-towar-wisi-zarezerwowany-catalog-scheduler"
+  - name: OrderingSweepNeverRan milczy, gdy sweep ma próbkę
+    interval: 15s
+    input_series:
+      - series: 'up{job="catalog"}'
+        values: '1x60'
+      - series: 'catalog_ordering_sweep_last_run_age_seconds{job="catalog"}'
+        values: '30x60'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OrderingSweepNeverRan
+        exp_alerts: []
+  - name: OrderingSweepNeverRan milczy, gdy catalog nie żyje (wtedy TargetDown)
+    interval: 15s
+    input_series:
+      - series: 'up{job="catalog"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OrderingSweepNeverRan
+        exp_alerts: []
+
+  # ---------------------------------------------------------- CatalogFailedJobs
+  - name: CatalogFailedJobs odpala przy > 0 przez minutę
+    interval: 15s
+    input_series:
+      - series: 'catalog_failed_jobs{job="catalog"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CatalogFailedJobs
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: catalog
+            exp_annotations:
+              summary: "catalog: zadania w failed_jobs (1)"
+              description: "Krok sagi w failed_jobs czeka na ręczne queue:retry."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#046--krok-sagi-w-failed_jobs-diagnoza-i-ręczne-ponowienie"
+  - name: CatalogFailedJobs milczy przy zerze
+    interval: 15s
+    input_series:
+      - series: 'catalog_failed_jobs{job="catalog"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CatalogFailedJobs
+        exp_alerts: []
+
+  # ------------------------------------------------------ CatalogMetricsScrapeErrors
+  - name: CatalogMetricsScrapeErrors odpala przy błędzie utrzymanym ponad 2 min
+    interval: 15s
+    input_series:
+      - series: 'catalog_metrics_scrape_errors{job="catalog"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CatalogMetricsScrapeErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: catalog
+            exp_annotations:
+              summary: "catalog: gauge'e niepoliczone przy scrape (1)"
+              description: "Co najmniej jeden gauge domenowy catalog nie dał się policzyć przy scrape (np. baza niedostępna lub brak tabeli); jego seria zniknęła, więc alerty na niej (OutboxStale, CatalogFailedJobs, OrdersStuckPlaced…) milczą. Nazwę gauge'a podaje warning w logu catalog-app."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
+  - name: CatalogMetricsScrapeErrors milczy przy 0 (tuż pod progiem)
+    interval: 15s
+    input_series:
+      - series: 'catalog_metrics_scrape_errors{job="catalog"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CatalogMetricsScrapeErrors
+        exp_alerts: []
+  - name: CatalogMetricsScrapeErrors milczy, gdy błąd trwa krócej niż for
+    interval: 15s
+    input_series:
+      - series: 'catalog_metrics_scrape_errors{job="catalog"}'
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CatalogMetricsScrapeErrors
+        exp_alerts: []
+
+  # ------------------------------------------------------ OfferModerationOverdue
+  - name: OfferModerationOverdue odpala po dobie
+    interval: 15s
+    input_series:
+      - series: 'catalog_offers_pending_moderation_oldest_age_seconds{job="catalog"}'
+        values: '86401x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: OfferModerationOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: catalog
+            exp_annotations:
+              summary: "Zmiana oferty czeka na moderatora ponad dobę"
+              description: "SLA biznesowe: najstarsza zmiana ceny czeka na decyzję 1d 0h 0m 1s."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"
+  - name: OfferModerationOverdue milczy równo przy dobie
+    interval: 15s
+    input_series:
+      - series: 'catalog_offers_pending_moderation_oldest_age_seconds{job="catalog"}'
+        values: '86400x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: OfferModerationOverdue
+        exp_alerts: []
+
+  # ------------------------------------------------------ SellerApprovalOverdue
+  - name: SellerApprovalOverdue odpala po dobie
+    interval: 15s
+    input_series:
+      - series: 'catalog_sellers_pending_approval_oldest_age_seconds{job="catalog"}'
+        values: '86401x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: SellerApprovalOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: catalog
+            exp_annotations:
+              summary: "Sprzedawca czeka na akceptację ponad dobę"
+              description: "SLA biznesowe: najstarszy sprzedawca czeka na decyzję 1d 0h 0m 1s."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"
+  - name: SellerApprovalOverdue milczy równo przy dobie
+    interval: 15s
+    input_series:
+      - series: 'catalog_sellers_pending_approval_oldest_age_seconds{job="catalog"}'
+        values: '86400x4'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: SellerApprovalOverdue
+        exp_alerts: []

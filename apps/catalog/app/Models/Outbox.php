@@ -27,6 +27,7 @@ class Outbox extends Model
         'sequence',
         'occurred_at',
         'published_at',
+        'trace_id',
     ];
 
     protected function casts(): array

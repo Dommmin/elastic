@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"{\"level\":\"warn\",\"ts\":1792267201.5,\"logger\":\"tls\",\"msg\":\"stapling OCSP\"}",
+  "fields":{"app":"catalog"},
+  "container":{"labels":{"com_docker_compose_service":"catalog-app"}}
+}}]}

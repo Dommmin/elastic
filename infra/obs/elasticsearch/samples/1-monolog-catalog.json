@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"{\"message\":\"Opublikowano zdarzenie do RabbitMQ\",\"context\":{\"event_id\":\"01J8ZK3V0000000000000000\"},\"level\":100,\"level_name\":\"DEBUG\",\"channel\":\"local\",\"datetime\":\"2026-10-17T20:00:00.123456+00:00\",\"extra\":{\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\"}}",
+  "fields":{"app":"catalog"},
+  "container":{"labels":{"com_docker_compose_service":"outbox-publisher"}}
+}}]}

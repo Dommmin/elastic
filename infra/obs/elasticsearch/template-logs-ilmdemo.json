@@ -1,0 +1,10 @@
+{
+  "index_patterns": ["logs-ilmdemo-*"],
+  "data_stream": {},
+  "priority": 200,
+  "composed_of": ["logs-app@mappings", "logs-app@settings"],
+  "template": {
+    "settings": { "index.lifecycle.name": "logs-ilmdemo" }
+  },
+  "_meta": { "description": "Demo ILM w skali minut (przewodnik ETAPU 11)." }
+}

@@ -60,6 +60,7 @@ Wszystkie komendy: `make help`
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
 | [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
 | [blog/rabbitmq-podglad.md](docs/blog/rabbitmq-podglad.md) | jak podejrzeć RabbitMQ w akcji: panel, DLQ, eksperyment zmiana ceny → kolejka → ES |
+| [blog/etap-11-observability.md](docs/blog/etap-11-observability.md) | observability krok po kroku: jedno żądanie po `trace_id` w Kibanie, alerty Prometheusa w mailpicie, Grafana, Stack Monitoring, ILM na żywo |
 | [blog/panel-edycji.md](docs/blog/panel-edycji.md) | panel edycji katalogu `/panel`: zmiana z przeglądarki przez outbox, droga zdarzenia na żywo, naprawa kolizji wersji w ES |
 
 ---
@@ -80,6 +81,7 @@ Wszystkie komendy: `make help`
 | D2 | Ten sam stack w k3s: ECK (ES ×3 + Kibana), StatefulSety, Job migracji, CronJob backupu; migracja z Compose | ✅ zweryfikowane na serwerze (`make k3s-verify` 82/82 + restart) — [przewodnik](docs/blog/etap-d2-k3s.md) |
 | Portal sprzedawcy | Moduł DDD w catalog: rejestracja i akceptacja sprzedawcy, oferty (szkic/publikacja/cena/stan), moderacja, blokady; do projekcji trafiają tylko oferty `listed()` | w trakcie — testy, `make smoke`, kryteria 1–4 na lokalnym stacku i pomiary (nDCG 0.779 → 0.786, [POMIARY](docs/POMIARY.md)) OK — [przewodnik](docs/blog/etap-e-portal-sprzedawcy-ddd.md); porównanie z DDD-lite zrobione lokalnie ([dokument](docs/blog/ddd-vs-ddd-lite.md), gałąź `ddd-lite-porownanie` niewypchnięta); brak wdrożenia k3s |
 | Zamówienia (F) | Kontekst Ordering w pełnym DDD: koszyk wielosprzedawcowy, zamówienie na sprzedawcę, rezerwacje stanu w `Offer`, saga (process manager, kompensacje, wyścigi R1–R10), symulowana bramka z podpisanym webhookiem, wysyłka i anulowanie ze zwrotem, `orders:race-test` | zrobione lokalnie i sprawdzone na żywym stacku — zmergowane do `main` (PR #1), cały catalog 764 testy, E2E kryteriów 1–6 w przeglądarce, `orders:race-test` na Postgresie 3/3 bez oversellingu, ostatnia sztuka znika z `/search` po 1,3 s ([POMIARY 11](docs/POMIARY.md#zamowienia-2026-10-17)) — [przewodnik](docs/blog/etap-f-zamowienia-saga.md); porównanie z jedną transakcją zrobione ([dokument](docs/blog/saga-vs-transakcja.md), gałąź `zamowienia-ddd-lite` niewypchnięta); brak wdrożenia k3s |
+| 11 | Observability: logi JSON → Filebeat → ES (ECS, data streams, ILM), `trace_id` przez HTTP → outbox → RabbitMQ → search, Stack Monitoring, Prometheus + 16 alertów z testami `promtool` → Alertmanager → mailpit, Grafana | część 1 zrobiona lokalnie na gałęzi `observability` i sprawdzona na żywym stacku 2026-10-18 (alert po 2:01, ślad 9 dokumentów, ILM demo, RAM w [POMIARY 12](docs/POMIARY.md)) — [przewodnik](docs/blog/etap-11-observability.md); `promphp`, eksportery i k3s w kolejnym PR |
 | 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:
@@ -139,4 +141,6 @@ make eval            # nDCG@10 na zapytaniach kontrolnych (ETAP 7)
 make search-proof    # ile zapytań do ES kosztuje każda akcja na /search
 make psql db=catalog
 make logs s=es01
+make up-obs          # profil obs (stack i aplikacje już działają): obs-setup, potem Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit (ETAP 11)
+make obs-check       # promtool: config, testy reguł alertów; amtool: config Alertmanagera
 ```

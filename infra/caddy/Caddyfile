@@ -11,6 +11,13 @@
 	# z Let's Encrypt (co lokalnie i tak by się nie udało).
 	local_certs
 
+	# Metryki serwera HTTP (caddy_http_*), z podziałem na host (per_host), żeby
+	# odróżnić ruch publiczny (catalog.localhost) od wewnętrznego (catalog-app).
+	# Samo włączenie niczego nie wystawia — endpoint to osobny blok :2020 niżej.
+	metrics {
+		per_host
+	}
+
 	frankenphp {
 		# Worker mode włączamy zmienną OCTANE_ENABLED (decyzja D-07b).
 		# Odkomentujemy w ETAPIE 4, po zmierzeniu wariantu klasycznego.
@@ -59,6 +66,17 @@
 	# To jedna z przewag nad php-fpm, gdzie każdy request przechodzi przez PHP.
 	file_server
 
+	# /prometheus (metryki aplikacji Laravel) jest tylko dla Prometheusa w sieci
+	# dockerowej — ADR-0005, zasada 4. Publicznie ma dawać 404, żeby nikt z
+	# zewnątrz nie czytał wewnętrznych liczników. Prometheus czyta go z portu
+	# 2020 (blok na końcu pliku). Kolejność w pliku nie ma znaczenia: Caddy
+	# sam sortuje dyrektywy i `respond` wykonuje się przed `php_server`.
+	# `/index.php/prometheus` też: php_server dzieli ścieżkę na `.php`, więc
+	# Laravel dostaje PATH_INFO `/prometheus` i bez tych wariantów oddałby
+	# metryki na publicznym hoście.
+	@metrics path /prometheus /prometheus/* /index.php/prometheus /index.php/prometheus/*
+	respond @metrics 404
+
 	php_server
 }
 
@@ -72,10 +90,14 @@
 #
 # Zamiast zmuszać wewnętrzny ruch serwis-serwis do TLS z certyfikatem
 # wystawionym pod inną nazwę (i tak nieprzydatnym poza tą siecią), ten blok
-# słucha zwykłego HTTP na porcie 80 pod nazwą kontenera. Nie jest wystawiony
-# na hosta (compose.yaml publikuje tylko 80/443 spod głównego bloku) — patrz
-# `ports:` w compose.yaml: to jest ruch, który NIGDY nie opuszcza sieci
-# `marketplace`, więc brak TLS tutaj nie jest realnym ryzykiem.
+# słucha zwykłego HTTP na porcie 80 pod nazwą kontenera. UWAGA: port 80
+# kontenera JEST opublikowany (dev: 127.0.0.1:${CATALOG_HTTP_PORT}, prod: na
+# serwerze), więc o tym bloku decyduje tylko nagłówek Host — kto go sfałszuje
+# (`Host: catalog-app`), ten tu trafi z zewnątrz. Dlatego niczego wrażliwego
+# (metryki) tu nie wystawiamy; metryki mają osobny, nieopublikowany port 2020
+# (blok na końcu pliku). Zamierzony ruch serwis-serwis
+# nigdy nie opuszcza sieci `marketplace`, więc dla NIEGO brak TLS nie jest
+# ryzykiem; ruch z zewnątrz przez sfałszowany Host to osobna sprawa.
 #
 # Świadomie tylko prefiks /api/ — to jedyne, czego wewnętrzni klienci
 # (search-service, ETAP 6) powinni móc dotknąć.
@@ -90,12 +112,51 @@
 # Naprawa: JAWNY schemat `http://` w adresie site'a. To jedyny pewny sposób
 # na całkowite wypisanie się z automatycznego HTTPS dla danego bloku.
 http://catalog-app {
+	# Access log także tu (ETAP 11): bez niego żądanie projekcji
+	# search -> catalog (/api/internal/products/…/projection) nie miało
+	# śladu w ES, choć niesie ten sam trace.id (traceparent -> X-Trace-Id).
+	# Znalezione na żywym stacku w Task 12.
+	log {
+		output stdout
+		format json
+	}
+
 	route /api/* {
 		root * public/
 		php_server
 	}
 	# Webhook bramki płatności (worker -> catalog-app, podpis HMAC w nagłówku).
 	route /webhooks/* {
+		root * public/
+		php_server
+	}
+	respond 404
+}
+
+# --- Metryki (Caddy/FrankenPHP + aplikacja) tylko na porcie 2020 -----------
+#
+# DLACZEGO osobny port :2020, a nie admin API na :2019: admin API pozwala
+# ZMIENIAĆ konfigurację serwera (POST /load, /config), więc wystawianie go
+# Prometheusowi byłoby dawaniem prawa zapisu komuś, kto ma tylko czytać liczby.
+#
+# DLACZEGO nie w bloku `http://catalog-app` (port 80): port 80 kontenera jest
+# opublikowany na hosta, a o wyborze bloku decyduje nagłówek Host, który
+# klient może sfałszować (`curl -H 'Host: catalog-app' localhost:...`). Metryki
+# w tym bloku byłyby więc osiągalne z zewnątrz sieci dockerowej. Port 2020 nie
+# jest nigdzie publikowany (brak w `ports:` w compose*.yaml) — dostęp ma tylko
+# sieć `marketplace`, i to jest właściwa ochrona, nie nazwa hosta.
+#
+# Prometheus scrape'uje: catalog-app:2020/metrics (Caddy: caddy_http_*,
+# frankenphp_*) i catalog-app:2020/prometheus (aplikacja Laravel).
+#
+# Jawny `http://` z tego samego powodu co przy `http://catalog-app`: bez
+# schematu Caddy włączyłby automatyczne HTTPS z certyfikatem lokalnego CA,
+# a scraper łączy się zwykłym HTTP.
+http://:2020 {
+	route /metrics {
+		metrics
+	}
+	route /prometheus {
 		root * public/
 		php_server
 	}

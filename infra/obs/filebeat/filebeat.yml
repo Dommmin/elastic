@@ -1,0 +1,131 @@
+# Filebeat: wysyła logi JSON kontenerów marketplace do data streamów
+# logs-app-catalog i logs-app-search (szablony, pipeline i ILM: obs-setup).
+#
+# Autodiscover (zamiast statycznych ścieżek): ID kontenera zmienia się przy
+# każdym odtworzeniu, więc ścieżkę do pliku logu składamy z metadanych Dockera.
+#
+# WYMAGANIE: kontenery muszą używać sterownika logów json-file (patrz
+# x-json-logging w compose.yaml). Domyślny sterownik `local` zapisuje format
+# binarny, którego Filebeat nie czyta.
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      # Warunki poniżej działają na etykietach zagnieżdżonych (com.docker.compose.*).
+      # Do dokumentu trafiają one zdedotowane (container.labels.com_docker_compose_*),
+      # co czyta pipeline logs-app.
+      labels.dedot: true
+      # DWA szablony muszą zostać zsynchronizowane: różnią się wyłącznie listą
+      # serwisów w warunku i `fields.app` (catalog / search). Zmiana ścieżek,
+      # parsera czy procesorów w jednym wymaga tej samej zmiany w drugim.
+      templates:
+        - condition:
+            and:
+              # Tylko projekt marketplace: maszyna współdzieli Dockera z igrit-*
+              # i starter-*, ich logi nie mogą trafić do naszego ES. `project`
+              # jest liściem albo obiektem z kluczem `value` (zależy, czy kontener
+              # ma też etykiety com.docker.compose.project.*), stąd dwa warianty.
+              - or:
+                - equals.docker.container.labels.com.docker.compose.project: marketplace
+                - equals.docker.container.labels.com.docker.compose.project.value: marketplace
+              # Tylko serwisy, które logują JSON w kontrakcie aplikacji.
+              - or:
+                - equals.docker.container.labels.com.docker.compose.service: catalog-app
+                - equals.docker.container.labels.com.docker.compose.service: catalog-worker
+                - equals.docker.container.labels.com.docker.compose.service: catalog-scheduler
+                - equals.docker.container.labels.com.docker.compose.service: outbox-publisher
+          config:
+            # Wejście `container` jest w Filebeacie 9.x wycofane; zastępuje je
+            # filestream z parserem `container` (zdejmuje opakowanie json-file).
+            - type: filestream
+              # Id musi być unikalne per kontener, inaczej filestream odmawia startu.
+              id: marketplace-${data.docker.container.id}
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              parsers:
+                - container:
+                    stream: all
+                    format: docker
+              # Linie JSON zaczynają się od `{`. Zwykły tekst (stack trace PHP,
+              # logi startowe supervisora, logi sprzed JSON) odrzucamy już tu;
+              # pipeline logs-app oczekuje JSON-a w polu message.
+              include_lines: ['^\{']
+              fields:
+                app: catalog
+              fields_under_root: false
+              processors:
+                # Docker autodiscover kładzie etykiety w docker.container.labels.*,
+                # a pipeline logs-app czyta container.labels.com_docker_compose_service
+                # (ECS). Kopiujemy jedną etykietę tam, gdzie pipeline jej szuka,
+                # i usuwamy nieECS-owe pole docker.
+                - copy_fields:
+                    fields:
+                      - from: docker.container.labels.com_docker_compose_service
+                        to: container.labels.com_docker_compose_service
+                    fail_on_error: false
+                    ignore_missing: true
+                - drop_fields:
+                    fields: [docker]
+                    ignore_missing: true
+        - condition:
+            and:
+              # Tylko projekt marketplace: maszyna współdzieli Dockera z igrit-*
+              # i starter-*, ich logi nie mogą trafić do naszego ES. `project`
+              # jest liściem albo obiektem z kluczem `value` (zależy, czy kontener
+              # ma też etykiety com.docker.compose.project.*), stąd dwa warianty.
+              - or:
+                - equals.docker.container.labels.com.docker.compose.project: marketplace
+                - equals.docker.container.labels.com.docker.compose.project.value: marketplace
+              # Tylko serwisy, które logują JSON w kontrakcie aplikacji.
+              - or:
+                - equals.docker.container.labels.com.docker.compose.service: search-consumer
+                - equals.docker.container.labels.com.docker.compose.service: search-metrics
+          config:
+            # Wejście `container` jest w Filebeacie 9.x wycofane; zastępuje je
+            # filestream z parserem `container` (zdejmuje opakowanie json-file).
+            - type: filestream
+              # Id musi być unikalne per kontener, inaczej filestream odmawia startu.
+              id: marketplace-${data.docker.container.id}
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              parsers:
+                - container:
+                    stream: all
+                    format: docker
+              # Linie JSON zaczynają się od `{`. Zwykły tekst (stack trace PHP,
+              # logi startowe supervisora, logi sprzed JSON) odrzucamy już tu;
+              # pipeline logs-app oczekuje JSON-a w polu message.
+              include_lines: ['^\{']
+              fields:
+                app: search
+              fields_under_root: false
+              processors:
+                # Docker autodiscover kładzie etykiety w docker.container.labels.*,
+                # a pipeline logs-app czyta container.labels.com_docker_compose_service
+                # (ECS). Kopiujemy jedną etykietę tam, gdzie pipeline jej szuka,
+                # i usuwamy nieECS-owe pole docker.
+                - copy_fields:
+                    fields:
+                      - from: docker.container.labels.com_docker_compose_service
+                        to: container.labels.com_docker_compose_service
+                    fail_on_error: false
+                    ignore_missing: true
+                - drop_fields:
+                    fields: [docker]
+                    ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["es01:9200"]
+  username: filebeat_writer
+  password: "${FILEBEAT_WRITER_PASSWORD}"
+  # Data stream wybierany po fields.app; pipeline podpina default_pipeline
+  # z szablonu (logs-app), więc tu `pipeline:` jest zbędne.
+  index: "logs-app-%{[fields.app]}"
+
+# Szablonem, ILM i pipeline'em zarządza obs-setup (jedno miejsce prawdy);
+# filebeat_writer i tak nie ma uprawnień do ich zakładania.
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+logging.level: info
+# Bez endpointu HTTP: nic go nie odpytuje, a otwarty port to zbędna powierzchnia.
+http.enabled: false

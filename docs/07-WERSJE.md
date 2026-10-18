@@ -25,6 +25,19 @@ bierzemy najnowszą wersję, ale zapisujemy ją jawnie, żeby build był powtarz
 | **RabbitMQ** | **4.3.4** | `rabbitmq:4.3.4-management-alpine` | |
 | **Redis** | **8.8.1** | `redis:8.8.1-alpine` | patrz sekcja 4 |
 
+### Obserwowalność (ETAP 11, profil `obs`)
+
+Sprawdzone 2026-10-18 w Docker Hub (`docker manifest inspect`). Reguła: najnowsza
+stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nightly`).
+
+| Komponent | Wersja | Tag / zmienna | Uwagi |
+|---|---|---|---|
+| **Prometheus** | **3.15.0** | `prom/prometheus:v3.15.0` (`PROMETHEUS_VERSION`) | wydany 2026-09-25 |
+| **Alertmanager** | **0.34.1** | `prom/alertmanager:v0.34.1` (`ALERTMANAGER_VERSION`) | wydany 2026-09-17 |
+| **Grafana** | **13.2.3** | `grafana/grafana:13.2.3` (`GRAFANA_VERSION`) | 13.2.4 jest młodsza niż 2 tygodnie; kontener `grafana` w profilu `obs` |
+| **Mailpit** | **1.31.4** | `axllent/mailpit:v1.31.4` (`MAILPIT_VERSION`) | wcześniej `:latest` |
+| Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
+
 ### PHP — zależności
 
 | Paczka | Wersja | Wymaga PHP | Uwaga |
@@ -139,6 +152,7 @@ to zauważyć. Zmierzymy i zapiszemy w `POMIARY.md`.
    POSTGRES_VERSION=18.4
    RABBITMQ_VERSION=4.3.4
    REDIS_VERSION=8.8.1
+   PROMETHEUS_VERSION=v3.15.0   # + ALERTMANAGER_, GRAFANA_, MAILPIT_VERSION (ETAP 11)
    ```
    Podbicie wersji = zmiana jednej linii, nie polowanie po plikach.
 2. **`composer.lock` i `package-lock.json` commitowane.** Zawsze.

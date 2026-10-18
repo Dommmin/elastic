@@ -1,0 +1,23 @@
+# Alertmanager → mailpit (spec D11). Jedna trasa, jeden odbiorca: lokalnie
+# jest jeden użytkownik, rozdzielanie tras wg severity ma sens dopiero na VPS.
+global:
+  smtp_smarthost: mailpit:1025
+  smtp_from: alertmanager@marketplace.local
+  # mailpit nie ma TLS ani auth; bez tego Alertmanager próbuje STARTTLS i pada.
+  smtp_require_tls: false
+
+route:
+  receiver: email
+  # Jedna wiadomość na nazwę alertu, nie na każdą serię (np. kilka DLQ naraz).
+  group_by: [alertname]
+  # 10 s zbiera alerty odpalone razem, ale nie każe czekać na mail minutę.
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+receivers:
+  - name: email
+    email_configs:
+      - to: alerts@marketplace.local
+        # Mail RESOLVED to część DoD: alert ma się „zamknąć” w skrzynce.
+        send_resolved: true

@@ -2,6 +2,7 @@
 
 namespace SellerPortal\Infrastructure\Persistence;
 
+use App\Support\Tracing\TraceId;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
@@ -63,6 +64,7 @@ final class OfferIntegrationEvents
                 'payload' => json_encode([...self::base($offer, $sequence), ...$specific], JSON_THROW_ON_ERROR),
                 'sequence' => $sequence,
                 'occurred_at' => SqlTimestamp::format($event->occurredAt()),
+                'trace_id' => TraceId::current(),
             ]);
         }
     }

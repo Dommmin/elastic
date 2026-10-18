@@ -1,0 +1,5 @@
+{"docs":[{"_source":{
+  "message":"PHP Warning:  Undefined variable $x in /app/x.php on line 3",
+  "fields":{"app":"catalog"},
+  "container":{"labels":{"com_docker_compose_service":"catalog-app"}}
+}}]}

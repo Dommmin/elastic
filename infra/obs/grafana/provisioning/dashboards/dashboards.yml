@@ -1,0 +1,11 @@
+# Provider plikowy: każdy JSON z /var/lib/grafana/dashboards (mount :ro z
+# infra/obs/grafana/dashboards) trafia do folderu „Marketplace”.
+apiVersion: 1
+providers:
+  - name: marketplace
+    folder: Marketplace
+    type: file
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

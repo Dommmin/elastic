@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Tracing\TraceContext;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
 use Symfony\Contracts\HttpClient\Exception\DecodingExceptionInterface;
@@ -23,8 +24,13 @@ class CatalogProjectionClient
 
     public function __construct(
         private readonly string $baseUrl,
+        private readonly TraceContext $trace,
+        ?HttpClientInterface $client = null,
     ) {
-        $this->client = HttpClient::create(['timeout' => 3.0]);
+        // Timeout 3 s stosujemy ZAWSZE, także do klienta wstrzykniętego przez
+        // kontener (autowiring podstawia domyślny klient frameworka z timeoutem
+        // ~60 s) — inaczej wolny catalog blokowałby workera na minutę.
+        $this->client = ($client ?? HttpClient::create())->withOptions(['timeout' => 3.0]);
     }
 
     /**
@@ -39,10 +45,20 @@ class CatalogProjectionClient
      */
     public function fetchProductProjection(string $productId): ProductProjection
     {
+        // W3C traceparent: catalog dołącza swoje logi do śladu zdarzenia, które
+        // wywołało tę projekcję. Span-id jest losowy — nie raportujemy spanów,
+        // catalog używa tylko trace-id.
+        $headers = [];
+        $traceId = $this->trace->get();
+        if ($traceId !== null) {
+            $headers['traceparent'] = '00-'.$traceId.'-'.bin2hex(random_bytes(8)).'-01';
+        }
+
         try {
             $response = $this->client->request(
                 'GET',
                 rtrim($this->baseUrl, '/')."/api/internal/products/{$productId}/projection",
+                ['headers' => $headers],
             );
 
             $data = $response->toArray();
