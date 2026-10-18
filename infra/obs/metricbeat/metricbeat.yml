@@ -7,10 +7,25 @@ metricbeat.modules:
     # scope: cluster — wystarczy odpytać jeden węzeł (es01), który zna stan
     # całego klastra; scope: node wymagałby wpisu na każdy węzeł.
     scope: cluster
-    period: 10s
+    # 30 s, nie domyślne 10 s: przy 10 s klaster (~100 indeksów, 3 węzły)
+    # dawał ~68 tys. dokumentów i ~66 MB w .monitoring-es-8-mb na GODZINĘ
+    # (głównie metricset shard), a wbudowana polityka .monitoring-8-ilm-policy
+    # trzyma je do 6 dni — gigabajty na współdzielonym laptopie. Zmierzone
+    # w Task 12; wykresy Stack Monitoring działają tak samo, tylko rzadziej.
+    period: 30s
     hosts: ["http://es01:9200"]
     username: remote_monitoring_user
     password: "${REMOTE_MONITORING_PASSWORD}"
+
+# Gdy ES nie odpowiada, metricset zwraca zdarzenie z samym error.message, bez
+# @metadata.index z trybu xpack — i trafiało ono do domyślnego metricbeat-<wersja>
+# (indeks bez szablonu i bez ILM, zakładany przy każdej awarii węzła; znalezione
+# na żywym stacku w Task 12). Stack Monitoring tych dokumentów nie czyta, a błąd
+# połączenia i tak jest w `docker logs` Metricbeata.
+processors:
+  - drop_event:
+      when:
+        has_fields: ["error.message"]
 
 output.elasticsearch:
   hosts: ["http://es01:9200"]
