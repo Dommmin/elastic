@@ -334,3 +334,83 @@ przejście z działającym workerem: ~1 s (historia zamówienia: 17:10:21 →
 - search-consumer po restartach ES: „No alive nodes” przy klastrze `green`,
   76 wiadomości w failure transport; `make reproject` przeliczył 1500
   dokumentów w 76 s. Problem istniejący wcześniej w search (RUNBOOK [#050](RUNBOOK.md#050)).
+
+## 12. Observability (ETAP 11, 2026-10-18)
+
+Stack z ETAPU 11 na żywo: kontenery aplikacji z kodem z worktree (logi JSON,
+`/prometheus`, `search-metrics`), profil `obs` z worktree, ES 3 węzły
+(`ES_HEAP=1g`, `mem_limit` 2g), maszyna współdzielona z dwoma innymi
+projektami (VM Dockera: 15,6 GiB, 10 CPU).
+
+### Pamięć kontenerów `obs` (`docker stats --no-stream`)
+
+„Przed” = profil `obs` już uruchomiony, aplikacje jeszcze z głównego
+checkoutu (bez ruchu do metryk i logów). „Po” = po godzinie weryfikacji
+(alerty, zamówienie, ślad, ILM, Stack Monitoring otwarty w Kibanie).
+
+| Kontener | Limit | Przed | Po |
+|---|---|---|---|
+| grafana | 512m | 351,7 MiB | 180,1 MiB |
+| prometheus | 512m | 66,8 MiB | 61,3 MiB |
+| alertmanager | 64m | 49,6 MiB | 20,4 MiB |
+| mailpit | 256m | 17,6 MiB | 11,3 MiB |
+| filebeat | 256m | 48,6 MiB | 56,0 MiB |
+| metricbeat | 256m | 51,1 MiB | 51,0 MiB |
+| search-metrics | 128m | — (nie działał) | 63,3 MiB |
+| **razem `obs`** | **1984 MiB** | **~585 MiB** | **~443 MiB** |
+
+Grafana po starcie trzyma ~350 MiB i schodzi do ~180 MiB; przy 256m nie
+wstawała (stąd 512m). search-metrics: 49 % limitu 128m — zapas jest, ale
+nie duży.
+
+### Alerty: od awarii do maila
+
+Prometheus: `scrape_interval` i `evaluation_interval` 15 s; Alertmanager
+`group_wait` 10 s.
+
+| Alert | Akcja | `pending` | `firing` | mail FIRING | naprawa | stan zamknięty | mail RESOLVED |
+|---|---|---|---|---|---|---|---|
+| SearchConsumerDown | `docker stop` search-consumer 09:03:35 | +1:00 | **+2:01** | +2:08 | `docker start` 09:06:00 | +0:21 | +0:43 |
+| OrdersStuckPlaced | `docker stop` catalog-worker 09:25:59, zamówienie 09:26:16 | +1:22 od zamówienia | **+3:26** | +3:27 | `docker start` 09:29:57 | +0:22 | +0:53 |
+| SearchFailedMessages | (sam) restart es01 09:00:21 → „No alive nodes” | — | 09:01:47 | 09:02:57 | `messenger:failed:retry` | — | — |
+
+SearchConsumerDown: okno `rate(...[1m])` + `for: 1m` = ~2 min, zgodnie
+z D10. OrdersStuckPlaced: 60 s progu w gauge + `for: 2m` + scrape.
+
+### Logi w ES
+
+- `logs-app-*` po godzinie ruchu (od 08:50): catalog 599 dok. / 645 KB
+  (primary), search 473 dok. / 505 KB. Najwięcej: access log Caddy (452,
+  głównie healthcheck `/up`) i `search-metrics` (403 — log „Matched route”
+  przy każdym scrape i healthchecku, co 15 s).
+- Ślad jednej zmiany ceny (`trace.id`): 9 dokumentów w 1,1 s — od logu
+  kontrolera do „Zaindeksowano produkt.”.
+
+### Stack Monitoring (Metricbeat)
+
+- `period: 10s`: `.monitoring-es-8-mb` rosło o **~68 tys. dok. / ~66 MB na
+  godzinę** (60 % to metricset `shard`); polityka `.monitoring-8-ilm-policy`
+  trzyma dane do 6 dni → kilka GB.
+- `period: 30s`: +4 685 dok. w 35 min (z przerwą ~8 min bez Metricbeata
+  i przestojami ES) — rząd wielkości ~10 tys./h.
+
+### ILM demo (`logs-ilmdemo`, poll 10 s)
+
+20 dokumentów 09:24:10 → indeks `-000001` hot 09:24:16 → rollover 09:26:20
+(`max_age: 2m`) → warm 09:29:19 (3 min od rolloveru) → delete planowo
+~09:34, faktycznie **09:46:17** — klaster był w pętli restartów węzłów
+(niżej), ILM dokończył po powrocie do `green`. `-000002` (pusty) nie robi
+rolloveru: ES nie przewija pustego indeksu.
+
+### Znalezione: ES na granicy `mem_limit`
+
+W czasie weryfikacji węzły ES restartowały się co 5–15 min
+(`RestartCount` es01 31 → 37, es02 27 → 30, es03 22 → 26 w ~1 h).
+`memory.events` cgroupy es01 pokazało `oom_kill 1` przed dwoma z tych
+restartów, a `memory.stat`: `anon` 1,5–1,7 GB przy limicie 2 GB (sterta 1g
++ ~260 MB non-heap + pamięć natywna), cache plików ~0. Do tego cała VM
+Dockera była pełna (~15,4 z 15,6 GiB, w tym ~6,7 GiB innych projektów):
+w tej samej godzinie Prometheus miał ~14 min luk w scrape **wszystkich**
+celów, łącznie z samym sobą (`scrape_duration` do 141 s). Skutki widoczne
+w alertach: TargetDown, OrderingSweepStale i migający DeadLetterNotEmpty
+(`for: 0m` + luka w serii = RESOLVED/FIRING co kilka minut).

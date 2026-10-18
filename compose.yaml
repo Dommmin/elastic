@@ -331,6 +331,13 @@ services:
       OCTANE_ENABLED: ${OCTANE_ENABLED}
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi: plik (jak dotąd, `make logs`) ORAZ JSON Monologa na stderr —
+      # stąd czyta je Filebeat (ETAP 11, spec D6). Tylko w kontenerach:
+      # testy i host zostają przy LOG_STACK=single z .env aplikacji.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       # DB_CONNECTION jest KLUCZOWE: .env Laravela ma domyślnie sqlite
       # (tak stawia installer). Bez tego nadpisania kontener po cichu
       # ignorowałby DB_HOST/DB_DATABASE poniżej i pisał do pliku SQLite,
@@ -432,6 +439,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -482,6 +494,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -542,6 +559,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
+      # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
+      LOG_CHANNEL: stack
+      LOG_STACK: single,stderr
+      LOG_STDERR_FORMATTER: Monolog\Formatter\JsonFormatter
+      LOG_LEVEL: debug
       DB_CONNECTION: pgsql
       DB_HOST: postgres
       DB_PORT: "5432"
