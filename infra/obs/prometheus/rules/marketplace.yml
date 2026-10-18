@@ -30,13 +30,17 @@ groups:
       # Sygnał to tempo odpytywania, nie liczba konsumentów: Messenger używa
       # basic.get, więc kolumna consumers w RabbitMQ jest zawsze 0.
       - alert: SearchConsumerDown
-        expr: 'sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m]) + rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m])) == 0'
+        # `or vector(0)` na każdym składniku: świeży broker, który nigdy nie
+        # zrobił get_ack, nie ma tej serii, a `+` na brakującym wektorze gubi
+        # wynik (alert nigdy by nie odpalił). `and on() up == 1`: gdy RabbitMQ
+        # w ogóle nie jest scrapowany, to sprawa TargetDown, nie tego alertu.
+        expr: '(sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m])) or vector(0)) + (sum(rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m])) or vector(0)) == 0 and on() up{job="rabbitmq-queues"} == 1'
         for: 1m
         labels:
           severity: critical
         annotations:
           summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
-          description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować."
+          description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
       - alert: SearchSyncBacklog
         expr: 'rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} > 1000'
@@ -49,7 +53,9 @@ groups:
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#006--licznik-wiadomości-w-kolejce-nie-nadąża"
       - alert: DeadLetterNotEmpty
         expr: 'rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"} > 0'
-        for: 0m
+        # 5m: `0m` flapowało przy każdej przerwie w scrape; DLQ to i tak ręczna
+        # decyzja, więc kilka minut zwłoki niczego nie kosztuje.
+        for: 5m
         labels:
           severity: warning
         annotations:

@@ -80,6 +80,8 @@ tests:
   - name: SearchConsumerDown odpala, gdy liczniki basic.get stoją co najmniej 3 min
     interval: 15s
     input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
       - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
         values: '100x40'
       - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
@@ -92,11 +94,13 @@ tests:
               severity: critical
             exp_annotations:
               summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
-              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować."
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
               runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
   - name: SearchConsumerDown milczy, gdy pusta kolejka jest odpytywana 60 razy/min
     interval: 15s
     input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
       - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
         values: '0+15x40'
       - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
@@ -108,6 +112,8 @@ tests:
   - name: SearchConsumerDown milczy przy zajętym konsumencie (rośnie tylko get_ack)
     interval: 15s
     input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
       - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
         values: '100x40'
       - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
@@ -119,6 +125,8 @@ tests:
   - name: SearchConsumerDown przeczekuje restart konsumenta (--time-limit)
     interval: 15s
     input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
       - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
         values: '0 15 30 45 60 75 90 105 105 105 105 120 135 150 165 180 195 210 225 240'
       - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
@@ -127,12 +135,61 @@ tests:
       - eval_time: 4m
         alertname: SearchConsumerDown
         exp_alerts: []
-  - name: SearchConsumerDown milczy dla innej kolejki z płaskimi licznikami
+  - name: SearchConsumerDown odpala, gdy target żyje, a search.product.sync nie ma serii (inna kolejka nie maskuje braku)
     interval: 15s
     input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
       - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.analytics.ingest"}'
         values: '100x40'
       - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.analytics.ingest"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+  - name: SearchConsumerDown odpala, gdy istnieje tylko stojąca seria get_empty (brak get_ack)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Nikt nie odpytuje kolejki search.product.sync (search-consumer nie żyje)"
+              description: "Nikt nie pyta kolejki search.product.sync o wiadomości od ok. 2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`). Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0; prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta: get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600) trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować. Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2 min: konsument w trakcie pracy nie odpytuje kolejki."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi"
+  - name: SearchConsumerDown milczy, gdy rośnie tylko get_empty (brak get_ack)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '1x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '0+15x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SearchConsumerDown
+        exp_alerts: []
+  - name: SearchConsumerDown milczy, gdy target rabbitmq-queues nie odpowiada (to sprawa TargetDown)
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-queues"}'
+        values: '0x40'
+      - series: 'rabbitmq_detailed_queue_get_empty_total{job="rabbitmq-queues",queue="search.product.sync"}'
+        values: '100x40'
+      - series: 'rabbitmq_detailed_queue_get_ack_total{job="rabbitmq-queues",queue="search.product.sync"}'
         values: '5x40'
     alert_rule_test:
       - eval_time: 5m
@@ -168,13 +225,13 @@ tests:
         exp_alerts: []
 
   # ------------------------------------------------------- DeadLetterNotEmpty
-  - name: DeadLetterNotEmpty odpala od razu przy jednej wiadomości w DLQ
+  - name: DeadLetterNotEmpty odpala po 5 min z jedną wiadomością w DLQ
     interval: 15s
     input_series:
       - series: 'rabbitmq_detailed_queue_messages{job="rabbitmq-queues",queue="search.product.sync.dlq"}'
-        values: '1x4'
+        values: '1x40'
     alert_rule_test:
-      - eval_time: 30s
+      - eval_time: 6m
         alertname: DeadLetterNotEmpty
         exp_alerts:
           - exp_labels:
@@ -185,6 +242,15 @@ tests:
               summary: "Kolejka search.product.sync.dlq nie jest pusta (1)"
               description: "DLQ ma być pusta poza awarią; każda wiadomość to ręczna decyzja (ponowić albo odrzucić)."
               runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md"
+  - name: DeadLetterNotEmpty milczy przed upływem 5 min (for)
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{job="rabbitmq-queues",queue="search.product.sync.dlq"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DeadLetterNotEmpty
+        exp_alerts: []
   - name: DeadLetterNotEmpty milczy przy pustej DLQ
     interval: 15s
     input_series:

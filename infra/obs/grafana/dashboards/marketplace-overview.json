@@ -163,7 +163,7 @@
       },
       "targets": [
         {
-          "expr": "rate(rabbitmq_detailed_queue_get_empty_total[1m]) + rate(rabbitmq_detailed_queue_get_ack_total[1m])",
+          "expr": "sum by (queue) (rate({__name__=~\"rabbitmq_detailed_queue_get_(empty|ack)_total\"}[1m]))",
           "legendFormat": "{{queue}}",
           "refId": "A",
           "datasource": {
@@ -172,7 +172,7 @@
           }
         }
       ],
-      "description": "Messenger pobiera przez basic.get, więc liczba konsumentów jest zawsze 0; żywotność konsumenta widać po tempie odpytywań.",
+      "description": "Messenger pobiera przez basic.get, więc liczba konsumentów jest zawsze 0; żywotność konsumenta widać po tempie odpytywań. Jedno zapytanie na oba liczniki (regex po nazwie), bo `a + b` gubi kolejkę, która ma tylko jedną z serii (np. świeży broker bez get_ack).",
       "fieldConfig": {
         "defaults": {
           "unit": "ops"
