@@ -151,5 +151,6 @@ make errors-smoke    # błędy z HTTP, kolejki, search i przeglądarki -> issues
 make errors-tunnel-check  # tunel POST /_errors na żywym catalog-app: 405/413/415, cel z configu, limit 429
 make errors-reset    # kasuje bazę GlitchTipa i odtwarza z kodu (pyta o potwierdzenie)
 make k3s-manifests-check  # manifesty k8s bez klastra: kubectl kustomize + tag process w Deploymentach
+make errors-db-check # setup_db.py z obrazu GlitchTipa na tymczasowej bazie (idempotencja, hasło, odmowa pustego)
 make prod-check      # obrazy prod + nakładka compose.prod, w tym sekrety GlitchTipa z gen-env.sh i strażnik bootstrapu
 ```

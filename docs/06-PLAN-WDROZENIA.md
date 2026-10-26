@@ -379,8 +379,9 @@ spec: [`superpowers/specs/2026-10-26-glitchtip-design.md`](superpowers/specs/202
 plan: [`superpowers/plans/2026-10-26-glitchtip.md`](superpowers/plans/2026-10-26-glitchtip.md),
 RUNBOOK #068–#073, pomiary w [POMIARY §13](POMIARY.md).
 
-Poza zakresem (świadomie): GlitchTip na VPS/k3s (po pomiarze RAM na VPS), upload
-source map w CI, `trace_id` z przeglądarki do żądań HTTP, performance/tracing i
+GlitchTip jest też w `compose.prod.yaml` (obraz z CI, tunel SSH, mailpit); **nie wdrożony na
+serwer** (wymaga merge'u i obrazu z CI, procedura w RUNBOOK #074). Poza zakresem (świadomie):
+GlitchTip na k3s, upload source map w CI, `trace_id` z przeglądarki do żądań HTTP, performance/tracing i
 Session Replay, monity cron i uptime GlitchTipa (to robi Prometheus).
 
 ### ETAP 12 — Tor analityki operacyjnej (3–4 dni) → **moduł 13a**

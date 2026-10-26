@@ -2,12 +2,18 @@
 
 Klucze DSN, token API i hasła z `.env.example` są PUBLICZNE (leżą w repozytorium).
 Poza localhostem bootstrap nie może z nich skorzystać, bo GlitchTip dostępny pod
-prawdziwą domeną miałby znane każdemu klucze zapisu i token API. Czysty Python bez
-zależności (uruchamiany przed `manage.py shell`, testowany na hoście).
+prawdziwą domeną miałby znane każdemu klucze zapisu i token API.
+
+Sama domena nie wystarcza: na VPS GlitchTip jest widziany przez tunel SSH jako
+`http://localhost:28000`, czyli wygląda jak dev. Nakładka prod ustawia więc
+`GLITCHTIP_STRICT_SECRETS=true`, a wtedy kontrola obowiązuje także dla localhosta.
+
+Czysty Python bez zależności (uruchamiany przed `manage.py shell`, testowany na hoście).
 
 Exit 0 = można startować, exit 1 = odmowa z listą powodów.
 """
 import os
+import re
 import sys
 
 # Wartości deweloperskie z .env.example (i z domyślnych w compose.yaml).
@@ -23,10 +29,21 @@ LOCAL_PREFIXES = ("http://localhost", "https://localhost", "http://127.0.0.1")
 
 def main() -> int:
     domain = os.environ.get("GLITCHTIP_DOMAIN", "")
-    if domain.startswith(LOCAL_PREFIXES):
+    strict = os.environ.get("GLITCHTIP_STRICT_SECRETS", "").lower() in ("1", "true", "yes")
+    if domain.startswith(LOCAL_PREFIXES) and not strict:
         return 0
 
     problems = []
+    # Pusty sekret nie jest „bez problemu”: compose.prod.yaml nie używa `:?` (stary .env bez
+    # sekcji GlitchTipa nie może blokować deployu), więc brak wartości łapiemy tutaj.
+    for name in (
+        "GLITCHTIP_KEY_CATALOG", "GLITCHTIP_KEY_FRONTEND", "GLITCHTIP_KEY_SEARCH",
+        "GLITCHTIP_API_TOKEN", "GLITCHTIP_ADMIN_PASSWORD", "GLITCHTIP_ADMIN_EMAIL", "SECRET_KEY",
+    ):
+        if not os.environ.get(name, "").strip():
+            problems.append(f"{name}: puste (ustaw w .env: tools/vps/gen-env.sh albo add-glitchtip-env.sh)")
+    if re.search(r"://[^:/@]*:@", os.environ.get("DATABASE_URL", "")):
+        problems.append("DATABASE_URL: puste hasło bazy (GLITCHTIP_DB_PASSWORD)")
     for name in ("GLITCHTIP_KEY_CATALOG", "GLITCHTIP_KEY_FRONTEND", "GLITCHTIP_KEY_SEARCH"):
         if os.environ.get(name, "").startswith(DEV_KEY_PREFIX):
             problems.append(f"{name}: klucz deweloperski z .env.example")
@@ -39,7 +56,8 @@ def main() -> int:
         problems.append("GLITCHTIP_ADMIN_EMAIL: niewypełnione (__SET_ME__), wpisz własny adres w .env")
 
     if problems:
-        print(f"ODMOWA: GLITCHTIP_DOMAIN={domain!r} nie jest localhostem, a:")
+        reason = "tryb produkcyjny (GLITCHTIP_STRICT_SECRETS)" if strict else "nie jest localhostem"
+        print(f"ODMOWA: GLITCHTIP_DOMAIN={domain!r} {reason}, a:")
         for problem in problems:
             print(f"  - {problem}")
         print("Wygeneruj własne: tools/vps/gen-env.sh .env.prod.example .env (patrz RUNBOOK #069).")

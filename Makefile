@@ -267,6 +267,7 @@ up-obs: ## Start profilu obs (stack i aplikacje muszą już działać): obs-setu
 # bootstrap (organizacja, projekty, stałe klucze DSN, alerty, token).
 up-errors: ## Start profilu errors (Postgres musi już działać): GlitchTip + bootstrap
 	@bash tools/doctor.sh errors
+	$(DC) --profile errors build glitchtip
 	$(DC) --profile errors run --rm --no-deps glitchtip-db-setup
 	$(DC) --profile errors up -d --no-deps mailpit glitchtip
 	@echo "Czekam na zdrowie GlitchTipa (do 120 s)..."
@@ -358,8 +359,11 @@ prod-eval: ## nDCG@10 na VPS
 	@$(VPS_DC) exec -T catalog-app php artisan search:eval
 
 .PHONY: vps-tunnel
-vps-tunnel: ## Tunel SSH do UI na VPS: catalog :28080, Kibana :25601, RabbitMQ :26672 (Ctrl+C kończy)
+vps-tunnel: ## Tunel SSH do UI na VPS: catalog :28080, Kibana :25601, RabbitMQ :26672, GlitchTip :28000, mailpit :28025 (Ctrl+C kończy)
 	@echo "  Catalog   http://localhost:28080/search"
+	@echo "  GlitchTip http://localhost:28000   (login: make vps-secret k=GLITCHTIP_ADMIN_EMAIL, hasło: k=GLITCHTIP_ADMIN_PASSWORD)"
+	@echo "  Mailpit   http://localhost:28025   (maile o nowych issue)"
+	@echo "  GlitchTip i mailpit wymagają w ~/.ssh/config (Host elastic-vps-tunnel): LocalForward 28000 127.0.0.1:18000 i 28025 127.0.0.1:8025"
 	@echo "  Kibana    http://localhost:25601   (elastic / hasło: make vps-secret k=ELASTIC_PASSWORD)"
 	@echo "  RabbitMQ  http://localhost:26672   (marketplace / hasło: make vps-secret k=RABBITMQ_PASSWORD)"
 	@ssh -N elastic-vps-tunnel
@@ -383,6 +387,10 @@ vps-backup-pull: ## Skopiuj backupy z VPS na Maca (~/backups/elastic-vps): dumpy
 ## k3s (ETAP D2 — docs/09-PLAN-ETAP-D2-K3S.md)
 # kubectl z Homebrew (1.37): ten z /usr/local/bin (1.33) jest za stary dla k3s 1.36.
 KUBECTL_VPS := /opt/homebrew/bin/kubectl --kubeconfig $(HOME)/.kube/elastic-vps.yaml
+
+.PHONY: errors-db-check
+errors-db-check: ## setup_db.py z obrazu GlitchTipa na tymczasowej bazie (wymaga make up i zbudowanego obrazu)
+	@bash tools/glitchtip-db-check.sh
 
 .PHONY: k3s-manifests-check
 k3s-manifests-check: ## Manifesty k8s bez klastra: kubectl kustomize + ERROR_TRACKING_PROCESS w Deploymentach (ETAP 11b)

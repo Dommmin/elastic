@@ -28,7 +28,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 echo "[deploy] pliki -> ${HOST}:${DIR}"
 scp -q "${ROOT}/compose.yaml" "${ROOT}/compose.prod.yaml" "${ROOT}/.env.prod.example" \
-    "${ROOT}/tools/vps/gen-env.sh" "${ROOT}/infra/systemd/pg-backup.sh" \
+    "${ROOT}/tools/vps/gen-env.sh" "${ROOT}/tools/vps/add-glitchtip-env.sh" "${ROOT}/infra/systemd/pg-backup.sh" \
     "${ROOT}/infra/systemd/marketplace-pg-backup.service" \
     "${ROOT}/infra/systemd/marketplace-pg-backup.timer" "${HOST}:${DIR}/"
 
@@ -39,9 +39,14 @@ scp -q "${ROOT}/compose.yaml" "${ROOT}/compose.prod.yaml" "${ROOT}/.env.prod.exa
 ssh "${HOST}" "TAG='${TAG}' DIR='${DIR}' bash -s" <<'REMOTE'
 set -euo pipefail
 cd "${DIR}"
-chmod +x gen-env.sh
+chmod +x gen-env.sh add-glitchtip-env.sh
 [ -f .env ] || ./gen-env.sh .env.prod.example .env
 sed -i -E "s/^IMAGE_TAG=.*/IMAGE_TAG=${TAG}/" .env
+# GlitchTip jest opcjonalny: serwer ze starym .env deployuje się jak dotąd. Włączenie to
+# świadoma decyzja (adres admina), więc tylko podpowiadamy, nie dopisujemy sami.
+if ! grep -q '^GLITCHTIP_KEY_CATALOG=' .env; then
+  echo "[deploy] GlitchTip nie jest skonfigurowany w .env — pomijam. Włączenie: ./add-glitchtip-env.sh .env.prod.example .env <adres-admina>"
+fi
 
 echo "[deploy] pull ${TAG:0:12}"
 docker compose pull --quiet </dev/null

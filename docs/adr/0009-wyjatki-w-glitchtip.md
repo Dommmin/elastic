@@ -148,6 +148,18 @@ API (64 znaki), `SECRET_KEY` i hasła, a DSN-y składa z wygenerowanych kluczy
 widzi klucze, token albo hasła z `.env.example` (są publiczne) lub niewypełniony adres
 admina.
 
+**GlitchTip na VPS (Compose):** `compose.prod.yaml` dokłada `glitchtip-db-setup`, `glitchtip` i
+`glitchtip-setup` z obrazu `elastic-glitchtip` budowanego w CI (`infra/glitchtip/Dockerfile`:
+oficjalny GlitchTip + skrypty, bo na serwerze nie ma repo; dev używa tego samego obrazu).
+UI i mailpit (odbiorca maili o nowych issue, nic nie wychodzi z VPS) tylko przez tunel SSH
+(`:28000`, `:28025`). `GLITCHTIP_STRICT_SECRETS=true`, bo przez tunel GlitchTip ma domenę
+`localhost` i sama domena nie odróżnia go od dev. Wartości sekretów w nakładce są puste, gdy
+brakuje ich w `.env`, a NIE `:?`: Compose interpoluje cały plik, więc `:?` zablokowałoby deploy
+na serwerze ze starym `.env`; odmowę dają `guard.py` i `setup_db.py`. `SENTRY_RELEASE` na
+serwerze to `IMAGE_TAG` (compose.yaml ustawia `dev`). `tools/vps/add-glitchtip-env.sh` dopisuje
+sekcję do istniejącego `.env` (RUNBOOK #074). Baza `glitchtip` nie wchodzi do backupów:
+dane błędów są jednorazowe (retencja 14 dni), a konfigurację odtwarza bootstrap z `.env`.
+
 **Do zrobienia później:** GlitchTip na k3s po pomiarze RAM na VPS, upload source
 map w CI (`docker build --target assets` daje mapy), przekazywanie `trace_id`
 z przeglądarki do żądań HTTP.
