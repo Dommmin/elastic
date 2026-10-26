@@ -71,7 +71,7 @@
 | [068](#068) | `make up-errors`: GlitchTip nie jest `healthy`, brak bazy `glitchtip` | GlitchTip / Docker | 11b |
 | [069](#069) | Bootstrap GlitchTipa: „ID oczekiwane 1/2/3”, rozjazd po podbiciu wersji | GlitchTip | 11b |
 | [070](#070) | Alert `GlitchTipDown` | GlitchTip / Prometheus | 11b |
-| [071](#071) | Brak zdarzeń z przeglądarki (tunel `/_errors`) | Caddy / frontend | 11b |
+| [071](#071) | Brak zdarzeń z przeglądarki (tunel `/_errors`) | Laravel / frontend | 11b |
 | [072](#072) | Stack trace frontu bez source map (ramki z `assets/*.js`) | Frontend / GlitchTip | 11b |
 | [073](#073) | Błąd poszedł w świat, a w GlitchTipie nie ma issue | Laravel / Symfony / GlitchTip | 11b |
 
@@ -3282,6 +3282,15 @@ Przy kolizji portu zmień `GLITCHTIP_PORT` w `.env`; `GLITCHTIP_DOMAIN` w
 compose jest liczony z tej zmiennej, więc linki w mailach zgadzają się z portem.
 Gdy Postgres nie działa: `make up`.
 
+**Stary montaż pliku po `git checkout`** (trzeci objaw, GlitchTip działa, ale
+`docker ps` pokazuje `unhealthy`): `docker inspect` daje w logu healthchecka kod 2
+i `can't open file '/healthcheck.py'`. Kontener ma zamontowany POJEDYNCZY plik
+(`infra/glitchtip/healthcheck.py`); `git checkout`/`pull` podmienia plik (nowy
+i-węzeł), a kontener trzyma starego. Naprawa: `docker compose --profile errors up -d
+--force-recreate --no-deps glitchtip` (dane są w Postgresie). To samo dotyczy każdego
+pliku montowanego pojedynczo (`bootstrap.py`, `guard.py` w `glitchtip-setup`, który
+i tak jest jednorazowy).
+
 **Czego się nauczyłem**
 Skrypt inicjalizacyjny kontenera to NIE migracja: nie odtwarza się na
 istniejących danych. Zmiana, która ma dotrzeć na działający wolumen, potrzebuje
@@ -3322,6 +3331,13 @@ bazę `glitchtip` i odtwarza cały stan z kodu). Dla drugiego: popraw
 `infra/glitchtip/bootstrap.py` do nowych modeli, wróć do poprzedniej wersji w
 `.env` albo sprawdź nazwy modeli komendą z Diagnozy. Skrypt jest idempotentny,
 więc można go uruchamiać wielokrotnie.
+
+**Odmowa strażnika** (`ODMOWA: GLITCHTIP_DOMAIN=… nie jest localhostem, a: …`):
+`infra/glitchtip/guard.py` nie pozwala startować bootstrapowi poza localhostem z
+kluczami DSN, tokenem API lub hasłami z `.env.example` (są publiczne) ani z
+niewypełnionym `GLITCHTIP_ADMIN_EMAIL=__SET_ME__`. Wygeneruj własne wartości
+(`tools/vps/gen-env.sh .env.prod.example .env`, plik się nie nadpisuje) i wpisz własny
+adres admina. Strażnik testuje `make prod-check`.
 
 **Czego się nauczyłem**
 Konfiguracja zewnętrznego narzędzia „jako kod” przez jego wewnętrzne modele
@@ -3372,26 +3388,33 @@ przeglądarki `POST /_errors 502/204/405`.
 
 **Diagnoza**
 ```bash
-make errors-tunnel-check      # 405/413/204/cel na sztywno/502 na jednorazowym kontenerze
+make errors-tunnel-check      # żywy catalog-app: 405/413/415, cel z configu, limit 429
 # czy strona w ogóle niesie konfigurację?
 curl -sk https://catalog.localhost:8443/ | grep error-tracking
-# co widzi Caddy?
+# jaki cel ma tunel?
 docker compose exec catalog-app printenv | grep GLITCHTIP
+docker compose exec catalog-app php artisan config:show error_tracking.tunnel
 ```
 
 **Przyczyna**
-Zależy od kodu odpowiedzi tunelu. **204**: pusty `GLITCHTIP_FRONTEND_KEY`
-(tunel wyłączony celowo, np. prod bez GlitchTipa). **502**: Caddy nie dociera
-do `glitchtip:8000` (GlitchTip leży, patrz #070). Brak tagów `<meta
-name="error-tracking-dsn">` w HTML: pusty `SENTRY_FRONTEND_DSN`, więc SDK się
-w ogóle nie włącza (to też zamierzone). **405** to GET pod `/_errors`, nie błąd.
-Caddyfile jest wbudowany w obraz, więc po zmianie trzeba przebudować
-`catalog-app` (`docker compose --profile apps build catalog-app`).
+Tunel to trasa Laravela (`ErrorTunnelController`), więc kod odpowiedzi mówi, co
+poszło nie tak. **204**: pusty `GLITCHTIP_FRONTEND_KEY` (tunel wyłączony celowo,
+np. prod bez GlitchTipa). **502**: catalog nie dociera do `glitchtip:8000`
+(GlitchTip leży albo jest zawieszony, patrz #070; timeout 1 s). **429**: limit
+liczby żądań (20/min na IP, 300/min globalnie, nagłówek `Retry-After`): przeglądarka
+spamująca błędami albo wiele stron naraz; SDK wstrzymuje wysyłkę, więc zwykle samo
+mija. **413/415**: ciało > 1 MB albo skompresowane. **4xx z GlitchTipa** są
+przekazywane z kodem (zła koperta). Brak tagów `<meta name="error-tracking-dsn">` w
+HTML: pusty `SENTRY_FRONTEND_DSN`, więc SDK się w ogóle nie włącza (też zamierzone).
+**405** to GET pod `/_errors`, nie błąd. Sufit rozmiaru ciała (2 MB) siedzi w Caddyfile,
+który jest wbudowany w obraz, więc po jego zmianie trzeba przebudować `catalog-app`
+(`docker compose --profile apps build catalog-app`).
 
 **Naprawa**
 Ustaw `GLITCHTIP_DSN_FRONTEND` i `GLITCHTIP_KEY_FRONTEND` w `.env` i odtwórz
 `catalog-app`. Jeśli adblocker blokuje `/_errors`, zmień ścieżkę w
-`resources/js/lib/errorTracking.ts` (`TUNNEL_PATH`) i w Caddyfile.
+`resources/js/lib/errorTracking.ts` (`TUNNEL_PATH`), w `bootstrap/app.php` (trasa) i w
+Caddyfile (`@errorsTunnel`). Limity zmienisz w `AppServiceProvider` (`errors-tunnel`).
 
 **Czego się nauczyłem**
 Konfiguracja w bundlu nie powie, czy SDK jest włączone. Stan włączenia

@@ -382,8 +382,9 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       VITE_DEV_SERVER: http://catalog-vite:5173
-      # Tunel /_errors w Caddyfile: błędy z przeglądarki do projektu catalog-frontend
-      # w GlitchTipie (cel na sztywno, ADR-0009). Pusty klucz = tunel wyłączony (204).
+      # Tunel POST /_errors (ErrorTunnelController, config/error_tracking.php): błędy z
+      # przeglądarki do projektu catalog-frontend w GlitchTipie (cel z configu, ADR-0009).
+      # Pusty klucz = tunel wyłączony (204).
       GLITCHTIP_FRONTEND_PROJECT_ID: "2"
       GLITCHTIP_FRONTEND_KEY: ${GLITCHTIP_KEY_FRONTEND:-}
       GLITCHTIP_UPSTREAM: glitchtip:8000
@@ -940,9 +941,11 @@ services:
   glitchtip-setup:
     profiles: [errors]
     image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
-    entrypoint: ["sh", "-c", "./manage.py shell < /bootstrap.py"]
+    # guard.py odmawia poza localhostem, gdy klucze/token/hasła są deweloperskie z repo.
+    entrypoint: ["sh", "-c", "python /guard.py && ./manage.py shell < /bootstrap.py"]
     environment: *glitchtip-env
     volumes:
+      - ./infra/glitchtip/guard.py:/guard.py:ro
       - ./infra/glitchtip/bootstrap.py:/bootstrap.py:ro
     networks: [marketplace]
     restart: "no"

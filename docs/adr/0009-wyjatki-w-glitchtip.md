@@ -80,12 +80,18 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
    jest pomijalny ([POMIARY §13](../POMIARY.md)). Pierwotnie planowane 1 s/2 s
    przekraczałoby budżet 3 s.
 9. **Przeglądarka nie łączy się z GlitchTipem bezpośrednio.** SDK (opcja
-   `tunnel`) wysyła na `POST /_errors`, a Caddy w `catalog-app` przekazuje do
-   projektu `catalog-frontend`. Cel i klucz są wpisane na sztywno w zmiennych
-   środowiskowych, nie zależą od DSN w kopercie, więc tunel nie jest otwartym
-   przekaźnikiem (klucz z query stringa i `X-Sentry-Auth` od klienta nie zmieniają
-   celu). Ciało do 1 MB i bez `Content-Encoding` (415), bez ciasteczek i
-   autoryzacji, pusty klucz wyłącza tunel (204). GlitchTip nie musi być publiczny.
+   `tunnel`) wysyła na `POST /_errors`, a `ErrorTunnelController` w `catalog` przekazuje
+   do projektu `catalog-frontend`. Cel i klucz pochodzą z configu, nie z żądania, więc
+   tunel nie jest otwartym przekaźnikiem (klucz z query stringa i `X-Sentry-Auth` od
+   klienta nie zmieniają celu). Ciało do 1 MB (413) i bez `Content-Encoding` (415), bez
+   ciasteczek i autoryzacji, pusty klucz wyłącza tunel (204), awaria GlitchTipa to szybkie
+   502. **Limity liczby żądań: 20/min na IP i 300/min globalnie** (429 z `Retry-After`).
+   Kontroler zamiast Caddy, bo Caddy nie ma limitera w rdzeniu, a własny obraz z modułem
+   rate-limit to nowa zależność i nowy łańcuch budowania; Caddy zostawia tylko sufit
+   rozmiaru ciała (2 MB), działający zanim PHP zacznie je buforować. Limiter używa
+   domyślnego magazynu cache aplikacji (`database`). Za tunelem SSH (dostęp na VPS)
+   wszystkie żądania mają to samo IP, więc tam realnie działa limit globalny. GlitchTip
+   nie musi być publiczny.
 10. **Konfiguracja jako kod.** Organizację, projekty, **stałe** klucze DSN,
     reguły alertu „nowy issue → e-mail” i token API zakłada idempotentny
     bootstrap (`infra/glitchtip/bootstrap.py`). Klucze są w `.env`, więc
@@ -128,14 +134,19 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
 - Skrypt bootstrapu używa wewnętrznych modeli Django GlitchTipa (zweryfikowane
   na 6.2.6): przy podbiciu wersji trzeba go sprawdzić (RUNBOOK #069).
 
-**Przed wystawieniem na VPS (nierozstrzygnięte):** tunel `/_errors` nie ma limitu
-liczby żądań. Zakładałem, że ogranicza je GlitchTip (throttling organizacji), ale
-nie zweryfikowałem tego dla instalacji bez billingu (może wynikać wyłącznie z
-kwot). Zdarzenia z publicznego tunelu wypełniałyby bazę `glitchtip`, która jest w
-tym samym Postgresie co katalog. Przed wdrożeniem: limit żądań w Caddy (moduł
-rate-limit) albo osobny limit rozmiaru bazy; do sprawdzenia też, czy GlitchTip
+**Przed wystawieniem na VPS:** tunel ma już limity (zasada 9), ale limit liczby
+żądań nie ogranicza *łącznej wielkości* danych w bazie `glitchtip`, która jest w tym
+samym Postgresie co katalog. Throttling samego GlitchTipa nie jest zweryfikowany dla
+instalacji bez billingu. Nadal do zrobienia: osobny limit rozmiaru bazy (albo
+retencja krótsza niż 14 dni, `GLITCHTIP_RETENTION_DAYS`) i sprawdzenie, czy GlitchTip
 ogranicza rozmiar *po dekompresji* (tunel odrzuca kompresję, ale sam GlitchTip
 przyjmuje ją na swoim porcie).
+
+**Sekrety prod:** `tools/vps/gen-env.sh` generuje klucze DSN (UUID hex, 32 znaki), token
+API (64 znaki), `SECRET_KEY` i hasła, a DSN-y składa z wygenerowanych kluczy
+(`__REF:…__`). `infra/glitchtip/guard.py` odmawia startu bootstrapu poza localhostem, gdy
+widzi klucze, token albo hasła z `.env.example` (są publiczne) lub niewypełniony adres
+admina.
 
 **Do zrobienia później:** GlitchTip na k3s po pomiarze RAM na VPS, upload source
 map w CI (`docker build --target assets` daje mapy), przekazywanie `trace_id`

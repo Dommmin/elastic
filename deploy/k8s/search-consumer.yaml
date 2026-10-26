@@ -28,6 +28,10 @@ spec:
             - configMapRef:
                 name: marketplace-config
           env:
+            # Tag `process` zdarzeń w GlitchTipie (ADR-0009); SDK jest wyłączone, dopóki DSN
+            # w marketplace-config jest pusty.
+            - name: ERROR_TRACKING_PROCESS
+              value: consumer
             # `env` wygrywa z `envFrom`: ConfigMap ma APP_ENV=production
             # (konwencja Laravela), Symfony chce `prod`.
             - name: APP_ENV

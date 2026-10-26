@@ -14,6 +14,15 @@ return [
     // a nie do buildu: ten sam obraz działa w każdym środowisku. Pusty DSN = bez SDK.
     // Przeglądarka wysyła przez tunel /_errors w Caddy, więc host z DSN nie jest
     // używany; liczy się klucz i ID projektu.
+    // Tunel POST /_errors (ErrorTunnelController): przeglądarka nie łączy się z GlitchTipem
+    // bezpośrednio, a cel jest wpisany tu, nie pochodzi z żądania klienta. Pusty klucz
+    // = tunel wyłączony (204). Te same zmienne ustawia compose dla catalog-app.
+    'tunnel' => [
+        'key' => env('GLITCHTIP_FRONTEND_KEY'),
+        'project_id' => env('GLITCHTIP_FRONTEND_PROJECT_ID', '2'),
+        'upstream' => env('GLITCHTIP_UPSTREAM', 'glitchtip:8000'),
+    ],
+
     'frontend' => [
         'dsn' => env('SENTRY_FRONTEND_DSN'),
         'environment' => env('SENTRY_ENVIRONMENT', env('APP_ENV')),

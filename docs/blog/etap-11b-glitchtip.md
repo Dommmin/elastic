@@ -6,7 +6,7 @@ zadaje się po awarii: **jaki błąd w kodzie, od kiedy, jak często i w której
 wersji?** Ten etap dokłada GlitchTip: wyjątki z Laravela (żądania HTTP,
 kolejka), z Symfony (konsument Messengera) i z przeglądarki (Vue) lądują
 jako zgrupowane issues, z tagiem `trace_id`, który prowadzi do tych samych
-zdarzeń w Kibanie. Przy okazji: protokół Sentry, tunel błędów przez Caddy,
+zdarzeń w Kibanie. Przy okazji: protokół Sentry, tunel błędów z limitami,
 source mapy z Debug IDs, bootstrap usługi jako kod i pomiar, ile kosztuje
 awaria narzędzia do awarii.*
 
@@ -74,7 +74,7 @@ używamy oficjalnych SDK Sentry, a po stronie serwera to jeden kontener
 | catalog | `sentry-laravel`, `EnrichEvent`, `QueueRetryFilter` | `apps/catalog/config/sentry.php`, `app/Support/ErrorTracking/` |
 | search | `sentry-symfony`, `EnrichEvent` | `apps/search/config/packages/sentry.yaml`, `src/ErrorTracking/` |
 | Przeglądarka | `@sentry/vue`, konfiguracja z meta, breadcrumbs z `X-Trace-Id` | `apps/catalog/resources/js/lib/errorTracking.ts` |
-| Tunel | `POST /_errors` → projekt `catalog-frontend` | `infra/caddy/Caddyfile` |
+| Tunel | `POST /_errors` → projekt `catalog-frontend`, z limitami | `app/Http/Controllers/ErrorTunnelController.php`, sufit ciała w `infra/caddy/Caddyfile` |
 | Alert | `GlitchTipDown` (z testami `promtool`) | `infra/obs/prometheus/rules/` |
 | Test | `make errors-smoke`, `make errors-tunnel-check` | `tools/` |
 
@@ -183,16 +183,22 @@ Przeglądarka **nie** łączy się z GlitchTipem. SDK wysyła na to samo origin:
 POST https://catalog.localhost:8443/_errors
 ```
 
-a Caddy przekazuje kopertę do projektu `catalog-frontend`. Korzyści: GlitchTip
+a `ErrorTunnelController` w catalog przekazuje kopertę do projektu `catalog-frontend`. Korzyści: GlitchTip
 nie musi być publiczny (na VPS jest tylko za tunelem SSH), nie ma CORS ani
 mixed content, a adblockery nie widzą domeny `sentry`.
 
 **To nie jest otwarty przekaźnik.** Cel (ID projektu i jego klucz) jest
-wpisany w zmiennych środowiskowych Caddy i nie zależy od DSN w kopercie.
-Sprawdza to `make errors-tunnel-check`: koperta z DSN projektu `search` ląduje
-w `catalog-frontend`, nie w `search`. Tunel przyjmuje tylko POST (405 dla
-GET), ciało do 1 MB (413), nie przekazuje ciasteczek ani autoryzacji, a przy
-pustym kluczu odpowiada 204.
+w configu (`config/error_tracking.php`) i nie zależy od DSN w kopercie ani od klucza
+w query stringu czy nagłówku. Sprawdza to `make errors-tunnel-check` na żywym
+`catalog-app`: koperta z kluczem projektu `search` ląduje w `catalog-frontend`, nie w
+`search`. Tunel przyjmuje tylko POST (405 dla GET), ciało do 1 MB (413), odrzuca
+`Content-Encoding` (415), nie przekazuje ciasteczek ani autoryzacji, przy pustym kluczu
+odpowiada 204, a przy awarii GlitchTipa szybkim 502. Ma też **limity liczby żądań:
+20/min na IP i 300/min globalnie** (429 z `Retry-After`); logika jest w testach Pest
+(`ErrorTunnelTest`). Dlaczego w Laravelu, a nie w Caddy: Caddy nie ma limitera w
+rdzeniu, a własny obraz z modułem rate-limit to nowa zależność w łańcuchu budowania.
+W Caddy zostaje tylko sufit rozmiaru ciała (2 MB), działający zanim PHP zacznie je
+buforować.
 
 Konfiguracja przeglądarki (DSN, środowisko, release) przychodzi **w runtime**
 z tagów `<meta>` w `app.blade.php`, nie z buildu. Ten sam bundle działa w
@@ -344,6 +350,10 @@ Szczegóły i komendy diagnostyczne w RUNBOOK
    przeglądarki. Wniosek: test „nie wysyłamy body i ciasteczek” nie dowodzi „nie
    wysyłamy PII”; trzeba przejść wszystkie pola zdarzenia (ramki, URL, nagłówki,
    breadcrumbs, komunikaty).
+10. **Healthcheck GlitchTipa padał po `git checkout`.** Kontener ma zamontowany
+    pojedynczy plik `healthcheck.py`; git podmienia plik (nowy i-węzeł), a kontener
+    trzyma stary, więc `python /healthcheck.py` kończył się kodem 2, choć GlitchTip
+    działał. Pomaga odtworzenie kontenera (`up -d --force-recreate glitchtip`).
 
 ## Czego jeszcze nie ma
 
@@ -353,6 +363,6 @@ Szczegóły i komendy diagnostyczne w RUNBOOK
   `/sourcemaps`, ale CI nie ma jeszcze dokąd ich wysłać.
 - `trace_id` z przeglądarki do żądań HTTP (dziś tylko w drugą stronę, przez
   breadcrumbs).
-- Limit liczby żądań na tunelu `/_errors` (ADR-0009, „Przed wystawieniem na VPS”).
+- Limit *łącznej wielkości* danych w bazie `glitchtip` i sprawdzenie dekompresji po stronie GlitchTipa (ADR-0009, „Przed wystawieniem na VPS”).
 - Crash samego konsumenta Messengera (poza obsługą wiadomości) nie trafia do
   GlitchTipa; pokrywa go `SearchConsumerDown`.

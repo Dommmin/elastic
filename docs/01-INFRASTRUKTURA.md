@@ -339,8 +339,8 @@ Test end-to-end: `make errors-smoke`.
 
 Zmierzone zużycie GlitchTipa: 183–229 MiB, baza ~22 MB ([POMIARY §13](POMIARY.md)).
 SDK w aplikacjach są włączone DSN-ami z `.env`; pusty DSN je wyłącza. Błędy
-z przeglądarki idą tunelem `POST /_errors` w Caddy `catalog-app`
-(GlitchTip nie jest publiczny). Prometheus scrape'uje `glitchtip:8000/metrics`
+z przeglądarki idą tunelem `POST /_errors` (`ErrorTunnelController` w catalog, limity 20/min na IP
+i 300/min globalnie; GlitchTip nie jest publiczny). Prometheus scrape'uje `glitchtip:8000/metrics`
 (job `glitchtip`, alert `GlitchTipDown`).
 
 Nie zrobione: GlitchTip na VPS/k3s (SDK są tam wyłączone pustym DSN), upload
