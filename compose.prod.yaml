@@ -161,12 +161,19 @@ services:
       LOG_LEVEL: info
     volumes: !reset []
 
-  # catalog-scheduler: nakładka nie zmienia go poza poziomem logów (dziedziczy
-  # LOG_LEVEL=debug z compose.yaml). Obraz/wolumeny schedulera w prod to osobna
-  # sprawa (RUNBOOK #044), tu tylko spójny poziom, gdyby kontener powstał.
+  # Scheduler (`schedule:work`, RUNBOOK #044): ten sam obraz z CI co worker. Bez `image:`
+  # Compose próbowałby go budować na serwerze, gdzie nie ma infra/ (deploy padał).
   catalog-scheduler:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
     environment:
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${CATALOG_APP_KEY:?}
+      LOG_CHANNEL: stderr
       LOG_LEVEL: info
+    volumes: !reset []
 
   search-consumer:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
