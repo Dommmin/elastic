@@ -74,7 +74,7 @@ chodzić jednocześnie**, bez gaszenia Kibany czy aplikacji. Przy 16 GB byłoby 
 ```
 elastic/
 ├── docs/                       # ten plan + Twój runbook diagnostyczny
-├── compose.yaml                # główny plik (profile: default, cluster, obs, tools)
+├── compose.yaml                # główny plik (profile: default, cluster, apps, obs, errors, tools)
 ├── compose.override.yaml       # lokalne nadpisania (git-ignored)
 ├── .env.example / .env
 ├── Makefile                    # skróty: make up, make reindex, make es-health...
@@ -322,6 +322,30 @@ Kontenery, których logi czyta Filebeat, mają sterownik `json-file`
 `elasticsearch_exporter`, `node_exporter`, `promphp` w search, ćwiczenie
 porównawcze Metricbeat → ES vs Prometheus, APM.
 
+### 3.9a Profil `errors` — śledzenie błędów (ETAP 11b, zrobione lokalnie)
+
+Wyjątki zgrupowane w issues (jaki błąd, od kiedy, jak często, w której wersji),
+uzupełnienie ADR-0005: [ADR-0009](adr/0009-wyjatki-w-glitchtip.md), przewodnik
+[`blog/etap-11b-glitchtip.md`](blog/etap-11b-glitchtip.md). Start: `make up-errors`
+(Postgres musi już działać; startuje tylko serwisy `errors`, z `--no-deps`).
+Test end-to-end: `make errors-smoke`.
+
+| Kontener | Rola | `mem_limit` | Port na hoście (tylko 127.0.0.1) |
+|---|---|---|---|
+| `glitchtip-db-setup` | jednorazowy, idempotentny: rola i baza `glitchtip` w istniejącym Postgresie | — | — |
+| `glitchtip` | GlitchTip 6.2.6 all-in-one (worker w procesie WWW, bez Valkey: kolejka i cache w Postgresie) | 512m | `GLITCHTIP_PORT=18000` |
+| `glitchtip-setup` | jednorazowy, idempotentny: organizacja, 3 projekty (ID 1/2/3), stałe klucze DSN z `.env`, reguły alertu e-mail, token API | — | — |
+| `mailpit` | odbiorca maili o nowym issue (też w profilach `tools`, `obs`) | 256m | `MAILPIT_UI_PORT` |
+
+Zmierzone zużycie GlitchTipa: 183–229 MiB, baza ~22 MB ([POMIARY §13](POMIARY.md)).
+SDK w aplikacjach są włączone DSN-ami z `.env`; pusty DSN je wyłącza. Błędy
+z przeglądarki idą tunelem `POST /_errors` w Caddy `catalog-app`
+(GlitchTip nie jest publiczny). Prometheus scrape'uje `glitchtip:8000/metrics`
+(job `glitchtip`, alert `GlitchTipDown`).
+
+Nie zrobione: GlitchTip na VPS/k3s (SDK są tam wyłączone pustym DSN), upload
+source map w CI.
+
 ### 3.10 Profil `tools`
 
 - `mailpit` — podgląd maili z alertów (SMTP na 1025, UI na 8025),
@@ -349,6 +373,7 @@ Wystawione na hosta (tylko to, co potrzebne człowiekowi):
 | Prometheus (profil `obs`) | `http://localhost:19090` |
 | Alertmanager (profil `obs`) | `http://localhost:19093` |
 | Grafana (profil `obs`) | `http://localhost:13000` |
+| GlitchTip (profil `errors`) | `http://localhost:18000` |
 | MinIO | `http://localhost:9001` |
 
 `*.localhost` rozwiązuje się na 127.0.0.1 automatycznie w większości przeglądarek i systemów

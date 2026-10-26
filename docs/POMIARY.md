@@ -418,3 +418,65 @@ w alertach: TargetDown, OrderingSweepStale i migający DeadLetterNotEmpty
 (`for: 0m` + luka w serii = RESOLVED/FIRING co kilka minut; potem
 `for: 5m`, commit `10ab6c1`). Diagnoza i opcje: RUNBOOK
 [#058](RUNBOOK.md#058); decyzja o pamięci ES jeszcze nie zapadła.
+
+## 13. Śledzenie błędów (ETAP 11b, 2026-10-26)
+
+Stack na żywo: GlitchTip 6.2.6 all-in-one z profilu `errors`, kontenery aplikacji
+z kodem z gałęzi `glitchtip`, ES 3 węzły (`ES_HEAP=1g`, `mem_limit` 2g), maszyna
+współdzielona z innym projektem (VM Dockera: 15,6 GiB, 10 CPU; inne projekty
+~2,1 GiB). Profil `obs` nie działał.
+
+### Pamięć i baza GlitchTipa (`docker stats --no-stream`)
+
+| Moment | Pamięć kontenera `glitchtip` (limit 512 MiB) |
+|---|---|
+| po pierwszym starcie i bootstrapie | 182,7 MiB |
+| po kilku przebiegach `make errors-smoke` i `errors-tunnel-check` | 196,8 MiB |
+| największa zaobserwowana w sesji | 228,7 MiB |
+
+CPU w spoczynku ~0,6 %. Baza `glitchtip` w Postgresie: **22 MB** po tych
+przebiegach. Przy limicie 512m zapas jest > 2x, więc OOM wskazywałby na coś
+nietypowego (RUNBOOK [#070](RUNBOOK.md#070)).
+
+### Koszt żądania z błędem przy awarii GlitchTipa
+
+`GET /_debug/errors/http` przez Caddy, `catalog-app` (dev, `APP_DEBUG=true`),
+ciepła ścieżka (po dwóch żądaniach rozgrzewających), `curl -w %{time_total}`.
+SDK: `http_connect_timeout` 0,3 s, `http_timeout` 1 s.
+
+| Stan GlitchTipa | Żądanie z błędem |
+|---|---|
+| działa | 0,22–0,40 s |
+| **zawieszony** (`docker pause`) | 1,26–1,34 s (+ ok. `http_timeout`) |
+| zatrzymany (`docker stop`) | 0,24–0,29 s |
+| (żądanie bez błędu, dla porównania) `/up` | 0,02–0,05 s |
+
+Zatrzymany jest tani, bo nazwa przestaje się rozwiązywać (`getaddrinfo`
+w kontenerze: 0,02 s), a wysyłka SDK padła w 4–39 ms. Najgorszy jest
+zawieszony: połączenie przechodzi, odpowiedzi brak. `make errors-smoke` pilnuje
+narzutu < 1,5 s względem bazy.
+
+**Znalezione: pierwszy błąd po bezczynności jest wolny sam z siebie.** Pierwsze
+żądanie z błędem po kilkunastu sekundach ciszy trwało 1,6–3,2 s przy
+działającym GlitchTipie, a zatrzymanie *niepowiązanego* kontenera (mailpit)
+przy działającym GlitchTipie dało 3,2 s. To zimna ścieżka strony błędu
+(`APP_DEBUG`), niezwiązana z GlitchTipem; dlatego smoke mierzy narzut względem
+ciepłej bazy, a nie bezwzględny czas. Wstępnie planowany próg 3 s dla
+„zatrzymanego” GlitchTipa mierzyłby to środowisko, nie narzędzie.
+
+### Source mapy
+
+| | |
+|---|---|
+| mapy wygenerowane przez `vite build` (`sourcemap: 'hidden'`) | 98 |
+| paczki z Debug ID w GlitchTipie po `make errors-sourcemaps` | 98 (`sourcecode_debugsymbolbundle`) |
+| komentarz `sourceMappingURL` w bundlach | 0 |
+| obraz `prod`: pliki `.map` / `.js` | **0 / 98** |
+| `app-*.js` (z SDK `@sentry/vue`) | 212 kB, gzip 63,9 kB |
+
+### Droga zdarzenia
+
+Zdarzenie (smoke: HTTP, kolejka, search, przeglądarka) jest issue we właściwym
+projekcie w mniej niż kilkanaście sekund; mail o nowym issue dochodzi do
+mailpita w ramach okna pollingu smoke (60 prób co 3 s). Dokładnych czasów
+przejścia nie mierzyłem.

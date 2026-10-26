@@ -324,3 +324,24 @@ stosie):
    6.x. Plan B: release + `url-prefix`.
 5. Zachowanie `sentry-symfony` (flush i scope) w workerze Messengera
    w aktualnej wersji.
+
+## 10. Zmiany względem projektu (po implementacji, 2026-10-26)
+
+Spec powyżej to projekt z brainstormingu. Implementacja zmieniła to, co pomiar
+i kod pokazały; ADR-0009 i przewodnik opisują stan faktyczny.
+
+| Sekcja specu | Było | Jest | Dlaczego |
+|---|---|---|---|
+| Zasada 7, 3 | `http_connect_timeout` 1 s, `http_timeout` 2 s | **0,3 s i 1 s** | pomiar na żywym stacku: przy zawieszonym GlitchTipie narzut żądania z błędem to `http_timeout`; 2 s psułoby budżet 3 s |
+| 3 | `config('sentry.frontend.*')`, tag `process` w `config/sentry.php` | `config/error_tracking.php` | SDK odrzuca nieznane klucze najwyższego poziomu |
+| 3 | `QueueRetryFilter::willRetry()` bez argumentu, stan procesu | `willRetry(Throwable)`, `WeakMap` po obiekcie wyjątku | flaga procesu wyciekałaby na wyjątki spoza zadania |
+| 3, 6 | podklasa `TestCase` dla testów Sentry | opt-in w `Tests\TestCase::createApplication()` | Pest nie pozwala na dwie klasy bazowe |
+| 4 | recipe Flex | ręczna rejestracja `SentryBundle` i `sentry.yaml` | Flex pomija recipe contrib |
+| 4, 6 | test flushu przed zatrzymaniem workera | pominięty w testach, sprawdza go smoke | fałszywy transport wysyła synchronicznie |
+| 5.2 | `setup` w `createInertiaApp`, zdarzenia `invalid`/`exception`, `shouldDrop` | `withApp`, zdarzenia `httpException`/`networkError`, bez `shouldDrop` | API Inertia v3; YAGNI |
+| 5.3 | upload `sentry-cli` w kontenerze | build i inject w kontenerze, **upload z hosta** | `chunk-upload` zwraca adres z `GLITCHTIP_DOMAIN`, niewidoczny z kontenera |
+| 5.3 | `find -delete` map w etapie `prod` | wycięcie map do `/sourcemaps` w etapie `assets` | skasowanie w `prod` zostawia plik w warstwie obrazu |
+| 6 | próg odporności 3 s dla zatrzymanego GlitchTipa | narzut < 1,5 s względem ciepłej bazy dla zawieszonego | pierwszy błąd po bezczynności trwa 2,5–3 s niezależnie od GlitchTipa |
+| 6 | Playwright preinstalowany | `playwright-core` w katalogu tymczasowym na systemowym Chrome | to był opis innego środowiska |
+| 2.2 | token API i klucze „deterministyczne” | tak, ale jako literały w `.env`/`.env.example` | interpolacja w `.env` czytana przez Make i Compose różnie |
+| 9 pkt 1–5 | fakty do potwierdzenia | potwierdzone na 6.2.6: tag obrazu, `/_health/`, `?sentry_key=`, Debug IDs, modele | plan A wystarczył, żaden plan B nie był potrzebny |
