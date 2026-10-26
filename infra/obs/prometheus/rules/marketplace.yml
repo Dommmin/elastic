@@ -11,7 +11,9 @@ groups:
   - name: marketplace
     rules:
       - alert: TargetDown
-        expr: 'up == 0'
+        # glitchtip jest opcjonalny (profil errors) i ma własny alert GlitchTipDown;
+        # przy wyłączonym profilu jego `up` = 0, co nie jest awarią.
+        expr: 'up{job!="glitchtip"} == 0'
         for: 1m
         labels:
           severity: critical
@@ -172,3 +174,16 @@ groups:
           summary: "Sprzedawca czeka na akceptację ponad dobę"
           description: "SLA biznesowe: najstarszy sprzedawca czeka na decyzję {{ $value | humanizeDuration }}."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę"
+      - alert: GlitchTipDown
+        # Target glitchtip:8000 jest w prometheus.yml zawsze, a GlitchTip działa
+        # tylko w profilu errors. Bez warunku na historię alert odpalałby na stałe
+        # przy wyłączonym profilu. Z nim: odpala tylko, gdy GlitchTip żył
+        # w ostatnich 7 dniach (retencja Prometheusa to 15 dni).
+        expr: 'up{job="glitchtip"} == 0 and on() (max_over_time(up{job="glitchtip"}[7d]) == 1)'
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GlitchTip nie odpowiada"
+          description: "GlitchTip przestał odpowiadać na scrape od 5 min (a działał w ostatnich 7 dniach). Aplikacje działają dalej: SDK nie buforuje zdarzeń, a błąd wysyłki nigdy nie przerywa żądania, więc w tym czasie wyjątki nie trafiają do issues. Logi w Kibanie i metryki w Prometheusie są nietknięte."
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#070--alert-glitchtipdown-glitchtip-nie-odpowiada"

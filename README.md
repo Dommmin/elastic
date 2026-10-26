@@ -55,12 +55,13 @@ Wszystkie komendy: `make help`
 | [10-DDD](docs/10-DDD.md) | Domain-Driven Design od zera na portalu sprzedawcy i zamówieniach: 12 modułów, „zepsuj i napraw” |
 | [11-SELLER-PORTAL-SLOWNIK](docs/11-SELLER-PORTAL-SLOWNIK.md) | język wszechobecny portalu sprzedawcy (PL ↔ kod), z rezerwacjami |
 | [12-ZAMOWIENIA-SLOWNIK](docs/12-ZAMOWIENIA-SLOWNIK.md) | język wszechobecny zamówień: statusy, płatność, zwroty, saga (PL ↔ kod) |
-| [adr/](docs/adr/) | decyzje architektoniczne: portal sprzedawcy (ADR-0001…0004), metryki w Prometheusie (ADR-0005), zamówienia (ADR-0006 rezerwacje w ofercie, 0007 process manager, 0008 Shared Kernel) |
+| [adr/](docs/adr/) | decyzje architektoniczne: portal sprzedawcy (ADR-0001…0004), metryki w Prometheusie (ADR-0005), wyjątki w GlitchTipie (ADR-0009), zamówienia (ADR-0006 rezerwacje w ofercie, 0007 process manager, 0008 Shared Kernel) |
 | [RUNBOOK](docs/RUNBOOK.md) | **przewodnik diagnostyczny — uzupełniaj po każdym błędzie** |
 | [POMIARY](docs/POMIARY.md) | tabela pomiarów — Twoje liczby, nie cudze blogi |
 | [blog/](docs/blog/) | **przewodniki krok po kroku po każdym etapie** — co, jak, dlaczego i co wybuchło |
 | [blog/rabbitmq-podglad.md](docs/blog/rabbitmq-podglad.md) | jak podejrzeć RabbitMQ w akcji: panel, DLQ, eksperyment zmiana ceny → kolejka → ES |
 | [blog/etap-11-observability.md](docs/blog/etap-11-observability.md) | observability krok po kroku: jedno żądanie po `trace_id` w Kibanie, alerty Prometheusa w mailpicie, Grafana, Stack Monitoring, ILM na żywo |
+| [blog/etap-11b-glitchtip.md](docs/blog/etap-11b-glitchtip.md) | śledzenie błędów krok po kroku: GlitchTip, issues z `trace_id`, tunel błędów z przeglądarki, source mapy, awaria samego GlitchTipa |
 | [blog/panel-edycji.md](docs/blog/panel-edycji.md) | panel edycji katalogu `/panel`: zmiana z przeglądarki przez outbox, droga zdarzenia na żywo, naprawa kolizji wersji w ES |
 
 ---
@@ -82,6 +83,7 @@ Wszystkie komendy: `make help`
 | Portal sprzedawcy | Moduł DDD w catalog: rejestracja i akceptacja sprzedawcy, oferty (szkic/publikacja/cena/stan), moderacja, blokady; do projekcji trafiają tylko oferty `listed()` | w trakcie — testy, `make smoke`, kryteria 1–4 na lokalnym stacku i pomiary (nDCG 0.779 → 0.786, [POMIARY](docs/POMIARY.md)) OK — [przewodnik](docs/blog/etap-e-portal-sprzedawcy-ddd.md); porównanie z DDD-lite zrobione lokalnie ([dokument](docs/blog/ddd-vs-ddd-lite.md), gałąź `ddd-lite-porownanie` niewypchnięta); brak wdrożenia k3s |
 | Zamówienia (F) | Kontekst Ordering w pełnym DDD: koszyk wielosprzedawcowy, zamówienie na sprzedawcę, rezerwacje stanu w `Offer`, saga (process manager, kompensacje, wyścigi R1–R10), symulowana bramka z podpisanym webhookiem, wysyłka i anulowanie ze zwrotem, `orders:race-test` | zrobione lokalnie i sprawdzone na żywym stacku — zmergowane do `main` (PR #1), cały catalog 764 testy, E2E kryteriów 1–6 w przeglądarce, `orders:race-test` na Postgresie 3/3 bez oversellingu, ostatnia sztuka znika z `/search` po 1,3 s ([POMIARY 11](docs/POMIARY.md#zamowienia-2026-10-17)) — [przewodnik](docs/blog/etap-f-zamowienia-saga.md); porównanie z jedną transakcją zrobione ([dokument](docs/blog/saga-vs-transakcja.md), gałąź `zamowienia-ddd-lite` niewypchnięta); brak wdrożenia k3s |
 | 11 | Observability: logi JSON → Filebeat → ES (ECS, data streams, ILM), `trace_id` przez HTTP → outbox → RabbitMQ → search, Stack Monitoring, Prometheus + 16 alertów z testami `promtool` → Alertmanager → mailpit, Grafana | część 1 zrobiona lokalnie na gałęzi `observability` i sprawdzona na żywym stacku 2026-10-18 (alert po 2:01, ślad 9 dokumentów, ILM demo, RAM w [POMIARY 12](docs/POMIARY.md)) — [przewodnik](docs/blog/etap-11-observability.md); `promphp`, eksportery i k3s w kolejnym PR |
+| 11b | Śledzenie błędów: GlitchTip self-hosted (all-in-one), `sentry-laravel` + `sentry-symfony` + `@sentry/vue` przez tunel `/_errors`, tagi `trace_id`/`process`, source mapy z Debug IDs, alert `GlitchTipDown` | zrobione lokalnie na gałęzi `glitchtip` i sprawdzone na żywym stacku 2026-10-26 (`make errors-smoke`: HTTP, kolejka, search i przeglądarka → issues z tagami, ramki zmapowane, mail alertu; GlitchTip 183–229 MiB, [POMIARY 13](docs/POMIARY.md)) — [przewodnik](docs/blog/etap-11b-glitchtip.md); brak wdrożenia VPS/k3s |
 | 8+ | patrz [06-PLAN-WDROZENIA](docs/06-PLAN-WDROZENIA.md) | — |
 
 > **ETAP 6 zweryfikowany end-to-end** na klastrze 3-nodowym + aplikacjach:
@@ -143,4 +145,9 @@ make psql db=catalog
 make logs s=es01
 make up-obs          # profil obs (stack i aplikacje już działają): obs-setup, potem Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit (ETAP 11)
 make obs-check       # promtool: config, testy reguł alertów; amtool: config Alertmanagera
+make up-errors       # profil errors (Postgres musi działać): GlitchTip + bootstrap (ETAP 11b), UI na :18000
+make errors-sourcemaps  # build frontu z Debug IDs i upload source map do GlitchTipa
+make errors-smoke    # błędy z HTTP, kolejki, search i przeglądarki -> issues w GlitchTipie
+make errors-tunnel-check  # tunel /_errors: 405/413/204/cel na sztywno/502
+make errors-reset    # kasuje bazę GlitchTipa i odtwarza z kodu (pyta o potwierdzenie)
 ```

@@ -6,15 +6,18 @@ use App\Http\Middleware\EnsureHasSeller;
 use App\Http\Middleware\EnsureSellerApproved;
 use App\Http\Middleware\HandleAppearance;
 use App\Http\Middleware\HandleInertiaRequests;
+use App\Support\ErrorTracking\QueueRetryFilter;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 use Ordering\Domain\OrderNotFound;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Seller\SellerNotFound;
+use Sentry\Laravel\Integration;
 use SharedKernel\DomainException;
 use SharedKernel\InvalidValue;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -25,6 +28,12 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
+        then: function (): void {
+            // Trasy `make errors-smoke` wywołują błąd na życzenie: tylko lokalnie.
+            if (app()->environment('local')) {
+                Route::middleware('web')->group(base_path('routes/debug.php'));
+            }
+        },
     )
     ->withMiddleware(function (Middleware $middleware): void {
         // Pierwszy w łańcuchu: trace_id ma istnieć, zanim ruszy cokolwiek, co loguje.
@@ -47,6 +56,16 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // GlitchTip dostaje dokładnie to, co Laravel raportuje, więc wszystkie
+        // `dontReport*` poniżej (i wbudowane: 404, walidacja, autoryzacja) działają
+        // też jako filtr błędów. Nie utrzymujemy drugiej listy wyjątków (ADR-0009).
+        Integration::handles($exceptions);
+
+        // Przejściowa porażka zadania, które zostanie ponowione, to nie błąd.
+        $exceptions->dontReportWhen(
+            fn (Throwable $e): bool => app(QueueRetryFilter::class)->willRetry($e),
+        );
+
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );

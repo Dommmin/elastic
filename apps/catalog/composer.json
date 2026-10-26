@@ -20,6 +20,7 @@
         "laravel/tinker": "^3.0",
         "laravel/wayfinder": "^0.1.14",
         "php-amqplib/php-amqplib": "^3.7",
+        "sentry/sentry-laravel": "4.28.0",
         "spatie/laravel-prometheus": "^1.7",
         "symfony/yaml": "^8.1"
     },

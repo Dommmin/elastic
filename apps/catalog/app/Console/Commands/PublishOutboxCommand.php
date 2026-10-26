@@ -149,6 +149,8 @@ class PublishOutboxCommand extends Command
             try {
                 $channel->wait_for_pending_acks($timeout);
             } catch (AMQPTimeoutException) {
+                // Oczekiwany retry w kolejnej partii, nie awaria: bez report(), więc bez
+                // issue w GlitchTipie. Wyjątek, który zatrzyma pętlę, zgłosi handler konsoli.
                 $this->warn('Timeout oczekiwania na potwierdzenia — część wiadomości spróbuję ponownie w kolejnej partii.');
             }
 

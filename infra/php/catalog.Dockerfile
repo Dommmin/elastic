@@ -133,10 +133,23 @@ RUN composer dump-autoload --optimize --classmap-authoritative \
 FROM vite AS assets
 
 COPY --from=vendor /app /app
-RUN npm ci && npm run build
+# Source mapy (vite.config.ts: sourcemap 'hidden') NIE trafiają do obrazu prod:
+# ujawniałyby kod źródłowy frontendu, a przeglądarka i tak ich nie używa. Wycinamy
+# je z public/build do /sourcemaps (zachowując ścieżki) PRZED kopią do etapu prod,
+# bo skasowanie w etapie prod zostawiłoby plik w warstwie obrazu. CI (po wdrożeniu
+# GlitchTipa na k3s) weźmie je stąd: `docker build --target assets`.
+RUN npm ci && npm run build \
+ && mkdir /sourcemaps \
+ && cd public/build && find . -name '*.map' -exec cp --parents {} /sourcemaps \; -delete
 
 # ---------------------------------------------------------------- prod ------
 FROM base AS prod
+
+# Śledzenie błędów (ADR-0009): obraz FrankenPHP nie ma php.ini, więc domyślnie ślad
+# wyjątku niesie WARTOŚCI argumentów (np. tablicę z hasłem z formularza) do logów
+# i do GlitchTipa. Zalecenie produkcyjne PHP; w dev zostaje Off dla diagnostyki
+# (GlitchTip i tak nie dostaje zmiennych ramek: `data_collection` w config/sentry.php).
+RUN echo 'zend.exception_ignore_args=On' > "$PHP_INI_DIR/conf.d/zz-exception-args.ini"
 
 # SHA commita, z którego zbudowano obraz (CI: --build-arg APP_VERSION=<sha>).
 # Trafia do nagłówka X-App-Version (Caddyfile) — po wdrożeniu i rollbacku

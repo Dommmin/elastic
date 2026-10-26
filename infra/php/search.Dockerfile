@@ -58,6 +58,13 @@ ENV APP_ENV=dev \
 CMD ["php", "-a"]
 
 FROM base AS prod
+
+# Śledzenie błędów (ADR-0009): obraz FrankenPHP nie ma php.ini, więc domyślnie ślad
+# wyjątku niesie WARTOŚCI argumentów (np. tablicę z hasłem z formularza) do logów
+# i do GlitchTipa. Zalecenie produkcyjne PHP; w dev zostaje Off dla diagnostyki
+# (GlitchTip i tak nie dostaje zmiennych ramek: `data_collection` w config/sentry.php).
+RUN echo 'zend.exception_ignore_args=On' > "$PHP_INI_DIR/conf.d/zz-exception-args.ini"
+
 ENV APP_ENV=prod \
     PHP_OPCACHE_VALIDATE_TIMESTAMPS=0
 

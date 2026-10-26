@@ -68,6 +68,12 @@
 | [065](#065) | Alert `CatalogHttpErrorRate` | Caddy / catalog | 11 |
 | [066](#066) | Alerty `OfferModerationOverdue`, `SellerApprovalOverdue` | Portal sprzedawcy | 11 |
 | [067](#067) | Alerty `SearchMetricsScrapeError`, `CatalogMetricsScrapeErrors` | Prometheus / metryki | 11 |
+| [068](#068) | `make up-errors`: GlitchTip nie jest `healthy`, brak bazy `glitchtip` | GlitchTip / Docker | 11b |
+| [069](#069) | Bootstrap GlitchTipa: „ID oczekiwane 1/2/3”, rozjazd po podbiciu wersji | GlitchTip | 11b |
+| [070](#070) | Alert `GlitchTipDown` | GlitchTip / Prometheus | 11b |
+| [071](#071) | Brak zdarzeń z przeglądarki (tunel `/_errors`) | Caddy / frontend | 11b |
+| [072](#072) | Stack trace frontu bez source map (ramki z `assets/*.js`) | Frontend / GlitchTip | 11b |
+| [073](#073) | Błąd poszedł w świat, a w GlitchTipie nie ma issue | Laravel / Symfony / GlitchTip | 11b |
 
 ---
 
@@ -3241,6 +3247,238 @@ milczał (`SearchFailedMessages`: `messenger:failed:show`).
 Tolerancja na błędy (200 zamiast 500) zamienia głośną awarię w cichą, więc musi
 iść w parze z metryką błędów i alertem na nią. Alert, który zależy od
 istnienia serii, nie powie nic, gdy seria znika.
+
+<a id="068"></a>
+## 068 — `make up-errors`: GlitchTip nie jest `healthy`, brak bazy `glitchtip`
+
+**Objaw**
+`GlitchTip nie jest healthy (RUNBOOK #068)` po 120 s, albo w logu
+`FATAL: database "glitchtip" does not exist` /
+`password authentication failed for user "glitchtip"`, albo
+`Bind for 127.0.0.1:18000 failed: port is already allocated`.
+
+**Diagnoza**
+```bash
+docker compose logs --since 10m glitchtip | tail -30
+docker inspect -f '{{.State.Health.Status}}' marketplace-glitchtip-1
+docker compose exec postgres psql -U postgres -lqt | cut -d'|' -f1 | grep glitchtip
+bash tools/doctor.sh errors        # port, Postgres, pamięć
+```
+
+**Przyczyna**
+Trzy typowe. (1) Baza nie istnieje: skrypty z `docker-entrypoint-initdb.d`
+(w tym `01-databases.sh`) działają tylko na PIERWSZEJ inicjalizacji wolumenu,
+a `pg-data` powstał przed tym etapem. Zakłada ją osobny krok
+`glitchtip-db-setup`, który `make up-errors` uruchamia za każdym razem; jeśli
+odpaliłeś `docker compose --profile errors up` ręcznie, ten krok ominąłeś.
+(2) Hasło roli `glitchtip` w bazie różni się od `.env` (zmieniłeś
+`GLITCHTIP_DB_PASSWORD` po utworzeniu bazy); ten sam krok ustawia hasło przy
+każdym uruchomieniu. (3) Port `GLITCHTIP_PORT` (domyślnie 18000) zajmuje inny
+projekt na współdzielonej maszynie.
+
+**Naprawa**
+Uruchom `make up-errors` (nie samo `up`): baza i hasło wyrównają się same.
+Przy kolizji portu zmień `GLITCHTIP_PORT` w `.env`; `GLITCHTIP_DOMAIN` w
+compose jest liczony z tej zmiennej, więc linki w mailach zgadzają się z portem.
+Gdy Postgres nie działa: `make up`.
+
+**Czego się nauczyłem**
+Skrypt inicjalizacyjny kontenera to NIE migracja: nie odtwarza się na
+istniejących danych. Zmiana, która ma dotrzeć na działający wolumen, potrzebuje
+osobnego, idempotentnego kroku.
+
+<a id="069"></a>
+## 069 — Bootstrap GlitchTipa: „ID oczekiwane 1/2/3”, rozjazd po podbiciu wersji
+
+**Objaw**
+Na końcu `make up-errors`:
+```
+BŁĄD bootstrapu GlitchTipa:
+  - projekt catalog-frontend: ID 5, oczekiwane 2
+```
+albo wyjątek Pythona z `infra/glitchtip/bootstrap.py` (`AttributeError`,
+`FieldError`) po podbiciu `GLITCHTIP_VERSION`.
+
+**Diagnoza**
+```bash
+docker compose exec postgres psql -U postgres -d glitchtip -c \
+  "select id, name, slug from projects_project order by id"
+# po podbiciu wersji: czy modele się zmieniły?
+docker run --rm --entrypoint sh glitchtip/glitchtip:<wersja> -c \
+  'grep -nE "^class |models\.[A-Za-z]+Field|ForeignKey" apps/projects/models.py apps/alerts/models.py apps/api_tokens/models.py'
+```
+
+**Przyczyna**
+DSN-y aplikacji mają ID projektów wpisane na stałe (`/1`, `/2`, `/3` w
+`.env`), a bootstrap zakłada projekty w kolejności `catalog`, `catalog-frontend`,
+`search`. Gdy ktoś utworzył projekt w UI przed pierwszym bootstrapem (albo
+usunął i założył od nowa), PostgreSQL przydzielił kolejne numery. Drugi
+przypadek: skrypt używa wewnętrznych modeli Django GlitchTipa, które nie są
+publicznym API i mogą się zmienić w nowej wersji.
+
+**Naprawa**
+Dla pierwszego przypadku: `make errors-reset` (pyta o potwierdzenie, kasuje
+bazę `glitchtip` i odtwarza cały stan z kodu). Dla drugiego: popraw
+`infra/glitchtip/bootstrap.py` do nowych modeli, wróć do poprzedniej wersji w
+`.env` albo sprawdź nazwy modeli komendą z Diagnozy. Skrypt jest idempotentny,
+więc można go uruchamiać wielokrotnie.
+
+**Czego się nauczyłem**
+Konfiguracja zewnętrznego narzędzia „jako kod” przez jego wewnętrzne modele
+działa, ale jest długiem do spłaty przy każdej aktualizacji. Asercje na końcu
+skryptu zamieniają cichy rozjazd w głośny błąd, i dlatego tam są.
+
+<a id="070"></a>
+## 070 — Alert `GlitchTipDown`: GlitchTip nie odpowiada
+
+**Objaw**
+Mail `[FIRING:1] GlitchTipDown (warning)` w mailpicie. W Prometheusie
+`up{job="glitchtip"} == 0` od ponad 5 minut.
+
+**Diagnoza**
+```bash
+docker compose ps glitchtip
+docker compose logs --since 10m glitchtip | tail -30
+curl -fsS http://localhost:18000/_health/
+```
+
+**Przyczyna**
+Kontener GlitchTipa leży (OOM przy limicie 512m, restart Postgresa, brak
+bazy) albo jest zawieszony. Aplikacje działają dalej: SDK nie buforuje
+zdarzeń, a błąd wysyłki nigdy nie przerywa żądania, więc w tym czasie wyjątki
+są po prostu gubione. Alert odpala tylko wtedy, gdy GlitchTip odpowiadał w
+ostatnich 7 dniach: target `glitchtip:8000` jest w `prometheus.yml` zawsze, a
+przy wyłączonym profilu `errors` jego `up` = 0 od początku i to nie awaria.
+Z tego samego powodu `TargetDown` pomija job `glitchtip`.
+
+**Naprawa**
+`make up-errors` (idempotentny). Przy OOM sprawdź
+`docker inspect -f '{{.State.OOMKilled}}' marketplace-glitchtip-1` i rozważ
+podniesienie `mem_limit` w `compose.yaml` (zmierzone zużycie: 183–229 MiB, więc
+OOM wskazuje na coś nietypowego, np. bardzo duże koperty). Zdarzeń z okresu
+awarii nie da się odzyskać; wystarczy, że błąd się powtórzy.
+
+**Czego się nauczyłem**
+Alert na opcjonalny komponent musi odróżniać „zawsze wyłączony” od „przestał
+działać”; sama seria `up == 0` tego nie rozróżnia, więc dokładamy warunek na
+historię.
+
+<a id="071"></a>
+## 071 — Brak zdarzeń z przeglądarki (tunel `/_errors`)
+
+**Objaw**
+Backend raportuje, a w projekcie `catalog-frontend` pusto. Albo w konsoli
+przeglądarki `POST /_errors 502/204/405`.
+
+**Diagnoza**
+```bash
+make errors-tunnel-check      # 405/413/204/cel na sztywno/502 na jednorazowym kontenerze
+# czy strona w ogóle niesie konfigurację?
+curl -sk https://catalog.localhost:8443/ | grep error-tracking
+# co widzi Caddy?
+docker compose exec catalog-app printenv | grep GLITCHTIP
+```
+
+**Przyczyna**
+Zależy od kodu odpowiedzi tunelu. **204**: pusty `GLITCHTIP_FRONTEND_KEY`
+(tunel wyłączony celowo, np. prod bez GlitchTipa). **502**: Caddy nie dociera
+do `glitchtip:8000` (GlitchTip leży, patrz #070). Brak tagów `<meta
+name="error-tracking-dsn">` w HTML: pusty `SENTRY_FRONTEND_DSN`, więc SDK się
+w ogóle nie włącza (to też zamierzone). **405** to GET pod `/_errors`, nie błąd.
+Caddyfile jest wbudowany w obraz, więc po zmianie trzeba przebudować
+`catalog-app` (`docker compose --profile apps build catalog-app`).
+
+**Naprawa**
+Ustaw `GLITCHTIP_DSN_FRONTEND` i `GLITCHTIP_KEY_FRONTEND` w `.env` i odtwórz
+`catalog-app`. Jeśli adblocker blokuje `/_errors`, zmień ścieżkę w
+`resources/js/lib/errorTracking.ts` (`TUNNEL_PATH`) i w Caddyfile.
+
+**Czego się nauczyłem**
+Konfiguracja w bundlu nie powie, czy SDK jest włączone. Stan włączenia
+musi być widoczny w HTML (meta) i w odpowiedzi tunelu, żeby dało się go
+sprawdzić `curl`em.
+
+<a id="072"></a>
+## 072 — Stack trace frontu bez source map (ramki z `assets/*.js`)
+
+**Objaw**
+Issue w `catalog-frontend` pokazuje ramki typu
+`assets/ErrorsSmoke-COnBI9Dr.js:1:123` zamiast
+`resources/js/pages/debug/ErrorsSmoke.vue`.
+
+**Diagnoza**
+```bash
+# czy mapy są w GlitchTipie?
+docker compose exec postgres psql -U postgres -d glitchtip -tAc \
+  "select count(*) from sourcecode_debugsymbolbundle"
+# czy bundle ma Debug ID?
+grep -c "_sentryDebugIds" apps/catalog/public/build/assets/app-*.js
+# czy strona ładuje build, a nie serwer Vite?
+ls apps/catalog/public/hot
+```
+
+**Przyczyna**
+(1) Nie wgrano map: `make errors-sourcemaps` nie był uruchomiony po ostatnim
+buildzie (hash plików się zmienił, a Debug ID wiąże mapę z konkretnym
+plikiem). (2) Działa serwer Vite (`public/hot` istnieje), więc przeglądarka
+dostaje moduły z dev servera, a nie z buildu z Debug IDs. (3) Upload z
+kontenera padł z `Failed to connect to localhost:18000`: GlitchTip w odpowiedzi
+na `chunk-upload` podaje adres z `GLITCHTIP_DOMAIN`, niewidoczny z kontenera;
+dlatego upload w `make errors-sourcemaps` idzie z hosta. (4) Obraz prod nie ma
+map z założenia (etap `assets` wycina je do `/sourcemaps`), więc mapy do
+buildu z CI trzeba wgrać osobno.
+
+**Naprawa**
+`make errors-sourcemaps` (build w kontenerze, upload z hosta; wymaga Node na
+hoście), usuń nieaktualny `public/hot`, jeśli nie działa serwer Vite, i
+wywołaj błąd ponownie. Release nie musi się zgadzać: mapowanie idzie po
+Debug IDs, nie po nazwie wydania.
+
+**Czego się nauczyłem**
+Adres, który serwer zwraca klientowi w odpowiedzi (tu: gdzie wgrać kawałki),
+musi być osiągalny z miejsca, w którym klient działa. Działało z hosta, nie
+działało z kontenera, choć oba widziały serwer pod innym adresem.
+
+<a id="073"></a>
+## 073 — Błąd poszedł w świat, a w GlitchTipie nie ma issue
+
+**Objaw**
+Użytkownik widzi 500 (albo zadanie wpadło do `failed_jobs`), a w GlitchTipie
+brak odpowiedniego issue.
+
+**Diagnoza**
+```bash
+# SDK włączone w tym kontenerze?
+docker compose exec catalog-app printenv SENTRY_LARAVEL_DSN
+docker compose exec search-consumer printenv SENTRY_DSN
+# end-to-end od zera
+make errors-smoke
+# issues w projekcie
+curl -s -H "Authorization: Bearer $GLITCHTIP_API_TOKEN" \
+  "http://localhost:18000/api/0/projects/marketplace/catalog/issues/" | head -c 600
+```
+
+**Przyczyna**
+Najczęściej celowe filtry (ADR-0009, zasada 1 i 2): wyjątek jest na liście
+`dontReport` (404, walidacja, brak autoryzacji), to `DomainException` w żądaniu
+HTTP (oczekiwany błąd użytkownika), to próba zadania, po której zadanie wróci
+do kolejki (raport dopiero po ostatniej), albo wiadomość Messengera do ponowienia
+(raport po wyczerpaniu `max_retries`). Poza filtrami: pusty DSN w kontenerze
+(SDK wyłączone), GlitchTip leżał w tym czasie (#070; zdarzenia nie są
+buforowane), albo to crash samego konsumenta Messengera poza obsługą
+wiadomości (`messenger:consume` jest na domyślnej liście ignorowanych komend
+SDK, patrz ADR-0009).
+
+**Naprawa**
+Zależnie od przyczyny: zdecyduj, czy to ma być błąd w GlitchTipie (wtedy usuń
+wyjątek z `dontReport` w `bootstrap/app.php`), ustaw DSN i odtwórz kontener,
+albo przywróć GlitchTip. Wspólny test `make errors-smoke` mówi, czy droga ze
+wszystkich źródeł działa.
+
+**Czego się nauczyłem**
+„Nie ma issue” to najczęściej działanie filtra, nie awaria. Jedna lista
+wyjątków (handler Laravela) sprawia, że odpowiedź na „dlaczego tego nie ma”
+jest w jednym pliku.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

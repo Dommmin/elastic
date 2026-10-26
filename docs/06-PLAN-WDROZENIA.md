@@ -353,6 +353,36 @@ Przeniesione do kolejnego PR (świadomie, z „Poza zakresem” specu):
 Otwarte: węzły ES restartują się na współdzielonej maszynie (RUNBOOK #058,
 decyzja o pamięci ES do podjęcia).
 
+### ETAP 11b — Śledzenie błędów w GlitchTipie (1–2 dni)
+Trzeci sygnał obok logów (ES) i metryk (Prometheus): wyjątki zgrupowane w
+issues. Decyzja: [ADR-0009](adr/0009-wyjatki-w-glitchtip.md).
+
+- GlitchTip self-hosted w trybie all-in-one (profil `errors`, baza w
+  istniejącym Postgresie, bez Valkey), bootstrap organizacji, projektów, stałych
+  kluczy DSN, alertów i tokenu jako kod;
+- `sentry/sentry-laravel` w catalog (HTTP, kolejka, komendy), `sentry/sentry-symfony`
+  w search (Messenger), `@sentry/vue` w przeglądarce przez tunel `/_errors` w Caddy;
+- tagi `trace_id` i `process` na każdym zdarzeniu backendu; filtr błędów to
+  istniejący handler wyjątków Laravela (bez drugiej listy); zadanie z ponowieniem
+  raportowane dopiero przy ostatniej próbie;
+- source mapy `hidden` z Debug IDs, wgrywane przez `sentry-cli`, wycięte z obrazu prod;
+- alert `GlitchTipDown` (z testami `promtool`), metryki GlitchTipa w Prometheusie.
+
+**DoD:** `make errors-smoke` zielone: błąd z żądania HTTP, z kolejki, z search i
+z przeglądarki jest issue we właściwym projekcie z tagami, ramki frontu są
+zmapowane, mail o nowym issue dochodzi, a awaria GlitchTipa nie wydłuża żądań
+ponad narzut `http_timeout`.
+
+**Stan (2026-10-26): zrobione lokalnie** na gałęzi `glitchtip`, DoD sprawdzone
+na żywym stacku. Przewodnik: [`blog/etap-11b-glitchtip.md`](blog/etap-11b-glitchtip.md),
+spec: [`superpowers/specs/2026-10-26-glitchtip-design.md`](superpowers/specs/2026-10-26-glitchtip-design.md),
+plan: [`superpowers/plans/2026-10-26-glitchtip.md`](superpowers/plans/2026-10-26-glitchtip.md),
+RUNBOOK #068–#073, pomiary w [POMIARY §13](POMIARY.md).
+
+Poza zakresem (świadomie): GlitchTip na VPS/k3s (po pomiarze RAM na VPS), upload
+source map w CI, `trace_id` z przeglądarki do żądań HTTP, performance/tracing i
+Session Replay, monity cron i uptime GlitchTipa (to robi Prometheus).
+
 ### ETAP 12 — Tor analityki operacyjnej (3–4 dni) → **moduł 13a**
 - data stream `events-user-*`, lejek konwersji, raport „zero results"
 - Transforms → `search-stats-*`, pętla zwrotna do `rank_feature`

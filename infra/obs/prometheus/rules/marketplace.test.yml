@@ -637,3 +637,51 @@ tests:
       - eval_time: 30s
         alertname: SellerApprovalOverdue
         exp_alerts: []
+
+  # ------------------------------------------------------ GlitchTipDown
+  # GlitchTip jest opcjonalny (profil errors), ale target glitchtip:8000 jest
+  # w prometheus.yml zawsze. Przy wyłączonym profilu `up` = 0 od początku;
+  # to nie awaria, więc alert wymaga, by w ostatnich 7 dniach GlitchTip żył.
+  - name: GlitchTipDown odpala, gdy GlitchTip działał, a potem przestał odpowiadać na 5 min
+    interval: 15s
+    input_series:
+      - series: 'up{job="glitchtip"}'
+        values: '1x20 0x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: GlitchTipDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: glitchtip
+            exp_annotations:
+              summary: "GlitchTip nie odpowiada"
+              description: "GlitchTip przestał odpowiadać na scrape od 5 min (a działał w ostatnich 7 dniach). Aplikacje działają dalej: SDK nie buforuje zdarzeń, a błąd wysyłki nigdy nie przerywa żądania, więc w tym czasie wyjątki nie trafiają do issues. Logi w Kibanie i metryki w Prometheusie są nietknięte."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#070--alert-glitchtipdown-glitchtip-nie-odpowiada"
+  - name: GlitchTipDown milczy, gdy profil errors nigdy nie działał (up = 0 od początku)
+    interval: 15s
+    input_series:
+      - series: 'up{job="glitchtip"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: GlitchTipDown
+        exp_alerts: []
+  - name: GlitchTipDown milczy, gdy przerwa jest krótsza niż for
+    interval: 15s
+    input_series:
+      - series: 'up{job="glitchtip"}'
+        values: '1x20 0x8 1x40'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: GlitchTipDown
+        exp_alerts: []
+  - name: TargetDown pomija glitchtip (opcjonalny, ma własny alert)
+    interval: 15s
+    input_series:
+      - series: 'up{job="glitchtip"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: TargetDown
+        exp_alerts: []

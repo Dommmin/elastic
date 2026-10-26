@@ -36,7 +36,14 @@ stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nigh
 | **Alertmanager** | **0.34.1** | `prom/alertmanager:v0.34.1` (`ALERTMANAGER_VERSION`) | wydany 2026-09-17 |
 | **Grafana** | **13.2.3** | `grafana/grafana:13.2.3` (`GRAFANA_VERSION`) | 13.2.4 jest młodsza niż 2 tygodnie; kontener `grafana` w profilu `obs` |
 | **Mailpit** | **1.31.4** | `axllent/mailpit:v1.31.4` (`MAILPIT_VERSION`) | wcześniej `:latest` |
+| **GlitchTip** | **6.2.6** | `glitchtip/glitchtip:6.2.6` (`GLITCHTIP_VERSION`) | wydany 2026-08-08; profil `errors` (ETAP 11b), tryb all-in-one; bootstrap używa wewnętrznych modeli Django (RUNBOOK #069) |
+| `sentry/sentry-laravel` | 4.28.0 | `apps/catalog/composer.json` | wydany 2026-09-23 (4.29.0 z 2026-10-08 młodsza niż 2 tygodnie w dniu wyboru) |
+| `sentry/sentry-symfony` | 5.13.0 | `apps/search/composer.json` | wydany 2026-08-28; recipe contrib pomijany, bundle rejestrowany ręcznie |
+| `@sentry/vue` | 10.76.2 | `apps/catalog/package.json` | wydany 2026-10-08 |
+| `@sentry/cli` | 3.8.0 | `apps/catalog/package.json` (dev) | wydany 2026-09-16; upload source map z Debug IDs |
+| `playwright-core` | 1.64.0 | `tools/errors-smoke.sh` (instalowany w katalogu tymczasowym) | wydany 2026-10-07; krok przeglądarkowy smoke na systemowym Chrome |
 | Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
+| Port GlitchTipa | 18000 | `GLITCHTIP_PORT` | tylko `127.0.0.1` |
 
 ### PHP — zależności
 

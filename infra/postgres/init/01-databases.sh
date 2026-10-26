@@ -34,5 +34,8 @@ SQL
 
 create_db "${CATALOG_DB}"   "${CATALOG_DB_USER}"   "${CATALOG_DB_PASSWORD}"
 create_db "${SEARCHSVC_DB}" "${SEARCHSVC_DB_USER}" "${SEARCHSVC_DB_PASSWORD}"
+# GlitchTip (profil errors, ETAP 11b). Na istniejącym wolumenie tę bazę zakłada
+# infra/glitchtip/setup-db.sh (make up-errors) — ten skrypt działa tylko raz.
+create_db "${GLITCHTIP_DB:-glitchtip}" "${GLITCHTIP_DB_USER:-glitchtip}" "${GLITCHTIP_DB_PASSWORD:-glitchtip_dev_2026}"
 
-echo "[init] Gotowe. Bazy: ${CATALOG_DB}, ${SEARCHSVC_DB}"
+echo "[init] Gotowe. Bazy: ${CATALOG_DB}, ${SEARCHSVC_DB}, ${GLITCHTIP_DB:-glitchtip}"
