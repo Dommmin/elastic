@@ -133,7 +133,14 @@ RUN composer dump-autoload --optimize --classmap-authoritative \
 FROM vite AS assets
 
 COPY --from=vendor /app /app
-RUN npm ci && npm run build
+# Source mapy (vite.config.ts: sourcemap 'hidden') NIE trafiają do obrazu prod:
+# ujawniałyby kod źródłowy frontendu, a przeglądarka i tak ich nie używa. Wycinamy
+# je z public/build do /sourcemaps (zachowując ścieżki) PRZED kopią do etapu prod,
+# bo skasowanie w etapie prod zostawiłoby plik w warstwie obrazu. CI (po wdrożeniu
+# GlitchTipa na k3s) weźmie je stąd: `docker build --target assets`.
+RUN npm ci && npm run build \
+ && mkdir /sourcemaps \
+ && cd public/build && find . -name '*.map' -exec cp --parents {} /sourcemaps \; -delete
 
 # ---------------------------------------------------------------- prod ------
 FROM base AS prod

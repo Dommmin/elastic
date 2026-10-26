@@ -60,6 +60,39 @@
 	}
 	reverse_proxy @viteHmr {$VITE_DEV_SERVER:http://catalog-vite:5173}
 
+	# --- Tunel błędów z przeglądarki do GlitchTipa (ETAP 11b, ADR-0009) -------
+	#
+	# SDK w przeglądarce (opcja `tunnel`) wysyła kopertę na to samo origin, a Caddy
+	# przekazuje ją do GlitchTipa. Dzięki temu GlitchTip nie musi być publiczny (na VPS
+	# jest tylko za tunelem SSH), nie ma CORS ani mixed content, a adblockery nie
+	# widzą domeny `sentry`.
+	#
+	# To NIE jest otwarty przekaźnik: cel (projekt frontendu i jego klucz) jest
+	# wpisany tu na sztywno ze zmiennych środowiskowych i nie zależy od DSN w kopercie.
+	# Przez /_errors da się pisać wyłącznie do projektu `catalog-frontend`.
+	# Ciało ograniczone do 1 MB, ciasteczka i autoryzacja nie idą dalej, a martwy
+	# GlitchTip daje 502 po sekundzie (SDK to ignoruje).
+	# Pusty GLITCHTIP_FRONTEND_KEY (np. prod bez GlitchTipa) = tunel wyłączony, 204.
+	@errorsDisabled expression `"{$GLITCHTIP_FRONTEND_KEY:}" == ""`
+	@errorsNotPost not method POST
+	handle /_errors {
+		respond @errorsDisabled 204
+		respond @errorsNotPost 405
+		request_body {
+			max_size 1MB
+		}
+		rewrite * /api/{$GLITCHTIP_FRONTEND_PROJECT_ID:2}/envelope/?sentry_key={$GLITCHTIP_FRONTEND_KEY:}
+		reverse_proxy {$GLITCHTIP_UPSTREAM:glitchtip:8000} {
+			header_up Host {upstream_hostport}
+			header_up -Cookie
+			header_up -Authorization
+			transport http {
+				dial_timeout 1s
+				response_header_timeout 3s
+			}
+		}
+	}
+
 	root * public/
 
 	# Pliki statyczne obsługuje Caddy — PHP nie jest w ogóle uruchamiane.

@@ -277,6 +277,25 @@ up-errors: ## Start profilu errors (Postgres musi już działać): GlitchTip + b
 	$(DC) --profile errors run --rm --no-deps glitchtip-setup
 	@echo "GlitchTip: http://localhost:$${GLITCHTIP_PORT:-18000}  (login: $${GLITCHTIP_ADMIN_EMAIL:-admin@marketplace.localhost})"
 
+.PHONY: errors-sourcemaps
+# Build produkcyjny frontu catalog z Debug IDs i upload source map do GlitchTipa
+# (projekt catalog-frontend). Wymaga profilu apps (kontener catalog-vite) i errors.
+# Release = SHA HEAD; żeby zobaczyć zmapowane ramki, uruchom catalog-app z tym samym
+# SENTRY_RELEASE (APP_VERSION=<sha> make up-apps). Upload w CI wejdzie razem
+# z GlitchTipem na k3s (spec, sekcja 5.3).
+errors-sourcemaps: ## Build frontu + upload source map do GlitchTipa (release = SHA HEAD)
+	@RELEASE=$$(git rev-parse --short HEAD); echo "release: $$RELEASE"; \
+	$(DC) --profile apps exec -T -e SENTRY_RELEASE=$$RELEASE -e GLITCHTIP_API_TOKEN catalog-vite sh -c '\
+	  npm install --no-audit --no-fund && npm run build && \
+	  npx sentry-cli sourcemaps inject public/build && \
+	  npx sentry-cli --url http://glitchtip:8000 --auth-token "$$GLITCHTIP_API_TOKEN" \
+	    sourcemaps upload --org marketplace --project catalog-frontend \
+	    --release "$$SENTRY_RELEASE" public/build'
+
+.PHONY: errors-tunnel-check
+errors-tunnel-check: ## Test tunelu /_errors na jednorazowym kontenerze catalog (wymaga make up-errors)
+	@bash tools/errors-tunnel-check.sh
+
 .PHONY: errors-reset
 errors-reset: ## Kasuje bazę GlitchTipa i zakłada od zera (pyta o potwierdzenie)
 	@read -p "Skasować WSZYSTKIE issues w GlitchTipie? [t/N] " a; [ "$$a" = "t" ] || { echo "Przerwano."; exit 1; }

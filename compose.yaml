@@ -382,6 +382,11 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       VITE_DEV_SERVER: http://catalog-vite:5173
+      # Tunel /_errors w Caddyfile: błędy z przeglądarki do projektu catalog-frontend
+      # w GlitchTipie (cel na sztywno, ADR-0009). Pusty klucz = tunel wyłączony (204).
+      GLITCHTIP_FRONTEND_PROJECT_ID: "2"
+      GLITCHTIP_FRONTEND_KEY: ${GLITCHTIP_KEY_FRONTEND:-}
+      GLITCHTIP_UPSTREAM: glitchtip:8000
       # Symulowana bramka płatności (apps/catalog/app/FakePaymentGateway).
       # Adres webhooka to WEWNĄTRZ sieci `marketplace`: zwykłe HTTP na port 80
       # serwisu (blok `http://catalog-app` w Caddyfile), nie publiczny

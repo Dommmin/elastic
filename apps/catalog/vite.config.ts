@@ -15,6 +15,12 @@ import { defineConfig } from 'vite';
 const vitePublicPort = process.env.VITE_PUBLIC_PORT;
 
 export default defineConfig({
+    build: {
+        // 'hidden': mapy powstają (GlitchTip dostaje je przez `make errors-sourcemaps`),
+        // ale bundle nie ma komentarza sourceMappingURL i przeglądarka ich nie pobiera.
+        // Etap `assets` w catalog.Dockerfile wycina je z obrazu prod (ADR-0009).
+        sourcemap: 'hidden',
+    },
     server: vitePublicPort
         ? { hmr: { host: 'localhost', clientPort: Number(vitePublicPort) } }
         : undefined,
