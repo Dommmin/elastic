@@ -36,8 +36,10 @@ sentry:
         max_request_body_size: never
         # Awaria GlitchTipa nie może wydłużyć obsługi wiadomości: SDK wysyła
         # synchronicznie (flush po wiadomości), więc timeouty są twardym kosztem.
-        http_connect_timeout: 1
-        http_timeout: 2
+        # Wartości jak w catalog (config/sentry.php): zmierzone, że 1 s dawało ok. 3 s
+        # opóźnienia tuż po zatrzymaniu GlitchTipa; połączenie w sieci to milisekundy.
+        http_connect_timeout: 0.3
+        http_timeout: 1.0
         enable_logs: false
         enable_metrics: false
         # Tag trace_id i process (patrz klasa). Usługa wywoływalna (__invoke).

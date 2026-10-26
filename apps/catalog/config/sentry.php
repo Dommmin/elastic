@@ -36,8 +36,12 @@ return [
 
     // Awaria GlitchTipa nie może wydłużyć odpowiedzi ani zablokować workera:
     // SDK wysyła synchronicznie, więc timeouty są twardym ograniczeniem kosztu.
-    'http_connect_timeout' => 1,
-    'http_timeout' => 2,
+    // Zmierzone na żywym stosie: tuż po zatrzymaniu GlitchTipa Docker jeszcze
+    // rozwiązuje nazwę na zwolniony adres, `connect` wisi do końca limitu, a SDK
+    // próbuje kilku wysyłek (przy 1 s żądanie z błędem trwało ok. 3 s). Połączenie
+    // w sieci dockerowej/klastra trwa milisekundy, więc 0,3 s ma duży zapas.
+    'http_connect_timeout' => 0.3,
+    'http_timeout' => 1.0,
 
     // Tag trace_id/process i user.id bez e-maila (patrz klasa).
     'before_send' => [EnrichEvent::class, 'handle'],

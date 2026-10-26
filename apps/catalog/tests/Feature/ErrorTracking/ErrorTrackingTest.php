@@ -164,8 +164,8 @@ test('konfiguracja: bez DSN w środowisku klient jest wyłączony', function () 
 });
 
 test('konfiguracja: transport ma krótkie timeouty, bez PII, śladów i body żądania', function () {
-    expect(config('sentry.http_connect_timeout'))->toBe(1)
-        ->and(config('sentry.http_timeout'))->toBe(2)
+    expect(config('sentry.http_connect_timeout'))->toBe(0.3)
+        ->and(config('sentry.http_timeout'))->toBe(1.0)
         ->and(config('sentry.send_default_pii'))->toBeFalse()
         ->and(config('sentry.traces_sample_rate'))->toBe(0.0)
         ->and(config('sentry.max_request_body_size'))->toBe('never')

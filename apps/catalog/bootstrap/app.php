@@ -12,6 +12,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 use Ordering\Domain\OrderNotFound;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Domain\Offer\OfferNotFound;
@@ -27,6 +28,12 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
+        then: function (): void {
+            // Trasy `make errors-smoke` wywołują błąd na życzenie: tylko lokalnie.
+            if (app()->environment('local')) {
+                Route::middleware('web')->group(base_path('routes/debug.php'));
+            }
+        },
     )
     ->withMiddleware(function (Middleware $middleware): void {
         // Pierwszy w łańcuchu: trace_id ma istnieć, zanim ruszy cokolwiek, co loguje.

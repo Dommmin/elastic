@@ -17,6 +17,9 @@ createInertiaApp({
             // Strona „obcego” dostawcy płatności: bez nawigacji marketplace'u.
             case name.startsWith('fake-gateway/'):
                 return null;
+            // Strona `make errors-smoke`: bez nawigacji, tylko lokalnie (routes/debug.php).
+            case name.startsWith('debug/'):
+                return null;
             case name.startsWith('auth/'):
                 return AuthLayout;
             case name.startsWith('settings/'):

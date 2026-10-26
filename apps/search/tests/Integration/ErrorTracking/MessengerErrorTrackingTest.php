@@ -78,8 +78,8 @@ final class MessengerErrorTrackingTest extends KernelTestCase
 
         self::assertFalse($options->shouldSendDefaultPii());
         self::assertSame('never', $options->getMaxRequestBodySize());
-        self::assertSame(1.0, (float) $options->getHttpConnectTimeout());
-        self::assertSame(2.0, (float) $options->getHttpTimeout());
+        self::assertSame(0.3, (float) $options->getHttpConnectTimeout());
+        self::assertSame(1.0, (float) $options->getHttpTimeout());
         self::assertFalse($options->isTracingEnabled());
         self::assertSame('test', $options->getEnvironment());
     }

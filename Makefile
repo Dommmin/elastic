@@ -279,22 +279,25 @@ up-errors: ## Start profilu errors (Postgres musi już działać): GlitchTip + b
 
 .PHONY: errors-sourcemaps
 # Build produkcyjny frontu catalog z Debug IDs i upload source map do GlitchTipa
-# (projekt catalog-frontend). Wymaga profilu apps (kontener catalog-vite) i errors.
-# Release = SHA HEAD; żeby zobaczyć zmapowane ramki, uruchom catalog-app z tym samym
-# SENTRY_RELEASE (APP_VERSION=<sha> make up-apps). Upload w CI wejdzie razem
-# z GlitchTipem na k3s (spec, sekcja 5.3).
-errors-sourcemaps: ## Build frontu + upload source map do GlitchTipa (release = SHA HEAD)
-	@RELEASE=$$(git rev-parse --short HEAD); echo "release: $$RELEASE"; \
-	$(DC) --profile apps exec -T -e SENTRY_RELEASE=$$RELEASE -e GLITCHTIP_API_TOKEN catalog-vite sh -c '\
+# (projekt catalog-frontend). Build i wstrzyknięcie Debug IDs idą w jednorazowym
+# kontenerze z obrazu catalog-vite (PHP + Node, jak w obrazie prod; bez serwera Vite,
+# więc nie powstaje public/hot). Upload idzie Z HOSTA: GlitchTip w odpowiedzi na
+# chunk-upload podaje adres z GLITCHTIP_DOMAIN (localhost:$(GLITCHTIP_PORT)), którego
+# kontener nie widzi. Wymaga działającego GlitchTipa (make up-errors) i Node na hoście.
+# Żeby zobaczyć zmapowane ramki, nie trzeba zgadywać release: Debug IDs wiążą mapę
+# z plikiem. Upload w CI wejdzie razem z GlitchTipem na k3s (spec, sekcja 5.3).
+errors-sourcemaps: ## Build frontu (kontener) + upload source map do GlitchTipa (z hosta)
+	$(DC) --profile apps run --rm --no-deps -T catalog-vite sh -c '\
 	  npm install --no-audit --no-fund && npm run build && \
-	  npx sentry-cli sourcemaps inject public/build && \
-	  npx sentry-cli --url http://glitchtip:8000 --auth-token "$$GLITCHTIP_API_TOKEN" \
+	  npx sentry-cli sourcemaps inject public/build'
+	cd apps/catalog && npm install --no-audit --no-fund >/dev/null && \
+	  npx sentry-cli --url http://localhost:$(GLITCHTIP_PORT) --auth-token "$(GLITCHTIP_API_TOKEN)" \
 	    sourcemaps upload --org marketplace --project catalog-frontend \
-	    --release "$$SENTRY_RELEASE" public/build'
+	    --release "$$(git rev-parse --short HEAD)" public/build
 
-.PHONY: errors-tunnel-check
-errors-tunnel-check: ## Test tunelu /_errors na jednorazowym kontenerze catalog (wymaga make up-errors)
-	@bash tools/errors-tunnel-check.sh
+.PHONY: errors-smoke
+errors-smoke: ## Test end-to-end: błędy z HTTP, kolejki, search i przeglądarki trafiają do GlitchTipa
+	@bash tools/errors-smoke.sh
 
 .PHONY: errors-reset
 errors-reset: ## Kasuje bazę GlitchTipa i zakłada od zera (pyta o potwierdzenie)
