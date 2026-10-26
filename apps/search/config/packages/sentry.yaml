@@ -1,0 +1,56 @@
+# Sentry SDK wskazany na self-hosted GlitchTip (docs/adr/0009-wyjatki-w-glitchtip.md).
+# Pusty SENTRY_DSN = klient wyłączony: nic nie jest wysyłane i nic się nie psuje.
+parameters:
+    # Wartości domyślne env: apps/search/.env jest w .gitignore, więc bez nich
+    # świeży checkout nie wystartowałby. Compose ustawia prawdziwe.
+    env(SENTRY_DSN): ''
+    env(SENTRY_RELEASE): 'dev'
+    # Który proces raportuje: consumer | metrics | cli (compose ustawia per kontener).
+    env(ERROR_TRACKING_PROCESS): 'cli'
+
+sentry:
+    dsn: '%env(default::SENTRY_DSN)%'
+    register_error_listener: true
+    register_error_handler: true
+
+    messenger:
+        enabled: true
+        # Wiadomość, która zostanie ponowiona, to normalna praca konsumenta (retry
+        # z backoffem po awarii katalogu itp.). Do issue trafia dopiero wiadomość,
+        # która wyczerpała max_retries i idzie do failure transportu.
+        capture_soft_fails: false
+        # Konsument żyje godzinę (--time-limit=3600), więc kontekst i breadcrumbs
+        # jednej wiadomości nie mogą trafić do zdarzenia następnej.
+        isolate_context_by_message: true
+        isolate_breadcrumbs_by_message: true
+
+    # Bez śladów, logów i metryk: GlitchTip ma być od wyjątków (ADR-0009, zasada 2).
+    tracing:
+        enabled: false
+
+    options:
+        environment: '%kernel.environment%'
+        release: '%env(SENTRY_RELEASE)%'
+        # Bez PII i bez treści żądania.
+        send_default_pii: false
+        max_request_body_size: never
+        # Awaria GlitchTipa nie może wydłużyć obsługi wiadomości: SDK wysyła
+        # synchronicznie (flush po wiadomości), więc timeouty są twardym kosztem.
+        http_connect_timeout: 1
+        http_timeout: 2
+        enable_logs: false
+        enable_metrics: false
+        # Tag trace_id i process (patrz klasa). Usługa wywoływalna (__invoke).
+        before_send: App\ErrorTracking\EnrichEvent
+
+when@test:
+    services:
+        App\Tests\Support\FakeSentryTransport: ~
+
+    sentry:
+        # Globalne handlery błędów PHP zostawiłyby w testach "risky" (PHPUnit pilnuje
+        # ich zdjęcia); testujemy listener Messengera, nie handler PHP.
+        register_error_handler: false
+        options:
+            # Żaden test nie wysyła ruchu na zewnątrz.
+            transport: App\Tests\Support\FakeSentryTransport

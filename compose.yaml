@@ -36,6 +36,12 @@ x-error-tracking-catalog: &error-tracking-catalog
   SENTRY_FRONTEND_DSN: ${GLITCHTIP_DSN_FRONTEND:-}
   SENTRY_RELEASE: ${APP_VERSION:-dev}
 
+# --- śledzenie błędów aplikacji search (ETAP 11b, ADR-0009) ------------------
+# Wspólne dla search-consumer i search-metrics; każdy dopisuje ERROR_TRACKING_PROCESS.
+x-error-tracking-search: &error-tracking-search
+  SENTRY_DSN: ${GLITCHTIP_DSN_SEARCH:-}
+  SENTRY_RELEASE: ${APP_VERSION:-dev}
+
 # --- wspólna konfiguracja node'ów Elasticsearcha ----------------------------
 x-es-common: &es-common
   image: marketplace/elasticsearch:${ES_VERSION}
@@ -632,6 +638,8 @@ services:
     # apps/search/config/packages/messenger.yaml (kolizja z wbudowaną nazwą).
     command: ["php", "bin/console", "messenger:consume", "product_sync", "-vv", "--time-limit=3600", "--memory-limit=256M"]
     environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: consumer
       # BRAK APP_ENV tutaj celowo: Symfony i Laravel mają różne konwencje
       # (dev/prod/test vs local/production) i współdzielony APP_ENV z jednego
       # .env powodował crash "environment local is not registered". Każda
@@ -694,6 +702,8 @@ services:
         PHP_VERSION: ${PHP_VERSION}
     command: ["frankenphp", "php-server", "--root", "/app/public", "--listen", ":80"]
     environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: metrics
       DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
       MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
     volumes:
