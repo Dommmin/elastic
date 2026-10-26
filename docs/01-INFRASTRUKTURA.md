@@ -322,7 +322,7 @@ Kontenery, których logi czyta Filebeat, mają sterownik `json-file`
 `elasticsearch_exporter`, `node_exporter`, `promphp` w search, ćwiczenie
 porównawcze Metricbeat → ES vs Prometheus, APM.
 
-### 3.9a Profil `errors` — śledzenie błędów (ETAP 11b, zrobione lokalnie)
+### 3.9a Profil `errors` — śledzenie błędów (ETAP 11b, zrobione lokalnie i w `compose.prod.yaml`)
 
 Wyjątki zgrupowane w issues (jaki błąd, od kiedy, jak często, w której wersji),
 uzupełnienie ADR-0005: [ADR-0009](adr/0009-wyjatki-w-glitchtip.md), przewodnik
@@ -343,8 +343,13 @@ z przeglądarki idą tunelem `POST /_errors` (`ErrorTunnelController` w catalog,
 i 300/min globalnie; GlitchTip nie jest publiczny). Prometheus scrape'uje `glitchtip:8000/metrics`
 (job `glitchtip`, alert `GlitchTipDown`).
 
-Nie zrobione: GlitchTip na VPS/k3s (SDK są tam wyłączone pustym DSN), upload
-source map w CI.
+**VPS (Compose):** `compose.prod.yaml` dokłada te same trzy usługi z obrazu `elastic-glitchtip`
+budowanego w CI (`infra/glitchtip/Dockerfile`: oficjalny GlitchTip + skrypty w środku, bo na serwerze
+nie ma repo). UI i mailpit tylko przez tunel SSH (`make vps-tunnel`: `:28000` i `:28025`),
+`GLITCHTIP_STRICT_SECRETS=true` włącza strażnika sekretów także dla `localhost`. Włączenie na
+działającym serwerze: RUNBOOK [#074](RUNBOOK.md#074).
+
+Nie zrobione: GlitchTip na k3s (SDK są tam wyłączone pustym DSN), upload source map w CI.
 
 ### 3.10 Profil `tools`
 

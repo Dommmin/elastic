@@ -355,10 +355,25 @@ Szczegóły i komendy diagnostyczne w RUNBOOK
     trzyma stary, więc `python /healthcheck.py` kończył się kodem 2, choć GlitchTip
     działał. Pomaga odtworzenie kontenera (`up -d --force-recreate glitchtip`).
 
+11. **`:?` w nakładce prod blokuje deploy.** Compose interpoluje CAŁY plik, także usługi z
+    wyłączonych profili, więc `${GLITCHTIP_DB_PASSWORD:?…}` przerwałoby `docker compose config`
+    (czyli każdy deploy) na serwerze ze starym `.env`, zanim ktokolwiek włączy GlitchTipa. W
+    prod wartości są puste, a odmowę dają `guard.py` i `setup_db.py`.
+12. **`SENTRY_RELEASE=dev` na serwerze.** `compose.yaml` ustawia `dev`, co przesłoniłoby SHA
+    wbudowany w obraz. Nakładka prod ustawia `IMAGE_TAG`, więc release w GlitchTipie wskazuje
+    wdrożony commit.
+13. **`COPY --chmod=0644` psuje katalog.** BuildKit stosuje chmod także do utworzonego katalogu
+    docelowego, który traci bit wykonania (`Permission denied` przy `python /opt/…`); poprawne
+    jest `0755`.
+14. **Compose daje pierwszeństwo zmiennym z powłoki.** Test uruchomiony z wyeksportowanym
+    lokalnym `.env` sprawdzał wartości deweloperskie zamiast wygenerowanych; `compose-prod-check`
+    czyści teraz z otoczenia zmienne, które definiuje wygenerowany plik.
+
 ## Czego jeszcze nie ma
 
-- GlitchTip na VPS/k3s: najpierw pomiar RAM na VPS. SDK jest tam gotowe, ale
-  wyłączone pustymi DSN-ami (`deploy/k8s/config.env`).
+- GlitchTip na VPS jest w `compose.prod.yaml`, ale **niewdrożony**: najpierw merge i obraz
+  z CI, potem procedura z RUNBOOK [#074](../RUNBOOK.md#074) i pomiar RAM na serwerze. Na k3s
+  go nie ma (SDK są tam wyłączone pustymi DSN-ami, `deploy/k8s/config.env`).
 - Upload source map w CI: `docker build --target assets` daje mapy w
   `/sourcemaps`, ale CI nie ma jeszcze dokąd ich wysłać.
 - `trace_id` z przeglądarki do żądań HTTP (dziś tylko w drugą stronę, przez

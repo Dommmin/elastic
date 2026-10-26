@@ -74,6 +74,7 @@
 | [071](#071) | Brak zdarzeń z przeglądarki (tunel `/_errors`) | Laravel / frontend | 11b |
 | [072](#072) | Stack trace frontu bez source map (ramki z `assets/*.js`) | Frontend / GlitchTip | 11b |
 | [073](#073) | Błąd poszedł w świat, a w GlitchTipie nie ma issue | Laravel / Symfony / GlitchTip | 11b |
+| [074](#074) | Włączenie GlitchTipa na działającym VPS (stary `.env`) | GlitchTip / VPS | 11b |
 
 ---
 
@@ -3502,6 +3503,50 @@ wszystkich źródeł działa.
 „Nie ma issue” to najczęściej działanie filtra, nie awaria. Jedna lista
 wyjątków (handler Laravela) sprawia, że odpowiedź na „dlaczego tego nie ma”
 jest w jednym pliku.
+
+<a id="074"></a>
+## 074 — Włączenie GlitchTipa na działającym VPS (stary `.env`)
+
+**Objaw**
+Serwer działa od ETAPU D, jego `.env` powstał przed GlitchTipem i `gen-env.sh` go nie
+nadpisze. `make prod-deploy` pisze `[deploy] GlitchTip nie jest skonfigurowany w .env —
+pomijam`, a GlitchTipa na serwerze nie ma.
+
+**Diagnoza**
+```bash
+ssh elastic-vps 'grep -c "^GLITCHTIP_KEY_CATALOG=" /opt/marketplace/.env; grep "^COMPOSE_PROFILES=" /opt/marketplace/.env'
+ssh elastic-vps 'cd /opt/marketplace && docker compose ps glitchtip glitchtip-setup mailpit'
+```
+
+**Przyczyna**
+GlitchTip jest opcjonalny: bez sekcji `GLITCHTIP_*` i profilu `errors` w `COMPOSE_PROFILES`
+deploy przebiega jak dotąd (Compose interpoluje cały plik, więc nakładka prod nie używa
+`:?`, które blokowałoby takie serwery). Włączenie to świadoma decyzja, bo wymaga adresu
+admina i nowych sekretów.
+
+**Naprawa**
+Po merge'u do `main` i zielonym CI (obraz `elastic-glitchtip` jest w GHCR):
+```bash
+make prod-deploy                    # kopiuje add-glitchtip-env.sh na serwer, GlitchTipa jeszcze nie włącza
+ssh elastic-vps 'cd /opt/marketplace && ./add-glitchtip-env.sh .env.prod.example .env twoj@adres.pl'
+make prod-deploy                    # teraz z profilem errors: db-setup -> glitchtip -> setup
+```
+Pomocnik dopisuje klucze DSN, token, hasła i DSN-y (wygenerowane na serwerze, nic nie jest
+wypisywane), robi kopię `.env.bak.<czas>` i jest idempotentny. Potem w `~/.ssh/config`
+(Host `elastic-vps-tunnel`) dodaj `LocalForward 28000 127.0.0.1:18000` i
+`LocalForward 28025 127.0.0.1:8025`, a UI otworzysz przez `make vps-tunnel`
+(`http://localhost:28000`, login i hasło: `make vps-secret k=GLITCHTIP_ADMIN_EMAIL` /
+`k=GLITCHTIP_ADMIN_PASSWORD`). Maile o nowych issue są w mailpicie (`:28025`); nic nie wychodzi
+poza VPS. Sprawdź zużycie: `ssh elastic-vps 'docker stats --no-stream --format "{{.Name}} {{.MemUsage}}" | grep glitchtip'`
+(lokalnie 183–229 MiB z 512).
+
+Jeśli `glitchtip-setup` kończy się `ODMOWA: …`, to `guard.py` wykrył w `.env` wartości z repo,
+puste sekrety albo `__SET_ME__` w adresie admina (RUNBOOK [#069](#069)).
+
+**Czego się nauczyłem**
+Zmiana w nakładce, która dotyka każdego serwera (`:?` na zmiennej z nowej funkcji), potrafi
+zablokować deploy na maszynach, które z niej nie korzystają. Opcjonalną funkcję włącza się
+osobnym, jawnym krokiem, a brak konfiguracji łapie narzędzie, które i tak jej używa.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 
