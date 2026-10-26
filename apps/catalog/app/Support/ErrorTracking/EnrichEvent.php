@@ -20,6 +20,8 @@ use Throwable;
  *   zostawiłby poprzedniego.
  *
  * Metoda statyczna, bo callable z configu musi przeżyć `config:cache`.
+ * Czyszczenie danych wrażliwych: EventScrubber (+ `data_collection` w configu).
+ *
  * Błąd tutaj nie może zepsuć raportowania błędu, więc przy wyjątku
  * wysyłamy zdarzenie bez wzbogacenia.
  */
@@ -28,6 +30,8 @@ final class EnrichEvent
     public static function handle(Event $event, ?EventHint $hint = null): ?Event
     {
         try {
+            EventScrubber::scrub($event);
+
             $event->setTag('trace_id', TraceId::current());
             $event->setTag('process', (string) config('error_tracking.process'));
 

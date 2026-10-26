@@ -103,6 +103,49 @@ final class MessengerErrorTrackingTest extends KernelTestCase
         }
     }
 
+    public function test_frame_variables_with_arguments_are_not_sent(): void
+    {
+        // Obraz FrankenPHP nie ma php.ini, więc `zend.exception_ignore_args` jest tam Off.
+        ini_set('zend.exception_ignore_args', '0');
+
+        $this->process(
+            new Envelope(new \stdClass),
+            fail: self::exceptionThrownWithArguments(['email' => 'jan.kowalski@example.com', 'password' => 'Plaintext#123']),
+            willRetry: false,
+        );
+
+        $frames = [];
+        foreach (FakeSentryTransport::$events[0]->getExceptions() as $exception) {
+            foreach ($exception->getStacktrace()?->getFrames() ?? [] as $frame) {
+                $frames[] = ['function' => $frame->getFunctionName(), 'vars' => $frame->getVars()];
+            }
+        }
+
+        self::assertStringContainsString('exceptionThrownWithArguments', implode(' ', array_column($frames, 'function')), 'Ramka funkcji z argumentami musi być w śladzie.');
+        self::assertStringNotContainsString('Plaintext#123', (string) json_encode($frames));
+        self::assertStringNotContainsString('jan.kowalski', (string) json_encode($frames));
+    }
+
+    /**
+     * @param array<string, string> $input
+     */
+    private static function exceptionThrownWithArguments(array $input): \Throwable
+    {
+        try {
+            self::throwWithArguments($input);
+        } catch (\RuntimeException $e) {
+            return $e;
+        }
+    }
+
+    /**
+     * @param array<string, string> $input
+     */
+    private static function throwWithArguments(array $input): never
+    {
+        throw new \RuntimeException('z argumentami');
+    }
+
     /**
      * Kolejność zdarzeń jak w Worker::handleMessage(): received, potem failed albo
      * handled, a dopiero po całej obsłudze running (stąd TraceContextSubscriber

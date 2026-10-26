@@ -1,6 +1,7 @@
 import { router } from '@inertiajs/vue3';
 import * as Sentry from '@sentry/vue';
 import type { App } from 'vue';
+import { scrubBreadcrumb, scrubEvent } from '@/lib/scrubUrl';
 
 /**
  * Błędy z przeglądarki do GlitchTipa (docs/adr/0009-wyjatki-w-glitchtip.md).
@@ -84,6 +85,10 @@ export function initErrorTracking(app: App): void {
             // Nieszkodliwe, zgłaszane przez przeglądarki przy zmianie układu.
             /ResizeObserver loop/,
         ],
+        // Tokeny z linków Fortify (reset hasła, weryfikacja e-maila) i query stringi nie
+        // mogą trafić do zdarzeń ani breadcrumbs (patrz scrubUrl.ts).
+        beforeSend: scrubEvent,
+        beforeBreadcrumb: scrubBreadcrumb,
     });
 
     registerInertiaBreadcrumbs();

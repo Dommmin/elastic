@@ -145,6 +145,12 @@ RUN npm ci && npm run build \
 # ---------------------------------------------------------------- prod ------
 FROM base AS prod
 
+# Śledzenie błędów (ADR-0009): obraz FrankenPHP nie ma php.ini, więc domyślnie ślad
+# wyjątku niesie WARTOŚCI argumentów (np. tablicę z hasłem z formularza) do logów
+# i do GlitchTipa. Zalecenie produkcyjne PHP; w dev zostaje Off dla diagnostyki
+# (GlitchTip i tak nie dostaje zmiennych ramek: `data_collection` w config/sentry.php).
+RUN echo 'zend.exception_ignore_args=On' > "$PHP_INI_DIR/conf.d/zz-exception-args.ini"
+
 # SHA commita, z którego zbudowano obraz (CI: --build-arg APP_VERSION=<sha>).
 # Trafia do nagłówka X-App-Version (Caddyfile) — po wdrożeniu i rollbacku
 # widać z zewnątrz, która wersja faktycznie odpowiada.

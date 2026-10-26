@@ -17,6 +17,9 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  *   Sentry'ego (WorkerMessageFailedEvent) jeszcze go widzi. Poza wiadomością
  *   (komenda, HTTP) tagu po prostu nie ma.
  * - `process`: który proces zgłosił błąd (consumer, metrics, cli).
+ * - bez zmiennych ramek: obraz FrankenPHP nie ma php.ini, więc `zend.exception_ignore_args`
+ *   jest Off, a ślad niesie WARTOŚCI argumentów (np. tablicę z hasłem). Bundle Symfony nie
+ *   zna opcji `data_collection` (jest w catalog), więc czyścimy je tu.
  *
  * Błąd tutaj nie może zepsuć raportowania błędu, więc przy wyjątku wysyłamy
  * zdarzenie bez wzbogacenia.
@@ -32,6 +35,12 @@ final class EnrichEvent
     public function __invoke(Event $event, ?EventHint $hint = null): ?Event
     {
         try {
+            foreach ($event->getExceptions() as $exception) {
+                foreach ($exception->getStacktrace()?->getFrames() ?? [] as $frame) {
+                    $frame->setVars([]);
+                }
+            }
+
             $traceId = $this->trace->get();
             if ($traceId !== null) {
                 $event->setTag('trace_id', $traceId);

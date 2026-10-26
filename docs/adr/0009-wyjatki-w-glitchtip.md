@@ -58,8 +58,18 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
 5. **Każde zdarzenie z backendu ma tagi `trace_id` i `process`** (`http`,
    `queue`, `outbox-publisher`, `scheduler`, `consumer`, `metrics`). Most do
    Kibany: issue → `trace.id` → pełny przebieg w logach obu aplikacji.
-6. **Bez PII:** `send_default_pii=false`, brak treści żądania, ciasteczek i
-   adresu IP; z użytkownika wysyłamy tylko `user.id`.
+6. **Bez PII.** `send_default_pii=false`, z użytkownika tylko `user.id`, a SDK
+   dostaje natywny filtr `data_collection` (catalog): bez ciasteczek, treści
+   żądania i query stringa, nagłówki z allow-listy (odpada `Referer`),
+   **bez zmiennych ramek stosu**. To ostatnie jest konieczne, bo obraz FrankenPHP
+   nie ma `php.ini`, więc `zend.exception_ignore_args` jest Off i ślad wyjątku
+   niesie wartości argumentów (np. tablicę z hasłem w `CreateNewUser::create`);
+   wykrył to końcowy przegląd, test odtwarzał jawne hasło w zdarzeniu. Obrazy
+   `prod` mają dodatkowo `zend.exception_ignore_args=On`. Czego filtr nie obejmuje,
+   czyści `EventScrubber`: tokeny w ścieżce (`/reset-password/{token}`,
+   `/email/verify/…`) i dane z komunikatów SQL (`DETAIL: Key (email)=(…)`, zapytanie
+   z powiązaniami). W search (bundle nie zna `data_collection`) zmienne ramek czyści
+   `EnrichEvent`, w przeglądarce `scrubUrl.ts` (URL, `Referer`, breadcrumbs).
 7. **Pusty DSN = SDK wyłączone.** Ten sam obraz działa w każdym środowisku;
    brak GlitchTipa niczego nie psuje.
 8. **Awaria GlitchTipa nie przerywa ani nie wydłuża obsługi.** SDK wysyła
@@ -73,8 +83,9 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
    `tunnel`) wysyła na `POST /_errors`, a Caddy w `catalog-app` przekazuje do
    projektu `catalog-frontend`. Cel i klucz są wpisane na sztywno w zmiennych
    środowiskowych, nie zależą od DSN w kopercie, więc tunel nie jest otwartym
-   przekaźnikiem. Ciało do 1 MB, bez ciasteczek i autoryzacji, pusty klucz
-   wyłącza tunel (204). GlitchTip nie musi być publiczny.
+   przekaźnikiem (klucz z query stringa i `X-Sentry-Auth` od klienta nie zmieniają
+   celu). Ciało do 1 MB i bez `Content-Encoding` (415), bez ciasteczek i
+   autoryzacji, pusty klucz wyłącza tunel (204). GlitchTip nie musi być publiczny.
 10. **Konfiguracja jako kod.** Organizację, projekty, **stałe** klucze DSN,
     reguły alertu „nowy issue → e-mail” i token API zakłada idempotentny
     bootstrap (`infra/glitchtip/bootstrap.py`). Klucze są w `.env`, więc
@@ -116,6 +127,15 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
   SDK. Pokrywa go alert `SearchConsumerDown` i restart kontenera.
 - Skrypt bootstrapu używa wewnętrznych modeli Django GlitchTipa (zweryfikowane
   na 6.2.6): przy podbiciu wersji trzeba go sprawdzić (RUNBOOK #069).
+
+**Przed wystawieniem na VPS (nierozstrzygnięte):** tunel `/_errors` nie ma limitu
+liczby żądań. Zakładałem, że ogranicza je GlitchTip (throttling organizacji), ale
+nie zweryfikowałem tego dla instalacji bez billingu (może wynikać wyłącznie z
+kwot). Zdarzenia z publicznego tunelu wypełniałyby bazę `glitchtip`, która jest w
+tym samym Postgresie co katalog. Przed wdrożeniem: limit żądań w Caddy (moduł
+rate-limit) albo osobny limit rozmiaru bazy; do sprawdzenia też, czy GlitchTip
+ogranicza rozmiar *po dekompresji* (tunel odrzuca kompresję, ale sam GlitchTip
+przyjmuje ją na swoim porcie).
 
 **Do zrobienia później:** GlitchTip na k3s po pomiarze RAM na VPS, upload source
 map w CI (`docker build --target assets` daje mapy), przekazywanie `trace_id`

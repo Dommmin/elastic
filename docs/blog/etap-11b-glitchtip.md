@@ -15,8 +15,8 @@ awaria narzędzia do awarii.*
 > `make errors-smoke` zielony (HTTP, kolejka, search i przeglądarka → po jednym
 > issue we właściwym projekcie, tagi `trace_id` i `process`, ramki frontu
 > zmapowane do `ErrorsSmoke.vue`, mail o nowym issue, tunel, odporność na
-> awarię GlitchTipa). Testy: catalog 828 (813 zielonych, 15 pominiętych),
-> search 33 (7 pominiętych na hoście bez `ext-amqp`), `make obs-check`.
+> awarię GlitchTipa, brak e-maila i tokenu z adresu w zdarzeniach). Testy: catalog 832 (817 zielonych, 15 pominiętych),
+> search 34 (7 pominiętych na hoście bez `ext-amqp`), JS `node --test` 7, `make obs-check`.
 > **Nie sprawdzone:** obecność `trace.id` w logach ES w ramach smoke (profil
 > `obs` nie działał; zgodność `trace_id` z `X-Trace-Id` jest sprawdzana, a że
 > ten sam id jest w logach, ustalił ETAP 11). **Nie zrobione:** wdrożenie
@@ -334,6 +334,16 @@ Szczegóły i komendy diagnostyczne w RUNBOOK
    i `es03` jak `make up-apps`.
 8. **Stary `public/hot`** wskazywał martwy serwer Vite, więc strona ładowała
    assety z `localhost:15173` zamiast z buildu.
+9. **Końcowy przegląd znalazł wyciek, którego testy nie widziały.** Obraz FrankenPHP
+   nie ma `php.ini`, więc `zend.exception_ignore_args` jest Off i ślad wyjątku niesie
+   wartości argumentów: wyjątek w `CreateNewUser::create(array $input)` wysłałby do
+   GlitchTipa jawne hasło (i do maila o nowym issue). Do tego tokeny resetu hasła szły
+   w URL, `Referer` i breadcrumbs, a e-maile w komunikatach SQL (`DETAIL: Key
+   (email)=(…)`). Każdy przypadek ma teraz test (Pest, PHPUnit, `node --test`), a smoke
+   sprawdza, że e-mail i token z adresu nie ma w zdarzeniu z backendu ani z
+   przeglądarki. Wniosek: test „nie wysyłamy body i ciasteczek” nie dowodzi „nie
+   wysyłamy PII”; trzeba przejść wszystkie pola zdarzenia (ramki, URL, nagłówki,
+   breadcrumbs, komunikaty).
 
 ## Czego jeszcze nie ma
 
@@ -343,5 +353,6 @@ Szczegóły i komendy diagnostyczne w RUNBOOK
   `/sourcemaps`, ale CI nie ma jeszcze dokąd ich wysłać.
 - `trace_id` z przeglądarki do żądań HTTP (dziś tylko w drugą stronę, przez
   breadcrumbs).
+- Limit liczby żądań na tunelu `/_errors` (ADR-0009, „Przed wystawieniem na VPS”).
 - Crash samego konsumenta Messengera (poza obsługą wiadomości) nie trafia do
   GlitchTipa; pokrywa go `SearchConsumerDown`.

@@ -80,7 +80,7 @@ ok "stos działa, front zbudowany (znacznik: $M)"
 
 echo "Żądanie HTTP (catalog)"
 HEADERS=$(curl -sk -D - -o /dev/null --resolve "catalog.localhost:${HTTPS_PORT}:127.0.0.1" \
-  "https://catalog.localhost:${HTTPS_PORT}/_debug/errors/http?m=${M}")
+  "https://catalog.localhost:${HTTPS_PORT}/_debug/errors/http?m=${M}&email=jan.kowalski%40example.com&token=SECRETTOKEN123")
 HTTP_TRACE=$(echo "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-trace-id"{print $2}')
 echo "$HEADERS" | head -1 | grep -q " 500" && ok "HTTP 500, X-Trace-Id=$HTTP_TRACE" || fail "oczekiwano HTTP 500: $(echo "$HEADERS" | head -1)"
 
@@ -96,7 +96,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 npm install --prefix "$TMP" playwright-core@1.64.0 --no-audit --no-fund --ignore-scripts >/dev/null 2>&1
 cp tools/errors-smoke-browser.mjs "$TMP/"
-(cd "$TMP" && node errors-smoke-browser.mjs "https://catalog.localhost:${HTTPS_PORT}/_debug/errors/frontend?m=${M}") \
+(cd "$TMP" && node errors-smoke-browser.mjs "https://catalog.localhost:${HTTPS_PORT}/_debug/errors/frontend?m=${M}&email=jan.kowalski%40example.com&token=SECRETTOKEN123") \
   && ok "przeglądarka wysłała kopertę" || fail "przeglądarka nie wysłała koperty"
 
 echo "Issues w GlitchTipie"
@@ -104,6 +104,19 @@ check_issue "HTTP"       catalog          "errors-smoke:http:${M}"     http   "$
 check_issue "kolejka"    catalog          "errors-smoke:queue:${M}"    queue
 check_issue "search"     search           "errors-smoke:search:${M}"   consumer
 check_issue "przeglądarka" catalog-frontend "errors-smoke:frontend:${M}" ""
+
+# Sekrety z adresu (e-mail i token w query stringu, jak w linku resetu hasła) nie mogą
+# trafić do zdarzenia ani z backendu, ani z przeglądarki (ADR-0009, zasada 6).
+for pair in "catalog:errors-smoke:http" "catalog-frontend:errors-smoke:frontend"; do
+  proj="${pair%%:*}"; kind="${pair#*:}"
+  sid=$(find_issue "$proj" "${kind}:${M}" || true)
+  if [ -z "$sid" ]; then fail "wyciek URL ($proj): brak issue do sprawdzenia"; continue; fi
+  if gt "issues/$sid/events/latest/" | grep -qE 'jan\.kowalski|jan%40|SECRETTOKEN123'; then
+    fail "wyciek URL ($proj): e-mail albo token z adresu jest w zdarzeniu"
+  else
+    ok "zdarzenie z $proj bez e-maila i tokenu z adresu"
+  fi
+done
 
 # Źródła w stack trace'ie frontu mają być zmapowane (Debug IDs), nie wzięte z bundla.
 FID=$(find_issue catalog-frontend "errors-smoke:frontend:${M}" || true)

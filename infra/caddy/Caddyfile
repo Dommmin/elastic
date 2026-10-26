@@ -70,14 +70,19 @@
 	# To NIE jest otwarty przekaźnik: cel (projekt frontendu i jego klucz) jest
 	# wpisany tu na sztywno ze zmiennych środowiskowych i nie zależy od DSN w kopercie.
 	# Przez /_errors da się pisać wyłącznie do projektu `catalog-frontend`.
-	# Ciało ograniczone do 1 MB, ciasteczka i autoryzacja nie idą dalej, a martwy
-	# GlitchTip daje 502 po sekundzie (SDK to ignoruje).
+	# Ciało ograniczone do 1 MB (bez Content-Encoding); ciasteczka, autoryzacja i X-Sentry-Auth
+	# nie idą dalej. Martwy GlitchTip daje szybkie 502, zawieszony 504 po 3 s (SDK
+	# przeglądarki to ignoruje).
 	# Pusty GLITCHTIP_FRONTEND_KEY (np. prod bez GlitchTipa) = tunel wyłączony, 204.
 	@errorsDisabled expression `"{$GLITCHTIP_FRONTEND_KEY:}" == ""`
 	@errorsNotPost not method POST
+	# Limit 1 MB dotyczy bajtów po kompresji, a SDK przeglądarki nie kompresuje,
+	# więc skompresowane ciało odrzucamy (bomba gzip w kontenerze z limitem 512m).
+	@errorsEncoded header Content-Encoding *
 	handle /_errors {
 		respond @errorsDisabled 204
 		respond @errorsNotPost 405
+		respond @errorsEncoded 415
 		request_body {
 			max_size 1MB
 		}
@@ -86,6 +91,7 @@
 			header_up Host {upstream_hostport}
 			header_up -Cookie
 			header_up -Authorization
+			header_up -X-Sentry-Auth
 			transport http {
 				dial_timeout 1s
 				response_header_timeout 3s

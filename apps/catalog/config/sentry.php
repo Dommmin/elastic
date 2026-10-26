@@ -34,6 +34,37 @@ return [
     'send_default_pii' => false,
     'max_request_body_size' => 'never',
 
+    // Natywny filtr danych SDK (zastępuje opcje powyżej, które zostają jako druga linia
+    // obrony). Co kontroluje, a czego nie:
+    // - stack_frame_variables: OFF. Obraz FrankenPHP nie ma php.ini, więc
+    //   `zend.exception_ignore_args` jest Off i ślad wyjątku niesie wartości argumentów,
+    //   np. tablicę z hasłem w `CreateNewUser::create(array $input)`. Bez tego trafiałyby
+    //   do GlitchTipa jako zmienne ramek (i do maila o nowym issue).
+    // - url_query_params: OFF. Linki Fortify niosą e-mail i podpis w query stringu
+    //   (`/reset-password/{token}?email=…`, `/email/verify/{id}/{hash}?signature=…`).
+    // - nagłówki: allow-lista, więc `Referer` (ten sam link) i `X-XSRF-TOKEN` odpadają.
+    //   SDK dodatkowo zawsze filtruje klucze z `token`, `auth`, `session`, `csrf`…
+    // Tokeny w ŚCIEŻCE oraz komunikaty SQL czyści EventScrubber (SDK ich nie rusza).
+    'data_collection' => [
+        'user_info' => false,
+        'cookies' => ['mode' => 'off'],
+        'http_headers' => [
+            'request' => [
+                'mode' => 'allowList',
+                'terms' => [
+                    'accept', 'content-type', 'content-length', 'host', 'user-agent',
+                    'x-requested-with', 'x-inertia', 'x-forwarded-proto', 'x-trace-id', 'traceparent',
+                ],
+            ],
+            'response' => ['mode' => 'off'],
+        ],
+        'http_bodies' => [],
+        'url_query_params' => ['mode' => 'off'],
+        'database_query_data' => false,
+        'stack_frame_variables' => ['mode' => 'off'],
+        'frame_context_lines' => 5,
+    ],
+
     // Awaria GlitchTipa nie może wydłużyć odpowiedzi ani zablokować workera:
     // SDK wysyła synchronicznie, więc timeouty są twardym ograniczeniem kosztu.
     // Zmierzone na żywym stosie: tuż po zatrzymaniu GlitchTipa Docker jeszcze

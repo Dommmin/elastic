@@ -3,6 +3,7 @@
 use App\Models\User;
 use App\Support\ErrorTracking\QueueRetryFilter;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Facades\Artisan;
@@ -42,6 +43,15 @@ beforeEach(function () {
     Route::get('/__boom', fn () => throw new RuntimeException('boom'));
     Route::post('/__boom-post', fn () => throw new RuntimeException('boom'));
 });
+
+/**
+ * Funkcja z argumentem-tablicą, jak `CreateNewUser::create(array $input)`: bez
+ * `zend.exception_ignore_args` jej argumenty wchodzą do śladu wyjątku.
+ */
+function errorTrackingThrowWithArgs(array $input): never
+{
+    throw new RuntimeException('boom with args');
+}
 
 /** @return list<Event> */
 function sentEvents(): array
@@ -174,4 +184,73 @@ test('konfiguracja: transport ma krótkie timeouty, bez PII, śladów i body ż�
 
 test('QueueRetryFilter nie wycisza wyjątku, o którym nic nie wie', function () {
     expect(app(QueueRetryFilter::class)->willRetry(new RuntimeException('x')))->toBeFalse();
+});
+
+test('ramki stosu nie niosą wartości argumentów, więc hasło z formularza nie wycieka', function () {
+    // Obraz FrankenPHP nie ma php.ini, więc `zend.exception_ignore_args` jest tam Off.
+    ini_set('zend.exception_ignore_args', '0');
+    Route::post('/__args', fn () => errorTrackingThrowWithArgs([
+        'email' => 'jan.kowalski@example.com',
+        'password' => 'Plaintext#123',
+    ]));
+
+    $this->post('/__args');
+
+    $frames = [];
+    foreach (sentEvents()[0]->getExceptions() as $exception) {
+        foreach ($exception->getStacktrace()?->getFrames() ?? [] as $frame) {
+            $frames[] = ['function' => $frame->getFunctionName(), 'vars' => $frame->getVars()];
+        }
+    }
+    $serialized = json_encode($frames);
+
+    expect(collect($frames)->pluck('function')->implode(' '))->toContain('errorTrackingThrowWithArgs')
+        ->and($serialized)->not->toContain('Plaintext#123')
+        ->and($serialized)->not->toContain('jan.kowalski');
+});
+
+test('adres i nagłówki zdarzenia nie niosą tokenów ani e-maila z URL', function () {
+    Route::get('/reset-password/{token}', fn () => throw new RuntimeException('boom'));
+
+    $this->get('/reset-password/SECRETTOKEN123?email=jan.kowalski%40example.com', [
+        'Referer' => 'https://catalog.localhost/email/verify/7/HASHSECRET?expires=1&signature=SIGSECRET',
+        'X-XSRF-TOKEN' => 'xsrf-secret-value',
+    ]);
+
+    $request = sentEvents()[0]->getRequest();
+    $serialized = json_encode($request);
+
+    expect($request['url'] ?? '')->toContain('/reset-password/')
+        ->and($serialized)->not->toContain('SECRETTOKEN123')
+        ->and($serialized)->not->toContain('jan.kowalski')
+        ->and($serialized)->not->toContain('HASHSECRET')
+        ->and($serialized)->not->toContain('SIGSECRET')
+        ->and($serialized)->not->toContain('xsrf-secret-value');
+});
+
+test('komunikat błędu SQL nie niesie powiązanych wartości, DETAIL ani zapytania', function () {
+    Route::get('/__sql', fn () => throw new QueryException(
+        'pgsql',
+        'insert into "users" ("email") values (?)',
+        ['jan.kowalski@example.com'],
+        new PDOException('SQLSTATE[23505]: Unique violation: 7 ERROR:  duplicate key value violates unique constraint "users_email_unique"'."\nDETAIL:  Key (email)=(jan.kowalski@example.com) already exists."),
+    ));
+
+    $this->get('/__sql');
+
+    $messages = implode("\n", array_map(fn ($e) => $e->getValue(), sentEvents()[0]->getExceptions()));
+
+    expect($messages)->toContain('users_email_unique')
+        ->and($messages)->not->toContain('jan.kowalski')
+        ->and($messages)->not->toContain('insert into');
+});
+
+test('konfiguracja zbierania danych wyłącza zmienne ramek, query string, ciasteczka i body', function () {
+    $collection = config('sentry.data_collection');
+
+    expect($collection['stack_frame_variables']['mode'])->toBe('off')
+        ->and($collection['url_query_params']['mode'])->toBe('off')
+        ->and($collection['cookies']['mode'])->toBe('off')
+        ->and($collection['http_bodies'])->toBe([])
+        ->and($collection['user_info'])->toBeFalse();
 });

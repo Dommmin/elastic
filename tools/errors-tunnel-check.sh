@@ -80,6 +80,32 @@ found_search=$(issue_count search "$MARKER")
 [ "$found_frontend" -ge 1 ] && ok "zdarzenie w projekcie catalog-frontend" || fail "brak zdarzenia w catalog-frontend"
 [ "$found_search" -eq 0 ] && ok "nic w projekcie search (cel na sztywno)" || fail "zdarzenie wylądowało w search: tunel jest otwartym przekaźnikiem"
 
+# Klient nie może przekierować zdarzenia na inny projekt ani przez query string, ani przez
+# nagłówek autoryzacyjny SDK: oba niosą klucz projektu `search`, a cel ma zostać na sztywno.
+MARKER2="tunnel-override-$(date +%s)"
+EVENT_ID2=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
+ENVELOPE2=$(printf '{"event_id":"%s","sent_at":"%s","dsn":"http://%s@glitchtip:8000/3"}\n{"type":"event"}\n{"event_id":"%s","timestamp":"%s","platform":"javascript","level":"error","message":"%s","exception":{"values":[{"type":"Error","value":"%s"}]}}\n' \
+  "$EVENT_ID2" "$SENTAT" "$GLITCHTIP_KEY_SEARCH" "$EVENT_ID2" "$SENTAT" "$MARKER2" "$MARKER2")
+code=$(curl -sk --resolve "catalog.localhost:${PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: text/plain;charset=UTF-8' \
+  -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=${GLITCHTIP_KEY_SEARCH}" \
+  --data-binary "$ENVELOPE2" "https://catalog.localhost:${PORT}/_errors?sentry_key=${GLITCHTIP_KEY_SEARCH}&glitchtip_key=${GLITCHTIP_KEY_SEARCH}")
+[ "$code" = "200" ] && ok "koperta z cudzym kluczem w query i nagłówku → 200" || fail "koperta z cudzym kluczem → $code (oczekiwano 200)"
+f2=0
+for _ in $(seq 1 30); do
+  f2=$(issue_count catalog-frontend "$MARKER2")
+  [ "$f2" -ge 1 ] && break
+  sleep 2
+done
+s2=$(issue_count search "$MARKER2")
+[ "$f2" -ge 1 ] && [ "$s2" -eq 0 ] && ok "klucz z query/nagłówka nie zmienia celu (catalog-frontend, nie search)" \
+  || fail "klient przekierował zdarzenie: catalog-frontend=$f2, search=$s2"
+
+# Skompresowane ciało: limit 1 MB dotyczy bajtów po kompresji, a SDK przeglądarki nie
+# kompresuje, więc odrzucamy takie żądania zamiast ryzykować bombę gzip w kontenerze 512m.
+code=$(tunnel -o /dev/null -w '%{http_code}' -X POST -H 'Content-Encoding: gzip' --data-binary 'x')
+[ "$code" = "415" ] && ok "Content-Encoding: gzip → 415" || fail "Content-Encoding: gzip → $code (oczekiwano 415)"
+
 echo "Tunel wyłączony (pusty klucz)"
 start_caddy "" "glitchtip:8000" || exit 1
 code=$(tunnel -o /dev/null -w '%{http_code}' -X POST --data-binary 'x')
