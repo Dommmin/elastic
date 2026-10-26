@@ -28,6 +28,34 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# --- profil errors (ETAP 11b): tylko GlitchTip + Postgres ---------------------
+# Nie wymaga ES, więc pomijamy kontrolę heapu/vm.max_map_count; liczy się
+# wolny port i 512 MB na kontener (mem_limit w compose).
+if [ "$PROFILE" = "errors" ]; then
+  PROJECT="${COMPOSE_PROJECT_NAME:-marketplace}"
+  port="${GLITCHTIP_PORT:-18000}"
+  echo -e "\n  ${BLD}GlitchTip${NC}"
+  if docker ps --format '{{.Names}}\t{{.Ports}}' | grep "^${PROJECT}-" | grep -q ":${port}->"; then
+    ok "GLITCHTIP_PORT=${port} (używa go już ten stack)"
+  elif owner=$(docker ps --format '{{.Names}}\t{{.Ports}}' | grep ":${port}->" | cut -f1 | head -1) && [ -n "$owner" ]; then
+    err "GLITCHTIP_PORT=${port} zajęty przez kontener '${owner}' (inny projekt) — zmień w .env"
+  elif lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    err "GLITCHTIP_PORT=${port} zajęty przez proces na hoście — zmień w .env"
+  else
+    ok "GLITCHTIP_PORT=${port}"
+  fi
+  if ! docker ps --format '{{.Names}}' | grep -q "^${PROJECT}-postgres-1$"; then
+    err "Postgres stacku nie działa. Najpierw: make up (albo make up-apps)."
+  else
+    ok "Postgres działa"
+  fi
+  MEM_GB=$(awk -v b="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)" 'BEGIN{printf "%.1f", b/1073741824}')
+  echo "    Docker VM: ${MEM_GB} GB; GlitchTip potrzebuje do 0,5 GB (mem_limit 512m)"
+  [ "$ERRORS" -gt 0 ] && { echo -e "\n  ${RED}${BLD}Błędów: ${ERRORS}${NC}\n"; exit 1; }
+  echo -e "\n  ${GRN}${BLD}Można startować.${NC}\n"
+  exit 0
+fi
+
 # --- pamięć -----------------------------------------------------------------
 MEM_BYTES=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
 MEM_GB=$(awk -v b="$MEM_BYTES" 'BEGIN{printf "%.1f", b/1073741824}')

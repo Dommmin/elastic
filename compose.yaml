@@ -8,9 +8,11 @@
 #    obs      -> + obs-setup (jednorazowy), filebeat, metricbeat,         [ETAP 11]
 #                search-metrics, prometheus, alertmanager, grafana, mailpit
 #                (logi -> ES, metryki i alerty -> Prometheus, ADR-0005)
+#    errors   -> + glitchtip (all-in-one), glitchtip-db-setup, glitchtip-setup,  [ETAP 11b]
+#                mailpit (wyjątki zgrupowane w issues, ADR-0009)
 #    tools    -> + mailpit, minio
 #
-#  Uruchomienie:  make up  |  make up-cluster  |  make up-obs (po make up-apps)
+#  Uruchomienie:  make up  |  make up-cluster  |  make up-obs / make up-errors (po make up-apps)
 # ============================================================================
 
 name: ${COMPOSE_PROJECT_NAME:-marketplace}
@@ -89,6 +91,9 @@ services:
       SEARCHSVC_DB: ${SEARCHSVC_DB}
       SEARCHSVC_DB_USER: ${SEARCHSVC_DB_USER}
       SEARCHSVC_DB_PASSWORD: ${SEARCHSVC_DB_PASSWORD}
+      GLITCHTIP_DB: ${GLITCHTIP_DB:-glitchtip}
+      GLITCHTIP_DB_USER: ${GLITCHTIP_DB_USER:-glitchtip}
+      GLITCHTIP_DB_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip_dev_2026}
     command:
       - postgres
       - -c
@@ -828,13 +833,96 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
+  #  Profil `errors` (ETAP 11b) — wyjątki zgrupowane w issues (ADR-0009)
+  #  Start: `make up-errors`. UI: http://localhost:${GLITCHTIP_PORT}
+  # ==========================================================================
+
+  # Krok 1 (jednorazowy, idempotentny): rola i baza `glitchtip` w istniejącym
+  # Postgresie. Osobny od init/01-databases.sh, bo tamten działa tylko na
+  # świeżym wolumenie.
+  glitchtip-db-setup:
+    profiles: [errors]
+    image: postgres:${POSTGRES_VERSION}-alpine
+    entrypoint: ["sh", "/setup-db.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      GLITCHTIP_DB: ${GLITCHTIP_DB:-glitchtip}
+      GLITCHTIP_DB_USER: ${GLITCHTIP_DB_USER:-glitchtip}
+      GLITCHTIP_DB_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip_dev_2026}
+    volumes:
+      - ./infra/glitchtip/setup-db.sh:/setup-db.sh:ro
+    networks: [marketplace]
+    restart: "no"
+
+  # GlitchTip w trybie all-in-one: worker w procesie WWW, bez Valkey
+  # (VALKEY_URL="" -> kolejka, cache i sesje w Postgresie). Redis aplikacji
+  # trzyma metryki search (ADR-0005), więc nie mieszamy z nim cudzej kolejki.
+  # 512 MB to rekomendacja producenta dla all-in-one.
+  glitchtip:
+    profiles: [errors]
+    image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
+    environment: &glitchtip-env
+      DATABASE_URL: postgresql://${GLITCHTIP_DB_USER:-glitchtip}:${GLITCHTIP_DB_PASSWORD:-glitchtip_dev_2026}@postgres:5432/${GLITCHTIP_DB:-glitchtip}
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-glitchtip-dev-only-secret-key-change-me}
+      GLITCHTIP_DOMAIN: http://localhost:${GLITCHTIP_PORT:-18000}
+      GLITCHTIP_EMBED_WORKER: "true"
+      VALKEY_URL: ""
+      EMAIL_URL: smtp://mailpit:1025
+      DEFAULT_FROM_EMAIL: glitchtip@marketplace.localhost
+      ENABLE_USER_REGISTRATION: "false"
+      ENABLE_ORGANIZATION_CREATION: "false"
+      # Logi są w ES, a uptime robi Prometheus — nie dublujemy sygnałów.
+      GLITCHTIP_ENABLE_LOGS: "false"
+      GLITCHTIP_ENABLE_UPTIME: "false"
+      ENABLE_OBSERVABILITY_API: "true"
+      GLITCHTIP_RETENTION_DAYS: "14"
+      # Dane dla bootstrap.py (kontener glitchtip-setup); sam serwer ich nie czyta.
+      GLITCHTIP_ADMIN_EMAIL: ${GLITCHTIP_ADMIN_EMAIL:-admin@marketplace.localhost}
+      GLITCHTIP_ADMIN_PASSWORD: ${GLITCHTIP_ADMIN_PASSWORD:-glitchtip_dev_2026}
+      GLITCHTIP_API_TOKEN: ${GLITCHTIP_API_TOKEN:-}
+      GLITCHTIP_KEY_CATALOG: ${GLITCHTIP_KEY_CATALOG:-}
+      GLITCHTIP_KEY_FRONTEND: ${GLITCHTIP_KEY_FRONTEND:-}
+      GLITCHTIP_KEY_SEARCH: ${GLITCHTIP_KEY_SEARCH:-}
+    ports:
+      - "127.0.0.1:${GLITCHTIP_PORT:-18000}:8000"
+    volumes:
+      - glitchtip-uploads:/code/uploads
+      - ./infra/glitchtip/healthcheck.py:/healthcheck.py:ro
+    healthcheck:
+      test: ["CMD", "python", "/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 512m
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Krok 3 (jednorazowy, idempotentny): organizacja, projekty, stałe klucze DSN,
+  # reguły alertów, token API. Patrz infra/glitchtip/bootstrap.py.
+  glitchtip-setup:
+    profiles: [errors]
+    image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
+    entrypoint: ["sh", "-c", "./manage.py shell < /bootstrap.py"]
+    environment: *glitchtip-env
+    volumes:
+      - ./infra/glitchtip/bootstrap.py:/bootstrap.py:ro
+    networks: [marketplace]
+    restart: "no"
+
+  # ==========================================================================
   #  Profil `tools` (mailpit jest też w `obs`)
   # ==========================================================================
 
   # mailpit w dwóch profilach: `tools` (ręczne testy maili) i `obs`
   # (odbiorca alertów). Wersja przypięta jak reszta obrazów.
   mailpit:
-    profiles: [tools, obs]
+    profiles: [tools, obs, errors]
     image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.4}
     ports:
       - "127.0.0.1:${MAILPIT_UI_PORT}:8025"
@@ -864,3 +952,4 @@ volumes:
   prometheus-data:
   alertmanager-data:
   grafana-data:
+  glitchtip-uploads:

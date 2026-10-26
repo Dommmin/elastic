@@ -260,6 +260,30 @@ up-obs: ## Start profilu obs (stack i aplikacje muszą już działać): obs-setu
 	$(DC) --profile obs run --rm --no-deps obs-setup
 	$(DC) --profile obs up -d --no-deps mailpit alertmanager prometheus grafana filebeat metricbeat search-metrics
 
+.PHONY: up-errors
+# Profil errors (ETAP 11b): GlitchTip all-in-one. Wymaga działającego Postgresa
+# (`make up` / `make up-apps`). --no-deps, żeby nie odtwarzać współdzielonych
+# kontenerów. Kroki: baza (idempotentnie) -> GlitchTip -> czekanie na zdrowie ->
+# bootstrap (organizacja, projekty, stałe klucze DSN, alerty, token).
+up-errors: ## Start profilu errors (Postgres musi już działać): GlitchTip + bootstrap
+	@bash tools/doctor.sh errors
+	$(DC) --profile errors run --rm --no-deps glitchtip-db-setup
+	$(DC) --profile errors up -d --no-deps mailpit glitchtip
+	@echo "Czekam na zdrowie GlitchTipa (do 120 s)..."
+	@for i in $$(seq 1 60); do \
+	  s=$$(docker inspect -f '{{.State.Health.Status}}' $(COMPOSE_PROJECT_NAME)-glitchtip-1 2>/dev/null); \
+	  [ "$$s" = "healthy" ] && break; sleep 2; done; \
+	  [ "$$s" = "healthy" ] || { echo "GlitchTip nie jest healthy (RUNBOOK #068)"; exit 1; }
+	$(DC) --profile errors run --rm --no-deps glitchtip-setup
+	@echo "GlitchTip: http://localhost:$${GLITCHTIP_PORT:-18000}  (login: $${GLITCHTIP_ADMIN_EMAIL:-admin@marketplace.localhost})"
+
+.PHONY: errors-reset
+errors-reset: ## Kasuje bazę GlitchTipa i zakłada od zera (pyta o potwierdzenie)
+	@read -p "Skasować WSZYSTKIE issues w GlitchTipie? [t/N] " a; [ "$$a" = "t" ] || { echo "Przerwano."; exit 1; }
+	$(DC) --profile errors stop glitchtip
+	$(DC) exec -T postgres psql -U $(POSTGRES_USER) -d postgres -c "DROP DATABASE IF EXISTS $${GLITCHTIP_DB:-glitchtip} WITH (FORCE)"
+	@$(MAKE) --no-print-directory up-errors
+
 # Trzy sprawdzenia bez żywego stosu (docker run --rm + bind mount): składnia
 # prometheus.yml i reguł, testy reguł z marketplace.test.yml oraz config
 # Alertmanagera. Uruchamiać przed każdą zmianą w infra/obs/{prometheus,alertmanager}.
