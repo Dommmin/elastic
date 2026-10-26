@@ -382,8 +382,9 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       VITE_DEV_SERVER: http://catalog-vite:5173
-      # Tunel /_errors w Caddyfile: błędy z przeglądarki do projektu catalog-frontend
-      # w GlitchTipie (cel na sztywno, ADR-0009). Pusty klucz = tunel wyłączony (204).
+      # Tunel POST /_errors (ErrorTunnelController, config/error_tracking.php): błędy z
+      # przeglądarki do projektu catalog-frontend w GlitchTipie (cel z configu, ADR-0009).
+      # Pusty klucz = tunel wyłączony (204).
       GLITCHTIP_FRONTEND_PROJECT_ID: "2"
       GLITCHTIP_FRONTEND_KEY: ${GLITCHTIP_KEY_FRONTEND:-}
       GLITCHTIP_UPSTREAM: glitchtip:8000

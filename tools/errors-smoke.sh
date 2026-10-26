@@ -146,7 +146,7 @@ done
 [ "${MAILS:-0}" -ge 1 ] && ok "mailpit: ${MAILS} wiadomości z alertem" || fail "brak maila z alertem w mailpicie"
 
 echo "Tunel i odporność"
-bash tools/errors-tunnel-check.sh >/tmp/errors-tunnel.log 2>&1 && ok "tunel: 405/413/204/cel na sztywno/502" || { fail "tunel (szczegóły: /tmp/errors-tunnel.log)"; tail -8 /tmp/errors-tunnel.log; }
+bash tools/errors-tunnel-check.sh >/tmp/errors-tunnel.log 2>&1 && ok "tunel: 405/413/415/cel z configu/limit 429" || { fail "tunel (szczegóły: /tmp/errors-tunnel.log)"; tail -8 /tmp/errors-tunnel.log; }
 
 # Awaria GlitchTipa nie może wydłużać żądań. Mierzymy względem ciepłej bazy: pierwszy
 # błąd po bezczynności jest wolny sam z siebie (strona błędu APP_DEBUG), niezależnie od
@@ -160,9 +160,19 @@ err_time() {  # czas żądania z błędem; $1 = kod oczekiwany
 err_time >/dev/null; err_time >/dev/null
 read -r _ base < <(err_time)
 GT_CONTAINER="${COMPOSE_PROJECT_NAME:-marketplace}-glitchtip-1"
+tunnel_time() {  # POST /_errors z poprawną kopertą; wypisuje kod i czas
+  curl -sk -o /dev/null -w '%{http_code} %{time_total}\n' --resolve "catalog.localhost:${HTTPS_PORT}:127.0.0.1" \
+    -X POST -H 'Content-Type: text/plain;charset=UTF-8' --data-binary '{}' "https://catalog.localhost:${HTTPS_PORT}/_errors"
+}
 docker pause "$GT_CONTAINER" >/dev/null
 read -r code hung < <(err_time)
+read -r tcode ttime < <(tunnel_time)
 docker unpause "$GT_CONTAINER" >/dev/null
+if [ "$tcode" = "502" ] && awk -v t="$ttime" 'BEGIN{exit !(t < 2.5)}'; then
+  ok "tunel przy zawieszonym GlitchTipie: 502 w ${ttime}s"
+else
+  fail "tunel przy zawieszonym GlitchTipie: HTTP $tcode w ${ttime}s (oczekiwano 502 poniżej 2,5 s)"
+fi
 if [ "$code" = "500" ] && awk -v b="$base" -v h="$hung" 'BEGIN{exit !(h - b < 1.5)}'; then
   ok "GlitchTip zawieszony: 500, ${hung}s wobec ${base}s bazowo (narzut poniżej 1,5 s)"
 else
@@ -170,7 +180,9 @@ else
 fi
 $DC stop glitchtip >/dev/null 2>&1
 read -r code _ < <(err_time)
+read -r tcode _ < <(tunnel_time)
 $DC start glitchtip >/dev/null 2>&1
+[ "$tcode" = "502" ] && ok "tunel przy zatrzymanym GlitchTipie: 502" || fail "tunel przy zatrzymanym GlitchTipie: HTTP $tcode (oczekiwano 502)"
 [ "$code" = "500" ] && ok "GlitchTip zatrzymany: żądanie z błędem nadal kończy się 500" || fail "GlitchTip zatrzymany: HTTP $code (oczekiwano 500)"
 for _ in $(seq 1 40); do
   [ "$(docker inspect -f '{{.State.Health.Status}}' "$GT_CONTAINER" 2>/dev/null)" = healthy ] && break

@@ -7,12 +7,15 @@ use App\Support\ErrorTracking\QueueRetryFilter;
 use Carbon\CarbonImmutable;
 use Elastic\Elasticsearch\Client;
 use Elastic\Elasticsearch\ClientBuilder;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
 
@@ -57,6 +60,14 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+
+        // Tunel błędów z przeglądarki (POST /_errors) jest publiczny z założenia, a GlitchTip
+        // nie ma gwarantowanego limitu. Dwa limity: na IP (jedna zepsuta strona nie zalewa
+        // reszty) i globalny (sufit na zapis do bazy glitchtip w tym samym Postgresie).
+        RateLimiter::for('errors-tunnel', fn (Request $request): array => [
+            Limit::perMinute(20)->by('ip:'.$request->ip()),
+            Limit::perMinute(300)->by('global'),
+        ]);
 
         Event::listen(JobExceptionOccurred::class, [QueueRetryFilter::class, 'jobExceptionOccurred']);
         Event::listen(JobFailed::class, [QueueRetryFilter::class, 'jobFailed']);

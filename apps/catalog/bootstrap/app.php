@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\ErrorTunnelController;
 use App\Http\DomainErrorMessages;
 use App\Http\Middleware\AssignTraceId;
 use App\Http\Middleware\EnsureHasSeller;
@@ -29,6 +30,10 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
         then: function (): void {
+            // Tunel błędów z przeglądarki do GlitchTipa (ADR-0009). Poza grupą `web`:
+            // bez sesji, ciasteczek i CSRF, za to z limitem liczby żądań (`errors-tunnel`).
+            Route::post('_errors', ErrorTunnelController::class)->middleware('throttle:errors-tunnel');
+
             // Trasy `make errors-smoke` wywołują błąd na życzenie: tylko lokalnie.
             if (app()->environment('local')) {
                 Route::middleware('web')->group(base_path('routes/debug.php'));
