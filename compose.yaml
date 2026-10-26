@@ -870,13 +870,19 @@ services:
   #  Start: `make up-errors`. UI: http://localhost:${GLITCHTIP_PORT}
   # ==========================================================================
 
-  # Krok 1 (jednorazowy, idempotentny): rola i baza `glitchtip` w istniejącym
-  # Postgresie. Osobny od init/01-databases.sh, bo tamten działa tylko na
-  # świeżym wolumenie.
+  # Wspólny obraz usług GlitchTipa: oficjalny glitchtip/glitchtip + skrypty etapu 11b
+  # wbudowane w /opt/marketplace (infra/glitchtip/Dockerfile). Na serwerze nie ma repo,
+  # więc nic nie jest montowane; w prod ten sam obraz buduje CI (compose.prod.yaml).
+  # Krok 1 (jednorazowy, idempotentny): rola i baza `glitchtip` w istniejącym Postgresie.
+  # Osobny od init/01-databases.sh, bo tamten działa tylko na świeżym wolumenie.
   glitchtip-db-setup:
     profiles: [errors]
-    image: postgres:${POSTGRES_VERSION}-alpine
-    entrypoint: ["sh", "/setup-db.sh"]
+    image: marketplace/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
+    build:
+      context: ./infra/glitchtip
+      args:
+        GLITCHTIP_VERSION: ${GLITCHTIP_VERSION:-6.2.6}
+    entrypoint: ["python", "/opt/marketplace/setup_db.py"]
     environment:
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER}
@@ -884,8 +890,8 @@ services:
       GLITCHTIP_DB: ${GLITCHTIP_DB:-glitchtip}
       GLITCHTIP_DB_USER: ${GLITCHTIP_DB_USER:-glitchtip}
       GLITCHTIP_DB_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip_dev_2026}
-    volumes:
-      - ./infra/glitchtip/setup-db.sh:/setup-db.sh:ro
+    depends_on:
+      postgres: { condition: service_healthy }
     networks: [marketplace]
     restart: "no"
 
@@ -895,7 +901,11 @@ services:
   # 512 MB to rekomendacja producenta dla all-in-one.
   glitchtip:
     profiles: [errors]
-    image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
+    image: marketplace/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
+    build:
+      context: ./infra/glitchtip
+      args:
+        GLITCHTIP_VERSION: ${GLITCHTIP_VERSION:-6.2.6}
     environment: &glitchtip-env
       DATABASE_URL: postgresql://${GLITCHTIP_DB_USER:-glitchtip}:${GLITCHTIP_DB_PASSWORD:-glitchtip_dev_2026}@postgres:5432/${GLITCHTIP_DB:-glitchtip}
       SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-glitchtip-dev-only-secret-key-change-me}
@@ -918,19 +928,22 @@ services:
       GLITCHTIP_KEY_CATALOG: ${GLITCHTIP_KEY_CATALOG:-}
       GLITCHTIP_KEY_FRONTEND: ${GLITCHTIP_KEY_FRONTEND:-}
       GLITCHTIP_KEY_SEARCH: ${GLITCHTIP_KEY_SEARCH:-}
+      # Pusty = strażnik (guard.py) kontroluje sekrety tylko poza localhostem; nakładka
+      # prod ustawia "true", bo na VPS GlitchTip jest widziany przez tunel jako localhost.
+      GLITCHTIP_STRICT_SECRETS: ${GLITCHTIP_STRICT_SECRETS:-}
     ports:
       - "127.0.0.1:${GLITCHTIP_PORT:-18000}:8000"
     volumes:
       - glitchtip-uploads:/code/uploads
-      - ./infra/glitchtip/healthcheck.py:/healthcheck.py:ro
     healthcheck:
-      test: ["CMD", "python", "/healthcheck.py"]
+      test: ["CMD", "python", "/opt/marketplace/healthcheck.py"]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 60s
     depends_on:
       postgres: { condition: service_healthy }
+      glitchtip-db-setup: { condition: service_completed_successfully }
     mem_limit: 512m
     logging: *json-logging
     networks: [marketplace]
@@ -940,13 +953,17 @@ services:
   # reguły alertów, token API. Patrz infra/glitchtip/bootstrap.py.
   glitchtip-setup:
     profiles: [errors]
-    image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
-    # guard.py odmawia poza localhostem, gdy klucze/token/hasła są deweloperskie z repo.
-    entrypoint: ["sh", "-c", "python /guard.py && ./manage.py shell < /bootstrap.py"]
+    image: marketplace/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
+    build:
+      context: ./infra/glitchtip
+      args:
+        GLITCHTIP_VERSION: ${GLITCHTIP_VERSION:-6.2.6}
+    # guard.py odmawia, gdy klucze/token/hasła są deweloperskie z repo (poza localhostem
+    # albo przy GLITCHTIP_STRICT_SECRETS).
+    entrypoint: ["sh", "-c", "python /opt/marketplace/guard.py && ./manage.py shell < /opt/marketplace/bootstrap.py"]
     environment: *glitchtip-env
-    volumes:
-      - ./infra/glitchtip/guard.py:/guard.py:ro
-      - ./infra/glitchtip/bootstrap.py:/bootstrap.py:ro
+    depends_on:
+      glitchtip: { condition: service_healthy }
     networks: [marketplace]
     restart: "no"
 
@@ -960,7 +977,7 @@ services:
     profiles: [tools, obs, errors]
     image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.4}
     ports:
-      - "127.0.0.1:${MAILPIT_UI_PORT}:8025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
     mem_limit: 256m
     networks: [marketplace]
     restart: unless-stopped

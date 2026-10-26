@@ -2,7 +2,7 @@
 #  Nakładka PRODUKCYJNA (ETAP D) — uruchamiana na serwerze RAZEM z compose.yaml:
 #
 #    docker compose -f compose.yaml -f compose.prod.yaml \
-#      --profile cluster --profile apps up -d
+#      --profile cluster --profile apps --profile errors up -d
 #
 #  Co zmienia względem lokalnego dev:
 #    - obrazy z rejestru (GHCR), tag = SHA commita  -> serwer niczego nie buduje
@@ -14,6 +14,27 @@
 #  się SCALAJĄ z compose.yaml — a my chcemy bind-mounty USUNĄĆ, nie dopisać.
 #  !override = "zastąp całą wartość", !reset = "jakby jej nigdy nie było".
 # ============================================================================
+
+# --- GlitchTip (ETAP 11b): środowisko wspólne dla serwera i jednorazowego bootstrapu --
+# W compose.yaml sekrety mają domyślne wartości deweloperskie (`:-glitchtip_dev_2026`).
+# Na serwerze to byłaby dziura, więc tu nadpisujemy je wartościami z .env, a brak wartości
+# daje PUSTĄ, nie deweloperską. Celowo nie `:?`: Compose interpoluje cały plik, także
+# usługi z wyłączonych profili, więc `:?` zablokowałoby każdy deploy na serwerze ze starym
+# .env (bez sekcji GlitchTipa). Odmowę dają guard.py (STRICT) i setup_db.py.
+x-glitchtip-prod-env: &glitchtip-prod-env
+  DATABASE_URL: postgresql://${GLITCHTIP_DB_USER:-glitchtip}:${GLITCHTIP_DB_PASSWORD:-}@postgres:5432/${GLITCHTIP_DB:-glitchtip}
+  SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-}
+  # Adres widziany w przeglądarce przez tunel SSH (make vps-tunnel): localhost:28000 na
+  # Macu -> 127.0.0.1:18000 na serwerze. Wygląda jak localhost, więc samą domeną guard.py
+  # prod od dev nie odróżni: stąd GLITCHTIP_STRICT_SECRETS.
+  GLITCHTIP_DOMAIN: http://localhost:28000
+  GLITCHTIP_STRICT_SECRETS: "true"
+  GLITCHTIP_ADMIN_EMAIL: ${GLITCHTIP_ADMIN_EMAIL:-}
+  GLITCHTIP_ADMIN_PASSWORD: ${GLITCHTIP_ADMIN_PASSWORD:-}
+  GLITCHTIP_API_TOKEN: ${GLITCHTIP_API_TOKEN:-}
+  GLITCHTIP_KEY_CATALOG: ${GLITCHTIP_KEY_CATALOG:-}
+  GLITCHTIP_KEY_FRONTEND: ${GLITCHTIP_KEY_FRONTEND:-}
+  GLITCHTIP_KEY_SEARCH: ${GLITCHTIP_KEY_SEARCH:-}
 
 services:
 
@@ -82,6 +103,8 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
     build: !reset null
     environment:
+      # SHA obrazu (nie `dev` z compose.yaml): release w GlitchTipie wskazuje wdrożony commit.
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
       # ":80" = Caddy słucha zwykłego HTTP na każdej nazwie hosta. Bez domeny
       # nie ma komu wystawić certyfikatu, a ruch i tak idzie szyfrowanym
       # tunelem SSH (docs/08-PLAN-ETAP-D-VPS.md, Task 9).
@@ -112,6 +135,8 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
     build: !reset null
     environment:
+      # SHA obrazu (nie `dev` z compose.yaml): release w GlitchTipie wskazuje wdrożony commit.
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
       APP_ENV: production
       APP_DEBUG: "false"
       APP_KEY: ${CATALOG_APP_KEY:?}
@@ -125,6 +150,8 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-catalog:${IMAGE_TAG:?ustaw IMAGE_TAG}
     build: !reset null
     environment:
+      # SHA obrazu (nie `dev` z compose.yaml): release w GlitchTipie wskazuje wdrożony commit.
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
       APP_ENV: production
       APP_DEBUG: "false"
       APP_KEY: ${CATALOG_APP_KEY:?}
@@ -145,11 +172,35 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
     build: !reset null
     environment:
+      # SHA obrazu (nie `dev` z compose.yaml): release w GlitchTipie wskazuje wdrożony commit.
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
       APP_ENV: prod
       APP_SECRET: ${SEARCH_APP_SECRET:?}
       MAILER_DSN: null://null
       DEFAULT_URI: http://localhost
     volumes: !reset []
+
+  # --- GlitchTip (ETAP 11b, ADR-0009) ------------------------------------------
+  # Obraz z CI (infra/glitchtip/Dockerfile): oficjalny GlitchTip + skrypty w środku, bo na
+  # serwerze nie ma repo. Kolejność z compose.yaml: db-setup -> glitchtip -> setup.
+  # UI tylko przez tunel SSH (127.0.0.1:${GLITCHTIP_PORT:-18000}, w tunelu 28000).
+  # Maile o nowych issue: mailpit z compose.yaml (profil `errors`), też tylko przez tunel;
+  # żadna poczta nie wychodzi z VPS.
+  glitchtip-db-setup:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-glitchtip:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      GLITCHTIP_DB_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-}
+
+  glitchtip:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-glitchtip:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment: *glitchtip-prod-env
+
+  glitchtip-setup:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-glitchtip:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment: *glitchtip-prod-env
 
   # Vite (HMR) to narzędzie deweloperskie — w prod assety są w obrazie catalog.
   # Profil, którego nikt nie włącza = usługa nigdy nie startuje.

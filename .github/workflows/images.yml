@@ -104,6 +104,18 @@ jobs:
           cache-from: type=gha,scope=rabbitmq
           cache-to: type=gha,scope=rabbitmq,mode=max
 
+      - name: Build glitchtip
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: infra/glitchtip
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-glitchtip:${{ github.sha }}
+          build-args: GLITCHTIP_VERSION=${{ env.GLITCHTIP_VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/Dommmin/elastic
+          cache-from: type=gha,scope=glitchtip
+          cache-to: type=gha,scope=glitchtip,mode=max
+
       - name: Build catalog
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -150,7 +162,7 @@ jobs:
         env:
           SHA: ${{ github.sha }}
         run: |
-          for name in elasticsearch postgres rabbitmq catalog search; do
+          for name in elasticsearch postgres rabbitmq glitchtip catalog search; do
             image="${REGISTRY}/elastic-${name}"
             docker push "${image}:${SHA}"
             docker tag "${image}:${SHA}" "${image}:main"

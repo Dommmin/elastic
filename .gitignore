@@ -35,3 +35,7 @@ tools/**/out/
 
 # generowany z definitions.template.json przez tools/render-rabbitmq-definitions.py
 infra/rabbitmq/definitions.json
+
+# --- Python (infra/glitchtip) ---
+__pycache__/
+*.pyc
