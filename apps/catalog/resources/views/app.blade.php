@@ -34,6 +34,14 @@
         <link rel="icon" href="/favicon.svg" type="image/svg+xml">
         <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 
+        {{-- Śledzenie błędów w przeglądarce: konfiguracja z serwera w runtime, nie z buildu
+             (ten sam obraz działa w każdym środowisku). Bez DSN brak meta, więc SDK się nie włącza. --}}
+        @if (filled(config('error_tracking.frontend.dsn')))
+            <meta name="error-tracking-dsn" content="{{ config('error_tracking.frontend.dsn') }}">
+            <meta name="error-tracking-environment" content="{{ config('error_tracking.frontend.environment') }}">
+            <meta name="error-tracking-release" content="{{ config('error_tracking.frontend.release') }}">
+        @endif
+
         @fonts
 
         @vite(['resources/css/app.css', 'resources/js/app.ts', "resources/js/pages/{$page['component']}.vue"])
