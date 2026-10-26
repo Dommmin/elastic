@@ -148,6 +148,8 @@ make obs-check       # promtool: config, testy reguł alertów; amtool: config A
 make up-errors       # profil errors (Postgres musi działać): GlitchTip + bootstrap (ETAP 11b), UI na :18000
 make errors-sourcemaps  # build frontu z Debug IDs i upload source map do GlitchTipa
 make errors-smoke    # błędy z HTTP, kolejki, search i przeglądarki -> issues w GlitchTipie
-make errors-tunnel-check  # tunel /_errors: 405/413/204/cel na sztywno/502
+make errors-tunnel-check  # tunel POST /_errors na żywym catalog-app: 405/413/415, cel z configu, limit 429
 make errors-reset    # kasuje bazę GlitchTipa i odtwarza z kodu (pyta o potwierdzenie)
+make k3s-manifests-check  # manifesty k8s bez klastra: kubectl kustomize + tag process w Deploymentach
+make prod-check      # obrazy prod + nakładka compose.prod, w tym sekrety GlitchTipa z gen-env.sh i strażnik bootstrapu
 ```

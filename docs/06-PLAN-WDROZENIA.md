@@ -361,7 +361,7 @@ issues. Decyzja: [ADR-0009](adr/0009-wyjatki-w-glitchtip.md).
   istniejącym Postgresie, bez Valkey), bootstrap organizacji, projektów, stałych
   kluczy DSN, alertów i tokenu jako kod;
 - `sentry/sentry-laravel` w catalog (HTTP, kolejka, komendy), `sentry/sentry-symfony`
-  w search (Messenger), `@sentry/vue` w przeglądarce przez tunel `/_errors` w Caddy;
+  w search (Messenger), `@sentry/vue` w przeglądarce przez tunel `POST /_errors` (kontroler w catalog z limitami liczby żądań);
 - tagi `trace_id` i `process` na każdym zdarzeniu backendu; filtr błędów to
   istniejący handler wyjątków Laravela (bez drugiej listy); zadanie z ponowieniem
   raportowane dopiero przy ostatniej próbie;
