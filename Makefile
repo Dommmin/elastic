@@ -295,6 +295,10 @@ errors-sourcemaps: ## Build frontu (kontener) + upload source map do GlitchTipa 
 	    sourcemaps upload --org marketplace --project catalog-frontend \
 	    --release "$$(git rev-parse --short HEAD)" public/build
 
+.PHONY: errors-tunnel-check
+errors-tunnel-check: ## Test tunelu POST /_errors na żywym catalog-app (wymaga make up-apps i up-errors)
+	@bash tools/errors-tunnel-check.sh
+
 .PHONY: errors-smoke
 errors-smoke: ## Test end-to-end: błędy z HTTP, kolejki, search i przeglądarki trafiają do GlitchTipa
 	@bash tools/errors-smoke.sh
@@ -379,6 +383,10 @@ vps-backup-pull: ## Skopiuj backupy z VPS na Maca (~/backups/elastic-vps): dumpy
 ## k3s (ETAP D2 — docs/09-PLAN-ETAP-D2-K3S.md)
 # kubectl z Homebrew (1.37): ten z /usr/local/bin (1.33) jest za stary dla k3s 1.36.
 KUBECTL_VPS := /opt/homebrew/bin/kubectl --kubeconfig $(HOME)/.kube/elastic-vps.yaml
+
+.PHONY: k3s-manifests-check
+k3s-manifests-check: ## Manifesty k8s bez klastra: kubectl kustomize + ERROR_TRACKING_PROCESS w Deploymentach (ETAP 11b)
+	@bash tools/k3s/manifests-check.sh
 
 .PHONY: k3s-verify
 k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all)

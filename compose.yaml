@@ -941,9 +941,11 @@ services:
   glitchtip-setup:
     profiles: [errors]
     image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6.2.6}
-    entrypoint: ["sh", "-c", "./manage.py shell < /bootstrap.py"]
+    # guard.py odmawia poza localhostem, gdy klucze/token/hasła są deweloperskie z repo.
+    entrypoint: ["sh", "-c", "python /guard.py && ./manage.py shell < /bootstrap.py"]
     environment: *glitchtip-env
     volumes:
+      - ./infra/glitchtip/guard.py:/guard.py:ro
       - ./infra/glitchtip/bootstrap.py:/bootstrap.py:ro
     networks: [marketplace]
     restart: "no"
