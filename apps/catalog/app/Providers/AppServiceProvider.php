@@ -3,11 +3,15 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Support\ErrorTracking\QueueRetryFilter;
 use Carbon\CarbonImmutable;
 use Elastic\Elasticsearch\Client;
 use Elastic\Elasticsearch\ClientBuilder;
+use Illuminate\Queue\Events\JobExceptionOccurred;
+use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
@@ -19,6 +23,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Stan wiąże się z obiektem wyjątku (WeakMap), więc singleton jest bezpieczny
+        // także w Octane. Listenery w boot(); ADR-0009.
+        $this->app->singleton(QueueRetryFilter::class);
+
         // Jeden klient ES na cały request lifecycle — używany przez
         // HealthController (readiness) i przyszły ProductSearchService
         // (ETAP 7, decyzja D-09: logika wyszukiwania w klasie serwisowej).
@@ -49,6 +57,9 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+
+        Event::listen(JobExceptionOccurred::class, [QueueRetryFilter::class, 'jobExceptionOccurred']);
+        Event::listen(JobFailed::class, [QueueRetryFilter::class, 'jobFailed']);
 
         // Rejestracja jest otwarta, więc samo `auth` nie chroni panelu edycji
         // katalogu — wpuszczamy tylko konta oznaczone przez `marketplace:admin`.

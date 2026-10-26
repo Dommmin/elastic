@@ -27,6 +27,15 @@ x-json-logging: &json-logging
     max-size: "10m"
     max-file: "3"
 
+# --- śledzenie błędów aplikacji catalog (ETAP 11b, ADR-0009) -----------------
+# Wspólne dla czterech kontenerów catalog; każdy dopisuje własny
+# ERROR_TRACKING_PROCESS (tag `process` w GlitchTipie). Pusty DSN = SDK wyłączone.
+# Gdy GlitchTip nie działa, zdarzenia są po cichu gubione (timeout 1 s/2 s).
+x-error-tracking-catalog: &error-tracking-catalog
+  SENTRY_LARAVEL_DSN: ${GLITCHTIP_DSN_CATALOG:-}
+  SENTRY_FRONTEND_DSN: ${GLITCHTIP_DSN_FRONTEND:-}
+  SENTRY_RELEASE: ${APP_VERSION:-dev}
+
 # --- wspólna konfiguracja node'ów Elasticsearcha ----------------------------
 x-es-common: &es-common
   image: marketplace/elasticsearch:${ES_VERSION}
@@ -334,6 +343,8 @@ services:
         PHP_VERSION: ${PHP_VERSION}
         NODE_VERSION: ${NODE_VERSION}
     environment:
+      <<: *error-tracking-catalog
+      ERROR_TRACKING_PROCESS: http
       SERVER_NAME: ${SERVER_NAME:-catalog.localhost}
       OCTANE_ENABLED: ${OCTANE_ENABLED}
       APP_ENV: ${APP_ENV}
@@ -444,6 +455,8 @@ services:
         NODE_VERSION: ${NODE_VERSION}
     command: ["php", "artisan", "outbox:publish", "--loop"]
     environment:
+      <<: *error-tracking-catalog
+      ERROR_TRACKING_PROCESS: outbox-publisher
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
       # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
@@ -499,6 +512,8 @@ services:
         NODE_VERSION: ${NODE_VERSION}
     command: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=5", "--max-time=3600", "--timeout=600"]
     environment:
+      <<: *error-tracking-catalog
+      ERROR_TRACKING_PROCESS: queue
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
       # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.
@@ -564,6 +579,8 @@ services:
         NODE_VERSION: ${NODE_VERSION}
     command: ["php", "artisan", "schedule:work"]
     environment:
+      <<: *error-tracking-catalog
+      ERROR_TRACKING_PROCESS: scheduler
       APP_ENV: ${APP_ENV}
       APP_DEBUG: ${APP_DEBUG}
       # Logi jak w catalog-app: plik + JSON na stderr dla Filebeata.

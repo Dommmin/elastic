@@ -6,6 +6,7 @@ use App\Http\Middleware\EnsureHasSeller;
 use App\Http\Middleware\EnsureSellerApproved;
 use App\Http\Middleware\HandleAppearance;
 use App\Http\Middleware\HandleInertiaRequests;
+use App\Support\ErrorTracking\QueueRetryFilter;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -15,6 +16,7 @@ use Ordering\Domain\OrderNotFound;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Domain\Offer\OfferNotFound;
 use SellerPortal\Domain\Seller\SellerNotFound;
+use Sentry\Laravel\Integration;
 use SharedKernel\DomainException;
 use SharedKernel\InvalidValue;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -47,6 +49,16 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // GlitchTip dostaje dokładnie to, co Laravel raportuje, więc wszystkie
+        // `dontReport*` poniżej (i wbudowane: 404, walidacja, autoryzacja) działają
+        // też jako filtr błędów. Nie utrzymujemy drugiej listy wyjątków (ADR-0009).
+        Integration::handles($exceptions);
+
+        // Przejściowa porażka zadania, które zostanie ponowione, to nie błąd.
+        $exceptions->dontReportWhen(
+            fn (Throwable $e): bool => app(QueueRetryFilter::class)->willRetry($e),
+        );
+
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
