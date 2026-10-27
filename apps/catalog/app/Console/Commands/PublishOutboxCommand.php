@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Outbox;
+use App\Support\ErrorTracking\LoopIterationScope;
 use App\Support\Outbox\OutboxMessageFactory;
 use App\Support\Tracing\TraceId;
 use Illuminate\Console\Command;
@@ -69,6 +70,7 @@ class PublishOutboxCommand extends Command
         $sleepSeconds = (int) $this->option('sleep');
 
         do {
+            LoopIterationScope::reset();
             $published = $this->publishBatch($channel, $batchSize, $timeout);
 
             if ($published > 0) {
