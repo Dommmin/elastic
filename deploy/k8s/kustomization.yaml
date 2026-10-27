@@ -17,6 +17,7 @@ resources:
   - redis.yaml
   - catalog.yaml
   - search-consumer.yaml
+  - glitchtip.yaml
   - jobs/migrate.yaml
   - backup.yaml
 
@@ -48,4 +49,6 @@ images:
   - name: ghcr.io/dommmin/elastic-catalog
     newTag: e0589c621c463b284b962beeebb3f1a101977187
   - name: ghcr.io/dommmin/elastic-search
+    newTag: e0589c621c463b284b962beeebb3f1a101977187
+  - name: ghcr.io/dommmin/elastic-glitchtip
     newTag: e0589c621c463b284b962beeebb3f1a101977187

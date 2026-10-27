@@ -401,8 +401,9 @@ errors-db-check: ## setup_db.py z obrazu GlitchTipa na tymczasowej bazie (wymaga
 	@bash tools/glitchtip-db-check.sh
 
 .PHONY: k3s-manifests-check
-k3s-manifests-check: ## Manifesty k8s bez klastra: kubectl kustomize + ERROR_TRACKING_PROCESS w Deploymentach (ETAP 11b)
+k3s-manifests-check: ## Manifesty k8s bez klastra: kustomize, ERROR_TRACKING_PROCESS, GlitchTip opcjonalny, krok deploy.sh (ETAP 11b)
 	@bash tools/k3s/manifests-check.sh
+	@bash tools/k3s/glitchtip-step-check.sh
 
 .PHONY: k3s-verify
 k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all)

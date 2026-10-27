@@ -47,6 +47,15 @@ spec:
             # w marketplace-config jest pusty.
             - name: ERROR_TRACKING_PROCESS
               value: http
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: SENTRY_LARAVEL_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_CATALOG, optional: true } }
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: SENTRY_FRONTEND_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_FRONTEND, optional: true } }
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: GLITCHTIP_FRONTEND_KEY
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: GLITCHTIP_KEY_FRONTEND, optional: true } }
             - name: APP_KEY
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
             - name: DB_DATABASE
@@ -109,6 +118,9 @@ spec:
             # w marketplace-config jest pusty.
             - name: ERROR_TRACKING_PROCESS
               value: outbox-publisher
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: SENTRY_LARAVEL_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_CATALOG, optional: true } }
             - name: APP_KEY
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
             - name: DB_DATABASE
@@ -184,6 +196,9 @@ spec:
             # w marketplace-config jest pusty.
             - name: ERROR_TRACKING_PROCESS
               value: queue
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: SENTRY_LARAVEL_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_CATALOG, optional: true } }
             - name: APP_KEY
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
             - name: DB_DATABASE

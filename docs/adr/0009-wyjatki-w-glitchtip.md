@@ -150,6 +150,8 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
   w całości).
 - Rozmiar po dekompresji GlitchTip ogranicza sam: 20 MB w gzipie (20 KB na drucie) dostało
   413 w 20 ms, bez wzrostu pamięci. Tunel i tak odrzuca kompresję.
+- GlitchTip na k3s: manifesty w `deploy/k8s/glitchtip.yaml` (opcjonalne, aktywuje je Secret
+  `glitchtip-secrets`), jeszcze nienałożone na klaster (RUNBOOK #078).
 - Korelacja `trace.id` zweryfikowana na żywo: `make errors-smoke` z profilem `obs` znajduje
   `trace.id` z issue w `logs-app-*`.
 

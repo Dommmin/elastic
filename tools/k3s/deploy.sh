@@ -45,10 +45,12 @@ nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
 WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
 cp -R "${ROOT}/deploy/k8s/." "${WORK}/"
 sed -i '' -E "s/^([[:space:]]*newTag:).*/\1 ${TAG}/" "${WORK}/kustomization.yaml"
+# Release w GlitchTipie = wdrożony SHA (w repo zostaje `dev`).
+sed -i '' -E "s/^SENTRY_RELEASE=.*/SENTRY_RELEASE=${TAG}/" "${WORK}/config.env"
 kk kustomize "${WORK}" > "${WORK}/rendered.yaml"
 
 echo "[k3s-deploy] 1/3 infrastruktura (${TAG:0:12})"
-apply_sel 'app.kubernetes.io/component notin (app,migrate)' fail
+apply_sel 'app.kubernetes.io/component notin (app,migrate,errors,errors-init,errors-setup)' fail
 for sts in postgres rabbitmq redis; do kk "${NS[@]}" rollout status "sts/${sts}" --timeout=300s; done
 # NIE wystarczy "health=green": zaraz po apply ECK jeszcze nie zaczął zmian,
 # więc green pochodzi z POPRZEDNIEGO stanu — i aplikacje wdrażały się w trakcie
@@ -72,6 +74,30 @@ if ! kk "${NS[@]}" wait job/migrate --for=condition=complete --timeout=600s; the
   exit 1
 fi
 kk "${NS[@]}" logs job/migrate --all-containers --tail=3 | sed 's/^/    /'
+
+# GlitchTip (ETAP 11b) jest OPCJONALNY: robimy go tylko, gdy na klastrze jest Secret glitchtip-secrets
+# (tools/k3s/secrets.sh, gdy .env ma sekcję GLITCHTIP_*). Awaria śledzenia błędów nie może
+# zablokować wdrożenia sklepu, więc porażka tego kroku to ostrzeżenie, nie przerwanie.
+# Kolejność jak w Compose: db-setup -> glitchtip -> setup (bootstrap projektów i kluczy).
+gt_fail() { echo "[k3s-deploy] GlitchTip: $1" >&2; return 1; }
+glitchtip_step() {
+  kk "${NS[@]}" delete job glitchtip-db-setup glitchtip-setup --ignore-not-found --wait=true || return 1
+  apply_sel 'app.kubernetes.io/component=errors-init' gt_fail || return 1
+  kk "${NS[@]}" wait job/glitchtip-db-setup --for=condition=complete --timeout=300s || return 1
+  apply_sel 'app.kubernetes.io/component=errors' gt_fail || return 1
+  kk "${NS[@]}" rollout status deploy/glitchtip --timeout=600s || return 1
+  apply_sel 'app.kubernetes.io/component=errors-setup' gt_fail || return 1
+  kk "${NS[@]}" wait job/glitchtip-setup --for=condition=complete --timeout=300s || return 1
+}
+if kk "${NS[@]}" get secret glitchtip-secrets >/dev/null 2>&1; then
+  echo "[k3s-deploy] GlitchTip (opcjonalny)"
+  glitchtip_step || {
+    echo "[k3s-deploy] OSTRZEŻENIE: GlitchTip nie wstał — wdrożenie aplikacji idzie dalej, wyjątki nie będą zbierane." >&2
+    kk "${NS[@]}" logs job/glitchtip-setup --tail=20 2>/dev/null >&2 || true
+  }
+else
+  echo "[k3s-deploy] GlitchTip pominięty (brak Secretu glitchtip-secrets; włączenie: RUNBOOK #074)"
+fi
 
 # Bez mieszania wersji catalog i search-consumer. Kontrakt projekcji zmienia
 # się razem z oboma (np. Panel [2/8]: pole projected_at_us), a każda

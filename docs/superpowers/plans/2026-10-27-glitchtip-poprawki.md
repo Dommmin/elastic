@@ -71,7 +71,14 @@ w kodzie i smoke, co jest prawdą, i poprawić dokument albo kod.
       Alert na wolne miejsce dysku: poza zakresem (brak node_exportera), zastąpiony alertem na tempo.
 - [x] Rozmiar po dekompresji: GlitchTip sam odrzuca (20 MB w gzipie, 20 KB na drucie: 413).
 - [x] Korelacja `trace.id` z Elasticsearch: `make errors-smoke` z profilem `obs` znajduje `trace.id` w `logs-app-*`.
-- [ ] GlitchTip na k3s (osobny etap, wymaga decyzji o storage dla Postgresa).
+- [x] GlitchTip na k3s: manifesty `deploy/k8s/glitchtip.yaml` (Deployment, Service, PVC, Joby db-setup i setup),
+      DSN-y z opcjonalnego Secretu w 4 Deploymentach, `secrets.sh`, opcjonalny nieblokujący krok w `deploy.sh`,
+      release z tagu. Baza w istniejącym Postgresie (decyzja o storage: bez nowego). Kontrole offline:
+      `make k3s-manifests-check` (24 zasoby, kubeconform 22 ważne / 0 błędnych) i `glitchtip-step-check.sh`.
+- [ ] **NIE nałożone na klaster** (świadomie): klaster jest 130 commitów za `main` (8 migracji), a `make k3s-deploy`
+      wdraża cały `main`. Najpierw zwykłe wdrożenie aplikacji (z brakującym `catalog-scheduler`), potem
+      włączenie GlitchTipa wg RUNBOOK #078.
+- [ ] Manifest `catalog-scheduler` dla k3s (ETAP F) - brakuje, osobna poprawka.
 
 ## Definicja ukończenia
 Commit w repo, wpis w `docs/blog/` (przewodnik krok po kroku), zielone zestawy testów,

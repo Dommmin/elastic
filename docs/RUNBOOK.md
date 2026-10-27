@@ -78,6 +78,7 @@
 | [075](#075) | `make prod-deploy` wskrzesił Compose obok k3s / deploy wisi na zdrowiu `es01` | Deploy / VPS | 11b |
 | [076](#076) | `make errors-smoke`: GlitchTip został spauzowany po przerwaniu / pomiar odporności raz czerwony, raz zielony | GlitchTip / smoke | 11b |
 | [077](#077) | Alert `GlitchTipEventFlood`; baza GlitchTipa rośnie, bo GlitchTip nie ogranicza przyjmowania | GlitchTip / Prometheus | 11b |
+| [078](#078) | GlitchTip na k3s: manifesty gotowe, ale jeszcze nie nałożone na klaster; jak włączyć | GlitchTip / k3s | 11b |
 
 ---
 
@@ -3678,6 +3679,48 @@ Pole w modelu i w API nie znaczy, że ktoś je egzekwuje: sprawdziłem to wysył
 czytając dokumentację. Zapory przed zalaniem zasobu współdzielonego (tu: Postgres katalogu) buduje się
 po stronie wejścia, które kontrolujemy, i mierzy przed ustaleniem progów, bo to liczby (kB na
 zdarzenie) decydują, czy 300/min jest bezpieczne. Nie było: 140 GB wobec 72 GB wolnych.
+
+<a id="078"></a>
+## 078 — GlitchTip na k3s: manifesty gotowe, ale jeszcze nie nałożone na klaster
+
+**Objaw**
+`make k3s-deploy` pisze `GlitchTip pominięty (brak Secretu glitchtip-secrets)`, a na klastrze nie ma
+poda `glitchtip`. Compose na VPS jest zatrzymany ([#075](#075)), więc GlitchTipa nie ma nigdzie.
+
+**Diagnoza**
+```bash
+make k3s-tunnel
+make k3s k="-n marketplace get secret glitchtip-secrets deploy/glitchtip"
+make k3s k="-n marketplace get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image"
+git rev-list --count <SHA z obrazu>..HEAD        # o ile commitów klaster jest za main
+```
+Stan z 2026-10-27: klaster na `ef53945`, **130 commitów za `main`**, w tym 8 plików migracji bazy
+(nowe tabele zamówień i portalu sprzedawcy). Brakuje na nim `catalog-worker`, a w repozytorium nie ma
+manifestu `catalog-scheduler` (ETAP F): zamówienia na k3s nie wygasałyby.
+
+**Przyczyna**
+GlitchTip jest opcjonalny z założenia (ADR-0009): manifesty w `deploy/k8s/glitchtip.yaml` nic nie robią,
+dopóki na klastrze nie ma Secretu `glitchtip-secrets`. `make k3s-deploy` wdraża CAŁY `main`, więc
+włączenie GlitchTipa przez ten skrypt nałoży też 130 commitów i 8 migracji na produkcyjną bazę.
+To osobna decyzja i osobne wdrożenie, nie skutek uboczny śledzenia błędów.
+
+**Naprawa (kolejność)**
+1. Najpierw wdrożenie aplikacji do `main`: uzupełnić manifest `catalog-scheduler` (jak `catalog-worker`:
+   obraz catalog, `php artisan schedule:work`, jedna replika) i przejść zwykły `make k3s-deploy`
+   z pre-flightem migracji. Sprawdzić: `make k3s-verify`.
+2. Włączyć GlitchTipa: na serwerze `./add-glitchtip-env.sh .env.prod.example .env <adres-admina>`,
+   potem `bash secrets.sh` (tworzy `glitchtip-secrets`), potem `make k3s-deploy`. Krok 2b nałoży kolejno:
+   Job `glitchtip-db-setup`, Deployment `glitchtip`, Job `glitchtip-setup`. Awaria tego kroku to
+   ostrzeżenie, nie przerwanie wdrożenia sklepu.
+3. UI: `make k3s-tunnel && make k3s k="-n marketplace port-forward svc/glitchtip 28000:8000"`,
+   adres `http://localhost:28000`; login i hasło z `.env` na serwerze.
+4. Kontrole bez klastra: `make k3s-manifests-check` (kustomize, DSN-y z opcjonalnego Secretu, GlitchTip
+   poza krokiem infrastruktury, kolejność kroku w `deploy.sh`) oraz job `prod-compose` w CI.
+
+**Czego się nauczyłem**
+Skrypt wdrożeniowy, który wdraża „wszystko z main”, nie nadaje się do wdrożenia jednej, niezależnej
+funkcji, gdy produkcja jest daleko za `main`. Zanim dołożyłem GlitchTipa do `deploy.sh`, sprawdziłem
+stan klastra (read-only) i okazało się, że ten krok wymaga najpierw zwykłego, większego wdrożenia.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 
