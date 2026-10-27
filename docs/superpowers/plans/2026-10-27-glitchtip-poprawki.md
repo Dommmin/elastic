@@ -13,18 +13,25 @@
 
 ## Grupa A: operacje na VPS (bez zmian w kodzie)
 
-### A1. Weryfikacja end-to-end na serwerze
+### A1. Weryfikacja end-to-end na serwerze (wstrzymane: GlitchTip na VPS jest zatrzymany razem z Compose)
 Teraz sprawdzono tylko healthcheck, bootstrap i pamięć (214 MiB z 512).
 - [ ] `make vps-tunnel`, logowanie do `http://localhost:28000` (admin z `make vps-secret`).
 - [ ] Wywołać błąd w prod przez tunel `/_errors` (kopertą z przeglądarki) i zobaczyć issue w projekcie `catalog-frontend`.
 - [ ] Sprawdzić, że w issue jest `release` = SHA wdrożonego obrazu i brak danych osobowych.
 - [ ] Mail o nowym issue widoczny w mailpicie (`http://localhost:28025`).
 
-### A2. Klaster ES: kto zatrzymał es02/es03?
-Stały `Exited (143)` od dwóch tygodni; pierwszy deploy padł, bo `es01` bez nich nie jest zdrowy.
-- [ ] Ustalić przyczynę (`docker events`/`journalctl`, reboot, ręczny stop, OOM).
-- [ ] Jeśli to restart hosta: `restart: unless-stopped` dla es02/es03 w `compose.prod.yaml` plus wpis w RUNBOOK.
-- [ ] `deploy.sh`: przed `up --wait` jawnie uruchamiać węzły klastra, żeby deploy nie zależał od ich stanu.
+### A2. Klaster ES: kto zatrzymał es02/es03? (ZROBIONE 2026-10-27)
+Ustalone: Compose zatrzymano celowo 11.10 (`docker compose stop`) przy przejściu na k3s (ETAP D2);
+`unless-stopped` nie wznawia ręcznie zatrzymanych kontenerów. Wdrożenie z 26.10 przywróciło Compose
+obok k3s: 20,4 z 24 GB RAM zajęte, timer `marketplace-pg-backup` włączony ponownie.
+Decyzja: **k3s jest produkcją**. Wykonano `docker compose stop` (wolumeny zostają) oraz
+`systemctl disable --now marketplace-pg-backup.timer`; zajęte 11 z 24 GB, k3s bez zmian.
+- [x] Przyczyna ustalona, stan serwera naprawiony.
+- [ ] **Nie uruchamiać `make prod-deploy`**, dopóki GlitchTip nie ma manifestów k3s: `deploy.sh` rusza Compose
+      i włącza timer backupu przy każdym wdrożeniu. Docelowo `deploy.sh` ma odmawiać, gdy działa k3s.
+- [ ] `deploy.sh`: pierwszy `up` rusza tylko `es01` bez `es02`/`es03`, co przy zatrzymanych węzłach zakleszcza deploy;
+      dodać węzły klastra do pierwszego kroku (gdy `.env` ma profil `cluster`).
+- [ ] GlitchTip na k3s (dawne E4) staje się następnym krokiem, bo Compose na VPS jest wyłączony.
 
 ## Grupa B: luki, które ujawnił deploy
 
