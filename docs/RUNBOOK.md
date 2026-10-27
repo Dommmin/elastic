@@ -77,6 +77,7 @@
 | [074](#074) | Włączenie GlitchTipa na działającym VPS (stary `.env`) | GlitchTip / VPS | 11b |
 | [075](#075) | `make prod-deploy` wskrzesił Compose obok k3s / deploy wisi na zdrowiu `es01` | Deploy / VPS | 11b |
 | [076](#076) | `make errors-smoke`: GlitchTip został spauzowany po przerwaniu / pomiar odporności raz czerwony, raz zielony | GlitchTip / smoke | 11b |
+| [077](#077) | Alert `GlitchTipEventFlood`; baza GlitchTipa rośnie, bo GlitchTip nie ogranicza przyjmowania | GlitchTip / Prometheus | 11b |
 
 ---
 
@@ -3413,7 +3414,7 @@ Tunel to trasa Laravela (`ErrorTunnelController`), więc kod odpowiedzi mówi, c
 poszło nie tak. **204**: pusty `GLITCHTIP_FRONTEND_KEY` (tunel wyłączony celowo,
 np. prod bez GlitchTipa). **502**: catalog nie dociera do `glitchtip:8000`
 (GlitchTip leży albo jest zawieszony, patrz #070; timeout 1 s). **429**: limit
-liczby żądań (20/min na IP, 300/min globalnie, nagłówek `Retry-After`): przeglądarka
+liczby żądań (20/min na IP, 60/min globalnie, nagłówek `Retry-After`; zmienne `ERROR_TUNNEL_RATE_PER_IP` i `ERROR_TUNNEL_RATE_GLOBAL`, patrz [#077](#077)): przeglądarka
 spamująca błędami albo wiele stron naraz; SDK wstrzymuje wysyłkę, więc zwykle samo
 mija. **413/415**: ciało > 1 MB albo skompresowane. **4xx z GlitchTipa** są
 przekazywane z kodem (zła koperta). Brak tagów `<meta name="error-tracking-dsn">` w
@@ -3632,6 +3633,51 @@ for i in 1 2 3; do curl -sk -o /dev/null -w '%{http_code} %{time_total}\n' --res
 Test, który zmienia stan współdzielonej usługi, musi go przywracać także przy przerwaniu, a pomiar
 czasu z jednej próby po zmianie stanu mierzy rozgrzewanie, nie system. Nie rozluźniłem progu: mediana
 i górna granica nadal wykrywają prawdziwą regresję (`http_timeout` rosnące do kilku sekund).
+
+<a id="077"></a>
+## 077 — GlitchTip nie ogranicza przyjmowania zdarzeń: zalew i rozmiar bazy
+
+**Objaw**
+Alert `GlitchTipEventFlood` (ponad 30 zdarzeń na minutę przez 10 min) albo rosnąca baza `glitchtip`
+w tym samym Postgresie co katalog (`pg_database_size`), albo mnóstwo identycznych issue.
+
+**Diagnoza**
+```bash
+# tempo przyjmowania (licznik z /metrics GlitchTipa, scrapowany przez Prometheusa)
+curl -s http://localhost:18000/metrics | grep 'vtasks_tasks_submitted_total.*ingest_event'
+docker compose exec -T postgres psql -U postgres -d glitchtip -tAc \
+  "select pg_size_pretty(pg_database_size('glitchtip')), (select count(*) from issue_events_issueevent)"
+# kto zalewa: issue z największą liczbą zdarzeń
+docker compose exec -T glitchtip ./manage.py shell -c \
+  "from apps.issue_events.models import Issue; [print(i.count, i.title[:80]) for i in Issue.objects.order_by('-count')[:5]]"
+```
+
+**Przyczyna**
+GlitchTip 6.2.6 self-hosted przyjmuje wszystko, co ma poprawny klucz. Zmierzone: ustawiony
+`rate_limit_count=5, rate_limit_window=60` na kluczu catalog zapisuje się w bazie, ale 30 z 30
+zdarzeń w minutę dostało 200 i zostało zapisanych. Throttling organizacji jest częścią billingu
+(moduł Stripe), którego nie używamy. Ustawianie limitu na kluczu daje więc fałszywe poczucie
+bezpieczeństwa i nie należy na nim polegać. Retencja (14 dni, partycje godzinowe) działa, ale
+nie chroni przed zalewem w ciągu tych 14 dni.
+
+Rozmiar zdarzenia: średnio 10 kB w tabeli (maks. 16 kB), ok. 23 kB z indeksami i narzutem
+partycji. Wzór na skrajny, ciągły ruch: `zdarzeń/min x 1440 x 14 x 23 kB`; 60/min to ok. 28 GB.
+
+**Naprawa**
+Zapory są po naszej stronie: tunel `/_errors` ma limity 20/min na IP i 60/min globalnie
+(`ERROR_TUNNEL_RATE_PER_IP`, `ERROR_TUNNEL_RATE_GLOBAL`, domyślnie z `config/error_tracking.php`),
+a alert `GlitchTipEventFlood` mówi o zalewie ze ścieżek backendowych. Gdy alert odpali:
+1. znajdź źródło (`process`/projekt najczęstszego issue), napraw pętlę błędu albo tymczasowo
+   wyczyść `SENTRY_*_DSN` tego kontenera;
+2. zatrzymaj napływ i usuń nadmiar: `Issue.objects.filter(title__startswith='…').delete()`
+   w `manage.py shell` (kasuje też zdarzenia);
+3. przy zalewie przez tunel obniż `ERROR_TUNNEL_RATE_GLOBAL` i odtwórz `catalog-app`.
+
+**Czego się nauczyłem**
+Pole w modelu i w API nie znaczy, że ktoś je egzekwuje: sprawdziłem to wysyłając 30 zdarzeń, a nie
+czytając dokumentację. Zapory przed zalaniem zasobu współdzielonego (tu: Postgres katalogu) buduje się
+po stronie wejścia, które kontrolujemy, i mierzy przed ustaleniem progów, bo to liczby (kB na
+zdarzenie) decydują, czy 300/min jest bezpieczne. Nie było: 140 GB wobec 72 GB wolnych.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

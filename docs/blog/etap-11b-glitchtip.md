@@ -194,7 +194,7 @@ w query stringu czy nagłówku. Sprawdza to `make errors-tunnel-check` na żywym
 `search`. Tunel przyjmuje tylko POST (405 dla GET), ciało do 1 MB (413), odrzuca
 `Content-Encoding` (415), nie przekazuje ciasteczek ani autoryzacji, przy pustym kluczu
 odpowiada 204, a przy awarii GlitchTipa szybkim 502. Ma też **limity liczby żądań:
-20/min na IP i 300/min globalnie** (429 z `Retry-After`); logika jest w testach Pest
+20/min na IP i 60/min globalnie** (429 z `Retry-After`; globalny zmniejszony z 300 po pomiarze rozmiaru bazy, RUNBOOK #077); logika jest w testach Pest
 (`ErrorTunnelTest`). Dlaczego w Laravelu, a nie w Caddy: Caddy nie ma limitera w
 rdzeniu, a własny obraz z modułem rate-limit to nowa zależność w łańcuchu budowania.
 W Caddy zostaje tylko sufit rozmiaru ciała (2 MB), działający zanim PHP zacznie je

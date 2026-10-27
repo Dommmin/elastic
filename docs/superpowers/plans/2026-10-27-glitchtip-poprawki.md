@@ -64,9 +64,13 @@ w kodzie i smoke, co jest prawdą, i poprawić dokument albo kod.
 | D4 (ZROBIONE) | CI: `sentry-cli sourcemaps inject` brak w etapie assets obrazu | mapy z CI nie mają Debug ID, stack trace w prod bez źródeł | `tools/vps/prod-image-check.sh`: mapy w `/sourcemaps` zawierają `debugId` |
 
 ## Grupa E: przed wystawieniem poza tunel SSH
-- [ ] Zmierzyć throttling GlitchTipa (limity zdarzeń na projekt) i ustawić świadomie.
-- [ ] Retencja i limit rozmiaru bazy GlitchTipa (dziś nieograniczone); alert na wolne miejsce.
-- [ ] Korelacja `trace.id` z Elasticsearch: uruchomić smoke z profilem `obs` i potwierdzić w Kibanie.
+- [x] Throttling GlitchTipa: **nie istnieje** w self-hosted 6.2.6 (limit na kluczu nieegzekwowany, 30/30 przyjęte).
+      Zapory po naszej stronie: limity tunelu 20/min na IP i 60/min globalnie (było 300), konfigurowalne;
+      alert `GlitchTipEventFlood` z testami promtool (RUNBOOK #077).
+- [x] Retencja i rozmiar: 14 dni działa, ok. 23 kB/zdarzenie, wzór i skrajny przypadek w #077 i ADR-0009.
+      Alert na wolne miejsce dysku: poza zakresem (brak node_exportera), zastąpiony alertem na tempo.
+- [x] Rozmiar po dekompresji: GlitchTip sam odrzuca (20 MB w gzipie, 20 KB na drucie: 413).
+- [x] Korelacja `trace.id` z Elasticsearch: `make errors-smoke` z profilem `obs` znajduje `trace.id` w `logs-app-*`.
 - [ ] GlitchTip na k3s (osobny etap, wymaga decyzji o storage dla Postgresa).
 
 ## Definicja ukończenia

@@ -187,3 +187,15 @@ groups:
           summary: "GlitchTip nie odpowiada"
           description: "GlitchTip przestał odpowiadać na scrape od 5 min (a działał w ostatnich 7 dniach). Aplikacje działają dalej: SDK nie buforuje zdarzeń, a błąd wysyłki nigdy nie przerywa żądania, więc w tym czasie wyjątki nie trafiają do issues. Logi w Kibanie i metryki w Prometheusie są nietknięte."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#070--alert-glitchtipdown-glitchtip-nie-odpowiada"
+      - alert: GlitchTipEventFlood
+        # GlitchTip self-hosted nie egzekwuje limitów przyjmowania (limit na kluczu DSN jest
+        # tylko zapisywany, zmierzone na 6.2.6), więc jedyny sygnał zalewu to tempo licznika
+        # ingest_event z /metrics GlitchTipa. Zwykły ruch to pojedyncze zdarzenia na godzinę.
+        expr: 'sum(rate(vtasks_tasks_submitted_total{job="glitchtip",task_name="ingest_event"}[10m])) * 60 > 30'
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GlitchTip przyjmuje ponad 30 zdarzeń na minutę"
+          description: "Tempo przyjmowania zdarzeń utrzymuje się powyżej 30/min od 10 min (wartość: {{ $value | humanize }}/min). Zwykle to pętla błędu w aplikacji albo zalew przez tunel /_errors. Baza glitchtip rośnie ok. 23 kB na zdarzenie, a retencja to 14 dni."
+          runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#077--glitchtip-nie-ogranicza-przyjmowania-zdarzeń-zalew-i-rozmiar-bazy"
