@@ -69,10 +69,11 @@ if [ "${1:-}" != "--no-build" ]; then
   build rabbitmq      infra/rabbitmq      infra/rabbitmq/Dockerfile
   build glitchtip     infra/glitchtip     infra/glitchtip/Dockerfile
   build catalog       .                   infra/php/catalog.Dockerfile prod
+  build catalog-assets .                  infra/php/catalog.Dockerfile assets
   build search        .                   infra/php/search.Dockerfile  prod
 fi
 
-C="$(img catalog)"; S="$(img search)"; E="$(img elasticsearch)"; P="$(img postgres)"; R="$(img rabbitmq)"; G="$(img glitchtip)"
+C="$(img catalog)"; A="$(img catalog-assets)"; S="$(img search)"; E="$(img elasticsearch)"; P="$(img postgres)"; R="$(img rabbitmq)"; G="$(img glitchtip)"
 
 echo -e "\n${BLD}  (b) Zero sekretów w obrazach aplikacji${NC}"
 check "catalog: brak /app/.env"            "nie" "$(has "$C" /app/.env)"
@@ -95,6 +96,21 @@ check "glitchtip: healthcheck.py"                    "tak" "$(has "$G" /opt/mark
 check "glitchtip: guard.py"                          "tak" "$(has "$G" /opt/marketplace/guard.py)"
 check "glitchtip: bootstrap.py"                      "tak" "$(has "$G" /opt/marketplace/bootstrap.py)"
 check "glitchtip: setup_db.py"                       "tak" "$(has "$G" /opt/marketplace/setup_db.py)"
+
+echo -e "\n${BLD}  (d) Source mapy frontu: Debug IDs (ADR-0009)${NC}"
+# Debug ID wiąże plik JS z mapą wysłaną do GlitchTipa (bez zgadywania release). Wstrzykuje go
+# `sentry-cli sourcemaps inject` w etapie assets, PRZED wycięciem map do /sourcemaps. Obraz prod
+# bez ID w JS i mapy bez ID dają stack trace z produkcji nie do zmapowania.
+JS_TOTAL=$(docker run --rm --entrypoint sh "$C" -c 'ls /app/public/build/assets/*.js | wc -l' 2>/dev/null | tr -d ' ')
+JS_NO_ID=$(docker run --rm --entrypoint sh "$C" -c 'grep -L "debugId=" /app/public/build/assets/*.js | wc -l' 2>/dev/null | tr -d ' ')
+MAP_TOTAL=$(docker run --rm --entrypoint sh "$A" -c 'find /sourcemaps -name "*.map" | wc -l' 2>/dev/null | tr -d ' ')
+MAP_NO_ID=$(docker run --rm --entrypoint sh "$A" -c 'find /sourcemaps -name "*.map" | xargs grep -L "debug_id\|debugId" | wc -l' 2>/dev/null | tr -d ' ')
+MAP_IN_PROD=$(docker run --rm --entrypoint sh "$C" -c 'find /app/public/build -name "*.map" | wc -l' 2>/dev/null | tr -d ' ')
+check "catalog: obraz prod ma pliki JS"                      "tak" "$([ "${JS_TOTAL:-0}" -gt 0 ] && echo tak || echo nie)"
+check "catalog: każdy plik JS ma debugId"                    "0"   "${JS_NO_ID:-?}"
+check "catalog-assets: są mapy w /sourcemaps"                "tak" "$([ "${MAP_TOTAL:-0}" -gt 0 ] && echo tak || echo nie)"
+check "catalog-assets: każda mapa ma debug_id"               "0"   "${MAP_NO_ID:-?}"
+check "catalog: obraz prod bez map (nie ujawniamy źródeł)"   "0"   "${MAP_IN_PROD:-?}"
 
 echo -e "\n${BLD}  (c) Konfiguracja czytana w runtime${NC}"
 APP_KEY_TEST="base64:$(openssl rand -base64 32)"

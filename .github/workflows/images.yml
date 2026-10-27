@@ -134,6 +134,23 @@ jobs:
           cache-from: type=gha,scope=catalog
           cache-to: type=gha,scope=catalog,mode=max
 
+      # Etap assets tylko do bramki (Debug IDs w mapach, prod-image-check). NIE jest pushowany:
+      # zawiera source mapy, czyli kod źródłowy frontu, a rejestr jest publiczny.
+      - name: Build catalog assets (bramka, bez pushu)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: infra/php/catalog.Dockerfile
+          target: assets
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/elastic-catalog-assets:${{ github.sha }}
+          build-args: |
+            FRANKENPHP_VERSION=${{ env.FRANKENPHP_VERSION }}
+            PHP_VERSION=${{ env.PHP_VERSION }}
+            NODE_VERSION=${{ env.NODE_VERSION }}
+          cache-from: type=gha,scope=catalog
+
       - name: Build search
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

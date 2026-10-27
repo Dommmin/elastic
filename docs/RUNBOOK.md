@@ -3461,7 +3461,10 @@ kontenera padł z `Failed to connect to localhost:18000`: GlitchTip w odpowiedzi
 na `chunk-upload` podaje adres z `GLITCHTIP_DOMAIN`, niewidoczny z kontenera;
 dlatego upload w `make errors-sourcemaps` idzie z hosta. (4) Obraz prod nie ma
 map z założenia (etap `assets` wycina je do `/sourcemaps`), więc mapy do
-buildu z CI trzeba wgrać osobno.
+buildu z CI trzeba wgrać osobno. Od 2026-10-27 etap `assets` wstrzykuje Debug IDs
+(`sentry-cli sourcemaps inject`) PRZED wycięciem map, więc JS w obrazie prod i mapa w
+`/sourcemaps` mają ten sam ID; wcześniej obraz z CI miał JS bez ID i żadna późniejsza mapa
+nie pasowała. Pilnuje tego `prod-image-check.sh`, sekcja (d), także w CI.
 
 **Naprawa**
 `make errors-sourcemaps` (build w kontenerze, upload z hosta; wymaga Node na

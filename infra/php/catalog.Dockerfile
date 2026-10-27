@@ -138,7 +138,11 @@ COPY --from=vendor /app /app
 # je z public/build do /sourcemaps (zachowując ścieżki) PRZED kopią do etapu prod,
 # bo skasowanie w etapie prod zostawiłoby plik w warstwie obrazu. CI (po wdrożeniu
 # GlitchTipa na k3s) weźmie je stąd: `docker build --target assets`.
+# Debug IDs (sentry-cli inject) wstrzykujemy PRZED wycięciem map: ID trafia i do JS, który
+# jedzie w obrazie prod, i do mapy w /sourcemaps. Wiążą one plik z mapą wysłaną do GlitchTipa
+# bez zgadywania release (ten sam krok robi lokalnie `make errors-sourcemaps`).
 RUN npm ci && npm run build \
+ && npx sentry-cli sourcemaps inject public/build \
  && mkdir /sourcemaps \
  && cd public/build && find . -name '*.map' -exec cp --parents {} /sourcemaps \; -delete
 
