@@ -23,7 +23,7 @@ echo -e "\n${BLD}  gen-env.sh${NC}"
 # shellcheck disable=SC2046
 unset $(grep -oE '^[A-Z][A-Z0-9_]*' "${WORK}/.env") 2>/dev/null || true
 check "brak __GENERATE__ po generowaniu"   "0"   "$(grep -c '=__GENERATE__$' "${WORK}/.env")"
-check "uprawnienia 600"                    "600" "$(stat -f '%Lp' "${WORK}/.env" 2>/dev/null || stat -c '%a' "${WORK}/.env")"
+check "uprawnienia 600"                    "600" "$(stat -c '%a' "${WORK}/.env" 2>/dev/null || stat -f '%Lp' "${WORK}/.env")"
 check "APP_KEY w formacie Laravela"        "1"   "$(grep -cE '^CATALOG_APP_KEY=base64:.{44}$' "${WORK}/.env")"
 check "każdy sekret inny"                  "0"   "$(grep -E '^[A-Z_]+=[0-9a-f]{48}$' "${WORK}/.env" | cut -d= -f2 | sort | uniq -d | wc -l | tr -d ' ')"
 "${ROOT}/tools/vps/gen-env.sh" "${ROOT}/.env.prod.example" "${WORK}/.env" >/dev/null 2>&1
@@ -85,7 +85,7 @@ check "pomocnik: wersja i port mailpita" "GLITCHTIP_VERSION=6.2.6 MAILPIT_UI_POR
 check "pomocnik: dotychczasowe zmienne bez zmian" "0" \
   "$(grep -vE '^(GLITCHTIP_|MAILPIT_UI_PORT=|COMPOSE_PROFILES=|#|$)' "${WORK}/old.before" | while IFS= read -r l; do grep -qxF -- "$l" "${OLD}" || echo x; done | wc -l | tr -d ' ')"
 check "pomocnik: kopia zapasowa starego .env" "1" "$(ls "${OLD}".bak.* 2>/dev/null | wc -l | tr -d ' ')"
-check "pomocnik: uprawnienia 600" "600" "$(stat -f '%Lp' "${OLD}" 2>/dev/null || stat -c '%a' "${OLD}")"
+check "pomocnik: uprawnienia 600" "600" "$(stat -c '%a' "${OLD}" 2>/dev/null || stat -f '%Lp' "${OLD}")"
 cp "${OLD}" "${WORK}/old.after1"
 "${ROOT}/tools/vps/add-glitchtip-env.sh" "${ROOT}/.env.prod.example" "${OLD}" admin@example.com >/dev/null 2>&1
 check "pomocnik: drugie wywołanie nic nie zmienia (idempotencja)" "0" "$(cmp -s "${OLD}" "${WORK}/old.after1"; echo $?)"

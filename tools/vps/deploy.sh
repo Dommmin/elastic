@@ -26,6 +26,20 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 [[ "${TAG}" =~ ^[0-9a-f]{40}$|^main$ ]] || { echo "Tag ma być pełnym SHA (40 znaków hex) albo 'main'." >&2; exit 1; }
 
+# Strażnik: na VPS produkcją jest k3s (ETAP D2). Ten skrypt podnosi Compose i włącza jego timer
+# backupu, więc obok k3s zjadłby ~9 GB RAM i backupował stare dane (RUNBOOK #075). Odmawiamy
+# ZANIM cokolwiek skopiujemy. Kod 3 z `systemctl is-active` = nieaktywny; inny kod = nie wiemy.
+K3S_RC=0
+ssh "${HOST}" 'systemctl is-active --quiet k3s' || K3S_RC=$?
+if [ "${K3S_RC}" -eq 0 ] && [ "${ALLOW_COMPOSE_WITH_K3S:-}" != "1" ]; then
+  echo "Na ${HOST} działa k3s — wdrożenie Compose obok niego jest zablokowane (RUNBOOK #075)." >&2
+  echo "Produkcja to k3s: make k3s-deploy. Świadome obejście: ALLOW_COMPOSE_WITH_K3S=1 make prod-deploy." >&2
+  exit 1
+elif [ "${K3S_RC}" -ne 0 ] && [ "${K3S_RC}" -ne 3 ]; then
+  echo "Nie da się ustalić, czy na ${HOST} działa k3s (ssh/systemctl zwróciły ${K3S_RC}) — przerywam." >&2
+  exit 1
+fi
+
 echo "[deploy] pliki -> ${HOST}:${DIR}"
 scp -q "${ROOT}/compose.yaml" "${ROOT}/compose.prod.yaml" "${ROOT}/.env.prod.example" \
     "${ROOT}/tools/vps/gen-env.sh" "${ROOT}/tools/vps/add-glitchtip-env.sh" "${ROOT}/infra/systemd/pg-backup.sh" \
@@ -56,7 +70,11 @@ docker compose pull --quiet </dev/null
 # kończyłby się błędem, zanim migracje by się wykonały (wyszło w próbie
 # generalnej). Ta sama zasada co w każdym deployu: schemat przed kodem.
 echo "[deploy] up --wait (bez outbox-publisher)"
-docker compose up -d --wait --remove-orphans catalog-app search-consumer kibana </dev/null
+# es01 nie zdrowieje bez kworum (es02/es03), a `up` z listą usług rusza tylko es01 i jego
+# zależności. Przy zatrzymanych węzłach deploy zakleszczał się na zdrowiu es01 (RUNBOOK #075).
+CLUSTER_NODES=""
+grep -Eq '^COMPOSE_PROFILES=.*cluster' .env && CLUSTER_NODES="es02 es03"
+docker compose up -d --wait --remove-orphans catalog-app search-consumer kibana ${CLUSTER_NODES} </dev/null
 
 echo "[deploy] migracje"
 # </dev/null przy KAŻDYM exec: ten skrypt przychodzi do `bash -s` przez stdin,

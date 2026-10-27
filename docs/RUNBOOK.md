@@ -75,6 +75,7 @@
 | [072](#072) | Stack trace frontu bez source map (ramki z `assets/*.js`) | Frontend / GlitchTip | 11b |
 | [073](#073) | Błąd poszedł w świat, a w GlitchTipie nie ma issue | Laravel / Symfony / GlitchTip | 11b |
 | [074](#074) | Włączenie GlitchTipa na działającym VPS (stary `.env`) | GlitchTip / VPS | 11b |
+| [075](#075) | `make prod-deploy` wskrzesił Compose obok k3s / deploy wisi na zdrowiu `es01` | Deploy / VPS | 11b |
 
 ---
 
@@ -2128,6 +2129,15 @@ zostawia zamówienie wiszące na zawsze, sweep naprawia nawet te, w których
 saga utknęła), ale tylko wtedy, gdy ktoś widzi, że żyje: stąd czas ostatniego
 przebiegu w `/health`.
 
+**Scheduler w produkcji (Compose na VPS)**
+Do PR #7 `compose.prod.yaml` nie dawał schedulerowi `image:`, więc Compose próbował go zbudować na
+serwerze (`lstat /opt/marketplace/infra: no such file or directory`) i **każdy** `make prod-deploy`
+padał na końcowym `up --wait`. Od #7 scheduler jest z obrazu `elastic-catalog:<SHA>` jak worker
+(bez bind-mountów, `APP_KEY`, `LOG_LEVEL=info`). Regresję łapie job `prod-compose` w CI
+(`tools/vps/compose-prod-check.sh`: „żadna usługa nie ma build:”, „zero bind-mountów”), czyli przed
+deployem, nie w jego trakcie. Uwaga: od 2026-10-27 produkcją jest k3s, Compose na VPS jest
+zatrzymany (RUNBOOK [#075](#075)).
+
 <a id="045"></a>
 ## 045 — Zamówienie wisi w „Sprawdzamy dostępność” (`placed`)
 
@@ -3547,6 +3557,44 @@ puste sekrety albo `__SET_ME__` w adresie admina (RUNBOOK [#069](#069)).
 Zmiana w nakładce, która dotyka każdego serwera (`:?` na zmiennej z nowej funkcji), potrafi
 zablokować deploy na maszynach, które z niej nie korzystają. Opcjonalną funkcję włącza się
 osobnym, jawnym krokiem, a brak konfiguracji łapie narzędzie, które i tak jej używa.
+
+<a id="075"></a>
+## 075 — `make prod-deploy` wskrzesił Compose obok k3s; deploy wisi na zdrowiu `es01`
+
+**Objaw**
+Po `make prod-deploy` na VPS działają dwa komplety usług (k3s i Compose), RAM zajęty w ~85%
+(`free -m`: ok. 0,5 GB wolnych z 24), a deploy kończy się
+`dependency failed to start: container marketplace-es01 is unhealthy`.
+
+**Diagnoza**
+```bash
+ssh elastic-vps 'systemctl is-active k3s; docker ps --format "{{.Names}}" | grep -c marketplace; free -m | sed -n 1,2p'
+ssh elastic-vps 'docker ps -a --filter name=es0 --format "{{.Names}} {{.Status}}"; docker logs --tail 5 marketplace-es01 2>&1 | cut -c1-200'
+```
+W logach `es01`: `failed to resolve host [es02]` i `master not discovered or elected yet`.
+
+**Przyczyna**
+1. Compose (ETAP D1) zatrzymano celowo `docker compose stop` przy przejściu na k3s (D2). `deploy.sh`
+   o tym nie wiedział: podnosił Compose i przy każdym wdrożeniu włączał timer backupu PG, który
+   zapisywał stare dane. Razem z k3s to ok. 9 GB RAM więcej.
+2. Pierwszy `up` w `deploy.sh` rusza `catalog-app search-consumer kibana`, czyli `es01` bez `es02`
+   i `es03` (te dochodzą dopiero w końcowym `up`). `es01` bez kworum nigdy nie jest `healthy`,
+   więc przy zatrzymanych węzłach deploy zakleszcza się.
+
+**Naprawa**
+- `deploy.sh` odmawia, gdy na serwerze działa k3s (`systemctl is-active k3s`), zanim cokolwiek
+  skopiuje. Gdy stanu nie da się ustalić (ssh/systemctl zwrócił inny kod niż 0 lub 3), też przerywa.
+  Świadome obejście: `ALLOW_COMPOSE_WITH_K3S=1 make prod-deploy`.
+- Pierwszy `up` dostaje `es02 es03`, ale tylko gdy `.env` ma profil `cluster`.
+- Zatrzymanie Compose po pomyłce: `ssh elastic-vps 'cd /opt/marketplace && docker compose stop'`
+  oraz `ssh elastic-vps 'sudo systemctl disable --now marketplace-pg-backup.timer'` (wolumeny zostają).
+- Test: `make vps-deploy-check` (atrapy `ssh`/`scp`, bez serwera).
+
+**Czego się nauczyłem**
+Skrypt wdrożeniowy, który nie sprawdza, czym serwer jest teraz, wykona się „poprawnie” na maszynie
+po migracji i zrobi szkodę po cichu. Decyzję „co jest produkcją” musi znać narzędzie, nie tylko człowiek.
+Drugie: `up <usługi>` rusza zależności w górę, nie w bok. Węzeł, który potrzebuje sąsiadów do
+kworum, trzeba wymienić w liście jawnie.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 
