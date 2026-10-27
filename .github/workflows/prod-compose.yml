@@ -1,0 +1,49 @@
+# ============================================================================
+#  Kontrola nakładki produkcyjnej Compose (RUNBOOK #075, docs/superpowers/plans/2026-10-27-*)
+#
+#  Dwa testy bez serwera, uruchamiane na każdym PR, który dotyka plików wdrożenia:
+#    - compose-prod-check.sh: wynik `docker compose config` (compose.yaml + compose.prod.yaml)
+#      ma być stackiem, który da się uruchomić na serwerze BEZ repo: zero `build:`, zero
+#      bind-mountów, sekrety z .env, porty tylko na 127.0.0.1. Brak `image:` przy nowej
+#      usłudze (jak catalog-scheduler przed PR #7) czerwieni ten job, a nie dopiero deploy.
+#    - deploy-check.sh: strażnik k3s i węzły klastra w pierwszym `up` (atrapy ssh/scp).
+#
+#  Bezpieczeństwo workflow: wyzwalacz pull_request (nie pull_request_target), token
+#  tylko do odczytu, żadnych sekretów, akcje przypięte do pełnego SHA.
+# ============================================================================
+name: prod-compose
+
+on:
+  pull_request:
+    paths:
+      - compose.yaml
+      - compose.prod.yaml
+      - .env.prod.example
+      - tools/vps/**
+      - infra/glitchtip/**
+      - .github/workflows/prod-compose.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: prod-compose-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Nakładka prod (docker compose config)
+        run: bash tools/vps/compose-prod-check.sh
+
+      - name: deploy.sh (strażnik k3s, węzły klastra)
+        run: bash tools/vps/deploy-check.sh

@@ -2129,6 +2129,15 @@ zostawia zamówienie wiszące na zawsze, sweep naprawia nawet te, w których
 saga utknęła), ale tylko wtedy, gdy ktoś widzi, że żyje: stąd czas ostatniego
 przebiegu w `/health`.
 
+**Scheduler w produkcji (Compose na VPS)**
+Do PR #7 `compose.prod.yaml` nie dawał schedulerowi `image:`, więc Compose próbował go zbudować na
+serwerze (`lstat /opt/marketplace/infra: no such file or directory`) i **każdy** `make prod-deploy`
+padał na końcowym `up --wait`. Od #7 scheduler jest z obrazu `elastic-catalog:<SHA>` jak worker
+(bez bind-mountów, `APP_KEY`, `LOG_LEVEL=info`). Regresję łapie job `prod-compose` w CI
+(`tools/vps/compose-prod-check.sh`: „żadna usługa nie ma build:”, „zero bind-mountów”), czyli przed
+deployem, nie w jego trakcie. Uwaga: od 2026-10-27 produkcją jest k3s, Compose na VPS jest
+zatrzymany (RUNBOOK [#075](#075)).
+
 <a id="045"></a>
 ## 045 — Zamówienie wisi w „Sprawdzamy dostępność” (`placed`)
 

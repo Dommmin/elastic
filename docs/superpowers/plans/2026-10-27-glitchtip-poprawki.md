@@ -36,11 +36,12 @@ Decyzja: **k3s jest produkcją**. Wykonano `docker compose stop` (wolumeny zosta
 ### B1. Test, że nakładka prod nie buduje żadnej usługi (regresja #7)
 `compose-prod-check.sh` już to sprawdza, ale dopiero od #7 przechodzi. Upewnić się, że CI go uruchamia
 na każdym PR zmieniającym `compose*.yaml` (dziś jest tylko lokalnie).
-- [ ] Dodać job w workflow (path filter `compose*.yaml`, `infra/**`, `tools/vps/**`).
-- [ ] Test: dodanie usługi z `build:` bez `image:` w overlay ma wywalić job.
+- [x] Job `prod-compose` (`.github/workflows/prod-compose.yml`): `compose-prod-check.sh` + `deploy-check.sh` na PR z path filter.
+- [x] Test mutacyjny: scheduler bez `image:` w overlay → 2 asercje czerwone (53/2), skrypt kończy się kodem ≠ 0.
+- [x] Przenośność: `stat -f '%Lp'` na GNU wypisuje śmieci i daje kod 1; kolejność zamieniona (GNU pierwszy).
 
-### B2. RUNBOOK #044 i komentarz o schedulerze
-Komentarz „osobna sprawa” już usunięty w #7; dopisać w RUNBOOK wpis o deployu, który padał na buildzie.
+### B2. RUNBOOK #044 i komentarz o schedulerze (ZROBIONE)
+Komentarz „osobna sprawa” usunięty w #7; w RUNBOOK #044 dopisek o deployu, który padał na buildzie.
 
 ## Grupa C: korekty dokumentacji (prawda o zachowaniu)
 
