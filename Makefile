@@ -333,6 +333,10 @@ prod-check: ## Obrazy prod z czystego klonu + nakładka compose.prod (przed push
 	@bash tools/vps/prod-image-check.sh
 	@bash tools/vps/compose-prod-check.sh
 
+.PHONY: vps-deploy-check
+vps-deploy-check: ## Test deploy.sh bez serwera: strażnik k3s, węzły klastra w pierwszym up (RUNBOOK #075)
+	@bash tools/vps/deploy-check.sh
+
 # Komendy na serwerze — przez SSH, w /opt/marketplace. COMPOSE_FILE
 # i COMPOSE_PROFILES są w .env serwera, więc `docker compose` wystarcza.
 VPS      ?= elastic-vps

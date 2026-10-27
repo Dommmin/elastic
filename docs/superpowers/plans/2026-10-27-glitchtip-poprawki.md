@@ -27,10 +27,8 @@ obok k3s: 20,4 z 24 GB RAM zajęte, timer `marketplace-pg-backup` włączony pon
 Decyzja: **k3s jest produkcją**. Wykonano `docker compose stop` (wolumeny zostają) oraz
 `systemctl disable --now marketplace-pg-backup.timer`; zajęte 11 z 24 GB, k3s bez zmian.
 - [x] Przyczyna ustalona, stan serwera naprawiony.
-- [ ] **Nie uruchamiać `make prod-deploy`**, dopóki GlitchTip nie ma manifestów k3s: `deploy.sh` rusza Compose
-      i włącza timer backupu przy każdym wdrożeniu. Docelowo `deploy.sh` ma odmawiać, gdy działa k3s.
-- [ ] `deploy.sh`: pierwszy `up` rusza tylko `es01` bez `es02`/`es03`, co przy zatrzymanych węzłach zakleszcza deploy;
-      dodać węzły klastra do pierwszego kroku (gdy `.env` ma profil `cluster`).
+- [x] `deploy.sh` odmawia, gdy działa k3s (obejście: `ALLOW_COMPOSE_WITH_K3S=1`), RUNBOOK #075, `make vps-deploy-check` 8/8.
+- [x] `deploy.sh`: pierwszy `up` dostaje `es02 es03` przy profilu `cluster` w `.env`.
 - [ ] GlitchTip na k3s (dawne E4) staje się następnym krokiem, bo Compose na VPS jest wyłączony.
 
 ## Grupa B: luki, które ujawnił deploy
