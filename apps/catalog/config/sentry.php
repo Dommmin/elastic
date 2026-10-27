@@ -16,7 +16,8 @@ return [
 
     'dsn' => env('SENTRY_LARAVEL_DSN', env('SENTRY_DSN')),
 
-    // SHA commita wbudowany w obraz prod (APP_VERSION); lokalnie `dev`.
+    // Release = SHA wdrożonego obrazu. Kolejność: SENTRY_RELEASE (compose.prod.yaml ustawia
+    // IMAGE_TAG), potem APP_VERSION wbudowany w obraz przez CI, na końcu `dev` lokalnie.
     'release' => env('SENTRY_RELEASE', env('APP_VERSION', 'dev')),
 
     // Pusty = środowisko Laravela (APP_ENV).
