@@ -58,7 +58,7 @@ w kodzie i smoke, co jest prawdą, i poprawić dokument albo kod.
 
 | # | Co | Skutek, gdy zostanie | Test najpierw |
 |---|----|----------------------|---------------|
-| D1 | `trap` w `tools/errors-smoke.sh` zostawia GlitchTip spauzowany po przerwaniu (Ctrl-C) | kolejne uruchomienie smoke’a wisi, UI nie odpowiada | skrypt przerwany w połowie fazy pauzy → `docker inspect` nie pokazuje `Paused` |
+| D1 (ZROBIONE, RUNBOOK #076) | `trap` w `tools/errors-smoke.sh` zostawia GlitchTip spauzowany po przerwaniu (Ctrl-C) | kolejne uruchomienie smoke’a wisi, UI nie odpowiada | skrypt przerwany w połowie fazy pauzy → `docker inspect` nie pokazuje `Paused` |
 | D2 | `outbox-publisher --loop` nie dodaje breadcrumbów | uboższy kontekst w issue z długo żyjącego procesu | test jednostkowy EnrichEvent dla `process=outbox` |
 | D3 | Przekroczenie czasu joba (SIGALRM) nie jest zgłaszane | job zabity po timeoucie znika bez issue | Pest: job z timeoutem → fake transport dostaje zdarzenie |
 | D4 | CI: `sentry-cli sourcemaps inject` brak w etapie assets obrazu | mapy z CI nie mają Debug ID, stack trace w prod bez źródeł | `tools/vps/prod-image-check.sh`: mapy w `/sourcemaps` zawierają `debugId` |

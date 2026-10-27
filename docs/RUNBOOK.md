@@ -76,6 +76,7 @@
 | [073](#073) | Błąd poszedł w świat, a w GlitchTipie nie ma issue | Laravel / Symfony / GlitchTip | 11b |
 | [074](#074) | Włączenie GlitchTipa na działającym VPS (stary `.env`) | GlitchTip / VPS | 11b |
 | [075](#075) | `make prod-deploy` wskrzesił Compose obok k3s / deploy wisi na zdrowiu `es01` | Deploy / VPS | 11b |
+| [076](#076) | `make errors-smoke`: GlitchTip został spauzowany po przerwaniu / pomiar odporności raz czerwony, raz zielony | GlitchTip / smoke | 11b |
 
 ---
 
@@ -3595,6 +3596,39 @@ Skrypt wdrożeniowy, który nie sprawdza, czym serwer jest teraz, wykona się �
 po migracji i zrobi szkodę po cichu. Decyzję „co jest produkcją” musi znać narzędzie, nie tylko człowiek.
 Drugie: `up <usługi>` rusza zależności w górę, nie w bok. Węzeł, który potrzebuje sąsiadów do
 kworum, trzeba wymienić w liście jawnie.
+
+<a id="076"></a>
+## 076 — `errors-smoke`: GlitchTip został spauzowany po przerwaniu; pomiar odporności raz czerwony, raz zielony
+
+**Objaw**
+Po Ctrl-C w środku `make errors-smoke` UI GlitchTipa (`:18000`) nie odpowiada, a `docker ps` pokazuje
+`(Paused)` albo kontener `Exited`. Osobno: ten sam smoke raz przechodzi, raz pada na
+„GlitchTip zawieszony: … narzut ma być poniżej 1,5 s” (np. 3,05 s wobec 0,30 s bazowo).
+
+**Diagnoza**
+```bash
+docker inspect -f '{{.State.Status}} paused={{.State.Paused}}' marketplace-glitchtip-1
+for i in 1 2 3; do curl -sk -o /dev/null -w '%{http_code} %{time_total}\n' --resolve catalog.localhost:8443:127.0.0.1 \
+  "https://catalog.localhost:8443/_debug/errors/http?m=x$RANDOM"; done      # przy docker pause GlitchTipa
+```
+
+**Przyczyna**
+1. `trap` sprzątał tylko katalog tymczasowy. Smoke pauzuje (`docker pause`) i zatrzymuje (`compose stop`)
+   GlitchTipa, więc przerwanie w tym oknie zostawiało go zawieszonego albo zatrzymanego.
+2. Pierwsze żądanie po zawieszeniu płaci za odrzucenie połączenia z puli keep-alive: 2,1-3,1 s.
+   Kolejne są stabilne, ok. 1,2 s (`http_timeout` 1 s + narzut), a po wznowieniu 0,24 s. Jeden pomiar
+   z progiem 1,5 s był więc loterią, mimo że koszt awarii GlitchTipa jest ograniczony.
+
+**Naprawa**
+- `tools/lib/glitchtip-restore.sh`: trap na EXIT/INT/TERM robi `docker unpause` i `docker start`
+  (idempotentnie), ale tylko jeśli smoke dotknął GlitchTipa. Test: `make errors-smoke-cleanup-check`.
+- Pomiar odporności: trzy próby, ocena mediany (narzut poniżej 1,5 s) i najgorszej (poniżej 4 s).
+- Ręczne przywrócenie po awarii: `docker unpause marketplace-glitchtip-1; docker start marketplace-glitchtip-1`.
+
+**Czego się nauczyłem**
+Test, który zmienia stan współdzielonej usługi, musi go przywracać także przy przerwaniu, a pomiar
+czasu z jednej próby po zmianie stanu mierzy rozgrzewanie, nie system. Nie rozluźniłem progu: mediana
+i górna granica nadal wykrywają prawdziwą regresję (`http_timeout` rosnące do kilku sekund).
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

@@ -304,6 +304,10 @@ errors-tunnel-check: ## Test tunelu POST /_errors na żywym catalog-app (wymaga 
 errors-smoke: ## Test end-to-end: błędy z HTTP, kolejki, search i przeglądarki trafiają do GlitchTipa
 	@bash tools/errors-smoke.sh
 
+.PHONY: errors-smoke-cleanup-check
+errors-smoke-cleanup-check: ## Test: przerwany errors-smoke nie zostawia GlitchTipa spauzowanego (RUNBOOK #076)
+	@bash tools/errors-smoke-cleanup-check.sh
+
 .PHONY: errors-reset
 errors-reset: ## Kasuje bazę GlitchTipa i zakłada od zera (pyta o potwierdzenie)
 	@read -p "Skasować WSZYSTKIE issues w GlitchTipie? [t/N] " a; [ "$$a" = "t" ] || { echo "Przerwano."; exit 1; }
