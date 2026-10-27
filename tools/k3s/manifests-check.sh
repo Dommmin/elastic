@@ -34,6 +34,7 @@ echo "Manifesty k8s (kubectl kustomize deploy/k8s)"
 check catalog-app http
 check outbox-publisher outbox-publisher
 check catalog-worker queue
+check catalog-scheduler scheduler
 check search-consumer consumer
 
 # --- GlitchTip na k3s (opcjonalny: aktywuje go Secret glitchtip-secrets z secrets.sh) --------
@@ -64,7 +65,7 @@ glitchtip_report=$(echo "$rendered" | ruby -E UTF-8:UTF-8 -ryaml -e '# encoding:
 
   # SDK w aplikacjach: DSN z opcjonalnego Secretu, więc bez GlitchTipa nic się nie zmienia.
   { "catalog-app" => "SENTRY_LARAVEL_DSN", "outbox-publisher" => "SENTRY_LARAVEL_DSN",
-    "catalog-worker" => "SENTRY_LARAVEL_DSN", "search-consumer" => "SENTRY_DSN" }.each do |name, var|
+    "catalog-worker" => "SENTRY_LARAVEL_DSN", "catalog-scheduler" => "SENTRY_LARAVEL_DSN", "search-consumer" => "SENTRY_DSN" }.each do |name, var|
     d = find.("Deployment", name)
     e = d && (d.dig("spec", "template", "spec", "containers", 0, "env") || []).find { |x| x["name"] == var }
     ref = e && e.dig("valueFrom", "secretKeyRef")

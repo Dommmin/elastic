@@ -78,7 +78,7 @@ w kodzie i smoke, co jest prawdą, i poprawić dokument albo kod.
 - [ ] **NIE nałożone na klaster** (świadomie): klaster jest 130 commitów za `main` (8 migracji), a `make k3s-deploy`
       wdraża cały `main`. Najpierw zwykłe wdrożenie aplikacji (z brakującym `catalog-scheduler`), potem
       włączenie GlitchTipa wg RUNBOOK #078.
-- [ ] Manifest `catalog-scheduler` dla k3s (ETAP F) - brakuje, osobna poprawka.
+- [x] Manifest `catalog-scheduler` dla k3s (ETAP F) dodany (jedna replika, Recreate, 256Mi), w `deploy.sh` i `verify.sh`.
 
 ## Definicja ukończenia
 Commit w repo, wpis w `docs/blog/` (przewodnik krok po kroku), zielone zestawy testów,

@@ -3695,8 +3695,8 @@ make k3s k="-n marketplace get deploy -o custom-columns=NAME:.metadata.name,IMAG
 git rev-list --count <SHA z obrazu>..HEAD        # o ile commitów klaster jest za main
 ```
 Stan z 2026-10-27: klaster na `ef53945`, **130 commitów za `main`**, w tym 8 plików migracji bazy
-(nowe tabele zamówień i portalu sprzedawcy). Brakuje na nim `catalog-worker`, a w repozytorium nie ma
-manifestu `catalog-scheduler` (ETAP F): zamówienia na k3s nie wygasałyby.
+(nowe tabele zamówień i portalu sprzedawcy). Brakuje na nim `catalog-worker` i `catalog-scheduler` (ETAP F):
+zamówienia na k3s nie wygasałyby. Manifest schedulera jest już w repozytorium (`deploy/k8s/catalog.yaml`).
 
 **Przyczyna**
 GlitchTip jest opcjonalny z założenia (ADR-0009): manifesty w `deploy/k8s/glitchtip.yaml` nic nie robią,
@@ -3705,8 +3705,7 @@ włączenie GlitchTipa przez ten skrypt nałoży też 130 commitów i 8 migracji
 To osobna decyzja i osobne wdrożenie, nie skutek uboczny śledzenia błędów.
 
 **Naprawa (kolejność)**
-1. Najpierw wdrożenie aplikacji do `main`: uzupełnić manifest `catalog-scheduler` (jak `catalog-worker`:
-   obraz catalog, `php artisan schedule:work`, jedna replika) i przejść zwykły `make k3s-deploy`
+1. Najpierw wdrożenie aplikacji z `main` (zawiera już `catalog-scheduler`): zwykły `make k3s-deploy`
    z pre-flightem migracji. Sprawdzić: `make k3s-verify`.
 2. Włączyć GlitchTipa: na serwerze `./add-glitchtip-env.sh .env.prod.example .env <adres-admina>`,
    potem `bash secrets.sh` (tworzy `glitchtip-secrets`), potem `make k3s-deploy`. Krok 2b nałoży kolejno:

@@ -217,3 +217,62 @@ spec:
           resources:
             requests: { memory: 64Mi, cpu: 50m }
             limits: { memory: 256Mi }
+---
+# Scheduler Laravela (`schedule:work`, ETAP F, RUNBOOK #044): co minutę sweep `orders:expire-overdue`.
+# Bez niego zamówienia bez płatności nie wygasają, a towar zostaje zarezerwowany. DOKŁADNIE jedna
+# replika i Recreate: `withoutOverlapping` chroni przed nakładaniem się przebiegów, nie przed
+# kilkoma schedulerami. Kroki sagi wykonuje catalog-worker.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-scheduler
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: catalog-scheduler
+  template:
+    metadata:
+      labels:
+        app: catalog-scheduler
+    spec:
+      containers:
+        - name: scheduler
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          args: ["php", "artisan", "schedule:work"]
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          # Te same zmienne co catalog-worker (kotwice YAML nie działają między dokumentami).
+          env:
+            # Tag `process` zdarzeń w GlitchTipie (ADR-0009).
+            - name: ERROR_TRACKING_PROCESS
+              value: scheduler
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: SENTRY_LARAVEL_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_CATALOG, optional: true } }
+            - name: APP_KEY
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
+            - name: DB_DATABASE
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB } }
+            - name: DB_USERNAME
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: CATALOG_DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_DB_PASSWORD } }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
+          # PID 1 to proces artisan; `schedule:work` żyje bez końca (jak healthcheck w compose).
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "grep -q 'schedule:work' /proc/1/cmdline"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          # 256Mi, nie 128Mi: `schedule:work` (~63 MB) uruchamia przy każdym przebiegu proces potomny
+          # `schedule:run` (RUNBOOK #048), więc 128Mi kończyło się OOM.
+          resources:
+            requests: { memory: 128Mi, cpu: 50m }
+            limits: { memory: 256Mi }
