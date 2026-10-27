@@ -379,5 +379,6 @@ Szczegóły i komendy diagnostyczne w RUNBOOK
 - `trace_id` z przeglądarki do żądań HTTP (dziś tylko w drugą stronę, przez
   breadcrumbs).
 - Limit *łącznej wielkości* danych w bazie `glitchtip` i sprawdzenie dekompresji po stronie GlitchTipa (ADR-0009, „Przed wystawieniem na VPS”).
-- Crash samego konsumenta Messengera (poza obsługą wiadomości) nie trafia do
-  GlitchTipa; pokrywa go `SearchConsumerDown`.
+- Proces zabity z zewnątrz (OOM, SIGKILL) nie zdąży wysłać zdarzenia; pokrywa go
+  `SearchConsumerDown`. Crash komendy `messenger:consume` jako wyjątek TRAFIA do GlitchTipa
+  (`ConsumerCommandCrashTest`; lista wyjątków SDK dotyczy tylko śladów wydajności).

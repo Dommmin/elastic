@@ -128,9 +128,12 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
   `trace_id` jest ręczna (skopiuj tag, wklej w Kibanie).
 - +200 MiB RAM w spoczynku (limit 512m), plus baza `glitchtip` w Postgresie.
 - Zdarzenia z okresu awarii GlitchTipa są gubione (SDK nie buforuje na dysku).
-- Crash samego konsumenta Messengera (poza obsługą wiadomości) nie trafia do
-  GlitchTipa: `messenger:consume` jest na domyślnej liście ignorowanych komend
-  SDK. Pokrywa go alert `SearchConsumerDown` i restart kontenera.
+- Proces zabity z zewnątrz (OOM, SIGKILL) nie zdąży nic wysłać, więc nie zostawia
+  issue; pokrywa go alert `SearchConsumerDown` i restart kontenera. Crash samej komendy
+  `messenger:consume` (wyjątek poza obsługą wiadomości, np. RabbitMQ niedostępny przy
+  starcie) TRAFIA do GlitchTipa: lista `messenger:consume` w SDK
+  (`tracing.console.excluded_commands`) dotyczy tylko śladów wydajności, a te są wyłączone
+  (test `ConsumerCommandCrashTest`). Wcześniejsza wersja tego akapitu twierdziła odwrotnie.
 - Skrypt bootstrapu używa wewnętrznych modeli Django GlitchTipa (zweryfikowane
   na 6.2.6): przy podbiciu wersji trzeba go sprawdzić (RUNBOOK #069).
 

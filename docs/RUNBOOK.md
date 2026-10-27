@@ -3499,9 +3499,9 @@ HTTP (oczekiwany błąd użytkownika), to próba zadania, po której zadanie wr�
 do kolejki (raport dopiero po ostatniej), albo wiadomość Messengera do ponowienia
 (raport po wyczerpaniu `max_retries`). Poza filtrami: pusty DSN w kontenerze
 (SDK wyłączone), GlitchTip leżał w tym czasie (#070; zdarzenia nie są
-buforowane), albo to crash samego konsumenta Messengera poza obsługą
-wiadomości (`messenger:consume` jest na domyślnej liście ignorowanych komend
-SDK, patrz ADR-0009).
+buforowane), albo proces został zabity z zewnątrz (OOM/SIGKILL: nie zdążył nic
+wysłać; ślad zostaje w `docker inspect` i w alercie `SearchConsumerDown`). Zwykły
+crash komendy `messenger:consume` (wyjątek) jest zgłaszany, patrz ADR-0009.
 
 **Naprawa**
 Zależnie od przyczyny: zdecyduj, czy to ma być błąd w GlitchTipie (wtedy usuń
