@@ -50,4 +50,27 @@ for user in catalog:ES_CATALOG_PASSWORD:catalog_app searchsvc:ES_SEARCHSVC_PASSW
     --from-literal=username="${name}" --from-literal=password="${!var}" --from-literal=roles="${role}" | apply
 done
 
-echo "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc)"
+# --- 4. GlitchTip (opcjonalny, ETAP 11b): tylko gdy .env ma sekcję GLITCHTIP_* ----------------
+#        (./add-glitchtip-env.sh ją dopisuje). Bez niej nic nie powstaje, a deploy.sh pomija
+#        GlitchTipa. Wartości z .env, ten sam zestaw co w Compose (DSN-y i klucze są stałe).
+if [ -n "${GLITCHTIP_KEY_CATALOG:-}" ] && [ -n "${GLITCHTIP_SECRET_KEY:-}" ]; then
+  kubectl -n "${NS}" create secret generic glitchtip-secrets --dry-run=client -o yaml \
+    --from-literal=DATABASE_URL="postgresql://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@postgres:5432/${GLITCHTIP_DB}" \
+    --from-literal=SECRET_KEY="${GLITCHTIP_SECRET_KEY}" \
+    --from-literal=GLITCHTIP_DB="${GLITCHTIP_DB}" \
+    --from-literal=GLITCHTIP_DB_USER="${GLITCHTIP_DB_USER}" \
+    --from-literal=GLITCHTIP_DB_PASSWORD="${GLITCHTIP_DB_PASSWORD}" \
+    --from-literal=GLITCHTIP_ADMIN_EMAIL="${GLITCHTIP_ADMIN_EMAIL}" \
+    --from-literal=GLITCHTIP_ADMIN_PASSWORD="${GLITCHTIP_ADMIN_PASSWORD}" \
+    --from-literal=GLITCHTIP_API_TOKEN="${GLITCHTIP_API_TOKEN}" \
+    --from-literal=GLITCHTIP_KEY_CATALOG="${GLITCHTIP_KEY_CATALOG}" \
+    --from-literal=GLITCHTIP_KEY_FRONTEND="${GLITCHTIP_KEY_FRONTEND}" \
+    --from-literal=GLITCHTIP_KEY_SEARCH="${GLITCHTIP_KEY_SEARCH}" \
+    --from-literal=DSN_CATALOG="${GLITCHTIP_DSN_CATALOG}" \
+    --from-literal=DSN_FRONTEND="${GLITCHTIP_DSN_FRONTEND}" \
+    --from-literal=DSN_SEARCH="${GLITCHTIP_DSN_SEARCH}" \
+    | apply
+  GT=", glitchtip-secrets"
+fi
+
+echo "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc${GT:-})"

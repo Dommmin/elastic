@@ -32,6 +32,9 @@ spec:
             # w marketplace-config jest pusty.
             - name: ERROR_TRACKING_PROCESS
               value: consumer
+            # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_SEARCH, optional: true } }
             # `env` wygrywa z `envFrom`: ConfigMap ma APP_ENV=production
             # (konwencja Laravela), Symfony chce `prod`.
             - name: APP_ENV

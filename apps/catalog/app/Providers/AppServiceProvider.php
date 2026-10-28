@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Support\ErrorTracking\JobTimeoutReporter;
 use App\Support\ErrorTracking\QueueRetryFilter;
 use Carbon\CarbonImmutable;
 use Elastic\Elasticsearch\Client;
@@ -11,6 +12,7 @@ use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Queue\Events\JobTimedOut;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -65,12 +67,13 @@ class AppServiceProvider extends ServiceProvider
         // nie ma gwarantowanego limitu. Dwa limity: na IP (jedna zepsuta strona nie zalewa
         // reszty) i globalny (sufit na zapis do bazy glitchtip w tym samym Postgresie).
         RateLimiter::for('errors-tunnel', fn (Request $request): array => [
-            Limit::perMinute(20)->by('ip:'.$request->ip()),
-            Limit::perMinute(300)->by('global'),
+            Limit::perMinute(config('error_tracking.tunnel.rate_per_ip'))->by('ip:'.$request->ip()),
+            Limit::perMinute(config('error_tracking.tunnel.rate_global'))->by('global'),
         ]);
 
         Event::listen(JobExceptionOccurred::class, [QueueRetryFilter::class, 'jobExceptionOccurred']);
         Event::listen(JobFailed::class, [QueueRetryFilter::class, 'jobFailed']);
+        Event::listen(JobTimedOut::class, [JobTimeoutReporter::class, 'handle']);
 
         // Rejestracja jest otwarta, więc samo `auth` nie chroni panelu edycji
         // katalogu — wpuszczamy tylko konta oznaczone przez `marketplace:admin`.

@@ -21,6 +21,12 @@ return [
         'key' => env('GLITCHTIP_FRONTEND_KEY'),
         'project_id' => env('GLITCHTIP_FRONTEND_PROJECT_ID', '2'),
         'upstream' => env('GLITCHTIP_UPSTREAM', 'glitchtip:8000'),
+        // Limity na minutę. GlitchTip self-hosted NIE ogranicza przyjmowania (limit na kluczu
+        // DSN jest zapisywany, ale nieegzekwowany: zmierzone na 6.2.6, RUNBOOK #077), więc
+        // to jedyna zapora przed zalaniem bazy przez publiczny tunel. Rozmiar: ok. 23 kB na
+        // zdarzenie, retencja 14 dni, więc 60/min w skrajnym, ciągłym ataku to ok. 28 GB.
+        'rate_per_ip' => (int) env('ERROR_TUNNEL_RATE_PER_IP', 20),
+        'rate_global' => (int) env('ERROR_TUNNEL_RATE_GLOBAL', 60),
     ],
 
     'frontend' => [

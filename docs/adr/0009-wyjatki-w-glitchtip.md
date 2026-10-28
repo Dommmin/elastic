@@ -85,7 +85,7 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
    tunel nie jest otwartym przekaźnikiem (klucz z query stringa i `X-Sentry-Auth` od
    klienta nie zmieniają celu). Ciało do 1 MB (413) i bez `Content-Encoding` (415), bez
    ciasteczek i autoryzacji, pusty klucz wyłącza tunel (204), awaria GlitchTipa to szybkie
-   502. **Limity liczby żądań: 20/min na IP i 300/min globalnie** (429 z `Retry-After`).
+   502. **Limity liczby żądań: 20/min na IP i 60/min globalnie** (429 z `Retry-After`).
    Kontroler zamiast Caddy, bo Caddy nie ma limitera w rdzeniu, a własny obraz z modułem
    rate-limit to nowa zależność i nowy łańcuch budowania; Caddy zostawia tylko sufit
    rozmiaru ciała (2 MB), działający zanim PHP zacznie je buforować. Limiter używa
@@ -128,19 +128,32 @@ profil Compose `errors`. SDK Sentry są protokołem, więc używamy oficjalnych:
   `trace_id` jest ręczna (skopiuj tag, wklej w Kibanie).
 - +200 MiB RAM w spoczynku (limit 512m), plus baza `glitchtip` w Postgresie.
 - Zdarzenia z okresu awarii GlitchTipa są gubione (SDK nie buforuje na dysku).
-- Crash samego konsumenta Messengera (poza obsługą wiadomości) nie trafia do
-  GlitchTipa: `messenger:consume` jest na domyślnej liście ignorowanych komend
-  SDK. Pokrywa go alert `SearchConsumerDown` i restart kontenera.
+- Proces zabity z zewnątrz (OOM, SIGKILL) nie zdąży nic wysłać, więc nie zostawia
+  issue; pokrywa go alert `SearchConsumerDown` i restart kontenera. Crash samej komendy
+  `messenger:consume` (wyjątek poza obsługą wiadomości, np. RabbitMQ niedostępny przy
+  starcie) TRAFIA do GlitchTipa: lista `messenger:consume` w SDK
+  (`tracing.console.excluded_commands`) dotyczy tylko śladów wydajności, a te są wyłączone
+  (test `ConsumerCommandCrashTest`). Wcześniejsza wersja tego akapitu twierdziła odwrotnie.
 - Skrypt bootstrapu używa wewnętrznych modeli Django GlitchTipa (zweryfikowane
   na 6.2.6): przy podbiciu wersji trzeba go sprawdzić (RUNBOOK #069).
 
-**Przed wystawieniem na VPS:** tunel ma już limity (zasada 9), ale limit liczby
-żądań nie ogranicza *łącznej wielkości* danych w bazie `glitchtip`, która jest w tym
-samym Postgresie co katalog. Throttling samego GlitchTipa nie jest zweryfikowany dla
-instalacji bez billingu. Nadal do zrobienia: osobny limit rozmiaru bazy (albo
-retencja krótsza niż 14 dni, `GLITCHTIP_RETENTION_DAYS`) i sprawdzenie, czy GlitchTip
-ogranicza rozmiar *po dekompresji* (tunel odrzuca kompresję, ale sam GlitchTip
-przyjmuje ją na swoim porcie).
+**Przed wystawieniem na VPS (zmierzone 2026-10-27 na GlitchTip 6.2.6, RUNBOOK #077):**
+- GlitchTip self-hosted **nie ogranicza przyjmowania zdarzeń**: limit na kluczu DSN
+  (`rate_limit_count/window`) jest zapisywany, ale nieegzekwowany (30 z 30 zdarzeń przyjęte
+  przy limicie 5/min), a throttling organizacji należy do modułu Stripe (billing). Zapora
+  jest więc po naszej stronie: limity tunelu (20/min na IP, 60/min globalnie) i alert
+  `GlitchTipEventFlood` (ponad 30 zdarzeń/min przez 10 min).
+- Rozmiar: ok. 10 kB zdarzenia w tabeli, ok. 23 kB z indeksami i partycjami. Przy retencji
+  14 dni skrajny, ciągły atak przez tunel (60/min) to ok. 28 GB, więc globalny limit
+  zmniejszono z 300/min (ok. 140 GB, więcej niż dysk VPS).
+- Retencja działa (`GLITCHTIP_RETENTION_DAYS=14`, zdarzenia w partycjach godzinowych usuwanych
+  w całości).
+- Rozmiar po dekompresji GlitchTip ogranicza sam: 20 MB w gzipie (20 KB na drucie) dostało
+  413 w 20 ms, bez wzrostu pamięci. Tunel i tak odrzuca kompresję.
+- GlitchTip na k3s: manifesty w `deploy/k8s/glitchtip.yaml` (opcjonalne, aktywuje je Secret
+  `glitchtip-secrets`), jeszcze nienałożone na klaster (RUNBOOK #078).
+- Korelacja `trace.id` zweryfikowana na żywo: `make errors-smoke` z profilem `obs` znajduje
+  `trace.id` z issue w `logs-app-*`.
 
 **Sekrety prod:** `tools/vps/gen-env.sh` generuje klucze DSN (UUID hex, 32 znaki), token
 API (64 znaki), `SECRET_KEY` i hasła, a DSN-y składa z wygenerowanych kluczy

@@ -58,16 +58,27 @@ w kodzie i smoke, co jest prawdą, i poprawić dokument albo kod.
 
 | # | Co | Skutek, gdy zostanie | Test najpierw |
 |---|----|----------------------|---------------|
-| D1 | `trap` w `tools/errors-smoke.sh` zostawia GlitchTip spauzowany po przerwaniu (Ctrl-C) | kolejne uruchomienie smoke’a wisi, UI nie odpowiada | skrypt przerwany w połowie fazy pauzy → `docker inspect` nie pokazuje `Paused` |
-| D2 | `outbox-publisher --loop` nie dodaje breadcrumbów | uboższy kontekst w issue z długo żyjącego procesu | test jednostkowy EnrichEvent dla `process=outbox` |
-| D3 | Przekroczenie czasu joba (SIGALRM) nie jest zgłaszane | job zabity po timeoucie znika bez issue | Pest: job z timeoutem → fake transport dostaje zdarzenie |
-| D4 | CI: `sentry-cli sourcemaps inject` brak w etapie assets obrazu | mapy z CI nie mają Debug ID, stack trace w prod bez źródeł | `tools/vps/prod-image-check.sh`: mapy w `/sourcemaps` zawierają `debugId` |
+| D1 (ZROBIONE, RUNBOOK #076) | `trap` w `tools/errors-smoke.sh` zostawia GlitchTip spauzowany po przerwaniu (Ctrl-C) | kolejne uruchomienie smoke’a wisi, UI nie odpowiada | skrypt przerwany w połowie fazy pauzy → `docker inspect` nie pokazuje `Paused` |
+| D2 (ZROBIONE) | `outbox-publisher --loop` nie dodaje breadcrumbów | uboższy kontekst w issue z długo żyjącego procesu | test jednostkowy EnrichEvent dla `process=outbox` |
+| D3 (ZROBIONE) | Przekroczenie czasu joba (SIGALRM) nie jest zgłaszane | job zabity po timeoucie znika bez issue | Pest: job z timeoutem → fake transport dostaje zdarzenie |
+| D4 (ZROBIONE) | CI: `sentry-cli sourcemaps inject` brak w etapie assets obrazu | mapy z CI nie mają Debug ID, stack trace w prod bez źródeł | `tools/vps/prod-image-check.sh`: mapy w `/sourcemaps` zawierają `debugId` |
 
 ## Grupa E: przed wystawieniem poza tunel SSH
-- [ ] Zmierzyć throttling GlitchTipa (limity zdarzeń na projekt) i ustawić świadomie.
-- [ ] Retencja i limit rozmiaru bazy GlitchTipa (dziś nieograniczone); alert na wolne miejsce.
-- [ ] Korelacja `trace.id` z Elasticsearch: uruchomić smoke z profilem `obs` i potwierdzić w Kibanie.
-- [ ] GlitchTip na k3s (osobny etap, wymaga decyzji o storage dla Postgresa).
+- [x] Throttling GlitchTipa: **nie istnieje** w self-hosted 6.2.6 (limit na kluczu nieegzekwowany, 30/30 przyjęte).
+      Zapory po naszej stronie: limity tunelu 20/min na IP i 60/min globalnie (było 300), konfigurowalne;
+      alert `GlitchTipEventFlood` z testami promtool (RUNBOOK #077).
+- [x] Retencja i rozmiar: 14 dni działa, ok. 23 kB/zdarzenie, wzór i skrajny przypadek w #077 i ADR-0009.
+      Alert na wolne miejsce dysku: poza zakresem (brak node_exportera), zastąpiony alertem na tempo.
+- [x] Rozmiar po dekompresji: GlitchTip sam odrzuca (20 MB w gzipie, 20 KB na drucie: 413).
+- [x] Korelacja `trace.id` z Elasticsearch: `make errors-smoke` z profilem `obs` znajduje `trace.id` w `logs-app-*`.
+- [x] GlitchTip na k3s: manifesty `deploy/k8s/glitchtip.yaml` (Deployment, Service, PVC, Joby db-setup i setup),
+      DSN-y z opcjonalnego Secretu w 4 Deploymentach, `secrets.sh`, opcjonalny nieblokujący krok w `deploy.sh`,
+      release z tagu. Baza w istniejącym Postgresie (decyzja o storage: bez nowego). Kontrole offline:
+      `make k3s-manifests-check` (24 zasoby, kubeconform 22 ważne / 0 błędnych) i `glitchtip-step-check.sh`.
+- [ ] **NIE nałożone na klaster** (świadomie): klaster jest 130 commitów za `main` (8 migracji), a `make k3s-deploy`
+      wdraża cały `main`. Najpierw zwykłe wdrożenie aplikacji (z brakującym `catalog-scheduler`), potem
+      włączenie GlitchTipa wg RUNBOOK #078.
+- [x] Manifest `catalog-scheduler` dla k3s (ETAP F) dodany (jedna replika, Recreate, 256Mi), w `deploy.sh` i `verify.sh`.
 
 ## Definicja ukończenia
 Commit w repo, wpis w `docs/blog/` (przewodnik krok po kroku), zielone zestawy testów,

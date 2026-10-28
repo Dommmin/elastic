@@ -76,6 +76,9 @@
 | [073](#073) | Błąd poszedł w świat, a w GlitchTipie nie ma issue | Laravel / Symfony / GlitchTip | 11b |
 | [074](#074) | Włączenie GlitchTipa na działającym VPS (stary `.env`) | GlitchTip / VPS | 11b |
 | [075](#075) | `make prod-deploy` wskrzesił Compose obok k3s / deploy wisi na zdrowiu `es01` | Deploy / VPS | 11b |
+| [076](#076) | `make errors-smoke`: GlitchTip został spauzowany po przerwaniu / pomiar odporności raz czerwony, raz zielony | GlitchTip / smoke | 11b |
+| [077](#077) | Alert `GlitchTipEventFlood`; baza GlitchTipa rośnie, bo GlitchTip nie ogranicza przyjmowania | GlitchTip / Prometheus | 11b |
+| [078](#078) | GlitchTip na k3s: manifesty gotowe, ale jeszcze nie nałożone na klaster; jak włączyć | GlitchTip / k3s | 11b |
 
 ---
 
@@ -3412,7 +3415,7 @@ Tunel to trasa Laravela (`ErrorTunnelController`), więc kod odpowiedzi mówi, c
 poszło nie tak. **204**: pusty `GLITCHTIP_FRONTEND_KEY` (tunel wyłączony celowo,
 np. prod bez GlitchTipa). **502**: catalog nie dociera do `glitchtip:8000`
 (GlitchTip leży albo jest zawieszony, patrz #070; timeout 1 s). **429**: limit
-liczby żądań (20/min na IP, 300/min globalnie, nagłówek `Retry-After`): przeglądarka
+liczby żądań (20/min na IP, 60/min globalnie, nagłówek `Retry-After`; zmienne `ERROR_TUNNEL_RATE_PER_IP` i `ERROR_TUNNEL_RATE_GLOBAL`, patrz [#077](#077)): przeglądarka
 spamująca błędami albo wiele stron naraz; SDK wstrzymuje wysyłkę, więc zwykle samo
 mija. **413/415**: ciało > 1 MB albo skompresowane. **4xx z GlitchTipa** są
 przekazywane z kodem (zła koperta). Brak tagów `<meta name="error-tracking-dsn">` w
@@ -3460,7 +3463,10 @@ kontenera padł z `Failed to connect to localhost:18000`: GlitchTip w odpowiedzi
 na `chunk-upload` podaje adres z `GLITCHTIP_DOMAIN`, niewidoczny z kontenera;
 dlatego upload w `make errors-sourcemaps` idzie z hosta. (4) Obraz prod nie ma
 map z założenia (etap `assets` wycina je do `/sourcemaps`), więc mapy do
-buildu z CI trzeba wgrać osobno.
+buildu z CI trzeba wgrać osobno. Od 2026-10-27 etap `assets` wstrzykuje Debug IDs
+(`sentry-cli sourcemaps inject`) PRZED wycięciem map, więc JS w obrazie prod i mapa w
+`/sourcemaps` mają ten sam ID; wcześniej obraz z CI miał JS bez ID i żadna późniejsza mapa
+nie pasowała. Pilnuje tego `prod-image-check.sh`, sekcja (d), także w CI.
 
 **Naprawa**
 `make errors-sourcemaps` (build w kontenerze, upload z hosta; wymaga Node na
@@ -3499,9 +3505,9 @@ HTTP (oczekiwany błąd użytkownika), to próba zadania, po której zadanie wr�
 do kolejki (raport dopiero po ostatniej), albo wiadomość Messengera do ponowienia
 (raport po wyczerpaniu `max_retries`). Poza filtrami: pusty DSN w kontenerze
 (SDK wyłączone), GlitchTip leżał w tym czasie (#070; zdarzenia nie są
-buforowane), albo to crash samego konsumenta Messengera poza obsługą
-wiadomości (`messenger:consume` jest na domyślnej liście ignorowanych komend
-SDK, patrz ADR-0009).
+buforowane), albo proces został zabity z zewnątrz (OOM/SIGKILL: nie zdążył nic
+wysłać; ślad zostaje w `docker inspect` i w alercie `SearchConsumerDown`). Zwykły
+crash komendy `messenger:consume` (wyjątek) jest zgłaszany, patrz ADR-0009.
 
 **Naprawa**
 Zależnie od przyczyny: zdecyduj, czy to ma być błąd w GlitchTipie (wtedy usuń
@@ -3595,6 +3601,125 @@ Skrypt wdrożeniowy, który nie sprawdza, czym serwer jest teraz, wykona się �
 po migracji i zrobi szkodę po cichu. Decyzję „co jest produkcją” musi znać narzędzie, nie tylko człowiek.
 Drugie: `up <usługi>` rusza zależności w górę, nie w bok. Węzeł, który potrzebuje sąsiadów do
 kworum, trzeba wymienić w liście jawnie.
+
+<a id="076"></a>
+## 076 — `errors-smoke`: GlitchTip został spauzowany po przerwaniu; pomiar odporności raz czerwony, raz zielony
+
+**Objaw**
+Po Ctrl-C w środku `make errors-smoke` UI GlitchTipa (`:18000`) nie odpowiada, a `docker ps` pokazuje
+`(Paused)` albo kontener `Exited`. Osobno: ten sam smoke raz przechodzi, raz pada na
+„GlitchTip zawieszony: … narzut ma być poniżej 1,5 s” (np. 3,05 s wobec 0,30 s bazowo).
+
+**Diagnoza**
+```bash
+docker inspect -f '{{.State.Status}} paused={{.State.Paused}}' marketplace-glitchtip-1
+for i in 1 2 3; do curl -sk -o /dev/null -w '%{http_code} %{time_total}\n' --resolve catalog.localhost:8443:127.0.0.1 \
+  "https://catalog.localhost:8443/_debug/errors/http?m=x$RANDOM"; done      # przy docker pause GlitchTipa
+```
+
+**Przyczyna**
+1. `trap` sprzątał tylko katalog tymczasowy. Smoke pauzuje (`docker pause`) i zatrzymuje (`compose stop`)
+   GlitchTipa, więc przerwanie w tym oknie zostawiało go zawieszonego albo zatrzymanego.
+2. Pierwsze żądanie po zawieszeniu płaci za odrzucenie połączenia z puli keep-alive: 2,1-3,1 s.
+   Kolejne są stabilne, ok. 1,2 s (`http_timeout` 1 s + narzut), a po wznowieniu 0,24 s. Jeden pomiar
+   z progiem 1,5 s był więc loterią, mimo że koszt awarii GlitchTipa jest ograniczony.
+
+**Naprawa**
+- `tools/lib/glitchtip-restore.sh`: trap na EXIT/INT/TERM robi `docker unpause` i `docker start`
+  (idempotentnie), ale tylko jeśli smoke dotknął GlitchTipa. Test: `make errors-smoke-cleanup-check`.
+- Pomiar odporności: trzy próby, ocena mediany (narzut poniżej 1,5 s) i najgorszej (poniżej 4 s).
+- Ręczne przywrócenie po awarii: `docker unpause marketplace-glitchtip-1; docker start marketplace-glitchtip-1`.
+
+**Czego się nauczyłem**
+Test, który zmienia stan współdzielonej usługi, musi go przywracać także przy przerwaniu, a pomiar
+czasu z jednej próby po zmianie stanu mierzy rozgrzewanie, nie system. Nie rozluźniłem progu: mediana
+i górna granica nadal wykrywają prawdziwą regresję (`http_timeout` rosnące do kilku sekund).
+
+<a id="077"></a>
+## 077 — GlitchTip nie ogranicza przyjmowania zdarzeń: zalew i rozmiar bazy
+
+**Objaw**
+Alert `GlitchTipEventFlood` (ponad 30 zdarzeń na minutę przez 10 min) albo rosnąca baza `glitchtip`
+w tym samym Postgresie co katalog (`pg_database_size`), albo mnóstwo identycznych issue.
+
+**Diagnoza**
+```bash
+# tempo przyjmowania (licznik z /metrics GlitchTipa, scrapowany przez Prometheusa)
+curl -s http://localhost:18000/metrics | grep 'vtasks_tasks_submitted_total.*ingest_event'
+docker compose exec -T postgres psql -U postgres -d glitchtip -tAc \
+  "select pg_size_pretty(pg_database_size('glitchtip')), (select count(*) from issue_events_issueevent)"
+# kto zalewa: issue z największą liczbą zdarzeń
+docker compose exec -T glitchtip ./manage.py shell -c \
+  "from apps.issue_events.models import Issue; [print(i.count, i.title[:80]) for i in Issue.objects.order_by('-count')[:5]]"
+```
+
+**Przyczyna**
+GlitchTip 6.2.6 self-hosted przyjmuje wszystko, co ma poprawny klucz. Zmierzone: ustawiony
+`rate_limit_count=5, rate_limit_window=60` na kluczu catalog zapisuje się w bazie, ale 30 z 30
+zdarzeń w minutę dostało 200 i zostało zapisanych. Throttling organizacji jest częścią billingu
+(moduł Stripe), którego nie używamy. Ustawianie limitu na kluczu daje więc fałszywe poczucie
+bezpieczeństwa i nie należy na nim polegać. Retencja (14 dni, partycje godzinowe) działa, ale
+nie chroni przed zalewem w ciągu tych 14 dni.
+
+Rozmiar zdarzenia: średnio 10 kB w tabeli (maks. 16 kB), ok. 23 kB z indeksami i narzutem
+partycji. Wzór na skrajny, ciągły ruch: `zdarzeń/min x 1440 x 14 x 23 kB`; 60/min to ok. 28 GB.
+
+**Naprawa**
+Zapory są po naszej stronie: tunel `/_errors` ma limity 20/min na IP i 60/min globalnie
+(`ERROR_TUNNEL_RATE_PER_IP`, `ERROR_TUNNEL_RATE_GLOBAL`, domyślnie z `config/error_tracking.php`),
+a alert `GlitchTipEventFlood` mówi o zalewie ze ścieżek backendowych. Gdy alert odpali:
+1. znajdź źródło (`process`/projekt najczęstszego issue), napraw pętlę błędu albo tymczasowo
+   wyczyść `SENTRY_*_DSN` tego kontenera;
+2. zatrzymaj napływ i usuń nadmiar: `Issue.objects.filter(title__startswith='…').delete()`
+   w `manage.py shell` (kasuje też zdarzenia);
+3. przy zalewie przez tunel obniż `ERROR_TUNNEL_RATE_GLOBAL` i odtwórz `catalog-app`.
+
+**Czego się nauczyłem**
+Pole w modelu i w API nie znaczy, że ktoś je egzekwuje: sprawdziłem to wysyłając 30 zdarzeń, a nie
+czytając dokumentację. Zapory przed zalaniem zasobu współdzielonego (tu: Postgres katalogu) buduje się
+po stronie wejścia, które kontrolujemy, i mierzy przed ustaleniem progów, bo to liczby (kB na
+zdarzenie) decydują, czy 300/min jest bezpieczne. Nie było: 140 GB wobec 72 GB wolnych.
+
+<a id="078"></a>
+## 078 — GlitchTip na k3s: manifesty gotowe, ale jeszcze nie nałożone na klaster
+
+**Objaw**
+`make k3s-deploy` pisze `GlitchTip pominięty (brak Secretu glitchtip-secrets)`, a na klastrze nie ma
+poda `glitchtip`. Compose na VPS jest zatrzymany ([#075](#075)), więc GlitchTipa nie ma nigdzie.
+
+**Diagnoza**
+```bash
+make k3s-tunnel
+make k3s k="-n marketplace get secret glitchtip-secrets deploy/glitchtip"
+make k3s k="-n marketplace get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image"
+git rev-list --count <SHA z obrazu>..HEAD        # o ile commitów klaster jest za main
+```
+Stan z 2026-10-27: klaster na `ef53945`, **130 commitów za `main`**, w tym 8 plików migracji bazy
+(nowe tabele zamówień i portalu sprzedawcy). Brakuje na nim `catalog-worker` i `catalog-scheduler` (ETAP F):
+zamówienia na k3s nie wygasałyby. Manifest schedulera jest już w repozytorium (`deploy/k8s/catalog.yaml`).
+
+**Przyczyna**
+GlitchTip jest opcjonalny z założenia (ADR-0009): manifesty w `deploy/k8s/glitchtip.yaml` nic nie robią,
+dopóki na klastrze nie ma Secretu `glitchtip-secrets`. `make k3s-deploy` wdraża CAŁY `main`, więc
+włączenie GlitchTipa przez ten skrypt nałoży też 130 commitów i 8 migracji na produkcyjną bazę.
+To osobna decyzja i osobne wdrożenie, nie skutek uboczny śledzenia błędów.
+
+**Naprawa (kolejność)**
+1. Najpierw wdrożenie aplikacji z `main` (zawiera już `catalog-scheduler`): zwykły `make k3s-deploy`
+   z pre-flightem migracji. Sprawdzić: `make k3s-verify`.
+2. Włączyć GlitchTipa: na serwerze `./add-glitchtip-env.sh .env.prod.example .env <adres-admina>`,
+   potem `bash secrets.sh` (tworzy `glitchtip-secrets`), potem `make k3s-deploy`. Krok 2b nałoży kolejno:
+   Job `glitchtip-db-setup`, Deployment `glitchtip`, Job `glitchtip-setup`. Awaria tego kroku to
+   ostrzeżenie, nie przerwanie wdrożenia sklepu.
+3. UI: `make k3s-tunnel && make k3s k="-n marketplace port-forward svc/glitchtip 28000:8000"`,
+   adres `http://localhost:28000`; login i hasło z `.env` na serwerze.
+4. Kontrole bez klastra: `make k3s-manifests-check` (kustomize, DSN-y z opcjonalnego Secretu, GlitchTip
+   poza krokiem infrastruktury, kolejność kroku w `deploy.sh`) oraz job `prod-compose` w CI.
+
+**Czego się nauczyłem**
+Skrypt wdrożeniowy, który wdraża „wszystko z main”, nie nadaje się do wdrożenia jednej, niezależnej
+funkcji, gdy produkcja jest daleko za `main`. Zanim dołożyłem GlitchTipa do `deploy.sh`, sprawdziłem
+stan klastra (read-only) i okazało się, że ten krok wymaga najpierw zwykłego, większego wdrożenia.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 

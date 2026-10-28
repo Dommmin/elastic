@@ -30,10 +30,14 @@ x-json-logging: &json-logging
 # --- śledzenie błędów aplikacji catalog (ETAP 11b, ADR-0009) -----------------
 # Wspólne dla czterech kontenerów catalog; każdy dopisuje własny
 # ERROR_TRACKING_PROCESS (tag `process` w GlitchTipie). Pusty DSN = SDK wyłączone.
-# Gdy GlitchTip nie działa, zdarzenia są po cichu gubione (timeout 1 s/2 s).
+# Gdy GlitchTip nie działa, zdarzenia są po cichu gubione (SDK: połączenie 0,3 s, całość 1 s).
+# Release: lokalnie `dev` (APP_VERSION), na serwerze compose.prod.yaml ustawia SHA obrazu (IMAGE_TAG).
 x-error-tracking-catalog: &error-tracking-catalog
   SENTRY_LARAVEL_DSN: ${GLITCHTIP_DSN_CATALOG:-}
   SENTRY_FRONTEND_DSN: ${GLITCHTIP_DSN_FRONTEND:-}
+  # Limity publicznego tunelu /_errors na minutę (RUNBOOK #077); domyślne jak w config/error_tracking.php.
+  ERROR_TUNNEL_RATE_PER_IP: ${ERROR_TUNNEL_RATE_PER_IP:-20}
+  ERROR_TUNNEL_RATE_GLOBAL: ${ERROR_TUNNEL_RATE_GLOBAL:-60}
   SENTRY_RELEASE: ${APP_VERSION:-dev}
 
 # --- śledzenie błędów aplikacji search (ETAP 11b, ADR-0009) ------------------

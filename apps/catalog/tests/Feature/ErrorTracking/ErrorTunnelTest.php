@@ -109,9 +109,14 @@ test('limit na IP: 21. żądanie w minucie dostaje 429 z Retry-After, inny adres
     tunnelPost()->assertOk();
 });
 
-test('limit globalny: po 300 żądaniach w minucie z różnych adresów dostaje 429', function () {
+test('limit globalny domyślnie 60 na minutę (rozmiar bazy GlitchTipa, RUNBOOK #077)', function () {
+    expect(config('error_tracking.tunnel.rate_global'))->toBe(60)
+        ->and(config('error_tracking.tunnel.rate_per_ip'))->toBe(20);
+});
+
+test('limit globalny: po 60 żądaniach w minucie z różnych adresów dostaje 429', function () {
     upstreamResponds();
-    foreach (range(1, 300) as $i) {
+    foreach (range(1, 60) as $i) {
         $this->withServerVariables(['REMOTE_ADDR' => '10.1.'.intdiv($i, 250).'.'.($i % 250)]);
         tunnelPost()->assertOk();
     }

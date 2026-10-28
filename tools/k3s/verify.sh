@@ -274,7 +274,7 @@ phase_apps() {
   tunnel_up
   echo -e "\n${BLD}  apps — aplikacje w k8s${NC}"
   local tag; tag="$(k get deploy catalog-app -n marketplace -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')"
-  for d in catalog-app outbox-publisher catalog-worker search-consumer; do
+  for d in catalog-app outbox-publisher catalog-worker catalog-scheduler search-consumer; do
     check "Deployment ${d}: Available" "True" \
       "$(k get deploy "${d}" -n marketplace -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')"
   done

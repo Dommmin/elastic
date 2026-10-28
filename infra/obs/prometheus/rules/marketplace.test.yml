@@ -685,3 +685,40 @@ tests:
       - eval_time: 4m
         alertname: TargetDown
         exp_alerts: []
+
+  # ------------------------------------------------------ GlitchTipEventFlood
+  # GlitchTip self-hosted nie ogranicza przyjmowania zdarzeń (RUNBOOK #077), więc zalew
+  # (pętla błędów, atak przez tunel) widać tylko w tempie licznika ingest_event.
+  - name: GlitchTipEventFlood odpala przy 40 zdarzeniach na minutę przez 10 min
+    interval: 15s
+    input_series:
+      - series: 'vtasks_tasks_submitted_total{job="glitchtip",task_name="ingest_event",queue="ingest"}'
+        values: '0+10x200'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GlitchTipEventFlood
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "GlitchTip przyjmuje ponad 30 zdarzeń na minutę"
+              description: "Tempo przyjmowania zdarzeń utrzymuje się powyżej 30/min od 10 min (wartość: 40/min). Zwykle to pętla błędu w aplikacji albo zalew przez tunel /_errors. Baza glitchtip rośnie ok. 23 kB na zdarzenie, a retencja to 14 dni."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#077--glitchtip-nie-ogranicza-przyjmowania-zdarzeń-zalew-i-rozmiar-bazy"
+  - name: GlitchTipEventFlood milczy przy zwykłym ruchu (4 zdarzenia na minutę)
+    interval: 15s
+    input_series:
+      - series: 'vtasks_tasks_submitted_total{job="glitchtip",task_name="ingest_event",queue="ingest"}'
+        values: '0+1x200'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GlitchTipEventFlood
+        exp_alerts: []
+  - name: GlitchTipEventFlood milczy, gdy zalew jest krótszy niż for
+    interval: 15s
+    input_series:
+      - series: 'vtasks_tasks_submitted_total{job="glitchtip",task_name="ingest_event",queue="ingest"}'
+        values: '0+10x20 200+0x180'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GlitchTipEventFlood
+        exp_alerts: []

@@ -304,6 +304,10 @@ errors-tunnel-check: ## Test tunelu POST /_errors na żywym catalog-app (wymaga 
 errors-smoke: ## Test end-to-end: błędy z HTTP, kolejki, search i przeglądarki trafiają do GlitchTipa
 	@bash tools/errors-smoke.sh
 
+.PHONY: errors-smoke-cleanup-check
+errors-smoke-cleanup-check: ## Test: przerwany errors-smoke nie zostawia GlitchTipa spauzowanego (RUNBOOK #076)
+	@bash tools/errors-smoke-cleanup-check.sh
+
 .PHONY: errors-reset
 errors-reset: ## Kasuje bazę GlitchTipa i zakłada od zera (pyta o potwierdzenie)
 	@read -p "Skasować WSZYSTKIE issues w GlitchTipie? [t/N] " a; [ "$$a" = "t" ] || { echo "Przerwano."; exit 1; }
@@ -397,8 +401,9 @@ errors-db-check: ## setup_db.py z obrazu GlitchTipa na tymczasowej bazie (wymaga
 	@bash tools/glitchtip-db-check.sh
 
 .PHONY: k3s-manifests-check
-k3s-manifests-check: ## Manifesty k8s bez klastra: kubectl kustomize + ERROR_TRACKING_PROCESS w Deploymentach (ETAP 11b)
+k3s-manifests-check: ## Manifesty k8s bez klastra: kustomize, ERROR_TRACKING_PROCESS, GlitchTip opcjonalny, krok deploy.sh (ETAP 11b)
 	@bash tools/k3s/manifests-check.sh
+	@bash tools/k3s/glitchtip-step-check.sh
 
 .PHONY: k3s-verify
 k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all)
