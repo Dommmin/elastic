@@ -251,9 +251,12 @@ phase_data() {
   # gotowego poda nie ma rekordu DNS, więc aplikacje dostają "could not
   # translate host name postgres", padają i są restartowane przez kubelet
   # (z narastającym back-offem). Mierzymy, po ilu sekundach wszystko wraca.
-  local t0 back=""; t0=$(date +%s)
+  # Liczba aplikacji z klastra, nie stała: po ETAPIE F jest ich 5 (kiedyś 3), a zahardkodowane
+  # "3" kończyło oczekiwanie, gdy 2 z 5 jeszcze leżały w back-offie (RUNBOOK #079).
+  local t0 back="" want; t0=$(date +%s)
+  want="$(k get deploy -n marketplace -l app.kubernetes.io/component=app --no-headers | wc -l | tr -d ' ')"
   while [ $(( $(date +%s) - t0 )) -le 300 ]; do
-    if [ "$(k get deploy -n marketplace -l app.kubernetes.io/component=app -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}' | grep -c True)" = "3" ]; then
+    if [ "$(k get deploy -n marketplace -l app.kubernetes.io/component=app -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}' | grep -c True)" = "${want}" ] && [ "${want}" -ge 1 ]; then
       back=$(( $(date +%s) - t0 )); break
     fi
     sleep 5
@@ -317,15 +320,23 @@ phase_stack() {
   [ -n "${ec}" ] && check "eval k8s = eval Compose (${ec})" "${ec}" "${ek:-brak}"
   check "eval OK (>= 0.80)" "tak" "$(python3 -c 'import sys; print("tak" if float(sys.argv[1]) >= 0.80 else "nie")' "${ek:-0}" 2>/dev/null)"
   # E2E ścieżką użytkownika (RUNBOOK #031): catalog -> outbox -> publisher ->
-  # RabbitMQ -> consumer -> ES. Wszystko w k8s.
-  local price=$(( (RANDOM % 90000) + 10000 )) pid t0 waited=""
-  pid="$(k exec -n marketplace deploy/catalog-app -- php artisan tinker --execute "\$o = App\\Models\\Offer::query()->orderBy(\"id\")->first(); \$o->updateWithOutbox([\"price_cents\" => ${price}]); echo \$o->product_id;" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)"
+  # RabbitMQ -> consumer -> ES. Wszystko w k8s. NIE zmienia danych: zapisuje produkt jego
+  # własnymi wartościami (`updateWithOutbox` zawsze emituje zdarzenie), a o przejściu całej ścieżki
+  # świadczy wzrost `_version` dokumentu w ES (zewnętrzna wersja = czas projekcji w mikrosekundach).
+  # Wcześniej test zmieniał cenę przez Offer::updateWithOutbox, którego portal sprzedawcy już nie ma
+  # (RUNBOOK #079), i zmieniał dane produkcyjne.
+  local pid v0 v1 t0 waited=""
+  pid="$(k exec -n marketplace deploy/catalog-app -- php artisan tinker --execute "\$p = App\\Models\\Product::query()->orderBy(\"id\")->first(); echo \$p->id;" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)"
+  es_version() { es_k8s elastic "/products-search/_doc/${pid:-0}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("_version",0))' 2>/dev/null; }
+  v0="$(es_version)"
+  k exec -n marketplace deploy/catalog-app -- php artisan tinker --execute "\$p = App\\Models\\Product::query()->findOrFail(${pid:-0}); \$p->updateWithOutbox(['name' => \$p->name], 'product.updated');" >/dev/null 2>&1
   t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -le 10 ]; do
-    if es_k8s elastic "/products-search/_doc/${pid:-0}" | grep -q "${price}"; then waited=$(( $(date +%s) - t0 )); break; fi
+    v1="$(es_version)"
+    if [ "${v1:-0}" -gt "${v0:-0}" ] 2>/dev/null; then waited=$(( $(date +%s) - t0 )); break; fi
     sleep 1
   done
-  check "E2E: zmiana ceny w ES k8s w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
+  check "E2E: zdarzenie produktu dochodzi do ES k8s w <= 10 s (${waited:-timeout} s)" "tak" "$([ -n "${waited}" ] && echo tak || echo nie)"
 }
 
 # --------------------------------------------------------------- backup -----

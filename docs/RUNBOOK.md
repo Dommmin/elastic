@@ -78,7 +78,8 @@
 | [075](#075) | `make prod-deploy` wskrzesił Compose obok k3s / deploy wisi na zdrowiu `es01` | Deploy / VPS | 11b |
 | [076](#076) | `make errors-smoke`: GlitchTip został spauzowany po przerwaniu / pomiar odporności raz czerwony, raz zielony | GlitchTip / smoke | 11b |
 | [077](#077) | Alert `GlitchTipEventFlood`; baza GlitchTipa rośnie, bo GlitchTip nie ogranicza przyjmowania | GlitchTip / Prometheus | 11b |
-| [078](#078) | GlitchTip na k3s: manifesty gotowe, ale jeszcze nie nałożone na klaster; jak włączyć | GlitchTip / k3s | 11b |
+| [078](#078) | GlitchTip na k3s: włączenie i restart aplikacji po utworzeniu Secretu | GlitchTip / k3s | 11b |
+| [079](#079) | `make k3s-verify`: fałszywe porażki po restarcie bazy, E2E ze starym `Offer::updateWithOutbox`, osierocony ConfigMap | k3s / weryfikacja | 11b |
 
 ---
 
@@ -3681,45 +3682,79 @@ po stronie wejścia, które kontrolujemy, i mierzy przed ustaleniem progów, bo 
 zdarzenie) decydują, czy 300/min jest bezpieczne. Nie było: 140 GB wobec 72 GB wolnych.
 
 <a id="078"></a>
-## 078 — GlitchTip na k3s: manifesty gotowe, ale jeszcze nie nałożone na klaster
+## 078 — GlitchTip na k3s: włączenie i restart aplikacji po utworzeniu Secretu
 
 **Objaw**
-`make k3s-deploy` pisze `GlitchTip pominięty (brak Secretu glitchtip-secrets)`, a na klastrze nie ma
-poda `glitchtip`. Compose na VPS jest zatrzymany ([#075](#075)), więc GlitchTipa nie ma nigdzie.
+`make k3s-deploy` pisze `GlitchTip pominięty (brak Secretu glitchtip-secrets)`, albo GlitchTip działa,
+a część aplikacji ma pusty DSN (`echo $SENTRY_LARAVEL_DSN` w podzie niczego nie pokazuje) i nie zgłasza błędów.
 
 **Diagnoza**
 ```bash
 make k3s-tunnel
-make k3s k="-n marketplace get secret glitchtip-secrets deploy/glitchtip"
-make k3s k="-n marketplace get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image"
-git rev-list --count <SHA z obrazu>..HEAD        # o ile commitów klaster jest za main
+make k3s k="-n marketplace get secret glitchtip-secrets deploy/glitchtip job/glitchtip-setup"
+for d in catalog-app outbox-publisher catalog-worker catalog-scheduler search-consumer; do
+  make k3s k="-n marketplace exec deploy/$d -- sh -c 'echo \$SENTRY_LARAVEL_DSN\$SENTRY_DSN'"; done
 ```
-Stan z 2026-10-27: klaster na `ef53945`, **130 commitów za `main`**, w tym 8 plików migracji bazy
-(nowe tabele zamówień i portalu sprzedawcy). Brakuje na nim `catalog-worker` i `catalog-scheduler` (ETAP F):
-zamówienia na k3s nie wygasałyby. Manifest schedulera jest już w repozytorium (`deploy/k8s/catalog.yaml`).
 
 **Przyczyna**
-GlitchTip jest opcjonalny z założenia (ADR-0009): manifesty w `deploy/k8s/glitchtip.yaml` nic nie robią,
-dopóki na klastrze nie ma Secretu `glitchtip-secrets`. `make k3s-deploy` wdraża CAŁY `main`, więc
-włączenie GlitchTipa przez ten skrypt nałoży też 130 commitów i 8 migracji na produkcyjną bazę.
-To osobna decyzja i osobne wdrożenie, nie skutek uboczny śledzenia błędów.
+GlitchTip jest opcjonalny: manifesty (`deploy/k8s/glitchtip.yaml`) nic nie robią bez Secretu
+`glitchtip-secrets`, a DSN-y aplikacji to `secretKeyRef` z `optional: true`. Zmienna z Secretu jest
+czytana TYLKO przy starcie kontenera. Jeśli pody powstały, zanim Secret istniał, drugi `make k3s-deploy`
+ich nie zrestartuje (manifest się nie zmienił). Zmierzone 2026-10-28: po utworzeniu Secretu `search-consumer`
+miał DSN (skrypt skaluje go do 0 i z powrotem), a cztery Deploymenty catalog nie.
 
-**Naprawa (kolejność)**
-1. Najpierw wdrożenie aplikacji z `main` (zawiera już `catalog-scheduler`): zwykły `make k3s-deploy`
-   z pre-flightem migracji. Sprawdzić: `make k3s-verify`.
-2. Włączyć GlitchTipa: na serwerze `./add-glitchtip-env.sh .env.prod.example .env <adres-admina>`,
-   potem `bash secrets.sh` (tworzy `glitchtip-secrets`), potem `make k3s-deploy`. Krok 2b nałoży kolejno:
-   Job `glitchtip-db-setup`, Deployment `glitchtip`, Job `glitchtip-setup`. Awaria tego kroku to
-   ostrzeżenie, nie przerwanie wdrożenia sklepu.
-3. UI: `make k3s-tunnel && make k3s k="-n marketplace port-forward svc/glitchtip 28000:8000"`,
-   adres `http://localhost:28000`; login i hasło z `.env` na serwerze.
-4. Kontrole bez klastra: `make k3s-manifests-check` (kustomize, DSN-y z opcjonalnego Secretu, GlitchTip
-   poza krokiem infrastruktury, kolejność kroku w `deploy.sh`) oraz job `prod-compose` w CI.
+**Naprawa (włączenie od zera, wykonane 2026-10-28)**
+1. Zwykłe wdrożenie aplikacji z `main` (`make k3s-deploy`), pre-flight danych wg [#043](#043), backup
+   (`kubectl create job --from=cronjob/pg-backup …`).
+2. Na serwerze `./add-glitchtip-env.sh .env.prod.example .env <adres-admina>` (idempotentne), potem
+   `scp tools/k3s/secrets.sh elastic-vps:/tmp/ && ssh elastic-vps 'bash /tmp/secrets.sh'` (tworzy `glitchtip-secrets`).
+3. `make k3s-deploy` jeszcze raz: krok „GlitchTip (opcjonalny)” nakłada db-setup → glitchtip → setup.
+4. **Rolling restart aplikacji, które nie przeszły przez krok 3**:
+   `make k3s k="-n marketplace rollout restart deploy/catalog-app deploy/outbox-publisher deploy/catalog-worker deploy/catalog-scheduler"`.
+5. Test: wyślij oznaczone zdarzenie z hosta VPS do `svc/glitchtip` (klucz z `.env`) i sprawdź issue w bazie
+   `glitchtip`. UI: `make k3s k="-n marketplace port-forward svc/glitchtip 28000:8000"`, `http://localhost:28000`.
+
+Wynik: GlitchTip 1/1, ok. 170 MiB z 512, bootstrap `OK: 3 projekty, klucze, alerty, token`, zdarzenie przyjęte.
 
 **Czego się nauczyłem**
-Skrypt wdrożeniowy, który wdraża „wszystko z main”, nie nadaje się do wdrożenia jednej, niezależnej
-funkcji, gdy produkcja jest daleko za `main`. Zanim dołożyłem GlitchTipa do `deploy.sh`, sprawdziłem
-stan klastra (read-only) i okazało się, że ten krok wymaga najpierw zwykłego, większego wdrożenia.
+Opcjonalna zależność wstrzykiwana przez Secret wymaga restartu konsumentów, bo Kubernetes nie odświeża
+zmiennych środowiskowych w działającym kontenerze. Sprawdzaj stan wewnątrz poda, nie tylko to, że Secret istnieje.
+
+<a id="079"></a>
+## 079 — `make k3s-verify`: fałszywe porażki po restarcie bazy, E2E ze starym `Offer::updateWithOutbox`
+
+**Objaw**
+Po wdrożeniu `make k3s-verify` kończy się 4 porażkami (80 przeszło): `ConfigMap marketplace-config-<hash>`
+(oczekiwano 1, są 2), `Deployment outbox-publisher/catalog-worker: Available`, `E2E: zmiana ceny w ES`.
+
+**Diagnoza**
+```bash
+make k3s k="-n marketplace get pods"                      # restarty outbox-publisher i catalog-worker
+make k3s k="-n marketplace logs deploy/outbox-publisher --previous --tail=5"   # could not translate host name "postgres"
+make k3s k="-n marketplace get cm"                        # stary marketplace-config-<hash> sprzed wdrożenia
+```
+
+**Przyczyna**
+Trzy niezależne rzeczy:
+1. Faza `data` celowo usuwa `postgres-0` (test trwałości). Headless Service bez gotowego poda nie ma rekordu DNS,
+   więc aplikacje padają i wracają z narastającym back-offem. Pętla oczekiwania miała na sztywno „3 aplikacje”,
+   a po ETAPIE F jest ich 5: kończyła się, gdy działały 3 z 5, i faza `apps` startowała za wcześnie.
+2. Krok E2E wołał `Offer::updateWithOutbox()`, którego portal sprzedawcy już nie ma (zostało tylko na `Product`),
+   więc `tinker` kończył się błędem i do outboxu nic nie trafiało. Test dodatkowo zmieniał ceny w produkcji.
+3. Kustomize nie usuwa starych ConfigMapów (brak prune): po zmianie `config.env` zostaje poprzedni, z innym hashem.
+
+**Naprawa**
+- Pętla czeka na faktyczną liczbę Deploymentów `component=app`, nie na stałą.
+- E2E zapisuje `Product` jego własnymi wartościami (`updateWithOutbox` zawsze emituje zdarzenie) i czeka, aż `_version`
+  dokumentu w ES wzrośnie. Bez zmiany danych; zmierzone 4 s na k3s.
+- Osierocony ConfigMap: sprawdź, że nic go nie używa (odwołują się do niego tylko historyczne ReplicaSety i zakończone Joby),
+  potem `make k3s k="-n marketplace delete cm marketplace-config-<stary hash>"`. Skutek: `rollout undo` do bardzo starej
+  rewizji by nie wstał; ponowny `make k3s-deploy` danym tagiem odtwarza ConfigMap z repo.
+- Pełny `make k3s-verify` nadal na chwilę kładzie bazę. Na produkcji wolniej: `make k3s-verify faza=apps`, `faza=stack`.
+
+**Czego się nauczyłem**
+Liczba w skrypcie weryfikacji, która kiedyś była prawdą („3 aplikacje”), jest błędem po następnym etapie. Wartości
+zależne od stanu klastra czytaj z klastra. Test E2E, który wywołuje metodę z kodu aplikacji, starzeje się razem z kodem.
 
 ## Notatka — czytanie `_explain` (ETAP 7)
 
