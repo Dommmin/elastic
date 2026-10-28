@@ -75,7 +75,7 @@ w kodzie i smoke, co jest prawdą, i poprawić dokument albo kod.
       DSN-y z opcjonalnego Secretu w 4 Deploymentach, `secrets.sh`, opcjonalny nieblokujący krok w `deploy.sh`,
       release z tagu. Baza w istniejącym Postgresie (decyzja o storage: bez nowego). Kontrole offline:
       `make k3s-manifests-check` (24 zasoby, kubeconform 22 ważne / 0 błędnych) i `glitchtip-step-check.sh`.
-- [ ] **NIE nałożone na klaster** (świadomie): klaster jest 130 commitów za `main` (8 migracji), a `make k3s-deploy`
+- [x] **Nałożone na klaster 2026-10-28** (RUNBOOK #078/#079): wdrożenie `main` (97dd187) z migracjami, potem GlitchTip. Wcześniej "NIE nałożone" (świadomie): klaster jest 130 commitów za `main` (8 migracji), a `make k3s-deploy`
       wdraża cały `main`. Najpierw zwykłe wdrożenie aplikacji (z brakującym `catalog-scheduler`), potem
       włączenie GlitchTipa wg RUNBOOK #078.
 - [x] Manifest `catalog-scheduler` dla k3s (ETAP F) dodany (jedna replika, Recreate, 256Mi), w `deploy.sh` i `verify.sh`.
