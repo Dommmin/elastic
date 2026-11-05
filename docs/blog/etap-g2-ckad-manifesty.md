@@ -15,8 +15,12 @@ Każdy z nich ma realny powód istnienia i test, który go pilnuje.*
 > i GlitchTip uruchomione lokalnie z `--user <uid> --read-only --cap-drop ALL`
 > (sekcja 3). `kubectl apply --dry-run=server` na klastrze: wszystkie obiekty
 > przyjęte. Dwa błędy niezmienności (selektor catalog-app, Joby) obsługuje deploy.sh.
-> **NIE wdrożone:** wdrożenie na produkcję wymaga Twojego uruchomienia (sekcja 10).
-> Wyniki `make k3s-verify faza=g2` dopiszę tutaj po wdrożeniu.
+> **Wdrożone na VPS 2026-11-05** (obraz `44f77ae`, Traefik 42.1.3, cert-manager v1.21.2).
+> Na klastrze: `hardening` 26/26, `netpol` 20/20, `ingress` 12/13, `hpa` 5/5,
+> `canary` 5/5, `exposure` 17/17 (80/443 dalej zamknięte z zewnątrz).
+> **Jedno czerwone, spodziewane:** „Laravel generuje linki https” — `TRUSTED_PROXIES`
+> jest w ConfigMapie, ale kod (`bootstrap/app.php`) wchodzi z obrazem zbudowanym
+> po merge PR [Dommmin/elastic#12](https://github.com/Dommmin/elastic/pull/12); potem `make k3s-deploy`.
 >
 > Plan: [`13-PLAN-ETAP-G-K8S.md`](../13-PLAN-ETAP-G-K8S.md). Błędy i decyzje:
 > RUNBOOK [#083–#087](../RUNBOOK.md#083).
@@ -460,7 +464,37 @@ Uwagi do kroku 3:
 - Sprawdzenie „Laravel generuje linki https” w fazie `ingress` przejdzie dopiero
   na obrazie catalog zbudowanym po merge (`TRUSTED_PROXIES` jest w kodzie).
 
-*(Wyniki z klastra dopiszę po wdrożeniu.)*
+### Co wyszło na klastrze (2026-11-05)
+
+- **Migracja selektora bez przerwy:** `--cascade=orphan` → nowy Deployment
+  `app=catalog-app,track=stable` gotowy → sprzątanie usunęło 7 starych ReplicaSetów
+  (bieżący i historię rolloutów). Postgres wstał jako uid 70 na istniejącym PVC,
+  Redis jako 999, GlitchTip read-only.
+- **HPA:** przy `curl --parallel 24` przez Ingress CPU skoczyło do 734% requestu
+  (limitu CPU nie ma, jest tylko request 100m). HPA dodał repliki i były gotowe
+  po **50 s**, bo nowe pody przeszły startupProbe po kilku sekundach.
+- **Canary:** w 3 minuty stable obsłużył 2095 żądań, canary 219. W tym czasie
+  stabilnych było 3 (HPA po poprzedniej fazie), więc ~1/4 połączeń to oczekiwany
+  podział, a 9% wynika z keep-alive. curl trzyma połączenia, a kube-proxy
+  rozdziela POŁĄCZENIA, nie żądania. Wniosek: podział canary przez Service jest zgrubny.
+- **NetworkPolicy:** wszystkie 8 tras dozwolonych OPEN, 4 zakazane BLOCKED,
+  obcy pod w namespace ma DNS i nic poza nim. Prometheus bez celów down, ECK
+  dalej widzi ES (green, spec przetworzona).
+- **Admission:** deployer nie utworzy Deploymentu z podem privileged ani nie
+  wpisze privileged do `podTemplate` Elasticsearch. Polityka nie ma ostrzeżeń typów CEL.
+
+Trzy testy były źle napisane i poprawiłem je (wcześniej dawały fałszywą czerwień):
+
+- busybox `nslookup postgres` zwraca 1, choć rozwiązuje nazwę, bo nie znajduje jej
+  w dalszych domenach wyszukiwania. Teraz test pyta o pełną nazwę (FQDN);
+- „pod privileged jako deployer” odrzucał RBAC (deployer nie tworzy podów), zanim
+  zadziałała polityka. Test wysyła teraz Deployment;
+- kończący się pod canary wisi chwilę w EndpointSlice z `ready: false`. Test liczy
+  teraz tylko gotowe endpointy.
+
+Do tego `ingress-tunnel.sh` padał: alias `elastic-vps-k8s` ma w `~/.ssh/config`
+`LocalForward 26443`, zajęty przez tunel do API. Tunel Ingressu idzie teraz przez
+`elastic-vps`.
 
 ## Ile to kosztuje
 

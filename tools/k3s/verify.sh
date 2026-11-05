@@ -529,15 +529,20 @@ phase_hardening() {
   check "RBAC deployer: BEZ kasowania namespace" "no" "$(k auth can-i delete namespaces --as="${sa}")"
   # deployer może tworzyć Deploymenty, ale nie pody z uprawnieniami do węzła
   # (ValidatingAdmissionPolicy deployer-pod-guard). --dry-run=server przechodzi
-  # przez admission, niczego nie tworząc.
+  # przez admission, niczego nie tworząc. Deployment, nie Pod: podów deployer nie
+  # tworzy wcale (RBAC odmówiłby przed admission i test nic by nie mówił).
   local pf; pf="$(mktemp)"
   cat > "${pf}" <<YAML
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
 metadata: { name: verify-privileged, namespace: marketplace }
 spec:
-  containers:
-    - { name: x, image: busybox:1.37, securityContext: { privileged: true } }
+  selector: { matchLabels: { app: verify-privileged } }
+  template:
+    metadata: { labels: { app: verify-privileged } }
+    spec:
+      containers:
+        - { name: x, image: busybox:1.37, securityContext: { privileged: true } }
 YAML
   check "deployer: pod privileged odrzucony przez admission (deployer-pod-guard)" "1" \
     "$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" create --dry-run=server --as="${sa}" -f "${pf}" 2>&1 | grep -c 'privileged niedozwolone')"
@@ -577,7 +582,7 @@ phase_netpol() {
   local out
   k -n marketplace delete pod verify-np --ignore-not-found --wait=true >/dev/null
   k -n marketplace run verify-np --restart=Never --image=busybox:1.37 --labels=run=verify-np --command -- \
-    sh -c 'nslookup postgres >/dev/null 2>&1 && echo DNS_OK; nc -z -w 3 postgres 5432 && echo PG_OPEN || echo PG_BLOCKED; nc -z -w 3 catalog-app 80 && echo APP_OPEN || echo APP_BLOCKED' >/dev/null
+    sh -c 'nslookup postgres.marketplace.svc.cluster.local >/dev/null 2>&1 && echo DNS_OK; nc -z -w 3 postgres 5432 && echo PG_OPEN || echo PG_BLOCKED; nc -z -w 3 catalog-app 80 && echo APP_OPEN || echo APP_BLOCKED' >/dev/null
   k -n marketplace wait pod/verify-np --for=jsonpath='{.status.phase}'=Succeeded --timeout=90s >/dev/null
   out="$(k -n marketplace logs verify-np)"
   k -n marketplace delete pod verify-np --wait=false >/dev/null
@@ -688,8 +693,10 @@ phase_canary() {
   check "ruch dzieli się między tracki (stable ${st}, canary ${cn} żądań w 3 min)" "tak" \
     "$([ "${st:-0}" -ge 40 ] && [ "${cn:-0}" -ge 40 ] && echo tak || echo nie)"
   bash "${ROOT}/tools/k3s/canary.sh" abort >/dev/null 2>&1
-  check "canary usunięty: w endpointach zostały tylko stabilne" "0" \
-    "$(k -n marketplace get endpointslices -l kubernetes.io/service-name=catalog-app -o json | jq --arg ip "${canary_ip}" '[.items[].endpoints[]? | select(.addresses[] == $ip)] | length')"
+  # Kończący się pod zostaje chwilę w EndpointSlice z conditions.terminating=true
+  # (ready=false) — ruch już do niego nie idzie. Liczą się tylko gotowe.
+  check "canary usunięty: gotowe endpointy to tylko stabilne" "0" \
+    "$(k -n marketplace get endpointslices -l kubernetes.io/service-name=catalog-app -o json | jq --arg ip "${canary_ip}" '[.items[].endpoints[]? | select(.conditions.ready == true) | select(.addresses[] == $ip)] | length')"
   k delete namespace loadtest --wait=false >/dev/null
 }
 

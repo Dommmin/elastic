@@ -28,7 +28,10 @@ kk -n cert-manager get secret marketplace-ca -o jsonpath='{.data.ca\.crt}' | bas
 if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
   echo "Port ${PORT} już nasłuchuje (tunel działa albo port zajęty)."
 else
-  ssh -o ExitOnForwardFailure=yes -fN -L "127.0.0.1:${PORT}:${ip}:443" elastic-vps-k8s
+  # Alias elastic-vps, NIE elastic-vps-k8s: ten drugi ma w ~/.ssh/config
+  # LocalForward 26443 (API), zajęty przez tunel `make k3s-tunnel` — z
+  # ExitOnForwardFailure nowe połączenie padało na „Address already in use”.
+  ssh -o ExitOnForwardFailure=yes -fN -L "127.0.0.1:${PORT}:${ip}:443" elastic-vps
   echo "Tunel: 127.0.0.1:${PORT} -> traefik ${ip}:443"
 fi
 
