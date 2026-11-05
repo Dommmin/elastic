@@ -1,0 +1,50 @@
+# ============================================================================
+#  HorizontalPodAutoscaler dla catalog-app (ETAP G2)
+#
+#  Co 15 s kontroler HPA pyta metrics-server (wbudowany w k3s) o zużycie CPU
+#  podów catalog-app i liczy:
+#      pożądane repliki = ceil( obecne repliki × średnie CPU / cel )
+#  Cel = 70% REQUESTU (100m), czyli 70m na pod. Dlatego bez `requests.cpu`
+#  HPA nie działa wcale (TARGETS: <unknown>/70%).
+#
+#  Dlaczego catalog-app, a nie worker czy consumer: tylko on obsługuje ruch
+#  użytkowników synchronicznie. Workery kolejek skaluje się po długości kolejki
+#  (KEDA), nie po CPU — i catalog-worker MUSI mieć jedną replikę (catalog.yaml).
+#
+#  Test: `make k3s-verify faza=hpa` puszcza generator obciążenia przez Ingress
+#  i czeka, aż HPA doda repliki. Widać to też w Grafanie:
+#  kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler="catalog-app"}
+# ============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: catalog-app
+  labels:
+    app.kubernetes.io/component: app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: catalog-app      # tylko stabilny; canary ma stałą 1 replikę
+  minReplicas: 1
+  # 3 × 128Mi request (limit 3 × 512Mi) mieści się w budżecie węzła (G1: ~47% RAM).
+  # Więcej replik nie pomoże, gdy wąskim gardłem jest Postgres albo ES na tym samym węźle.
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # Domyślnie: bez okna stabilizacji, do +100% albo +4 pody na 15 s.
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      # Skalowanie w dół dopiero, gdy przez 5 min KAŻDA rekomendacja była niższa —
+      # krótki spadek ruchu między falami nie zabija podów, które za chwilę będą
+      # potrzebne (i których start kosztuje: init kontener + startupProbe).
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 60 }   # najwyżej 1 pod na minutę

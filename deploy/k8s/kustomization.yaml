@@ -13,11 +13,13 @@ resources:
   - namespace.yaml
   - serviceaccounts.yaml
   - networkpolicies.yaml
+  - rbac.yaml
   - elasticsearch.yaml
   - postgres.yaml
   - rabbitmq.yaml
   - redis.yaml
   - catalog.yaml
+  - hpa.yaml
   - search-consumer.yaml
   - glitchtip.yaml
   - jobs/migrate.yaml

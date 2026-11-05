@@ -17,6 +17,10 @@ spec:
   namespaceSelector: { matchNames: [marketplace] }
   selector:
     matchLabels: { app: catalog-app }
+  # Etykieta poda `track` (stable/canary, ETAP G2) przechodzi na każdą serię:
+  # `sum by (track) (rate(...))` porównuje canary ze stabilną wersją bez
+  # szukania, który pod jest który.
+  podTargetLabels: [track]
   endpoints:
     # Caddy/FrankenPHP: caddy_http_*, frankenphp_*
     - port: metrics

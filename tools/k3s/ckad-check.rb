@@ -277,4 +277,59 @@ DOCS.select { |d| d["kind"] == "Service" }.each do |svc|
   end
 end
 
+# ---------------------------------------------------------------------------
+# 5. HPA dla catalog-app
+hpa = find("HorizontalPodAutoscaler", "catalog-app")
+ok(!hpa.nil?, "HPA catalog-app istnieje")
+if hpa
+  ok(hpa["apiVersion"] == "autoscaling/v2", "HPA: autoscaling/v2 (v1 zna tylko CPU, bez `behavior`)")
+  ok(hpa.dig("spec", "scaleTargetRef") == { "apiVersion" => "apps/v1", "kind" => "Deployment", "name" => "catalog-app" }, "HPA: celuje w Deployment catalog-app (nie w canary)")
+  ok(hpa.dig("spec", "minReplicas") == 1 && hpa.dig("spec", "maxReplicas") == 3, "HPA: 1..3 repliki (budżet pamięci: 3 × 128Mi request)")
+  cpu = (hpa.dig("spec", "metrics") || []).find { |m| m.dig("resource", "name") == "cpu" }
+  ok(cpu && cpu.dig("resource", "target", "type") == "Utilization" && cpu.dig("resource", "target", "averageUtilization") == 70, "HPA: CPU 70% requestu")
+  ok(hpa.dig("spec", "behavior", "scaleDown", "stabilizationWindowSeconds").is_a?(Integer), "HPA: jawne okno stabilizacji przy skalowaniu w dół")
+end
+dep = find("Deployment", "catalog-app")
+ok(!dep["spec"].key?("replicas"), "Deployment catalog-app bez `replicas` (inaczej każdy apply cofa HPA do 1)")
+dep["spec"]["template"]["spec"]["containers"].each do |c|
+  ok(!c.dig("resources", "requests", "cpu").nil?, "catalog-app [#{c['name']}]: requests.cpu (mianownik dla HPA; bez niego HPA pokazuje <unknown>)")
+end
+
+# ---------------------------------------------------------------------------
+# 6. Canary: osobny Deployment pod tym samym Service, rozłączne selektory
+require_relative "canary-render"
+TAG = "0123456789abcdef0123456789abcdef01234567"
+canary = CanaryRender.canary_from(dep, TAG)
+svc = find("Service", "catalog-app")
+stable_sel = dep.dig("spec", "selector")
+canary_sel = canary.dig("spec", "selector")
+canary_labels = canary.dig("spec", "template", "metadata", "labels")
+stable_labels = dep.dig("spec", "template", "metadata", "labels")
+ok(canary.dig("metadata", "name") == "catalog-app-canary", "canary: Deployment catalog-app-canary")
+ok(stable_labels["track"] == "stable" && canary_labels["track"] == "canary", "canary: etykiety track stable/canary")
+ok(!selector_match?(stable_sel, canary_labels) && !selector_match?(canary_sel, stable_labels), "canary: selektory rozłączne (żaden Deployment nie widzi cudzych podów)")
+ok(selector_match?({ "matchLabels" => svc.dig("spec", "selector") }, canary_labels) && selector_match?({ "matchLabels" => svc.dig("spec", "selector") }, stable_labels), "canary: Service catalog-app wybiera oba tracki")
+ok(canary.dig("spec", "replicas") == 1, "canary: 1 replika")
+imgs = CanaryRender.containers(canary).map { |c| c["image"] }
+ok(imgs.all? { |i| i.end_with?(":#{TAG}") } && imgs.size == CanaryRender.containers(dep).size, "canary: nowy tag w każdym kontenerze, także init")
+ok(canary.dig("metadata", "labels", "app.kubernetes.io/component") == "canary", "canary: component=canary (deploy.sh `apply -l component=app` go nie dotyka)")
+rel = canary.dig("spec", "template", "spec", "containers").map { |c| (c["env"] || []).select { |e| e["name"] == "SENTRY_RELEASE" }.map { |e| e["value"] } }
+ok(rel.all? { |v| v == [TAG] }, "canary: SENTRY_RELEASE = tag canary (wyjątki odróżnialne od stabilnej wersji)")
+
+# ---------------------------------------------------------------------------
+# 7. RBAC: konto deployera — tylko namespace marketplace, bez exec i bez nodes
+role = DOCS.find { |d| d["kind"] == "Role" && d.dig("metadata", "name") == "deployer" }
+rb = DOCS.find { |d| d["kind"] == "RoleBinding" && d.dig("metadata", "name") == "deployer" }
+ok(!role.nil? && !rb.nil?, "RBAC: Role i RoleBinding deployer (namespaced, nie ClusterRole)")
+ok(DOCS.none? { |d| %w[ClusterRole ClusterRoleBinding].include?(d["kind"]) }, "RBAC: żadnych uprawnień na poziomie klastra w deploy/k8s")
+if role && rb
+  rules = role["rules"] || []
+  grants = ->(res, verb) { rules.any? { |r| (r["resources"] || []).include?(res) && ((r["verbs"] || []).include?(verb) || r["verbs"] == ["*"]) } }
+  ok(rules.none? { |r| (r["verbs"] || []).include?("*") || (r["resources"] || []).include?("*") }, "RBAC deployer: bez symboli wieloznacznych")
+  ok(grants.("deployments", "patch") && grants.("jobs", "delete") && grants.("deployments/scale", "patch"), "RBAC deployer: patch Deploymentów, delete Jobów, scale (to robi deploy.sh)")
+  ok(!grants.("pods/exec", "create"), "RBAC deployer: bez pods/exec (wdrożenie nie potrzebuje powłoki w podzie)")
+  subj = (rb["subjects"] || []).first || {}
+  ok(subj["kind"] == "ServiceAccount" && subj["name"] == "deployer" && rb.dig("roleRef", "name") == "deployer", "RBAC: RoleBinding wiąże ServiceAccount deployer z Role deployer")
+end
+
 puts OUT.map { |s, m| "#{s}|#{m}" }
