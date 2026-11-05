@@ -57,11 +57,27 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/component: errors-init
+        # `app` na podach Jobów: po nim wybierają je reguły NetworkPolicy (G2).
+        app: glitchtip-db-setup
     spec:
       restartPolicy: Never
+      serviceAccountName: glitchtip
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2). Obraz już działa jako app (5000); read-only
+      # sprawdzone lokalnie (migracje + /_health/ = 200), zapisywalne /tmp i uploads.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 5000
+        runAsGroup: 5000
+        fsGroup: 5000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: db-setup
           image: ghcr.io/dommmin/elastic-glitchtip:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           command: ["python", "/opt/marketplace/setup_db.py"]
           envFrom:
             - secretRef: { name: glitchtip-secrets }
@@ -72,6 +88,10 @@ spec:
               valueFrom: { configMapKeyRef: { name: marketplace-config, key: POSTGRES_USER } }
             - name: PGPASSWORD
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: POSTGRES_PASSWORD } }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
 ---
 # all-in-one: worker w procesie WWW, bez Valkey (VALKEY_URL="" -> kolejka, cache i sesje
 # w Postgresie). Jedna replika i Recreate: PVC jest ReadWriteOnce.
@@ -93,9 +113,23 @@ spec:
       labels:
         app: glitchtip
     spec:
+      serviceAccountName: glitchtip
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2). Obraz już działa jako app (5000); read-only
+      # sprawdzone lokalnie (migracje + /_health/ = 200), zapisywalne /tmp i uploads.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 5000
+        runAsGroup: 5000
+        fsGroup: 5000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: glitchtip
           image: ghcr.io/dommmin/elastic-glitchtip:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           envFrom:
             - secretRef: { name: glitchtip-secrets }
           env:
@@ -127,27 +161,36 @@ spec:
               value: "14"
           ports:
             - containerPort: 8000
-          readinessProbe:
+          # startupProbe (ETAP G2): przy starcie GlitchTip wykonuje migracje Django —
+          # na pustej bazie to minuty, przy zwykłym restarcie sekundy. Sztywne
+          # initialDelaySeconds: 90 było więc albo za długie, albo (pierwszy start)
+          # za krótkie i liveness zabijał pod w trakcie migracji. Budżet: 10 min.
+          startupProbe:
             exec: { command: ["python", "/opt/marketplace/healthcheck.py"] }
-            initialDelaySeconds: 20
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 12
+            failureThreshold: 60
+          readinessProbe:
+            exec: { command: ["python", "/opt/marketplace/healthcheck.py"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             exec: { command: ["python", "/opt/marketplace/healthcheck.py"] }
-            initialDelaySeconds: 90
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 6
           volumeMounts:
             - name: uploads
               mountPath: /code/uploads
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { memory: 256Mi, cpu: 100m }
             limits: { memory: 512Mi }
       volumes:
         - name: uploads
           persistentVolumeClaim: { claimName: glitchtip-uploads }
+        - { name: tmp, emptyDir: {} }
 ---
 # Bootstrap: organizacja, projekty (catalog=1, catalog-frontend=2, search=3), stałe klucze DSN,
 # reguły alertów, token API. guard.py odmawia wartości deweloperskich z repo (STRICT).
@@ -163,11 +206,26 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/component: errors-setup
+        app: glitchtip-setup
     spec:
       restartPolicy: Never
+      serviceAccountName: glitchtip
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2). Obraz już działa jako app (5000); read-only
+      # sprawdzone lokalnie (migracje + /_health/ = 200), zapisywalne /tmp i uploads.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 5000
+        runAsGroup: 5000
+        fsGroup: 5000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: setup
           image: ghcr.io/dommmin/elastic-glitchtip:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           command: ["sh", "-c", "python /opt/marketplace/guard.py && ./manage.py shell < /opt/marketplace/bootstrap.py"]
           envFrom:
             - secretRef: { name: glitchtip-secrets }
@@ -182,3 +240,7 @@ spec:
               value: ""
             - name: EMAIL_URL
               value: consolemail://
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

@@ -35,7 +35,11 @@ kubectl -n "${NS}" create secret generic marketplace-secrets --dry-run=client -o
   --from-literal=SEARCH_APP_SECRET="${SEARCH_APP_SECRET}" \
   --from-literal=DATABASE_URL="postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8" \
   --from-literal=MESSENGER_TRANSPORT_DSN="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
+  ${FAKE_GATEWAY_WEBHOOK_SECRET:+--from-literal=FAKE_GATEWAY_WEBHOOK_SECRET="${FAKE_GATEWAY_WEBHOOK_SECRET}"} \
   | apply
+# FAKE_GATEWAY_WEBHOOK_SECRET (ETAP F, RUNBOOK #085) jest opcjonalny: bez niego webhooki
+# płatności są odrzucane, ale reszta sklepu działa. Dopisanie do .env na serwerze:
+#   echo "FAKE_GATEWAY_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> /opt/marketplace/.env
 
 # --- 2. hasło `elastic` — ECK używa istniejącego Secretu <nazwa>-es-elastic-user
 #        zamiast generować własne (to samo hasło co w D1 -> restore snapshotu

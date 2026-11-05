@@ -34,18 +34,75 @@ metadata:
   labels:
     app.kubernetes.io/component: app
 spec:
-  replicas: 1
+  # BEZ `replicas`: liczbą replik steruje HPA (hpa.yaml). Gdyby pole tu było,
+  # każdy `make k3s-deploy` (kubectl apply) cofałby skalowanie HPA do 1 —
+  # w środku szczytu ruchu (RUNBOOK #083).
+  #
+  # Selektor z `track: stable` (ETAP G2): Service catalog-app wybiera pody po
+  # samym `app: catalog-app`, więc trafia i do stabilnych, i do canary
+  # (tools/k3s/canary.sh). Deploymenty muszą mieć ROZŁĄCZNE selektory, inaczej
+  # oba uznałyby cudze pody za swoje. Selektor Deploymentu jest niezmienny —
+  # przejście ze starego robi raz tools/k3s/deploy.sh (--cascade=orphan).
   selector:
     matchLabels:
       app: catalog-app
+      track: stable
   template:
     metadata:
       labels:
         app: catalog-app
+        track: stable
     spec:
+      serviceAccountName: catalog
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2). Sprawdzone na obrazie przed wdrożeniem
+      # (docker run --user 33 --read-only --cap-drop ALL, przewodnik etap-g2, sekcja 3).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data — właściciel storage/ i bootstrap/cache w obrazie
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+        # Port 80 bez roota: z allowPrivilegeEscalation: false (no_new_privs) jądro NIE
+        # nadaje capability z pliku frankenphp — exec przechodzi, ale bind(:80) dostaje
+        # „permission denied” (RUNBOOK #086). Sysctl z listy „bezpiecznych” (k8s 1.22+,
+        # dozwolony w profilu restricted) obniża próg portów uprzywilejowanych w sieci
+        # TEGO poda. containerd 2.x ustawia to domyślnie — tu jawnie, żeby nie zależeć od runtime'u.
+        sysctls:
+          - { name: net.ipv4.ip_unprivileged_port_start, value: "0" }
+      # readOnlyRootFilesystem zamyka /app, a Laravel pisze w storage/ (widoki,
+      # cache) i bootstrap/cache/ (config:cache w catalog-entrypoint.sh). Pusty
+      # emptyDir zakryłby to, co obraz ma tam już gotowe (route:cache, view:cache),
+      # więc init kontener kopiuje zawartość z obrazu do wolumenów — wzorzec
+      # „init container przygotowuje dane” z CKAD.
+      initContainers:
+        - name: writable-dirs
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          command: ["sh", "-c", "cp -R /app/storage/. /work/storage/ && cp -R /app/bootstrap/cache/. /work/bootstrap-cache/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: storage, mountPath: /work/storage }
+            - { name: bootstrap-cache, mountPath: /work/bootstrap-cache }
+          resources:
+            requests: { memory: 16Mi, cpu: 10m }
+            limits: { memory: 64Mi }
       containers:
         - name: catalog
           image: ghcr.io/dommmin/elastic-catalog:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              # Binarka frankenphp ma file capability cap_net_bind_service=ep.
+              # Gdy tej capability nie ma w zbiorze ograniczającym kontenera, exec
+              # kończy się EPERM: „exec: frankenphp: Operation not permitted”.
+              # Samo słuchanie na :80 daje sysctl poda wyżej (no_new_privs blokuje
+              # nadanie capability z pliku) — RUNBOOK #086.
+              add: [NET_BIND_SERVICE]
           envFrom:
             - configMapRef:
                 name: marketplace-config
@@ -63,6 +120,10 @@ spec:
             # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
             - name: GLITCHTIP_FRONTEND_KEY
               valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: GLITCHTIP_KEY_FRONTEND, optional: true } }
+            # Sekret HMAC webhooka bramki (ETAP F): worker podpisuje, catalog-app sprawdza.
+            # optional: bez klucza w Secrecie kontroler odrzuca webhooki (500) — RUNBOOK #085.
+            - name: FAKE_GATEWAY_WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: FAKE_GATEWAY_WEBHOOK_SECRET, optional: true } }
             - name: APP_KEY
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
             - name: DB_DATABASE
@@ -86,17 +147,40 @@ spec:
               containerPort: 2020
           # /up = liveness Laravela (bez zależności) — ten sam wybór co
           # w healthchecku compose; /health (z zależnościami) świadomie nie.
+          #
+          # startupProbe (ETAP G2) zamiast initialDelaySeconds: liveness i readiness
+          # nie ruszają, dopóki ta sonda raz nie przejdzie. Budżet startu to
+          # failureThreshold × periodSeconds = 60 s, ale zdrowy pod jest gotowy po
+          # ~3 s (pierwsze udane /up), a nie po sztywnych 30 s jak wcześniej —
+          # przy skalowaniu HPA każda sekunda czekania to sekunda przeciążenia.
+          startupProbe:
+            httpGet: { path: /up, port: 80 }
+            periodSeconds: 2
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /up, port: 80 }
             periodSeconds: 10
           livenessProbe:
             httpGet: { path: /up, port: 80 }
-            initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 4
+          # cpu: 100m to także mianownik HPA: „70% CPU” = 70m średnio na pod.
           resources:
             requests: { memory: 128Mi, cpu: 100m }
             limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: storage, mountPath: /app/storage }
+            - { name: bootstrap-cache, mountPath: /app/bootstrap/cache }
+            - { name: tmp, mountPath: /tmp }
+            # Caddy: XDG_DATA_HOME=/data (lokalne CA z `local_certs`), XDG_CONFIG_HOME=/config (autosave.json)
+            - { name: caddy-data, mountPath: /data }
+            - { name: caddy-config, mountPath: /config }
+      volumes:
+        - { name: storage, emptyDir: {} }
+        - { name: bootstrap-cache, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+        - { name: caddy-data, emptyDir: {} }
+        - { name: caddy-config, emptyDir: {} }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -114,9 +198,37 @@ spec:
       labels:
         app: outbox-publisher
     spec:
+      serviceAccountName: catalog
+      automountServiceAccountToken: false
+      # Ten sam profil co catalog-app (komentarze tam); bez NET_BIND_SERVICE, bo
+      # `php artisan` nie słucha na porcie.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: writable-dirs
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          command: ["sh", "-c", "cp -R /app/storage/. /work/storage/ && cp -R /app/bootstrap/cache/. /work/bootstrap-cache/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: storage, mountPath: /work/storage }
+            - { name: bootstrap-cache, mountPath: /work/bootstrap-cache }
+          resources:
+            requests: { memory: 16Mi, cpu: 10m }
+            limits: { memory: 64Mi }
       containers:
         - name: publisher
           image: ghcr.io/dommmin/elastic-catalog:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           args: ["php", "artisan", "outbox:publish", "--loop"]
           envFrom:
             - configMapRef:
@@ -155,6 +267,14 @@ spec:
           resources:
             requests: { memory: 64Mi, cpu: 50m }
             limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: storage, mountPath: /app/storage }
+            - { name: bootstrap-cache, mountPath: /app/bootstrap/cache }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: storage, emptyDir: {} }
+        - { name: bootstrap-cache, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -192,9 +312,37 @@ spec:
       # przerwania: joby są idempotentne, ponowienie kontynuuje od ofert,
       # które jeszcze nie zmieniły stanu.
       terminationGracePeriodSeconds: 120
+      serviceAccountName: catalog
+      automountServiceAccountToken: false
+      # Ten sam profil co catalog-app (komentarze tam); bez NET_BIND_SERVICE, bo
+      # `php artisan` nie słucha na porcie.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: writable-dirs
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          command: ["sh", "-c", "cp -R /app/storage/. /work/storage/ && cp -R /app/bootstrap/cache/. /work/bootstrap-cache/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: storage, mountPath: /work/storage }
+            - { name: bootstrap-cache, mountPath: /work/bootstrap-cache }
+          resources:
+            requests: { memory: 16Mi, cpu: 10m }
+            limits: { memory: 64Mi }
       containers:
         - name: worker
           image: ghcr.io/dommmin/elastic-catalog:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           args: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=5", "--max-time=3600", "--timeout=600"]
           envFrom:
             - configMapRef:
@@ -209,6 +357,10 @@ spec:
             # DSN z opcjonalnego Secretu (tools/k3s/secrets.sh); bez GlitchTipa pusty -> SDK wyłączone.
             - name: SENTRY_LARAVEL_DSN
               valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_CATALOG, optional: true } }
+            # Sekret HMAC webhooka bramki (ETAP F): worker podpisuje, catalog-app sprawdza.
+            # optional: bez klucza w Secrecie kontroler odrzuca webhooki (500) — RUNBOOK #085.
+            - name: FAKE_GATEWAY_WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: FAKE_GATEWAY_WEBHOOK_SECRET, optional: true } }
             - name: APP_KEY
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
             - name: DB_DATABASE
@@ -227,6 +379,14 @@ spec:
           resources:
             requests: { memory: 64Mi, cpu: 50m }
             limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: storage, mountPath: /app/storage }
+            - { name: bootstrap-cache, mountPath: /app/bootstrap/cache }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: storage, emptyDir: {} }
+        - { name: bootstrap-cache, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
 ---
 # Scheduler Laravela (`schedule:work`, ETAP F, RUNBOOK #044): co minutę sweep `orders:expire-overdue`.
 # Bez niego zamówienia bez płatności nie wygasają, a towar zostaje zarezerwowany. DOKŁADNIE jedna
@@ -250,9 +410,37 @@ spec:
       labels:
         app: catalog-scheduler
     spec:
+      serviceAccountName: catalog
+      automountServiceAccountToken: false
+      # Ten sam profil co catalog-app (komentarze tam); bez NET_BIND_SERVICE, bo
+      # `php artisan` nie słucha na porcie.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: writable-dirs
+          image: ghcr.io/dommmin/elastic-catalog:placeholder
+          command: ["sh", "-c", "cp -R /app/storage/. /work/storage/ && cp -R /app/bootstrap/cache/. /work/bootstrap-cache/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: storage, mountPath: /work/storage }
+            - { name: bootstrap-cache, mountPath: /work/bootstrap-cache }
+          resources:
+            requests: { memory: 16Mi, cpu: 10m }
+            limits: { memory: 64Mi }
       containers:
         - name: scheduler
           image: ghcr.io/dommmin/elastic-catalog:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           args: ["php", "artisan", "schedule:work"]
           envFrom:
             - configMapRef:
@@ -286,3 +474,11 @@ spec:
           resources:
             requests: { memory: 128Mi, cpu: 50m }
             limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: storage, mountPath: /app/storage }
+            - { name: bootstrap-cache, mountPath: /app/bootstrap/cache }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: storage, emptyDir: {} }
+        - { name: bootstrap-cache, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }

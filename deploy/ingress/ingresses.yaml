@@ -1,0 +1,106 @@
+# ============================================================================
+#  Certyfikaty i Ingressy (ETAP G2)
+#
+#    https://shop.marketplace.test:8443     -> marketplace/catalog-app:80
+#    https://kibana.marketplace.test:8443   -> marketplace/marketplace-kb-http:5601
+#    https://grafana.marketplace.test:8443  -> monitoring/kps-grafana:80
+#
+#  Port 8443, bo tunel z Maca (make k3s-ingress-tunnel) — 443 na Macu bywa
+#  zajęty przez inne projekty. Hosty .test (RFC 2606) nigdy nie trafią do
+#  publicznego DNS; na Macu: wpis w /etc/hosts (przewodnik etap-g2, sekcja 6).
+#
+#  Secret z certyfikatem musi być w TYM SAMYM namespace co Ingress, więc są dwa
+#  Certificate (marketplace i monitoring) z jednego ClusterIssuera.
+#  Ingress w każdym namespace musi też przepuścić NetworkPolicy: marketplace
+#  wpuszcza namespace `ingress` na catalog-app:80 i Kibanę:5601 (networkpolicies.yaml).
+# ============================================================================
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: marketplace-tls
+  namespace: marketplace
+spec:
+  secretName: marketplace-tls
+  dnsNames: [shop.marketplace.test, kibana.marketplace.test]
+  duration: 2160h       # 90 dni, jak Let's Encrypt
+  renewBefore: 720h     # odnowienie 30 dni przed końcem
+  issuerRef:
+    kind: ClusterIssuer
+    name: marketplace-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: grafana-tls
+  namespace: monitoring
+spec:
+  secretName: grafana-tls
+  dnsNames: [grafana.marketplace.test]
+  duration: 2160h
+  renewBefore: 720h
+  issuerRef:
+    kind: ClusterIssuer
+    name: marketplace-ca
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: marketplace
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [shop.marketplace.test]
+      secretName: marketplace-tls
+  rules:
+    - host: shop.marketplace.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-app   # stable + canary (Service wybiera po `app`)
+                port: { number: 80 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana
+  namespace: marketplace
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [kibana.marketplace.test]
+      secretName: marketplace-tls
+  rules:
+    - host: kibana.marketplace.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: marketplace-kb-http   # Service tworzony przez ECK
+                port: { number: 5601 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [grafana.marketplace.test]
+      secretName: grafana-tls
+  rules:
+    - host: grafana.marketplace.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kps-grafana
+                port: { number: 80 }

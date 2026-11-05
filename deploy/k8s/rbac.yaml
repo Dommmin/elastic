@@ -1,0 +1,73 @@
+# ============================================================================
+#  RBAC: konto `deployer` dla narzędzi wdrożeniowych (ETAP G2)
+#
+#  Dziś `make k3s-deploy` używa kubeconfigu ADMINA klastra (cluster-admin):
+#  literówka w skrypcie może skasować dowolny namespace. To konto ma dokładnie
+#  to, czego potrzebuje tools/k3s/deploy.sh, i tylko w namespace marketplace.
+#  Docelowo pod nim działa CI (GitHub Actions) — token krótkotrwały:
+#
+#    kubectl -n marketplace create token deployer --duration=1h
+#
+#  Sprawdzenie bez tokena (impersonacja, robi to `make k3s-verify faza=hardening`):
+#
+#    kubectl auth can-i patch deployments -n marketplace --as=system:serviceaccount:marketplace:deployer   # yes
+#    kubectl auth can-i create pods/exec -n marketplace --as=system:serviceaccount:marketplace:deployer    # no
+#    kubectl auth can-i list secrets -n kube-system --as=system:serviceaccount:marketplace:deployer        # no
+#
+#  Role (nie ClusterRole): uprawnienia kończą się na granicy namespace. Obiekty
+#  klastrowe z deploy/k8s (sam Namespace) zakłada raz admin.
+#  Secrets są na liście, bo deploy je WDRAŻA (es-app-roles z secretGenerator)
+#  i sprawdza istnienie glitchtip-secrets. Kto może wdrażać do namespace, ten
+#  w praktyce widzi jego sekrety — to granica, którą RBAC wyznacza namespace'em.
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer
+rules:
+  # kubectl apply = get + create + patch (server-side diff), plus list/watch dla `rollout status` i `wait`
+  - apiGroups: [""]
+    resources: [services, configmaps, secrets, persistentvolumeclaims, serviceaccounts]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, list, watch, create, patch, update, delete]   # delete: canary i zmiana selektora
+  - apiGroups: [apps]
+    resources: [deployments/scale]
+    verbs: [get, patch, update]                                # scale search-consumer do 0
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch, delete]                          # sprzątanie po --cascade=orphan
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch, create, patch, update, delete]   # Job migrate jest niezmienny: delete + create
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list, watch]                                  # logi migracji przy błędzie
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [elasticsearch.k8s.elastic.co, kibana.k8s.elastic.co]
+    resources: [elasticsearches, kibanas]
+    verbs: [get, list, watch, create, patch, update]           # ES green + observedGeneration
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deployer
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: marketplace

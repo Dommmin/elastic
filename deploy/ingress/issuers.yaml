@@ -1,0 +1,44 @@
+# ============================================================================
+#  Własne CA dla *.marketplace.test (ETAP G2) — klasyczny „bootstrap” z dokumentacji
+#  cert-managera, w trzech krokach:
+#
+#    1. ClusterIssuer selfsigned        — podpisuje certyfikat sam sobą
+#    2. Certificate marketplace-ca      — certyfikat CA (isCA), podpisany przez (1),
+#                                         klucz w Secret cert-manager/marketplace-ca
+#    3. ClusterIssuer marketplace-ca    — wystawia certyfikaty podpisane kluczem CA (2)
+#
+#  Dlaczego nie od razu self-signed dla każdego hosta: przeglądarce (i curl) ufa
+#  się wtedy JEDNEMU certyfikatowi CA (make k3s-ingress-tunnel zapisuje go na Macu),
+#  zamiast osobno każdemu hostowi — i każdemu po każdym odnowieniu.
+# ============================================================================
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: marketplace-ca
+  namespace: cert-manager   # ClusterIssuer typu CA czyta Secret z namespace cert-managera
+spec:
+  isCA: true
+  commonName: marketplace.test CA
+  secretName: marketplace-ca
+  duration: 87600h          # 10 lat — CA odnawia się rzadko, bo każdy klient musi mu zaufać na nowo
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    kind: ClusterIssuer
+    name: selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: marketplace-ca
+spec:
+  ca:
+    secretName: marketplace-ca

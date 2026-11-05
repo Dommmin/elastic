@@ -21,9 +21,24 @@ spec:
       labels:
         app: search-consumer
     spec:
+      serviceAccountName: search
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2), sprawdzony na obrazie: cache Symfony jest
+      # rozgrzany w buildzie (var/cache/prod, tylko do odczytu wystarcza), logi
+      # idą na stderr. Zapisywalny jest tylko /tmp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP); pliki /app należą do roota i są czytelne dla wszystkich
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: consumer
           image: ghcr.io/dommmin/elastic-search:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           envFrom:
             - configMapRef:
                 name: marketplace-config
@@ -57,6 +72,10 @@ spec:
           resources:
             requests: { memory: 64Mi, cpu: 50m }
             limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
 ---
 # ============================================================================
 #  search-metrics (ETAP G1) — odpowiednik usługi `search-metrics` z Compose.
@@ -98,10 +117,33 @@ spec:
       labels:
         app: search-metrics
     spec:
+      serviceAccountName: search
+      automountServiceAccountToken: false
+      # Jak search-consumer; do tego Caddy (frankenphp php-server) pisze w /data i /config.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP); pliki /app należą do roota i są czytelne dla wszystkich
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+        # Port 80 bez roota: z allowPrivilegeEscalation: false (no_new_privs) jądro NIE
+        # nadaje capability z pliku frankenphp (catalog.yaml) — exec przechodzi, ale bind(:80) dostaje
+        # „permission denied” (RUNBOOK #086). Sysctl z listy „bezpiecznych” (k8s 1.22+,
+        # dozwolony w profilu restricted) obniża próg portów uprzywilejowanych w sieci
+        # TEGO poda. containerd 2.x ustawia to domyślnie — tu jawnie, żeby nie zależeć od runtime'u.
+        sysctls:
+          - { name: net.ipv4.ip_unprivileged_port_start, value: "0" }
       containers:
         - name: metrics
           image: ghcr.io/dommmin/elastic-search:placeholder
           command: ["frankenphp", "php-server", "--root", "/app/public", "--listen", ":80"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              # frankenphp ma file capability cap_net_bind_service (komentarz w catalog.yaml).
+              add: [NET_BIND_SERVICE]
           envFrom:
             - configMapRef:
                 name: marketplace-config
@@ -139,3 +181,11 @@ spec:
           resources:
             requests: { memory: 48Mi, cpu: 20m }
             limits: { memory: 192Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: caddy-data, mountPath: /data }
+            - { name: caddy-config, mountPath: /config }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: caddy-data, emptyDir: {} }
+        - { name: caddy-config, emptyDir: {} }

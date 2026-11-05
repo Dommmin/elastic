@@ -44,6 +44,22 @@ return Application::configure(basePath: dirname(__DIR__))
         // Pierwszy w łańcuchu: trace_id ma istnieć, zanim ruszy cokolwiek, co loguje.
         $middleware->prepend(AssignTraceId::class);
 
+        // Zaufane proxy (ETAP G2): na k3s TLS kończy Ingress (Traefik) i przekazuje
+        // X-Forwarded-*. TRUSTED_PROXIES = sieć podów (deploy/k8s/config.env); puste
+        // (Compose, dev, testy) = nikt, żeby klient nie podszył się nagłówkiem
+        // X-Forwarded-For pod cudzy adres IP. Zmienna procesu, nie .env: config:cache
+        // nie obejmuje tego miejsca, a prawdziwe env działa i przy cache.
+        $trustedProxies = array_filter(array_map('trim', explode(',', (string) env('TRUSTED_PROXIES', ''))));
+        if ($trustedProxies !== []) {
+            $middleware->trustProxies(
+                at: $trustedProxies,
+                headers: Request::HEADER_X_FORWARDED_FOR
+                    | Request::HEADER_X_FORWARDED_HOST
+                    | Request::HEADER_X_FORWARDED_PORT
+                    | Request::HEADER_X_FORWARDED_PROTO,
+            );
+        }
+
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
 
         $middleware->web(append: [
