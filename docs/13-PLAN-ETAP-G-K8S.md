@@ -1,6 +1,6 @@
 # 13 — ETAP G: Kubernetes na poziomie CKAD + produkcyjna obserwowalność
 
-> **Stan (2026-11-05):** plan przyjęty, G1 w realizacji.
+> **Stan (2026-11-05):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). Następny: G2.
 
 **Cel:** po ETAPIE D2 sklep działa na k3s, ale manifesty pokrywają mniej więcej połowę
 zakresu CKAD, a Prometheus/Grafana/Alertmanager działają tylko lokalnie w Compose.
