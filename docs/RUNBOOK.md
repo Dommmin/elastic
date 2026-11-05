@@ -80,6 +80,7 @@
 | [077](#077) | Alert `GlitchTipEventFlood`; baza GlitchTipa rośnie, bo GlitchTip nie ogranicza przyjmowania | GlitchTip / Prometheus | 11b |
 | [078](#078) | GlitchTip na k3s: włączenie i restart aplikacji po utworzeniu Secretu | GlitchTip / k3s | 11b |
 | [079](#079) | `make k3s-verify`: fałszywe porażki po restarcie bazy, E2E ze starym `Offer::updateWithOutbox`, osierocony ConfigMap | k3s / weryfikacja | 11b |
+| [080](#080) | Eksporter Postgresa na k3s łączy się jako superużytkownik — dług i jak go spłacić | k3s / monitoring | G1 |
 
 ---
 
@@ -3792,6 +3793,43 @@ tinker`, zbuduj `SearchCriteria`, wywołaj `app(App\Services\
 ProductSearchService::class)->buildSearchQuery($criteria)` żeby dostać
 dokładny DSL, wklej do `_explain` przez `make es-analyze` albo bezpośrednio
 `curl` (przykład wyżej).
+
+---
+
+<a id="080"></a>
+## 080 — Eksporter Postgresa na k3s łączy się jako superużytkownik
+
+**Objaw**
+Brak awarii — to świadomy dług z ETAPU G1. `kubectl -n marketplace get sts postgres -o yaml`
+pokazuje kontener `exporter` z `DATA_SOURCE_USER` = `POSTGRES_USER` (superużytkownik) i hasłem
+z `marketplace-secrets/POSTGRES_PASSWORD`.
+
+**Diagnoza**
+```bash
+make k3s k="-n marketplace exec postgres-0 -c postgres -- psql -U postgres -tAc \"select usename, application_name from pg_stat_activity where application_name like '%exporter%' or usename='postgres'\""
+```
+
+**Przyczyna**
+Eksporter potrzebuje tylko odczytu statystyk (`pg_stat_*`), do czego wystarcza wbudowana rola
+`pg_monitor`. Skrypty init z obrazu (`01-databases.sh`) uruchamiają się jednak wyłącznie przy
+PUSTYM katalogu danych — na istniejącym PVC nowej roli nie utworzą. Dodanie jej wymaga jednego
+SQL-a na żywej bazie i nowego klucza w Secrecie, a celem G1 było uruchomienie obserwowalności bez
+ruszania danych.
+
+**Naprawa (spłata długu)**
+1. Na serwerze dopisz `POSTGRES_EXPORTER_PASSWORD=...` do `/opt/marketplace/.env`, w `tools/k3s/secrets.sh`
+   dodaj `--from-literal=POSTGRES_EXPORTER_PASSWORD=...` i uruchom go.
+2. Utwórz rolę (idempotentnie):
+   `psql -U postgres -c "do \$\$ begin create role postgres_exporter login password '...' in role pg_monitor; exception when duplicate_object then null; end \$\$;"`
+   — albo, lepiej, jako `initContainer` eksportera, żeby nowy klaster dostał ją sam.
+3. W `deploy/k8s/postgres.yaml` zmień `DATA_SOURCE_USER`/`DATA_SOURCE_PASS` eksportera i wdroż.
+4. `make k3s-verify faza=monitoring` — `pg_up` ma dalej wynosić 1.
+
+**Czego się nauczyłem**
+Skrypty `docker-entrypoint-initdb.d` to jednorazowy bootstrap, nie migracje: każda zmiana
+uprawnień po pierwszym starcie musi mieć własną, idempotentną ścieżkę (Job, initContainer albo
+migracja aplikacji). Sidecar w podzie bazy nie zwalnia z najmniejszych uprawnień — dzieli z nią
+sieć, ale nie musi dzielić konta.
 
 ---
 
