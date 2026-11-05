@@ -89,7 +89,7 @@ pass = env.find { |e| e['name'] == 'GF_SECURITY_ADMIN_PASSWORD' }
 ok.(pass&.dig('valueFrom', 'secretKeyRef', 'name') == 'grafana-admin', 'Grafana: hasło admina z Secretu grafana-admin')
 deps = of_kind.(chart, 'Deployment') + of_kind.(chart, 'DaemonSet')
 deps.each do |d|
-  lim = d.dig('spec', 'template', 'spec', 'containers').all? { |c| c.dig('resources', 'limits', 'memory') || c['name'] =~ /reloader|sidecar|grafana-sc/ }
+  lim = d.dig('spec', 'template', 'spec', 'containers').all? { |c| c.dig('resources', 'limits', 'memory') || c['name'] =~ /reloader/ }
   ok.(lim, "#{d['kind']} #{d.dig('metadata', 'name')}: limity pamięci")
 end
 

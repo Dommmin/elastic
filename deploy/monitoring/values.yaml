@@ -96,6 +96,11 @@ grafana:
   # zmiana wyklikana w UI znika po restarcie poda — celowo, jak w Compose.
   persistence: { enabled: false }
   sidecar:
+    # Dwa sidecary (dashboardy, źródła danych) — domyślnie bez requestów
+    # i limitów, czyli ~155Mi niewidoczne dla schedulera.
+    resources:
+      requests: { memory: 80Mi, cpu: 5m }
+      limits: { memory: 160Mi }
     dashboards:
       enabled: true
       # ConfigMapy z tą etykietą sidecar wczytuje jako dashboardy
@@ -113,9 +118,12 @@ grafana:
       alertmanager:
         enabled: true
         uid: alertmanager
+  # Zmierzone na VPS po instalacji (2026-11-05, kubectl top --containers):
+  # grafana 275Mi, każdy sidecar ~78Mi. Request = typowe zużycie (scheduler
+  # rezerwuje tyle, ile pod naprawdę bierze), limit z zapasem ~2x.
   resources:
-    requests: { memory: 128Mi, cpu: 50m }
-    limits: { memory: 384Mi }
+    requests: { memory: 256Mi, cpu: 50m }
+    limits: { memory: 512Mi }
 
 # --- operator i eksportery --------------------------------------------------------
 prometheusOperator:
