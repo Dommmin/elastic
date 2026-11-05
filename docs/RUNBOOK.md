@@ -83,6 +83,11 @@
 | [080](#080) | Eksporter Postgresa na k3s łączy się jako superużytkownik — dług i jak go spłacić | k3s / monitoring | G1 |
 | [081](#081) | Na k3s `CatalogHttpErrorRate` milczy, panele HTTP w Grafanie puste — Caddy daje `host="_other"` | k3s / monitoring | G1 |
 | [082](#082) | `kubectl apply -f -` z heredoca w verify.sh nic nie tworzy — proces w tle dostaje stdin z /dev/null | k3s / skrypty | G1 |
+| [083](#083) | HPA skaluje catalog-app do 3, a po `make k3s-deploy` znów jest 1 replika — `replicas` w manifeście | k3s / HPA | G2 |
+| [084](#084) | `Deployment.apps "catalog-app" is invalid: spec.selector … field is immutable` przy dodaniu `track` | k3s / Deployment | G2 |
+| [085](#085) | Na k3s płatność nigdy nie jest potwierdzana — webhook bramki leci na localhost workera | k3s / ETAP F | G2 |
+| [086](#086) | `exec: frankenphp: Operation not permitted` po `capabilities: drop: [ALL]` | k3s / securityContext | G2 |
+| [087](#087) | Plan zakładał ingress-nginx, a projekt jest wycofany — Traefik przez standardowy Ingress | k3s / Ingress | G2 |
 
 ---
 
@@ -3912,6 +3917,159 @@ Alertmanager zamyka alert dopiero po `endsAt` (kilka minut).
 Wrapper z timeoutem przez `&` zmienia semantykę stdin. Każdy test, który ma
 coś utworzyć, powinien najpierw sprawdzić, że to powstało — inaczej kolejny
 krok (tu: „czy alert dotarł”) pokazuje mylący objaw daleko od przyczyny.
+
+<a id="083"></a>
+## 083 — HPA skaluje catalog-app do 3, a po `make k3s-deploy` znów jest 1 replika
+
+> ETAP G2, projekt manifestów, 2026-11-05 — wpis zapobiegawczy (pułapka znana z CKAD).
+
+**Objaw**
+W środku szczytu ruchu HPA trzyma 3 repliki catalog-app. Ktoś robi `make k3s-deploy`
+i natychmiast zostaje 1 pod, który się dławi, aż HPA po minucie znów doda dwa.
+
+**Diagnoza**
+`kubectl get deploy catalog-app -o yaml` — `spec.replicas: 1`, a w
+`kubectl.kubernetes.io/last-applied-configuration` też `replicas: 1`.
+
+**Przyczyna**
+Dwóch właścicieli jednego pola. HPA zapisuje `spec.replicas` przez subresource
+`scale`, a `kubectl apply` traktuje wartość z pliku jako stan docelowy i ją
+przywraca. Wygrywa ten, kto pisał ostatni.
+
+**Naprawa**
+Z manifestu catalog-app pole `replicas` usunięte (komentarz w `deploy/k8s/catalog.yaml`),
+test w `tools/k3s/ckad-check.rb` pilnuje, że nie wróci. Pierwszy apply po zmianie
+usuwa pole z last-applied: API ustawia domyślne 1, od tej chwili liczbą replik
+rządzi tylko HPA.
+
+**Czego się nauczyłem**
+Każde pole ma jednego właściciela. Jeśli kontroler (HPA, VPA, operator) zarządza
+polem, to pole znika z manifestu w repo — inaczej GitOps i kontroler walczą.
+
+<a id="084"></a>
+## 084 — `spec.selector … field is immutable` przy dodaniu `track` do catalog-app
+
+> ETAP G2, `kubectl apply --dry-run=server` przed wdrożeniem, 2026-11-05.
+
+**Objaw**
+```
+Deployment.apps "catalog-app" is invalid: spec.selector: Invalid value:
+{"matchLabels":{"app":"catalog-app","track":"stable"}}: field is immutable
+```
+
+**Diagnoza**
+Canary (osobny Deployment za tym samym Service) wymaga rozłącznych selektorów:
+stabilny `{app, track: stable}`, canary `{app, track: canary}`. Stary selektor
+`{app: catalog-app}` pasowałby do podów canary.
+
+**Przyczyna**
+Selektor Deploymentu jest niezmienny od apps/v1 — zmiana oznaczałaby, że
+istniejące ReplicaSety nagle „nie należą” do Deploymentu.
+
+**Naprawa**
+Jednorazowo w `tools/k3s/deploy.sh` (krok 3/3): gdy żywy selektor nie ma `track`,
+`kubectl delete deploy/catalog-app --cascade=orphan` — Deployment znika, pody zostają
+i dalej obsługują ruch przez Service. Nowy Deployment ich nie przejmuje (brak etykiety
+`track`), startuje własne; po jego rolloucie `kubectl delete rs -l 'app=catalog-app,!track'`.
+Zero przerwy w ruchu.
+
+**Czego się nauczyłem**
+Etykiety w selektorze projektuje się na początku, z myślą o przyszłych
+Deploymentach za tym samym Service. `--cascade=orphan` to sposób na wymianę
+kontrolera bez ruszania podów (ten sam trik działa przy zmianie StatefulSetu
+z `volumeClaimTemplates`).
+
+<a id="085"></a>
+## 085 — Na k3s płatność nigdy nie jest potwierdzana
+
+> ETAP G2, rozpisywanie przepływów pod NetworkPolicy, 2026-11-05.
+
+**Objaw**
+Brak objawu na produkcji tylko dlatego, że nie było jeszcze zamówień
+(`select count(*) from orders` = 0). Każde zamówienie utknęłoby w oczekiwaniu na
+płatność i wygasło po sweepie `orders:expire-overdue`.
+
+**Diagnoza**
+Przy wypisywaniu „kto z kim rozmawia” dla NetworkPolicy: `SendPaymentWebhookJob`
+(catalog-worker) robi `POST config('services.fake_gateway.webhook_url')`.
+`kubectl exec deploy/catalog-worker -- env | grep GATEWAY` — pusto. Domyślny URL to
+`http://localhost/webhooks/payments`, czyli pod workera, w którym nic nie słucha.
+Do tego `PaymentWebhookController` bez `FAKE_GATEWAY_WEBHOOK_SECRET` odrzuca każdy
+webhook (500, fail closed).
+
+**Przyczyna**
+Compose ustawia `FAKE_GATEWAY_*` w `compose.yaml`; przenosząc stack na k3s (D2)
+przeniesiono zmienne z `.env`, a tych tam nie było — miały domyślne wartości w compose.
+
+**Naprawa**
+`deploy/k8s/config.env`: `FAKE_GATEWAY_WEBHOOK_URL=http://catalog-app/webhooks/payments`.
+Sekret: opcjonalny klucz `FAKE_GATEWAY_WEBHOOK_SECRET` w `marketplace-secrets`
+(`tools/k3s/secrets.sh` dodaje go, gdy jest w `/opt/marketplace/.env`), wpięty do
+catalog-app (sprawdza) i catalog-worker (podpisuje). Na serwerze jednorazowo:
+`echo "FAKE_GATEWAY_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> /opt/marketplace/.env`
+i ponownie `secrets.sh`. NetworkPolicy ma trasę catalog-worker -> catalog-app:80.
+
+**Czego się nauczyłem**
+Rozpisanie przepływów sieciowych to audyt konfiguracji za darmo: każda trasa
+„kto -> dokąd” musi mieć źródło adresu i hasła. Domyślne wartości w compose.yaml
+to konfiguracja, której nie widać w `.env`.
+
+<a id="086"></a>
+## 086 — `exec: frankenphp: Operation not permitted` po `drop: [ALL]`
+
+> ETAP G2, test obrazu przed wdrożeniem (`docker run --cap-drop ALL`), 2026-11-05.
+
+**Objaw**
+```
+/usr/local/bin/catalog-entrypoint.sh: 16: exec: frankenphp: Operation not permitted
+```
+Kontener kończy się kodem 126. Ten sam obraz z `--user 33` bez `--cap-drop` działa.
+
+**Diagnoza**
+`getcap /usr/local/bin/frankenphp` → `cap_net_bind_service=ep`. Obraz FrankenPHP
+daje binarce file capability, żeby nie-root mógł słuchać na porcie 80.
+
+**Przyczyna**
+Przy `exec` jądro chce nadać procesowi capability z pliku. Jeśli jej nie ma
+w zbiorze ograniczającym (bounding set) — a `drop: [ALL]` go opróżnia — a plik ma
+bit „effective”, exec kończy się EPERM, zamiast uruchomić proces bez uprawnienia.
+
+**Naprawa**
+`capabilities: { drop: [ALL], add: [NET_BIND_SERVICE] }` tylko dla kontenerów
+uruchamiających frankenphp (catalog-app, search-metrics); `php artisan` i
+`bin/console` (zwykłe `php`) działają z pustym zbiorem. `ckad-check.rb` pilnuje,
+że NET_BIND_SERVICE nie pojawia się nigdzie indziej.
+
+**Czego się nauczyłem**
+`drop: [ALL]` zmienia nie tylko to, co proces może, ale też to, CZY binarka
+z file capabilities w ogóle wystartuje. Profil bezpieczeństwa testuje się na
+obrazie przed wdrożeniem (`docker run --user … --read-only --cap-drop ALL`), nie na produkcji.
+
+<a id="087"></a>
+## 087 — Plan zakładał ingress-nginx, a projekt jest wycofany
+
+> ETAP G2, wybór kontrolera Ingress, 2026-11-05.
+
+**Objaw**
+Plan G2 (`docs/13-PLAN-ETAP-G-K8S.md`) mówił „ingress-nginx przez Helm”.
+
+**Diagnoza**
+Społeczność Kubernetesa ogłosiła wycofanie ingress-nginx; utrzymanie (łatki
+bezpieczeństwa) skończyło się w marcu 2026. Nowa instalacja na listopad 2026 to
+dług od pierwszego dnia.
+
+**Przyczyna**
+Plan powstał z pamięci „domyślnego wyboru”, bez sprawdzenia stanu projektu.
+
+**Naprawa**
+Traefik (chart 42.1.3, Traefik v3.7.16) — domyślny Ingress w k3s, tu instalowany
+osobno, z Service ClusterIP (bez portów na węźle). Routing przez STANDARDOWY obiekt
+`networking.k8s.io/v1 Ingress`, nie przez CRD IngressRoute — manifesty nie wiążą
+się z kontrolerem. Następny krok w tym kierunku to Gateway API.
+
+**Czego się nauczyłem**
+Przy każdym nowym komponencie: sprawdź status projektu i datę ostatniego wydania,
+zanim przypniesz wersję. „Wszyscy tego używają” to informacja o przeszłości.
 
 ---
 
