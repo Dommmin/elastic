@@ -439,6 +439,10 @@ k3s-canary-abort: ## Usuń canary — ruch wraca do stabilnych podów
 k3s-ingress: ## Zainstaluj/zaktualizuj cert-manager, Traefik, CA i Ingressy (sklep, Grafana, Kibana)
 	@bash tools/k3s/install-ingress.sh
 
+.PHONY: k3s-ingress-check
+k3s-ingress-check: ## Ingress bez klastra: render chartu Traefika, certyfikaty i Ingressy (CI)
+	@bash tools/k3s/ingress-check.sh
+
 .PHONY: k3s-ingress-tunnel
 k3s-ingress-tunnel: ## Tunel https://*.marketplace.test:8443 -> Traefik w klastrze (+ wpis do /etc/hosts, patrz przewodnik G2)
 	@bash tools/k3s/ingress-tunnel.sh
