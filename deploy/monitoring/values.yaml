@@ -1,0 +1,137 @@
+# ============================================================================
+#  kube-prometheus-stack na k3s (ETAP G1 — docs/13-PLAN-ETAP-G-K8S.md)
+#
+#  Instalacja: make k3s-monitoring   (tools/k3s/install-monitoring.sh)
+#  Wersja chartu jest przypięta w skrypcie (CHART_VERSION). Tu są TYLKO
+#  różnice względem domyślnych wartości chartu — pełną listę pokaże:
+#    helm show values prometheus-community/kube-prometheus-stack --version <wersja>
+#
+#  Co instaluje chart (jednym `helm upgrade --install`):
+#    - Prometheus Operator + CRD (Prometheus, ServiceMonitor, PrometheusRule…)
+#    - Prometheus, Alertmanager (obiekty CRD, które operator zamienia w StatefulSety)
+#    - Grafana z dashboardami dla Kubernetesa
+#    - node-exporter (DaemonSet: metryki maszyny) i kube-state-metrics
+#      (metryki OBIEKTÓW: ile replik gotowych, który pod w CrashLoopBackOff)
+# ============================================================================
+
+# Krótkie nazwy obiektów: kps-prometheus, kps-alertmanager, kps-operator
+# zamiast kps-kube-prometheus-stack-prometheus itd.
+fullnameOverride: kps
+
+# --- k3s: kontroler, scheduler, proxy i etcd żyją w JEDNYM procesie k3s -----
+# Nie wystawiają osobnych endpointów metryk tam, gdzie chart ich szuka, więc
+# ich ServiceMonitory dawałyby `up == 0`, a reguły — fałszywe alarmy od
+# pierwszej minuty (w tym nasz TargetDown z ETAPU 11).
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }
+kubeEtcd: { enabled: false }
+
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeProxy: false
+    windows: false
+
+windowsMonitoring: { enabled: false }
+
+# --- Prometheus ---------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    # 15 s jak w Compose: reguły z ETAPU 11 zakładają 4 oceny na `for: 1m`
+    # i co najmniej 4 próbki w oknie `rate(...[1m])`. Domyślne 30 s dałoby
+    # 2 próbki — rate na granicy, alerty migające.
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+
+    # Bez tego operator bierze TYLKO obiekty z etykietą `release: <nazwa
+    # releasu Helma>`. Nasze ServiceMonitory i PrometheusRule są w repo,
+    # poza chartem — i bez tej etykiety Prometheus by ich nie widział
+    # (najczęstszy „dlaczego mój ServiceMonitor nic nie robi”).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+    retention: 7d
+    # Twardy limit niezależny od czasu: dysk VPS jest współdzielony z ES.
+    retentionSize: 4GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 5Gi
+
+    resources:
+      requests: { memory: 512Mi, cpu: 100m }
+      limits: { memory: 1536Mi }
+
+# --- Alertmanager ---------------------------------------------------------------
+# Domyślna konfiguracja chartu kieruje wszystko do odbiorcy "null": alerty są
+# widoczne w UI Alertmanagera i w Grafanie, ale nikt nie dostaje maila. Na
+# serwerze nie ma SMTP; kanał powiadomień to jedna sekcja `alertmanager.config`
+# (receivers + route) — przykład w przewodniku etap-g1-monitoring-k3s.md.
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { memory: 32Mi, cpu: 10m }
+      limits: { memory: 128Mi }
+
+# --- Grafana --------------------------------------------------------------------
+grafana:
+  # Hasło admina z Secretu tworzonego przez install-monitoring.sh (losowe przy
+  # pierwszej instalacji). Bez tego chart generuje własne przy KAŻDYM upgrade.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  # Bez trwałego dysku: dashboardy i źródła danych są w repo (ConfigMapy),
+  # zmiana wyklikana w UI znika po restarcie poda — celowo, jak w Compose.
+  persistence: { enabled: false }
+  sidecar:
+    dashboards:
+      enabled: true
+      # ConfigMapy z tą etykietą sidecar wczytuje jako dashboardy
+      # (deploy/monitoring/kustomization.yaml dodaje ją naszym dwóm).
+      label: grafana_dashboard
+      labelValue: "1"
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      # uid-y `prometheus` i `alertmanager` — takie same jak w Compose
+      # (infra/obs/grafana/provisioning), bo dashboardy wskazują źródło po uid.
+      defaultDatasourceEnabled: true
+      uid: prometheus
+      alertmanager:
+        enabled: true
+        uid: alertmanager
+  resources:
+    requests: { memory: 128Mi, cpu: 50m }
+    limits: { memory: 384Mi }
+
+# --- operator i eksportery --------------------------------------------------------
+prometheusOperator:
+  resources:
+    requests: { memory: 64Mi, cpu: 20m }
+    limits: { memory: 256Mi }
+
+kube-state-metrics:
+  resources:
+    requests: { memory: 48Mi, cpu: 10m }
+    limits: { memory: 192Mi }
+
+prometheus-node-exporter:
+  # node-exporter działa w sieci HOSTA (widzi prawdziwe interfejsy i dyski),
+  # więc słucha na 9100 publicznego adresu VPS. Zamknięty jest tylko dzięki
+  # ufw — `make k3s-verify faza=exposure` sprawdza 9100 z zewnątrz.
+  resources:
+    requests: { memory: 24Mi, cpu: 10m }
+    limits: { memory: 64Mi }

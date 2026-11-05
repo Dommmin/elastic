@@ -13,6 +13,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
+  labels:
+    # Po tej etykiecie ServiceMonitor (deploy/monitoring) znajduje Service.
+    app: postgres
 spec:
   clusterIP: None
   selector:
@@ -20,6 +23,9 @@ spec:
   ports:
     - name: postgres
       port: 5432
+    # Sidecar postgres-exporter (ETAP G1) — scrape przez ServiceMonitor.
+    - name: metrics
+      port: 9187
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -35,6 +41,11 @@ spec:
     metadata:
       labels:
         app: postgres
+      annotations:
+        # Pod ma dwa kontenery (baza + eksporter). `kubectl exec/logs postgres-0`
+        # bez `-c` trafia wtedy tutaj — skrypty (verify.sh, migrate-from-compose.sh)
+        # i nawyki z D2 działają bez zmian.
+        kubectl.kubernetes.io/default-container: postgres
     spec:
       containers:
         - name: postgres
@@ -89,6 +100,38 @@ spec:
             # Postgres 18: punkt montowania /var/lib/postgresql (komentarz w compose.yaml)
             - name: data
               mountPath: /var/lib/postgresql
+        # --------------------------------------------------------------------
+        # Eksporter metryk jako DRUGI kontener w podzie bazy (ETAP G1) — wzorzec
+        # „adapter” z CKAD: tłumaczy stan Postgresa na format Prometheusa.
+        # Dlaczego w tym samym podzie, a nie osobny Deployment:
+        #   - łączy się po localhost (te same namespace sieciowe kontenerów poda),
+        #     więc nie potrzebuje Service do bazy ani reguły NetworkPolicy (G2);
+        #   - żyje i umiera razem z bazą: eksporter bez bazy jest bezużyteczny.
+        # Kompromis: konto superużytkownika z istniejącego Secretu. Osobna rola
+        # z `pg_monitor` wymagałaby SQL na istniejącym PVC (skrypty init z obrazu
+        # działają tylko przy pustym katalogu danych) — RUNBOOK #080.
+        # Uwaga: zmiana tego szablonu = restart postgres-0 (StatefulSet, 1 replika).
+        - name: exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+          env:
+            - name: DATA_SOURCE_URI
+              value: localhost:5432/postgres?sslmode=disable
+            - name: DATA_SOURCE_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: POSTGRES_USER } }
+            - name: DATA_SOURCE_PASS
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: POSTGRES_PASSWORD } }
+          ports:
+            - name: metrics
+              containerPort: 9187
+          # /metrics odpowiada też, gdy baza leży (pg_up 0) — sonda pilnuje
+          # tylko samego eksportera, żeby awaria bazy nie restartowała go w kółko.
+          livenessProbe:
+            httpGet: { path: /metrics, port: 9187 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: { memory: 24Mi, cpu: 10m }
+            limits: { memory: 96Mi }
   volumeClaimTemplates:
     - metadata:
         name: data

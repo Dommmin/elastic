@@ -22,6 +22,7 @@ metadata:
   name: glitchtip
   labels:
     app.kubernetes.io/component: errors
+    app: glitchtip
 spec:
   selector:
     app: glitchtip

@@ -9,6 +9,9 @@
 #    - deploy-check.sh: strażnik k3s i węzły klastra w pierwszym `up` (atrapy ssh/scp).
 #    - manifests-check.sh + glitchtip-step-check.sh: manifesty k8s (kustomize) i krok GlitchTipa
 #      w tools/k3s/deploy.sh, bez klastra.
+#    - monitoring-check.sh (ETAP G1): PrometheusRule zsynchronizowany z regułami ETAPU 11,
+#      każdy ServiceMonitor trafia w istniejący Service i port, render chartu z values.yaml
+#      (helm jest w obrazie ubuntu-24.04 runnera).
 #
 #  Bezpieczeństwo workflow: wyzwalacz pull_request (nie pull_request_target), token
 #  tylko do odczytu, żadnych sekretów, akcje przypięte do pełnego SHA.
@@ -24,6 +27,9 @@ on:
       - tools/vps/**
       - infra/glitchtip/**
       - deploy/k8s/**
+      - deploy/monitoring/**
+      - infra/obs/prometheus/rules/**
+      - infra/obs/grafana/dashboards/**
       - tools/k3s/**
       - .github/workflows/prod-compose.yml
   workflow_dispatch:
@@ -57,3 +63,6 @@ jobs:
 
       - name: Krok GlitchTipa w tools/k3s/deploy.sh
         run: bash tools/k3s/glitchtip-step-check.sh
+
+      - name: Monitoring k3s (reguły, ServiceMonitory, chart)
+        run: bash tools/k3s/monitoring-check.sh

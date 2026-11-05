@@ -1,0 +1,35 @@
+# ============================================================================
+#  Obiekty monitoringu marketplace (ETAP G1) — nakładane PO instalacji
+#  kube-prometheus-stack (tools/k3s/install-monitoring.sh), bo potrzebują
+#  CRD ServiceMonitor/PrometheusRule, które instaluje chart.
+#
+#  Dlatego NIE są częścią deploy/k8s: `make k3s-deploy` na klastrze bez
+#  monitoringu padłby na „no matches for kind ServiceMonitor”.
+#
+#  Render wymaga --load-restrictor LoadRestrictionsNone: dashboardy leżą
+#  w infra/obs/grafana/dashboards (wspólne z Compose), poza tym katalogiem.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+
+resources:
+  - servicemonitors.yaml
+  - prometheus-rule.yaml
+
+generatorOptions:
+  # Bez hasha: sidecar Grafany czyta ConfigMapy po etykiecie, nie po nazwie,
+  # a hash zostawiałby stare kopie (dwa razy ten sam dashboard).
+  disableNameSuffixHash: true
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: Marketplace
+
+configMapGenerator:
+  - name: dashboard-marketplace-overview
+    files:
+      - ../../infra/obs/grafana/dashboards/marketplace-overview.json
+  - name: dashboard-marketplace-ordering
+    files:
+      - ../../infra/obs/grafana/dashboards/ordering.json

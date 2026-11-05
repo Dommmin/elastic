@@ -57,3 +57,85 @@ spec:
           resources:
             requests: { memory: 64Mi, cpu: 50m }
             limits: { memory: 512Mi }
+---
+# ============================================================================
+#  search-metrics (ETAP G1) — odpowiednik usługi `search-metrics` z Compose.
+#  search nie ma HTTP, więc /metrics (MetricsController) serwuje ten sam obraz
+#  uruchomiony jako `frankenphp php-server`. Osobny Deployment, NIE sidecar
+#  konsumenta: metryki opisują kolejkę i bazę, nie proces konsumenta — nie
+#  chcemy, żeby restart konsumenta gasił metryki (i na odwrót).
+#  Bez etykiety `app: search-consumer` na Deploymencie: deploy.sh wdraża go
+#  razem z catalogiem (OTHER_APPS_SEL), bo tylko czyta.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-metrics
+  labels:
+    app.kubernetes.io/component: app
+    app: search-metrics
+spec:
+  selector:
+    app: search-metrics
+  ports:
+    - name: metrics
+      port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-metrics
+  labels:
+    app.kubernetes.io/component: app
+    app: search-metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search-metrics
+  template:
+    metadata:
+      labels:
+        app: search-metrics
+    spec:
+      containers:
+        - name: metrics
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["frankenphp", "php-server", "--root", "/app/public", "--listen", ":80"]
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            - name: ERROR_TRACKING_PROCESS
+              value: metrics
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_SEARCH, optional: true } }
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+          ports:
+            - name: metrics
+              containerPort: 80
+          # Endpoint zwraca 200 także przy błędzie odczytu (search_metrics_scrape_error 1,
+          # patrz MetricsController) — sonda sprawdza więc proces i HTTP, nie zależności.
+          readinessProbe:
+            httpGet: { path: /metrics, port: 80 }
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /metrics, port: 80 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: { memory: 48Mi, cpu: 20m }
+            limits: { memory: 192Mi }
