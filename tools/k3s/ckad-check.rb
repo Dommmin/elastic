@@ -104,6 +104,8 @@ WORKLOADS.each do |w|
     cmd = Array(c["command"]) + Array(c["args"])
     frankenphp = cmd.empty? || cmd.first == "frankenphp"
     ok(frankenphp && c["image"].to_s.match?(/elastic-(catalog|search)/), "#{w[:kind]}/#{w[:name]} [#{c['name']}]: NET_BIND_SERVICE tylko dla procesu frankenphp")
+    sysctl = (w[:spec].dig("securityContext", "sysctls") || []).find { |x| x["name"] == "net.ipv4.ip_unprivileged_port_start" }
+    ok(sysctl && sysctl["value"] == "0", "#{w[:kind]}/#{w[:name]}: sysctl ip_unprivileged_port_start=0 (no_new_privs blokuje capability z pliku przy bind :80)")
   end
 end
 
@@ -341,7 +343,7 @@ ok(!vap.nil? && !vapb.nil?, "Admission: ValidatingAdmissionPolicy + Binding depl
 if vap && vapb
   rules = vap.dig("spec", "matchConstraints", "resourceRules") || []
   kinds = rules.flat_map { |r| r["resources"] }
-  ok(%w[pods deployments statefulsets jobs cronjobs].all? { |k| kinds.include?(k) }, "Admission: obejmuje pods, deployments, statefulsets, jobs, cronjobs")
+  ok(%w[pods deployments statefulsets jobs cronjobs elasticsearches kibanas].all? { |k| kinds.include?(k) }, "Admission: obejmuje pods, deployments, statefulsets, jobs, cronjobs i CR-y ECK (podTemplate)")
   cond = (vap.dig("spec", "matchConditions") || []).map { |c| c["expression"] }.join(" ")
   ok(cond.include?("system:serviceaccount:marketplace:deployer"), "Admission: tylko żądania od deployera (admin bez zmian)")
   exprs = (vap.dig("spec", "validations") || []).map { |v| v["expression"] }.join(" ")

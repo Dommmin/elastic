@@ -121,6 +121,12 @@ Co wyszło (każdy punkt to zmiana w manifeście):
    file capability `cap_net_bind_service=ep`, a przy pustym zbiorze ograniczającym
    exec kończy się EPERM. Dlatego catalog-app i search-metrics dostają
    `add: [NET_BIND_SERVICE]`. Procesy `php artisan` i `bin/console` nie potrzebują nic.
+   **Ale to nie wystarcza do słuchania na :80** (wyłapał recenzent). Przy
+   `allowPrivilegeEscalation: false` jądro nie nadaje capability z pliku i `bind(:80)`
+   dostaje „permission denied”. Mój test przeszedł tylko dlatego, że Docker ustawia
+   domyślnie `ip_unprivileged_port_start=0`. Z `--sysctl …=1024` kontener pada. Pody
+   z frankenphp mają więc jawny sysctl `net.ipv4.ip_unprivileged_port_start: "0"`.
+   Jest bezpieczny i dozwolony w restricted, a dotyczy tylko sieci tego poda.
 2. **`mkdir /data/caddy: permission denied`.** Caddy trzyma lokalne CA
    (`local_certs`) w `XDG_DATA_HOME=/data`, a autosave w `/config`. Obie ścieżki
    dostały emptyDir. Druga linia w logu, `failed to install root certificate`, to
@@ -211,6 +217,10 @@ CEL wbudowany w API server). Działa tylko dla żądań od deployera i odrzuca:
 - `hostNetwork`, `hostPID` i `hostIPC`,
 - capabilities poza `NET_BIND_SERVICE`,
 - hostPath inny niż katalog backupu.
+
+Drugi przegląd złapał obejście: pody Elasticsearch i Kibany tworzy operator
+ECK (inne konto), ale z `podTemplate`, który wpisuje deployer. Polityka obejmuje
+więc także `elasticsearches` i `kibanas`.
 
 `ckad-check.rb` sprawdza, że nasze obciążenia tę politykę przechodzą. Faza
 `hardening` próbuje jako deployer utworzyć pod privileged (`--dry-run=server`)

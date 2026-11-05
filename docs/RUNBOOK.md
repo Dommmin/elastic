@@ -4036,14 +4036,24 @@ bit „effective”, exec kończy się EPERM, zamiast uruchomić proces bez upra
 
 **Naprawa**
 `capabilities: { drop: [ALL], add: [NET_BIND_SERVICE] }` tylko dla kontenerów
-uruchamiających frankenphp (catalog-app, search-metrics); `php artisan` i
-`bin/console` (zwykłe `php`) działają z pustym zbiorem. `ckad-check.rb` pilnuje,
-że NET_BIND_SERVICE nie pojawia się nigdzie indziej.
+uruchamiających frankenphp (catalog-app, search-metrics) — to naprawia sam exec.
+`php artisan` i `bin/console` (zwykłe `php`) działają z pustym zbiorem.
+
+**Druga warstwa (znalazł recenzent, potwierdzone testem):** przy
+`allowPrivilegeEscalation: false` (no_new_privs) jądro NIE nadaje capability z pliku —
+exec przechodzi, ale `bind(:80)` kończy się `permission denied`. Lokalny test przeszedł
+tylko dlatego, że Docker (i containerd 2.x na k3s) ustawia domyślnie
+`net.ipv4.ip_unprivileged_port_start=0`. Z `--sysctl net.ipv4.ip_unprivileged_port_start=1024`
+ten sam kontener pada. Dlatego pody z frankenphp mają jawnie
+`securityContext.sysctls: [{ name: net.ipv4.ip_unprivileged_port_start, value: "0" }]`
+(sysctl „bezpieczny”, dozwolony w profilu restricted) — zmiana runtime'u nie zgasi portu 80.
+`ckad-check.rb` pilnuje obu rzeczy.
 
 **Czego się nauczyłem**
 `drop: [ALL]` zmienia nie tylko to, co proces może, ale też to, CZY binarka
 z file capabilities w ogóle wystartuje. Profil bezpieczeństwa testuje się na
-obrazie przed wdrożeniem (`docker run --user … --read-only --cap-drop ALL`), nie na produkcji.
+obrazie przed wdrożeniem (`docker run --user … --read-only --cap-drop ALL`), nie na produkcji —
+i z tymi samymi domyślnymi ustawieniami jądra co na klastrze, inaczej test sprawdza co innego.
 
 <a id="087"></a>
 ## 087 — Plan zakładał ingress-nginx, a projekt jest wycofany

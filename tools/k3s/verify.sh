@@ -542,6 +542,12 @@ YAML
   check "deployer: pod privileged odrzucony przez admission (deployer-pod-guard)" "1" \
     "$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" create --dry-run=server --as="${sa}" -f "${pf}" 2>&1 | grep -c 'privileged niedozwolone')"
   rm -f "${pf}"
+  # Ta sama bramka dla CR-ów ECK: pod tworzy operator, ale z podTemplate od deployera.
+  check "deployer: privileged w podTemplate Elasticsearch odrzucony" "1" \
+    "$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" -n marketplace patch elasticsearch marketplace --dry-run=server --as="${sa}" --type=json \
+      -p '[{"op":"add","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/securityContext","value":{"privileged":true}}]' 2>&1 | grep -c 'privileged niedozwolone')"
+  check "ValidatingAdmissionPolicy: bez ostrzeżeń typów CEL" "0" \
+    "$(k get validatingadmissionpolicy deployer-pod-guard -o json | jq '[.status.typeChecking.expressionWarnings[]?] | length')"
   check "konto catalog: zero uprawnień w API" "no" "$(k auth can-i list pods -n marketplace --as=system:serviceaccount:marketplace:catalog)"
 }
 

@@ -63,6 +63,13 @@ spec:
         runAsGroup: 33
         fsGroup: 33
         seccompProfile: { type: RuntimeDefault }
+        # Port 80 bez roota: z allowPrivilegeEscalation: false (no_new_privs) jądro NIE
+        # nadaje capability z pliku frankenphp — exec przechodzi, ale bind(:80) dostaje
+        # „permission denied” (RUNBOOK #086). Sysctl z listy „bezpiecznych” (k8s 1.22+,
+        # dozwolony w profilu restricted) obniża próg portów uprzywilejowanych w sieci
+        # TEGO poda. containerd 2.x ustawia to domyślnie — tu jawnie, żeby nie zależeć od runtime'u.
+        sysctls:
+          - { name: net.ipv4.ip_unprivileged_port_start, value: "0" }
       # readOnlyRootFilesystem zamyka /app, a Laravel pisze w storage/ (widoki,
       # cache) i bootstrap/cache/ (config:cache w catalog-entrypoint.sh). Pusty
       # emptyDir zakryłby to, co obraz ma tam już gotowe (route:cache, view:cache),
@@ -90,10 +97,11 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-              # Binarka frankenphp ma file capability cap_net_bind_service=ep
-              # (żeby nie-root mógł słuchać na :80). Gdy tej capability nie ma
-              # w zbiorze ograniczającym kontenera, exec kończy się EPERM:
-              # „exec: frankenphp: Operation not permitted” — sprawdzone.
+              # Binarka frankenphp ma file capability cap_net_bind_service=ep.
+              # Gdy tej capability nie ma w zbiorze ograniczającym kontenera, exec
+              # kończy się EPERM: „exec: frankenphp: Operation not permitted”.
+              # Samo słuchanie na :80 daje sysctl poda wyżej (no_new_privs blokuje
+              # nadanie capability z pliku) — RUNBOOK #086.
               add: [NET_BIND_SERVICE]
           envFrom:
             - configMapRef:
