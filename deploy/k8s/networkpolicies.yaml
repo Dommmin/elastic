@@ -1,0 +1,274 @@
+# ============================================================================
+#  NetworkPolicy w namespace marketplace (ETAP G2)
+#
+#  Do G2 sieć podów była płaska: każdy pod w klastrze mógł otworzyć połączenie
+#  z każdym (Postgres, Redis, RabbitMQ, ES — porty i hasła to jedyna ochrona).
+#  Egzekwuje to wbudowany w k3s kontroler polityk (kube-router, reguły iptables
+#  na węźle) — bez instalowania Calico/Cilium.
+#
+#  Model (od najszerszego):
+#    1. default-deny        — nic nie wchodzi i nic nie wychodzi
+#    2. allow-dns           — każdy pod może pytać CoreDNS (inaczej `postgres`
+#                             się nie rozwiązuje i wszystko wygląda na awarię bazy)
+#    3. allow-egress-in-namespace — wychodzić wolno tylko do podów tego namespace
+#    4. <serwer>-ingress    — każdy SERWER wymienia klientów, od których przyjmuje
+#                             ruch, i na które porty
+#
+#  Dlaczego egress „do całego namespace”, a nie para po parze: każdą trasę trzeba
+#  by wtedy opisać DWA razy (egress klienta + ingress serwera) i przy każdej
+#  zmianie pilnować obu. Ingress po stronie serwera decyduje, czy połączenie
+#  dojdzie, a egress zamyka to, co naprawdę groźne przy włamaniu: wyjście do
+#  internetu (wyciek danych, pobranie narzędzi) i do innych namespace.
+#
+#  Zasada list klientów: „kto ma hasło do usługi, ten ma do niej trasę” — klient
+#  bez danych logowania (env w manifestach) nie dostaje trasy. Ta sama tabela
+#  jest w tools/k3s/ckad-check.rb (ALLOWED/DENIED) i jest sprawdzana w CI bez
+#  klastra, a na klastrze: `make k3s-verify faza=netpol`.
+#
+#  Port-forward (`make k3s-ui`, tunel do Kibany, verify.sh) omija polityki:
+#  kubelet łączy się z podem z jego WŁASNEJ przestrzeni sieciowej. Sondy kubeleta
+#  też przechodzą — kube-router przepuszcza ruch z adresu węzła.
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}          # wszystkie pody w namespace, także przyszłe
+  policyTypes: [Ingress, Egress]
+  # brak `ingress:` i `egress:` = zero dozwolonego ruchu
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:       # W TYM SAMYM elemencie listy = AND (CoreDNS w kube-system)
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }   # odpowiedzi > 512 B i retry po obcięciu idą po TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-in-namespace
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector: {}    # sam podSelector = pody TEGO namespace
+---
+# ----------------------------------------------------------------- Postgres --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - catalog-app        # także canary (ta sama etykieta app)
+                  - outbox-publisher
+                  - catalog-worker
+                  - catalog-scheduler
+                  - migrate
+                  - search-consumer
+                  - search-metrics     # failure transport Messengera (doctrine://)
+                  - glitchtip
+                  - glitchtip-db-setup
+                  - glitchtip-setup
+                  - pg-backup
+      ports:
+        - port: 5432
+    # Sidecar postgres-exporter — tylko Prometheus i tylko port metryk.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - port: 9187
+---
+# -------------------------------------------------------------------- Redis --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+spec:
+  podSelector:
+    matchLabels: { app: redis }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler]
+      ports:
+        - port: 6379
+---
+# ----------------------------------------------------------------- RabbitMQ --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ingress
+spec:
+  podSelector:
+    matchLabels: { app: rabbitmq }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [catalog-app, outbox-publisher, search-consumer]
+      ports:
+        - port: 5672
+    # 15692 = wtyczka rabbitmq_prometheus. UI zarządzania (15672) celowo bez
+    # reguły: tylko przez port-forward (`make k3s-ui`).
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - port: 15692
+---
+# ------------------------------------------------------------ Elasticsearch --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elasticsearch-ingress
+spec:
+  podSelector:
+    matchLabels: { elasticsearch.k8s.elastic.co/cluster-name: marketplace }
+  policyTypes: [Ingress]
+  ingress:
+    # Węzły między sobą: transport (9300, TLS od ECK) i HTTP (koordynacja zapytań).
+    - from:
+        - podSelector:
+            matchLabels: { elasticsearch.k8s.elastic.co/cluster-name: marketplace }
+      ports:
+        - port: 9300
+        - port: 9200
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [catalog-app, outbox-publisher, migrate, search-consumer]
+        - podSelector:
+            matchLabels: { kibana.k8s.elastic.co/name: marketplace }
+        # Operator ECK sprawdza zdrowie klastra, ustawia hasła i role przez HTTP API.
+        # Bez tej reguły ES „działa”, ale ECK widzi go jako niedostępny i wstrzymuje
+        # każdą zmianę spec (rolling restart, nowe role).
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: elastic-system }
+      ports:
+        - port: 9200
+---
+# ------------------------------------------------------------------- Kibana --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kibana-ingress
+spec:
+  podSelector:
+    matchLabels: { kibana.k8s.elastic.co/name: marketplace }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress }
+      ports:
+        - port: 5601
+---
+# ---------------------------------------------------------------- catalog-app --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalog-app-ingress
+spec:
+  podSelector:
+    matchLabels: { app: catalog-app }   # stable i canary
+  policyTypes: [Ingress]
+  ingress:
+    # Ruch użytkowników — wyłącznie przez kontroler Ingress (Traefik).
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress }
+      ports:
+        - port: 80
+    # Wewnętrzne API: projekcja produktu (search -> catalog) i webhook bramki
+    # płatności (worker -> catalog-app). Blok `http://catalog-app` w Caddyfile.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [search-consumer, catalog-worker]
+      ports:
+        - port: 80
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - port: 2020
+---
+# -------------------------------------------------------------- search-metrics --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: search-metrics-ingress
+spec:
+  podSelector:
+    matchLabels: { app: search-metrics }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - port: 80
+---
+# ------------------------------------------------------------------ GlitchTip --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: glitchtip-ingress
+  labels:
+    # GlitchTip jest opcjonalny: polityka idzie jego krokiem w deploy.sh (pierwsza
+    # faza, przed podami), a bez Secretu glitchtip-secrets nie powstaje wcale.
+    app.kubernetes.io/component: errors-init
+spec:
+  podSelector:
+    matchLabels: { app: glitchtip }
+  policyTypes: [Ingress]
+  ingress:
+    # SDK-i aplikacji (wyjątki) i tunel /_errors z catalog-app.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler, search-consumer, search-metrics]
+      ports:
+        - port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - port: 8000
