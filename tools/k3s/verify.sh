@@ -418,16 +418,26 @@ phase_monitoring() {
   check "eksporter Postgresa widzi bazę (pg_up)" "1" "$(prom_val 'pg_up{job="postgres"}')"
   check "metryki domenowe catalog (catalog_outbox_oldest_pending_age_seconds)" "tak" \
     "$([ "$(prom_val 'catalog_outbox_oldest_pending_age_seconds')" != brak ] && echo tak || echo nie)"
-  # Dashboardy: Grafana pytana z wnętrza poda (API wymaga logowania; hasło
-  # zostaje w zmiennych kontenera, nie przechodzi przez terminal).
+  # Dashboardy: API Grafany wymaga logowania. Obraz grafana jest distroless
+  # (bez sh i wget), więc pytamy z kontenera sidecara, który ma Pythona
+  # i to samo hasło admina w REQ_USERNAME/REQ_PASSWORD (używa ich do
+  # przeładowania dashboardów). Hasło nie przechodzi przez terminal.
   check "Grafana: dashboardy marketplace-overview i marketplace-ordering" "2" \
-    "$(k exec -n monitoring deploy/kps-grafana -c grafana -- sh -c \
-      'wget -qO- "http://${GF_SECURITY_ADMIN_USER}:${GF_SECURITY_ADMIN_PASSWORD}@localhost:3000/api/search?query=" ' \
+    "$(k exec -n monitoring deploy/kps-grafana -c grafana-sc-dashboard -- python3 -c '
+import os, base64, urllib.request
+r = urllib.request.Request("http://localhost:3000/api/search?query=")
+cred = (os.environ["REQ_USERNAME"] + ":" + os.environ["REQ_PASSWORD"]).encode()
+r.add_header("Authorization", "Basic " + base64.b64encode(cred).decode())
+print(urllib.request.urlopen(r).read().decode())' \
       | jq '[.[] | select(.uid=="marketplace-overview" or .uid=="marketplace-ordering")] | length')"
 
   # Cała ścieżka alertu: reguła -> Prometheus (firing) -> Alertmanager -> resolved.
-  local rule=verify-g1-pipeline
-  k apply -f - >/dev/null <<YAML
+  # Przez PLIK, nie `apply -f -`: k() woła kubectl przez with_timeout, czyli
+  # w tle (`&`), a nieinteraktywny bash daje procesom w tle stdin z /dev/null —
+  # heredoc nigdy nie dociera, apply tworzy zero obiektów, a k() chowa stderr.
+  local rule=verify-g1-pipeline rule_file
+  rule_file="$(mktemp)"
+  cat > "${rule_file}" <<YAML
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata: { name: ${rule}, namespace: monitoring }
@@ -439,15 +449,26 @@ spec:
           expr: vector(1)
           labels: { severity: none }
 YAML
+  check "reguła testowa ${rule} utworzona" "0" "$(k apply -f "${rule_file}" >/dev/null; echo $?)"
+  # Do 5 min: operator przepisuje regułę do ConfigMapy, kubelet odświeża
+  # zamontowany wolumen co ~60 s, reloader przeładowuje Prometheusa, potem
+  # jedna ocena (15 s). Zmierzone ręcznie 2026-11-05: ~65 s.
   local seen=""
-  for i in $(seq 1 30); do [ "$(am_alerts VerifyG1Pipeline)" -ge 1 ] 2>/dev/null && { seen=$((i*5)); break; }; sleep 5; done
+  for i in $(seq 1 60); do [ "$(am_alerts VerifyG1Pipeline)" -ge 1 ] 2>/dev/null && { seen=$((i*5)); break; }; sleep 5; done
   check "alert testowy dotarł do Alertmanagera (${seen:-timeout} s)" "tak" "$([ -n "${seen}" ] && echo tak || echo nie)"
-  k delete prometheusrule "${rule}" -n monitoring >/dev/null
+  # Rozwiązanie: NAJPIERW warunek przestaje być spełniony (wyrażenie bez
+  # wyników), dopiero potem kasujemy regułę. Odwrotnie Prometheus nie wysyła
+  # „resolved” — reguła znika razem ze stanem alertu, a Alertmanager zamyka
+  # go dopiero po endsAt (~4 min od ostatniego wysłania). Zmierzone 2026-11-05.
+  sed -i.bak 's/expr: vector(1)/expr: vector(1) unless vector(1)/' "${rule_file}"
+  k apply -f "${rule_file}" >/dev/null
   local gone=""
-  # resolve_timeout chartu = 5 min, ale Prometheus wysyła „resolved” od razu
-  # po zniknięciu reguły — Alertmanager zamyka alert po kolejnej ocenie.
-  for i in $(seq 1 36); do [ "$(am_alerts VerifyG1Pipeline)" = "0" ] && { gone=$((i*5)); break; }; sleep 5; done
-  check "alert testowy rozwiązany po usunięciu reguły (${gone:-timeout} s)" "tak" "$([ -n "${gone}" ] && echo tak || echo nie)"
+  # Bez `seen` ten test byłby fałszywie zielony: alertu, który nie dotarł, nie
+  # trzeba rozwiązywać.
+  [ -n "${seen}" ] && for i in $(seq 1 60); do [ "$(am_alerts VerifyG1Pipeline)" = "0" ] && { gone=$((i*5)); break; }; sleep 5; done
+  check "alert testowy rozwiązany, gdy warunek zniknął (${gone:-timeout} s)" "tak" "$([ -n "${gone}" ] && echo tak || echo nie)"
+  k delete prometheusrule "${rule}" -n monitoring >/dev/null
+  rm -f "${rule_file}" "${rule_file}.bak"
 
   local firing
   firing="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/alerts' \

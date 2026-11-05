@@ -94,16 +94,15 @@ spec:
           mogą lądować w failure transport niezauważone.
         runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania
     - alert: CatalogHttpErrorRate
-      expr: sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?",code=~"5.."}[5m]))
-        / sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?"}[5m]))
-        > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?"}[5m]))
+      expr: sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics",code=~"5.."}[5m]))
+        / sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[5m]))
+        > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[5m]))
         > 0.1
       for: 5m
       labels:
         severity: warning
       annotations:
-        summary: 'catalog.localhost: {{ $value | humanizePercentage }} odpowiedzi
-          5xx'
+        summary: 'catalog: {{ $value | humanizePercentage }} odpowiedzi 5xx'
         description: Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu
           jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%.
         runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx
