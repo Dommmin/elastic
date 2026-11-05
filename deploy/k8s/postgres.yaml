@@ -47,9 +47,27 @@ spec:
         # i nawyki z D2 działają bez zmian.
         kubectl.kubernetes.io/default-container: postgres
     spec:
+      serviceAccountName: postgres
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2). Oficjalny obraz startuje jako root tylko po
+      # to, żeby zrobić chown katalogu danych i przejść na użytkownika postgres
+      # (gosu). Katalog danych na PVC już należy do uid 70 (sprawdzone: ls -ln),
+      # więc startujemy od razu jako 70 — entrypoint pomija chown, gdy nie jest rootem.
+      # fsGroup nie działa na wolumenach local-path (to hostPath), więc
+      # o własności PVC decyduje to, kto go założył — tu: dotychczasowy root+gosu.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70      # postgres w obrazie alpine
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
           image: ghcr.io/dommmin/elastic-postgres:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           # Te same parametry co w compose.yaml.
           args:
             - postgres
@@ -100,6 +118,10 @@ spec:
             # Postgres 18: punkt montowania /var/lib/postgresql (komentarz w compose.yaml)
             - name: data
               mountPath: /var/lib/postgresql
+            # Gniazdo unixowe i plik blokady (.s.PGSQL.5432) — jedyne miejsca
+            # poza katalogiem danych, w których Postgres pisze.
+            - { name: run, mountPath: /var/run/postgresql }
+            - { name: tmp, mountPath: /tmp }
         # --------------------------------------------------------------------
         # Eksporter metryk jako DRUGI kontener w podzie bazy (ETAP G1) — wzorzec
         # „adapter” z CKAD: tłumaczy stan Postgresa na format Prometheusa.
@@ -113,6 +135,12 @@ spec:
         # Uwaga: zmiana tego szablonu = restart postgres-0 (StatefulSet, 1 replika).
         - name: exporter
           image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+          securityContext:
+            runAsUser: 65534   # nobody — użytkownik z obrazu eksportera, nie uid bazy
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           env:
             - name: DATA_SOURCE_URI
               value: localhost:5432/postgres?sslmode=disable
@@ -132,6 +160,9 @@ spec:
           resources:
             requests: { memory: 24Mi, cpu: 10m }
             limits: { memory: 96Mi }
+      volumes:
+        - { name: run, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
   volumeClaimTemplates:
     - metadata:
         name: data

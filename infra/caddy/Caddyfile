@@ -10,6 +10,11 @@
 	# Ogranicza automatyczne HTTPS do domen lokalnych — bez prób kontaktu
 	# z Let's Encrypt (co lokalnie i tak by się nie udało).
 	local_certs
+	# Nie instaluj lokalnego CA w magazynie zaufania SYSTEMU (kontenera). Na k3s
+	# proces działa jako www-data z read-only FS (ETAP G2) i próba kończyła się
+	# błędem w logu przy każdym starcie ("failed to install root certificate").
+	# Przeglądarka i tak ufa CA ręcznie, a nikt w kontenerze z niego nie korzysta.
+	skip_install_trust
 
 	# Metryki serwera HTTP (caddy_http_*), z podziałem na host (per_host), żeby
 	# odróżnić ruch publiczny (catalog.localhost) od wewnętrznego (catalog-app).

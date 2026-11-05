@@ -11,6 +11,7 @@ namespace: marketplace
 
 resources:
   - namespace.yaml
+  - serviceaccounts.yaml
   - elasticsearch.yaml
   - postgres.yaml
   - rabbitmq.yaml

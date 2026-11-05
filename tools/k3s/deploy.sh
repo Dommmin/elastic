@@ -142,10 +142,33 @@ if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
     || { echo "[k3s-deploy] pody search-consumer nie zniknęły w 2 min" >&2; exit 1; }
 fi
 
+# Canary (tools/k3s/canary.sh) kończy się z każdym wdrożeniem: wdrożenie to albo
+# promocja tej wersji, albo powrót do poprzedniej. Canary nie ma pliku w repo,
+# więc apply by go nie dotknął — zostałby ze starym obrazem za tym samym Service.
+kk "${NS[@]}" delete deploy/catalog-app-canary --ignore-not-found
+
+# ETAP G2, jednorazowo: selektor catalog-app dostał `track: stable` (canary ma
+# `track: canary`). Selektor Deploymentu jest NIEZMIENNY — apply skończyłby się
+# "field is immutable". Usuwamy więc sam Deployment, zostawiając pody
+# (--cascade=orphan): dalej obsługują ruch przez Service, a nowy Deployment ich
+# nie przejmie (nie mają etykiety track). Po jego rolloucie sprzątamy stary
+# ReplicaSet razem z podami. Ruch nie ma przerwy. RUNBOOK #084.
+catalog_orphans=0
+if kk "${NS[@]}" get deploy/catalog-app >/dev/null 2>&1 \
+   && [ -z "$(kk "${NS[@]}" get deploy/catalog-app -o jsonpath='{.spec.selector.matchLabels.track}')" ]; then
+  echo "    catalog-app: zmiana selektora (track: stable) — stary Deployment usunięty z --cascade=orphan"
+  kk "${NS[@]}" delete deploy/catalog-app --cascade=orphan
+  catalog_orphans=1
+fi
+
 apply_sel "${OTHER_APPS_SEL}" step3_fail
 for d in catalog-app outbox-publisher catalog-worker catalog-scheduler search-metrics; do
   kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s || step3_fail "rollout ${d} nie skończył się"
 done
+if [ "${catalog_orphans}" = 1 ]; then
+  kk "${NS[@]}" delete rs -l 'app=catalog-app,!track' --wait=true \
+    || step3_fail "nie udało się usunąć starego ReplicaSetu catalog-app (pody bez track)"
+fi
 
 # Manifest ma `replicas: 1`, więc apply przywraca consumer (już nowy obraz).
 apply_sel "${SEARCH_SEL}" step3_fail

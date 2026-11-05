@@ -91,4 +91,12 @@ leaked=$(echo "$rendered" | INFRA_SEL="$infra_sel" ruby -E UTF-8:UTF-8 -ryaml -e
   puts names.join(" ")')
 if [ -z "$leaked" ]; then echo "  ✓ krok infrastruktury w deploy.sh nie obejmuje GlitchTipa ($infra_sel)"; else echo "  ✗ krok infrastruktury w deploy.sh nałożyłby GlitchTipa bezwarunkowo: $leaked"; FAIL=1; fi
 
+# --- ETAP G2: CKAD w manifestach (securityContext, SA, sondy, NetworkPolicy, HPA, canary) ---
+echo "CKAD w manifestach (ETAP G2, tools/k3s/ckad-check.rb)"
+ckad_report=$(echo "$rendered" | ruby -E UTF-8:UTF-8 tools/k3s/ckad-check.rb 2>&1)
+while IFS='|' read -r st msg; do
+  [ -z "$msg" ] && { echo "  ✗ $st"; FAIL=1; continue; }
+  if [ "$st" = ok ]; then echo "  ✓ $msg"; else echo "  ✗ $msg"; FAIL=1; fi
+done <<<"$ckad_report"
+
 [ "$FAIL" -eq 0 ] && echo "OK: manifesty k8s" || { echo "BŁĄD: manifesty k8s"; exit 1; }
