@@ -87,17 +87,21 @@ groups:
           description: "Endpoint /metrics działa, ale nie umie odczytać failure transportu (RabbitMQ/Messenger). W tym czasie krytyczny alert SearchFailedMessages milczy, bo seria search_messenger_failed_messages nie istnieje, więc wiadomości mogą lądować w failure transport niezauważone."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania"
       - alert: CatalogHttpErrorRate
-        # Host z portem: przeglądarka na https://catalog.localhost:8443 wysyła
-        # `Host: catalog.localhost:8443` i z tym `per_host` Caddy etykietuje
-        # serię; bez portu przychodzi tylko healthcheck z kontenera (443).
-        # Sprawdzone na żywym stacku (Task 12) — samo `host="catalog.localhost"`
-        # nie widziało ruchu użytkowników.
-        expr: 'sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?",code=~"5.."}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?"}[5m])) > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{host=~"catalog\\.localhost(:[0-9]+)?"}[5m])) > 0.1'
+        # Selekcja po job="caddy" (Prometheus scrape'uje w nim tylko
+        # catalog-app) i po NAZWIE serwera, nie po hoście. Host działał
+        # w Compose (catalog.localhost[:8443]), ale na k3s SERVER_NAME=:80 to
+        # blok bez nazwy hosta i `per_host` daje tam wszystkim host="_other"
+        # — reguła była ślepa (ETAP G1). Serwer `metrics` (:2020, nazwany
+        # w infra/caddy/Caddyfile) to scrape'y Prometheusa: odpadają, żeby
+        # 0.13 req/s samych odpowiedzi 200 nie rozwadniało udziału 5xx.
+        # Ruch wewnętrzny (search -> catalog-app/api) liczy się: jego 5xx to
+        # też błędy katalogu.
+        expr: 'sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics",code=~"5.."}[5m])) / sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[5m])) > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[5m])) > 0.1'
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "catalog.localhost: {{ $value | humanizePercentage }} odpowiedzi 5xx"
+          summary: "catalog: {{ $value | humanizePercentage }} odpowiedzi 5xx"
           description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
           runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
       - alert: OrdersStuckPlaced

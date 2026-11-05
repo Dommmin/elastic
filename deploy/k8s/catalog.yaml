@@ -13,12 +13,19 @@ metadata:
   name: catalog-app
   labels:
     app.kubernetes.io/component: app
+    # Po tej etykiecie ServiceMonitor (deploy/monitoring) znajduje Service.
+    app: catalog-app
 spec:
   selector:
     app: catalog-app
   ports:
     - name: http
       port: 80
+    # Metryki Caddy (/metrics) i Laravela (/prometheus) — osobny port, jak w Compose
+    # (Caddyfile, blok http://:2020). Scrape'uje go Prometheus przez ServiceMonitor
+    # (deploy/monitoring/servicemonitors.yaml, ETAP G1).
+    - name: metrics
+      port: 2020
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -73,7 +80,10 @@ spec:
             - name: ELASTICSEARCH_PASSWORD
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_CATALOG_PASSWORD } }
           ports:
-            - containerPort: 80
+            - name: http
+              containerPort: 80
+            - name: metrics
+              containerPort: 2020
           # /up = liveness Laravela (bez zależności) — ten sam wybór co
           # w healthchecku compose; /health (z zależnościami) świadomie nie.
           readinessProbe:

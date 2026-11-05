@@ -341,9 +341,9 @@ tests:
     interval: 15s
     input_series:
       # 200: +3.6 / 15 s = 0.24 req/s; 500: +0.4 / 15 s ≈ 0.027 req/s (10 %)
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="200"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost",code="200"}'
         values: '0+3.6x60'
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="500"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost",code="500"}'
         values: '0+0.4x60'
     alert_rule_test:
       - eval_time: 14m
@@ -352,15 +352,15 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "catalog.localhost: 10% odpowiedzi 5xx"
+              summary: "catalog: 10% odpowiedzi 5xx"
               description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
               runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
   - name: CatalogHttpErrorRate liczy też host z portem (ruch z przeglądarki na :8443)
     interval: 15s
     input_series:
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost:8443",code="200"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost:8443",code="200"}'
         values: '0+3.6x60'
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost:8443",code="500"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost:8443",code="500"}'
         values: '0+0.4x60'
     alert_rule_test:
       - eval_time: 14m
@@ -369,14 +369,14 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "catalog.localhost: 10% odpowiedzi 5xx"
+              summary: "catalog: 10% odpowiedzi 5xx"
               description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
               runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
   - name: CatalogHttpErrorRate milczy przy 100 % błędów, ale znikomym ruchu
     interval: 15s
     input_series:
       # 0.01 req/s, wszystko 5xx: bez progu ruchu byłoby 100 %
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="500"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost",code="500"}'
         values: '0+0.15x60'
     alert_rule_test:
       - eval_time: 14m
@@ -385,18 +385,49 @@ tests:
   - name: CatalogHttpErrorRate milczy przy 4 % błędów
     interval: 15s
     input_series:
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="200"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost",code="200"}'
         values: '0+4.8x60'
-      - series: 'caddy_http_request_duration_seconds_count{host="catalog.localhost",code="503"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv0",host="catalog.localhost",code="503"}'
         values: '0+0.2x60'
     alert_rule_test:
       - eval_time: 14m
         alertname: CatalogHttpErrorRate
         exp_alerts: []
-  - name: CatalogHttpErrorRate ignoruje inne hosty
+  - name: CatalogHttpErrorRate ignoruje Caddy innych aplikacji (inny job)
     interval: 15s
     input_series:
-      - series: 'caddy_http_request_duration_seconds_count{host="search.localhost",code="500"}'
+      - series: 'caddy_http_request_duration_seconds_count{job="search-caddy",server="srv0",host="search.localhost",code="500"}'
+        values: '0+15x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts: []
+  # k3s (ETAP G1): SERVER_NAME=:80 to blok bez nazwy hosta, więc `per_host`
+  # etykietuje CAŁY ruch jako host="_other". Reguła oparta o host była tam
+  # ślepa — stąd selekcja po job i nazwie serwera, nie po hoście.
+  - name: CatalogHttpErrorRate odpala na k3s (host="_other")
+    interval: 15s
+    input_series:
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv1",host="_other",code="200"}'
+        values: '0+3.6x60'
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="srv1",host="_other",code="500"}'
+        values: '0+0.4x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CatalogHttpErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "catalog: 10% odpowiedzi 5xx"
+              description: "Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%."
+              runbook: "https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx"
+  # Scrape'y Prometheusa na :2020 (serwer nazwany `metrics` w Caddyfile) to
+  # nie ruch użytkowników: nie liczą się ani do błędów, ani do progu ruchu.
+  - name: CatalogHttpErrorRate pomija serwer metrics (:2020)
+    interval: 15s
+    input_series:
+      - series: 'caddy_http_request_duration_seconds_count{job="caddy",server="metrics",host="_other",code="500"}'
         values: '0+15x60'
     alert_rule_test:
       - eval_time: 14m

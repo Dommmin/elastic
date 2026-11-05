@@ -80,6 +80,9 @@
 | [077](#077) | Alert `GlitchTipEventFlood`; baza GlitchTipa rośnie, bo GlitchTip nie ogranicza przyjmowania | GlitchTip / Prometheus | 11b |
 | [078](#078) | GlitchTip na k3s: włączenie i restart aplikacji po utworzeniu Secretu | GlitchTip / k3s | 11b |
 | [079](#079) | `make k3s-verify`: fałszywe porażki po restarcie bazy, E2E ze starym `Offer::updateWithOutbox`, osierocony ConfigMap | k3s / weryfikacja | 11b |
+| [080](#080) | Eksporter Postgresa na k3s łączy się jako superużytkownik — dług i jak go spłacić | k3s / monitoring | G1 |
+| [081](#081) | Na k3s `CatalogHttpErrorRate` milczy, panele HTTP w Grafanie puste — Caddy daje `host="_other"` | k3s / monitoring | G1 |
+| [082](#082) | `kubectl apply -f -` z heredoca w verify.sh nic nie tworzy — proces w tle dostaje stdin z /dev/null | k3s / skrypty | G1 |
 
 ---
 
@@ -3792,6 +3795,123 @@ tinker`, zbuduj `SearchCriteria`, wywołaj `app(App\Services\
 ProductSearchService::class)->buildSearchQuery($criteria)` żeby dostać
 dokładny DSL, wklej do `_explain` przez `make es-analyze` albo bezpośrednio
 `curl` (przykład wyżej).
+
+---
+
+<a id="080"></a>
+## 080 — Eksporter Postgresa na k3s łączy się jako superużytkownik
+
+**Objaw**
+Brak awarii — to świadomy dług z ETAPU G1. `kubectl -n marketplace get sts postgres -o yaml`
+pokazuje kontener `exporter` z `DATA_SOURCE_USER` = `POSTGRES_USER` (superużytkownik) i hasłem
+z `marketplace-secrets/POSTGRES_PASSWORD`.
+
+**Diagnoza**
+```bash
+make k3s k="-n marketplace exec postgres-0 -c postgres -- psql -U postgres -tAc \"select usename, application_name from pg_stat_activity where application_name like '%exporter%' or usename='postgres'\""
+```
+
+**Przyczyna**
+Eksporter potrzebuje tylko odczytu statystyk (`pg_stat_*`), do czego wystarcza wbudowana rola
+`pg_monitor`. Skrypty init z obrazu (`01-databases.sh`) uruchamiają się jednak wyłącznie przy
+PUSTYM katalogu danych — na istniejącym PVC nowej roli nie utworzą. Dodanie jej wymaga jednego
+SQL-a na żywej bazie i nowego klucza w Secrecie, a celem G1 było uruchomienie obserwowalności bez
+ruszania danych.
+
+**Naprawa (spłata długu)**
+1. Na serwerze dopisz `POSTGRES_EXPORTER_PASSWORD=...` do `/opt/marketplace/.env`, w `tools/k3s/secrets.sh`
+   dodaj `--from-literal=POSTGRES_EXPORTER_PASSWORD=...` i uruchom go.
+2. Utwórz rolę (idempotentnie):
+   `psql -U postgres -c "do \$\$ begin create role postgres_exporter login password '...' in role pg_monitor; exception when duplicate_object then null; end \$\$;"`
+   — albo, lepiej, jako `initContainer` eksportera, żeby nowy klaster dostał ją sam.
+3. W `deploy/k8s/postgres.yaml` zmień `DATA_SOURCE_USER`/`DATA_SOURCE_PASS` eksportera i wdroż.
+4. `make k3s-verify faza=monitoring` — `pg_up` ma dalej wynosić 1.
+
+**Czego się nauczyłem**
+Skrypty `docker-entrypoint-initdb.d` to jednorazowy bootstrap, nie migracje: każda zmiana
+uprawnień po pierwszym starcie musi mieć własną, idempotentną ścieżkę (Job, initContainer albo
+migracja aplikacji). Sidecar w podzie bazy nie zwalnia z najmniejszych uprawnień — dzieli z nią
+sieć, ale nie musi dzielić konta.
+
+---
+
+<a id="081"></a>
+## 081 — Na k3s `CatalogHttpErrorRate` milczy, panele HTTP w Grafanie puste
+
+> ETAP G1, pierwsze wdrożenie monitoringu na k3s, 2026-11-05.
+
+**Objaw**
+Wszystkie cele `up`, ale panel „HTTP catalog: req/s per kod” w dashboardzie
+„Marketplace: przegląd” był pusty, a reguła `CatalogHttpErrorRate` (wtedy z
+`host=~"catalog\.localhost(:[0-9]+)?"`) nie miała żadnej serii do oceny.
+
+**Diagnoza**
+```bash
+kubectl get --raw "/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/query?query=$(jq -rn '"sum by (server,host,code) (rate(caddy_http_request_duration_seconds_count{job=\"caddy\"}[5m]))"|@uri')" \
+  | jq -c '.data.result[] | [.metric, .value[1]]'
+```
+Wynik: tylko `host="_other"`, dwa serwery `srv0` (0.13 req/s — dokładnie dwa
+scrape'y co 15 s, czyli port 2020) i `srv1` (ruch aplikacji).
+
+**Przyczyna**
+`metrics { per_host }` wpisuje do etykiety `host` nazwę z adresu site'a, do
+którego pasuje żądanie; żądania do bloku bez nazwy hosta dostają `_other`. W
+Compose `SERVER_NAME=catalog.localhost`, na k3s `SERVER_NAME=:80` (Service bez
+domeny) — tam CAŁY ruch jest `_other`, tak samo jak scrape'y na `:2020`. Reguła
+i panele odróżniały ruch użytkowników od scrape'ów po hoście, a ten na k3s
+niczego nie odróżnia. Nazwy `srv0`/`srv1` też się nie nadają: zależą od
+kolejności bloków w konfiguracji (w Compose `:2020` był `srv0`, na k3s też —
+ale to przypadek).
+
+**Naprawa**
+1. W `infra/caddy/Caddyfile` (opcje globalne) stała nazwa serwera metryk:
+   `servers :2020 { name metrics }`. Sprawdzenie bez stacku:
+   `docker run --rm -e SERVER_NAME=:80 -v $PWD/infra/caddy/Caddyfile:/tmp/C:ro --entrypoint frankenphp <obraz catalog> adapt --config /tmp/C | jq '.apps.http.servers|keys'`
+   → `["metrics","srv1"]`.
+2. Reguła i panele wybierają `{job="caddy",server!="metrics"}` zamiast hosta;
+   testy promtool mają przypadek k3s (`host="_other"`) i serwera `metrics`.
+3. `make k3s-monitoring-rules`, nowy obraz catalog (CI po merge), `make k3s-deploy`
+   i `make k3s-monitoring`.
+
+**Czego się nauczyłem**
+Etykieta zależna od konfiguracji środowiska (nazwa hosta, numer serwera) to
+słaby selektor dla reguły, która ma działać w kilku środowiskach. Lepiej nazwać
+rzecz jawnie tam, gdzie powstaje (tu: nazwa serwera w Caddyfile), i mieć test
+reguły dla każdego środowiska — sam „cel up” nie mówi, czy reguła ma co liczyć.
+
+---
+
+<a id="082"></a>
+## 082 — `kubectl apply -f -` z heredoca w verify.sh nic nie tworzy
+
+> ETAP G1, `make k3s-verify faza=monitoring`, 2026-11-05.
+
+**Objaw**
+`✗ alert testowy dotarł do Alertmanagera (timeout s)` — a ręcznie ten sam
+PrometheusRule docierał do Alertmanagera po ~65 s. `kubectl get prometheusrule`
+nie pokazywał `verify-g1-pipeline`.
+
+**Diagnoza**
+Funkcja `k()` w `tools/k3s/verify.sh` woła kubectl przez `with_timeout`, a ta
+uruchamia komendę w tle (`"$@" &`) i chowa stderr (`2>/dev/null`).
+
+**Przyczyna**
+Nieinteraktywny bash (skrypt, bez kontroli zadań) przekierowuje stdin procesów
+uruchomionych z `&` na `/dev/null`. Heredoc trafił do funkcji, ale nie do
+kubectl w tle: `apply -f -` przeczytał pusty strumień, nie utworzył niczego,
+a komunikat błędu zniknął w `/dev/null`.
+
+**Naprawa**
+YAML do pliku tymczasowego i `k apply -f "${plik}"`, z `check` na kod wyjścia —
+żeby nieudany apply był czerwony, a nie cichy. Przy okazji: alert rozwiązujemy,
+zmieniając wyrażenie na puste (`vector(1) unless vector(1)`), dopiero potem
+kasujemy regułę — po skasowaniu Prometheus nie wysyła „resolved”, a
+Alertmanager zamyka alert dopiero po `endsAt` (kilka minut).
+
+**Czego się nauczyłem**
+Wrapper z timeoutem przez `&` zmienia semantykę stdin. Każdy test, który ma
+coś utworzyć, powinien najpierw sprawdzić, że to powstało — inaczej kolejny
+krok (tu: „czy alert dotarł”) pokazuje mylący objaw daleko od przyczyny.
 
 ---
 

@@ -285,7 +285,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count{host!=\"_other\"}[1m]))",
+          "expr": "sum by (code) (rate(caddy_http_request_duration_seconds_count{job=\"caddy\",server!=\"metrics\"}[1m]))",
           "legendFormat": "{{code}}",
           "refId": "A",
           "datasource": {
@@ -294,7 +294,7 @@
           }
         }
       ],
-      "description": "Z metryk Caddy (etykiety host, code). Bez host=_other, czyli scrape Prometheusa na porcie 2020.",
+      "description": "Z metryk Caddy (etykieta code). Bez serwera metrics, czyli scrape Prometheusa na porcie 2020. Po serwerze, nie po hoście: na k3s host to zawsze _other.",
       "fieldConfig": {
         "defaults": {
           "unit": "reqps"
@@ -318,7 +318,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(caddy_http_request_duration_seconds_bucket{host!=\"_other\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(caddy_http_request_duration_seconds_bucket{job=\"caddy\",server!=\"metrics\"}[5m])))",
           "legendFormat": "p95",
           "refId": "A",
           "datasource": {
@@ -327,7 +327,7 @@
           }
         }
       ],
-      "description": "p95 czasu odpowiedzi z histogramu Caddy (bez scrape na porcie 2020, host=_other).",
+      "description": "p95 czasu odpowiedzi z histogramu Caddy (bez serwera metrics, czyli scrape na porcie 2020).",
       "fieldConfig": {
         "defaults": {
           "unit": "s"

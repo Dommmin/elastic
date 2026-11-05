@@ -134,7 +134,8 @@ phase_exposure() {
   local ip; ip="$(server_ip)"
   echo -e "\n${BLD}  exposure — ${ip} (z zewnątrz)${NC}"
   check "22/tcp otwarty" "otwarty" "$(nc -z -G 3 "${ip}" 22 >/dev/null 2>&1 && echo otwarty || echo zamknięty)"
-  for port in 80 443 2379 5432 5601 6443 8080 9200 10250 15672 30000 30080 32767; do
+  # 9100 = node-exporter (ETAP G1): sieć hosta, zamknięty tylko przez ufw.
+  for port in 80 443 2379 5432 5601 6443 8080 9100 9187 9200 10250 15672 15692 30000 30080 32767; do
     check "${port}/tcp zamknięty" "zamknięty" "$(nc -z -G 3 "${ip}" "${port}" >/dev/null 2>&1 && echo OTWARTY || echo zamknięty)"
   done
 }
@@ -389,8 +390,95 @@ phase_reboot() {
   check "eval identyczny jak przed restartem (${before:-?} -> ${after:-?})" "${before:-brak}" "${after:-brak}"
 }
 
+# ----------------------------------------------------------- monitoring -----
+# ETAP G1. Zapytania przez proxy API Kubernetesa (`get --raw .../services/
+# <svc>:<port>/proxy/...`): bez port-forwardu i bez exec — działa przez sam
+# tunel do API. To samo, co robi `kubectl proxy`, tylko jednorazowo.
+prom_q() { # prom_q <PromQL> -> surowy JSON odpowiedzi /api/v1/query
+  k get --raw "/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/query?query=$(jq -rn --arg q "$1" '$q|@uri')"
+}
+prom_val() { prom_q "$1" | jq -r '.data.result[0].value[1] // "brak"'; }
+am_alerts() { # am_alerts <alertname> -> liczba aktywnych alertów w Alertmanagerze
+  k get --raw "/api/v1/namespaces/monitoring/services/kps-alertmanager:9093/proxy/api/v2/alerts?filter=$(jq -rn --arg f "alertname=\"$1\"" '$f|@uri')" \
+    | jq 'length'
+}
+phase_monitoring() {
+  tunnel_up
+  echo -e "\n${BLD}  monitoring — kube-prometheus-stack (ETAP G1)${NC}"
+  check "pody monitoring: wszystkie Ready" "0" \
+    "$(k get pods -n monitoring -o json | jq '[.items[] | select(.status.phase!="Succeeded") | select(any(.status.conditions[]?; .type=="Ready" and .status!="True"))] | length')"
+  # Cele z ETAPU 11 + eksporter Postgresa: każdy job ma >=1 cel i wszystkie up.
+  for job in caddy catalog rabbitmq rabbitmq-queues search glitchtip postgres; do
+    check "cel job=${job}: up (min po celach = 1)" "1" "$(prom_val "min(up{job=\"${job}\"})")"
+  done
+  check "żaden cel w klastrze nie jest down" "0" "$(prom_val 'count(up == 0) or vector(0)')"
+  check "18 reguł alertów z grupy marketplace załadowanych" "18" \
+    "$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' \
+      | jq '[.data.groups[] | select(.name=="marketplace") | .rules[]] | length')"
+  check "eksporter Postgresa widzi bazę (pg_up)" "1" "$(prom_val 'pg_up{job="postgres"}')"
+  check "metryki domenowe catalog (catalog_outbox_oldest_pending_age_seconds)" "tak" \
+    "$([ "$(prom_val 'catalog_outbox_oldest_pending_age_seconds')" != brak ] && echo tak || echo nie)"
+  # Dashboardy: API Grafany wymaga logowania. Obraz grafana jest distroless
+  # (bez sh i wget), więc pytamy z kontenera sidecara, który ma Pythona
+  # i to samo hasło admina w REQ_USERNAME/REQ_PASSWORD (używa ich do
+  # przeładowania dashboardów). Hasło nie przechodzi przez terminal.
+  check "Grafana: dashboardy marketplace-overview i marketplace-ordering" "2" \
+    "$(k exec -n monitoring deploy/kps-grafana -c grafana-sc-dashboard -- python3 -c '
+import os, base64, urllib.request
+r = urllib.request.Request("http://localhost:3000/api/search?query=")
+cred = (os.environ["REQ_USERNAME"] + ":" + os.environ["REQ_PASSWORD"]).encode()
+r.add_header("Authorization", "Basic " + base64.b64encode(cred).decode())
+print(urllib.request.urlopen(r).read().decode())' \
+      | jq '[.[] | select(.uid=="marketplace-overview" or .uid=="marketplace-ordering")] | length')"
+
+  # Cała ścieżka alertu: reguła -> Prometheus (firing) -> Alertmanager -> resolved.
+  # Przez PLIK, nie `apply -f -`: k() woła kubectl przez with_timeout, czyli
+  # w tle (`&`), a nieinteraktywny bash daje procesom w tle stdin z /dev/null —
+  # heredoc nigdy nie dociera, apply tworzy zero obiektów, a k() chowa stderr.
+  local rule=verify-g1-pipeline rule_file
+  rule_file="$(mktemp)"
+  cat > "${rule_file}" <<YAML
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: { name: ${rule}, namespace: monitoring }
+spec:
+  groups:
+    - name: verify
+      rules:
+        - alert: VerifyG1Pipeline
+          expr: vector(1)
+          labels: { severity: none }
+YAML
+  check "reguła testowa ${rule} utworzona" "0" "$(k apply -f "${rule_file}" >/dev/null; echo $?)"
+  # Do 5 min: operator przepisuje regułę do ConfigMapy, kubelet odświeża
+  # zamontowany wolumen co ~60 s, reloader przeładowuje Prometheusa, potem
+  # jedna ocena (15 s). Zmierzone ręcznie 2026-11-05: ~65 s.
+  local seen=""
+  for i in $(seq 1 60); do [ "$(am_alerts VerifyG1Pipeline)" -ge 1 ] 2>/dev/null && { seen=$((i*5)); break; }; sleep 5; done
+  check "alert testowy dotarł do Alertmanagera (${seen:-timeout} s)" "tak" "$([ -n "${seen}" ] && echo tak || echo nie)"
+  # Rozwiązanie: NAJPIERW warunek przestaje być spełniony (wyrażenie bez
+  # wyników), dopiero potem kasujemy regułę. Odwrotnie Prometheus nie wysyła
+  # „resolved” — reguła znika razem ze stanem alertu, a Alertmanager zamyka
+  # go dopiero po endsAt (~4 min od ostatniego wysłania). Zmierzone 2026-11-05.
+  sed -i.bak 's/expr: vector(1)/expr: vector(1) unless vector(1)/' "${rule_file}"
+  k apply -f "${rule_file}" >/dev/null
+  local gone=""
+  # Bez `seen` ten test byłby fałszywie zielony: alertu, który nie dotarł, nie
+  # trzeba rozwiązywać.
+  [ -n "${seen}" ] && for i in $(seq 1 60); do [ "$(am_alerts VerifyG1Pipeline)" = "0" ] && { gone=$((i*5)); break; }; sleep 5; done
+  check "alert testowy rozwiązany, gdy warunek zniknął (${gone:-timeout} s)" "tak" "$([ -n "${gone}" ] && echo tak || echo nie)"
+  k delete prometheusrule "${rule}" -n monitoring >/dev/null
+  rm -f "${rule_file}" "${rule_file}.bak"
+
+  local firing
+  firing="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/alerts' \
+    | jq -r '[.data.alerts[] | select(.state=="firing") | .labels.alertname] | unique | join(", ")')"
+  echo -e "  ${DIM}alerty firing teraz: ${firing:-brak} (Watchdog świeci zawsze — to test ścieżki alertów)${NC}"
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
+  monitoring) phase_monitoring ;;
   exposure) phase_exposure ;;
   eck)      phase_eck ;;
   config)   phase_config ;;
@@ -401,7 +489,7 @@ case "${1:-}" in
   backup)   phase_backup ;;
   reboot)   phase_reboot ;;
   all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack; phase_backup ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|reboot|all}" >&2; exit 2 ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|monitoring|reboot|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

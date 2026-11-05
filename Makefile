@@ -422,6 +422,36 @@ k3s: ## kubectl na klastrze VPS (make k3s k="get pods -n marketplace")
 k3s-deploy: ## Wdróż na k3s: ostatni build CI albo tag=<SHA> (infra -> Job migrate -> aplikacje)
 	@bash tools/k3s/deploy.sh $(tag)
 
+## Monitoring na k3s (ETAP G1 — docs/13-PLAN-ETAP-G-K8S.md)
+.PHONY: k3s-monitoring
+k3s-monitoring: ## Zainstaluj/zaktualizuj kube-prometheus-stack + ServiceMonitory, reguły i dashboardy z repo
+	@bash tools/k3s/install-monitoring.sh
+
+.PHONY: k3s-monitoring-rules
+k3s-monitoring-rules: ## Odśwież deploy/monitoring/prometheus-rule.yaml z infra/obs/prometheus/rules/marketplace.yml
+	@ruby tools/k3s/gen-prometheus-rule.rb > deploy/monitoring/prometheus-rule.yaml
+	@echo "zapisano deploy/monitoring/prometheus-rule.yaml"
+
+.PHONY: k3s-monitoring-check
+k3s-monitoring-check: ## Monitoring bez klastra: reguły zsynchronizowane, render chartu i kustomize, asercje
+	@bash tools/k3s/monitoring-check.sh
+
+.PHONY: k3s-grafana
+k3s-grafana: ## Grafana z k3s na http://localhost:33000 (wypisuje login i hasło admina)
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@echo "login: admin  hasło: $$($(KUBECTL_VPS) -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d)"
+	@$(KUBECTL_VPS) -n monitoring port-forward svc/kps-grafana 33000:80
+
+.PHONY: k3s-prometheus
+k3s-prometheus: ## Prometheus z k3s na http://localhost:39090
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@$(KUBECTL_VPS) -n monitoring port-forward svc/kps-prometheus 39090:9090
+
+.PHONY: k3s-alertmanager
+k3s-alertmanager: ## Alertmanager z k3s na http://localhost:39093
+	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+	@$(KUBECTL_VPS) -n monitoring port-forward svc/kps-alertmanager 39093:9093
+
 .PHONY: k3s-mq-status
 k3s-mq-status: ## Kolejki RabbitMQ na k3s: głębokość i konsumenci (Messenger polluje, więc consumers=0 to norma)
 	@nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s

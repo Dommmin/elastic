@@ -1,0 +1,218 @@
+# WYGENEROWANE przez tools/k3s/gen-prometheus-rule.rb — NIE EDYTUJ RĘCZNIE.
+# Źródło: infra/obs/prometheus/rules/marketplace.yml (testy: make obs-rules-test).
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: marketplace
+spec:
+  groups:
+  - name: marketplace
+    rules:
+    - alert: TargetDown
+      expr: up{job!="glitchtip"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: Target {{ $labels.job }} ({{ $labels.instance }}) nie odpowiada
+        description: Prometheus nie zebrał metryk z {{ $labels.instance }} od minuty
+          (4 nieudane scrape co 15 s). Bez metryk inne alerty tego celu milczą.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#062--alert-targetdown-prometheus-nie-zbiera-metryk-z-celu
+    - alert: OutboxStale
+      expr: catalog_outbox_oldest_pending_age_seconds > 60
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: 'Outbox: najstarsze zdarzenie czeka ponad minutę'
+        description: Najstarsze nieopublikowane zdarzenie ma {{ $value | humanizeDuration
+          }}. Publisher pyta co 1 s i seed schodzi w kilka sekund, więc minuta oznacza
+          martwy publisher albo blokadę publikacji w RabbitMQ (flow control, disk_free_limit).
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#031--zmiana-ceny-nigdy-nie-dociera-do-es-outbox-bez-przekaźnika
+    - alert: SearchConsumerDown
+      expr: (sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.product.sync"}[1m]))
+        or vector(0)) + (sum(rate(rabbitmq_detailed_queue_get_ack_total{queue="search.product.sync"}[1m]))
+        or vector(0)) == 0 and on() up{job="rabbitmq-queues"} == 1
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: Nikt nie odpytuje kolejki search.product.sync (search-consumer nie
+          żyje)
+        description: 'Nikt nie pyta kolejki search.product.sync o wiadomości od ok.
+          2 min (rate() z 1 min na obu licznikach basic.get równy 0, potem 1 min `for`).
+          Symfony amqp-messenger pobiera przez basic.get, więc RabbitMQ nigdy nie
+          rejestruje konsumenta i rabbitmq_detailed_queue_consumers jest zawsze 0;
+          prawdziwym sygnałem życia jest więc to, że ktoś odpytuje kolejkę (pusta:
+          get_empty, z wiadomością: get_ack). Restart konsumenta (--time-limit=3600)
+          trwa sekundy i mieści się w oknie; dłużej indeks /search przestaje się aktualizować.
+          Fałszywy alarm da też pojedyncza wiadomość obsługiwana dłużej niż ok. 2
+          min: konsument w trakcie pracy nie odpytuje kolejki.'
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#052--alert-searchconsumerdown-nikt-nie-odpytuje-kolejki-searchproductsync
+    - alert: SearchSyncBacklog
+      expr: rabbitmq_detailed_queue_messages_ready{queue="search.product.sync"} >
+        1000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: 'Zaległość w search.product.sync: {{ $value }} wiadomości'
+        description: Seed 1500 zdarzeń konsument przerabia w niecałą minutę; ponad
+          1000 gotowych wiadomości przez 5 min oznacza, że konsument nie nadąża.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#064--alert-searchsyncbacklog-ponad-1000-wiadomości-w-searchproductsync
+    - alert: DeadLetterNotEmpty
+      expr: rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"} > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Kolejka {{ $labels.queue }} nie jest pusta ({{ $value }})
+        description: DLQ ma być pusta poza awarią; każda wiadomość to ręczna decyzja
+          (ponowić albo odrzucić).
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#063--alert-deadletternotempty-wiadomości-w-kolejce-dlq
+    - alert: SearchFailedMessages
+      expr: search_messenger_failed_messages > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: 'search: wiadomości w failure transport ({{ $value }})'
+        description: Każda wiadomość w failure transport to zmiana oferty, której
+          nie ma w /search; bez tego alertu indeks stoi po cichu.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#050--search-consumer-po-restarcie-węzłów-es-no-alive-nodes-przy-klastrze-green-indeks-stoi
+    - alert: SearchMetricsScrapeError
+      expr: search_metrics_scrape_error > 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: search-metrics nie odczytał failure transportu
+        description: Endpoint /metrics działa, ale nie umie odczytać failure transportu
+          (RabbitMQ/Messenger). W tym czasie krytyczny alert SearchFailedMessages
+          milczy, bo seria search_messenger_failed_messages nie istnieje, więc wiadomości
+          mogą lądować w failure transport niezauważone.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania
+    - alert: CatalogHttpErrorRate
+      expr: sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics",code=~"5.."}[5m]))
+        / sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[5m]))
+        > 0.05 and sum(rate(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[5m]))
+        > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: 'catalog: {{ $value | humanizePercentage }} odpowiedzi 5xx'
+        description: Ponad 5% odpowiedzi 5xx przy ruchu powyżej 0.1 req/s. Próg ruchu
+          jest po to, by pojedynczy błąd na pustym stacku nie dawał 100%.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#065--alert-cataloghttperrorrate-ponad-5-odpowiedzi-5xx
+    - alert: OrdersStuckPlaced
+      expr: catalog_orders_stuck_placed > 0
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: 'Zamówienia w statusie placed ponad 60 s: {{ $value }}'
+        description: Rezerwacja to krok workera (--sleep=1), zwykle kilka sekund.
+          Zamówienie placed ponad 60 s plus 2 min oznacza, że worker stoi albo krok
+          wpada w retry.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#045--zamówienie-wisi-w-sprawdzamy-dostępność-placed
+    - alert: SettledOrderHoldsReservation
+      expr: catalog_orders_settled_with_active_reservation > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Opłacone zamówienie trzyma aktywną rezerwację ({{ $value }})
+        description: Po płatności rezerwacja powinna zostać potwierdzona krokiem sagi;
+          5 min przeczeka ponowienia joba. Dłużej to towar zablokowany na zawsze (wyciek
+          stanu).
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#046--krok-sagi-w-failed_jobs-diagnoza-i-ręczne-ponowienie
+    - alert: OrderingSweepStale
+      expr: catalog_ordering_sweep_last_run_age_seconds > 180
+      for: 0m
+      labels:
+        severity: warning
+      annotations:
+        summary: Sweep zamówień nie biegł od {{ $value | humanizeDuration }}
+        description: Sweep wygaszający zamówienia biegnie co minutę; ponad 180 s to
+          trzy opuszczone przebiegi (catalog-scheduler).
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#044--zamówienia-nie-wygasają-towar-wisi-zarezerwowany-catalog-scheduler
+    - alert: OrderingSweepNeverRan
+      expr: absent(catalog_ordering_sweep_last_run_age_seconds) and on() up{job="catalog"}
+        == 1
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Sweep zamówień nigdy nie biegł, choć catalog działa
+        description: Brak klucza w cache przy żywym catalog. 10 min wystarcza na pierwszy
+          przebieg po starcie; dłużej scheduler nie działa.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#044--zamówienia-nie-wygasają-towar-wisi-zarezerwowany-catalog-scheduler
+    - alert: CatalogFailedJobs
+      expr: catalog_failed_jobs > 0
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: 'catalog: zadania w failed_jobs ({{ $value }})'
+        description: Krok sagi w failed_jobs czeka na ręczne queue:retry.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#046--krok-sagi-w-failed_jobs-diagnoza-i-ręczne-ponowienie
+    - alert: CatalogMetricsScrapeErrors
+      expr: catalog_metrics_scrape_errors > 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: 'catalog: gauge''e niepoliczone przy scrape ({{ $value }})'
+        description: Co najmniej jeden gauge domenowy catalog nie dał się policzyć
+          przy scrape (np. baza niedostępna lub brak tabeli); jego seria zniknęła,
+          więc alerty na niej (OutboxStale, CatalogFailedJobs, OrdersStuckPlaced…)
+          milczą. Nazwę gauge'a podaje warning w logu catalog-app.
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#067--alerty-searchmetricsscrapeerror-i-catalogmetricsscrapeerrors-metryki-nie-do-odczytania
+    - alert: OfferModerationOverdue
+      expr: catalog_offers_pending_moderation_oldest_age_seconds > 86400
+      for: 0m
+      labels:
+        severity: info
+      annotations:
+        summary: Zmiana oferty czeka na moderatora ponad dobę
+        description: 'SLA biznesowe: najstarsza zmiana ceny czeka na decyzję {{ $value
+          | humanizeDuration }}.'
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę
+    - alert: SellerApprovalOverdue
+      expr: catalog_sellers_pending_approval_oldest_age_seconds > 86400
+      for: 0m
+      labels:
+        severity: info
+      annotations:
+        summary: Sprzedawca czeka na akceptację ponad dobę
+        description: 'SLA biznesowe: najstarszy sprzedawca czeka na decyzję {{ $value
+          | humanizeDuration }}.'
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#066--alerty-offermoderationoverdue-i-sellerapprovaloverdue-decyzja-czeka-ponad-dobę
+    - alert: GlitchTipDown
+      expr: up{job="glitchtip"} == 0 and on() (max_over_time(up{job="glitchtip"}[7d])
+        == 1)
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: GlitchTip nie odpowiada
+        description: 'GlitchTip przestał odpowiadać na scrape od 5 min (a działał
+          w ostatnich 7 dniach). Aplikacje działają dalej: SDK nie buforuje zdarzeń,
+          a błąd wysyłki nigdy nie przerywa żądania, więc w tym czasie wyjątki nie
+          trafiają do issues. Logi w Kibanie i metryki w Prometheusie są nietknięte.'
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#070--alert-glitchtipdown-glitchtip-nie-odpowiada
+    - alert: GlitchTipEventFlood
+      expr: sum(rate(vtasks_tasks_submitted_total{job="glitchtip",task_name="ingest_event"}[10m]))
+        * 60 > 30
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: GlitchTip przyjmuje ponad 30 zdarzeń na minutę
+        description: 'Tempo przyjmowania zdarzeń utrzymuje się powyżej 30/min od 10
+          min (wartość: {{ $value | humanize }}/min). Zwykle to pętla błędu w aplikacji
+          albo zalew przez tunel /_errors. Baza glitchtip rośnie ok. 23 kB na zdarzenie,
+          a retencja to 14 dni.'
+        runbook: https://github.com/Dommmin/elastic/blob/main/docs/RUNBOOK.md#077--glitchtip-nie-ogranicza-przyjmowania-zdarzeń-zalew-i-rozmiar-bazy

@@ -18,6 +18,14 @@
 		per_host
 	}
 
+	# Stała nazwa serwera z portem metryk (etykieta `server` w caddy_http_*).
+	# Bez niej Caddy numeruje serwery srv0, srv1… w kolejności, która zależy od
+	# konfiguracji. Reguła CatalogHttpErrorRate odfiltrowuje `server="metrics"`
+	# (scrape'y Prometheusa), bo na k3s host jest wszędzie "_other" (ETAP G1).
+	servers :2020 {
+		name metrics
+	}
+
 	frankenphp {
 		# Worker mode włączamy zmienną OCTANE_ENABLED (decyzja D-07b).
 		# Odkomentujemy w ETAPIE 4, po zmierzeniu wariantu klasycznego.

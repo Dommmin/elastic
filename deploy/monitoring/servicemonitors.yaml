@@ -1,0 +1,101 @@
+# ============================================================================
+#  ServiceMonitory (ETAP G1) — odpowiednik `scrape_configs` z
+#  infra/obs/prometheus/prometheus.yml. Zamiast adresów na sztywno
+#  („rabbitmq:15692”) Prometheus Operator wybiera obiekty Service po
+#  etykietach i sam śledzi ich Endpoints: nowy pod = nowy cel, bez restartu.
+#
+#  Etykieta `job`: domyślnie operator ustawia ją na nazwę Service. Reguły
+#  z ETAPU 11 (TargetDown, SearchConsumerDown, GlitchTipDown…) pytają o
+#  job="catalog", "rabbitmq-queues" itd. — relabeling niżej nadaje nazwy
+#  z Compose, więc TEN SAM plik reguł działa lokalnie i na klastrze.
+# ============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: catalog
+spec:
+  namespaceSelector: { matchNames: [marketplace] }
+  selector:
+    matchLabels: { app: catalog-app }
+  endpoints:
+    # Caddy/FrankenPHP: caddy_http_*, frankenphp_*
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - { targetLabel: job, replacement: caddy }
+    # Gauge'e domenowe Laravela (spatie/laravel-prometheus)
+    - port: metrics
+      path: /prometheus
+      interval: 15s
+      relabelings:
+        - { targetLabel: job, replacement: catalog }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rabbitmq
+spec:
+  namespaceSelector: { matchNames: [marketplace] }
+  selector:
+    matchLabels: { app: rabbitmq }
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - { targetLabel: job, replacement: rabbitmq }
+    # Metryki per kolejka — tylko trzy rodziny (komentarz w prometheus.yml z ETAPU 11).
+    - port: prometheus
+      path: /metrics/detailed
+      interval: 15s
+      params:
+        family: [queue_coarse_metrics, queue_consumer_count, queue_delivery_metrics]
+      relabelings:
+        - { targetLabel: job, replacement: rabbitmq-queues }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: search
+spec:
+  namespaceSelector: { matchNames: [marketplace] }
+  selector:
+    matchLabels: { app: search-metrics }
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - { targetLabel: job, replacement: search }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: glitchtip
+spec:
+  namespaceSelector: { matchNames: [marketplace] }
+  selector:
+    matchLabels: { app: glitchtip }
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - { targetLabel: job, replacement: glitchtip }
+---
+# Nowość względem Compose: eksporter Postgresa (sidecar w postgres-0).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres
+spec:
+  namespaceSelector: { matchNames: [marketplace] }
+  selector:
+    matchLabels: { app: postgres }
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - { targetLabel: job, replacement: postgres }
