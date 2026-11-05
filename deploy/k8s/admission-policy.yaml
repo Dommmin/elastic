@@ -1,0 +1,85 @@
+# ============================================================================
+#  ValidatingAdmissionPolicy: bramka dla konta `deployer` (ETAP G2)
+#
+#  Role `deployer` (rbac.yaml) ogranicza się do namespace marketplace, ale prawo
+#  tworzenia Deploymentów to w praktyce prawo uruchomienia DOWOLNEGO poda:
+#  `privileged: true` albo hostPath na `/` = root na węźle, a stąd cały klaster.
+#  Pod Security Admission by to zablokowało, ale namespace ma tylko warn/audit
+#  (rabbitmq i pg-backup to wyjątki), a `baseline` zabrania hostPath, którego
+#  potrzebuje pg-backup.
+#
+#  Ta polityka (CEL, wbudowana w API server od 1.30, bez Kyverno/OPA) odrzuca
+#  żądania OD DEPLOYERA, które dają podowi uprawnienia do węzła:
+#    privileged, hostNetwork/hostPID/hostIPC, capabilities poza NET_BIND_SERVICE,
+#    hostPath inny niż katalog backupu.
+#  Admin klastra (deploy.sh dziś) jej nie podlega — to bariera dla CI, nie dla ludzi.
+#  Obiekt klastrowy: zakłada go admin (deployer nie może i nie powinien).
+#
+#  Test: `make k3s-verify faza=hardening` próbuje jako deployer utworzyć pod
+#  privileged (--dry-run=server) i oczekuje odmowy.
+# ============================================================================
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deployer-pod-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, statefulsets, daemonsets, replicasets]
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs, cronjobs]
+  matchConditions:
+    - name: only-deployer
+      expression: "request.userInfo.username == 'system:serviceaccount:marketplace:deployer'"
+  variables:
+    - name: spec
+      expression: >-
+        object.kind == 'Pod' ? object.spec :
+        object.kind == 'CronJob' ? object.spec.jobTemplate.spec.template.spec :
+        object.spec.template.spec
+    - name: containers
+      expression: >-
+        variables.spec.containers +
+        (has(variables.spec.initContainers) ? variables.spec.initContainers : []) +
+        (has(variables.spec.ephemeralContainers) ? variables.spec.ephemeralContainers : [])
+  validations:
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext) ||
+          !has(c.securityContext.privileged) || !c.securityContext.privileged)
+      message: "deployer: privileged niedozwolone"
+    - expression: >-
+        !(has(variables.spec.hostNetwork) && variables.spec.hostNetwork) &&
+        !(has(variables.spec.hostPID) && variables.spec.hostPID) &&
+        !(has(variables.spec.hostIPC) && variables.spec.hostIPC)
+      message: "deployer: hostNetwork/hostPID/hostIPC niedozwolone"
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
+          c.securityContext.capabilities.add.all(cap, cap == 'NET_BIND_SERVICE'))
+      message: "deployer: z capabilities wolno dodać tylko NET_BIND_SERVICE"
+    - expression: >-
+        !has(variables.spec.volumes) || variables.spec.volumes.all(v,
+          !has(v.hostPath) || v.hostPath.path == '/var/backups/marketplace-k8s')
+      message: "deployer: hostPath tylko /var/backups/marketplace-k8s (pg-backup)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deployer-pod-guard
+spec:
+  policyName: deployer-pod-guard
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: marketplace

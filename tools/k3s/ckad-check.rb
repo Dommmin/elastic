@@ -332,4 +332,31 @@ if role && rb
   ok(subj["kind"] == "ServiceAccount" && subj["name"] == "deployer" && rb.dig("roleRef", "name") == "deployer", "RBAC: RoleBinding wiąże ServiceAccount deployer z Role deployer")
 end
 
+# Role w namespace nie wystarcza: kto tworzy Deploymenty, ten może dać podowi
+# privileged/hostPath i przejąć węzeł. Bez PSA enforce (wyjątki) bramką jest
+# ValidatingAdmissionPolicy dla żądań od deployera.
+vap = find("ValidatingAdmissionPolicy", "deployer-pod-guard")
+vapb = find("ValidatingAdmissionPolicyBinding", "deployer-pod-guard")
+ok(!vap.nil? && !vapb.nil?, "Admission: ValidatingAdmissionPolicy + Binding deployer-pod-guard")
+if vap && vapb
+  rules = vap.dig("spec", "matchConstraints", "resourceRules") || []
+  kinds = rules.flat_map { |r| r["resources"] }
+  ok(%w[pods deployments statefulsets jobs cronjobs].all? { |k| kinds.include?(k) }, "Admission: obejmuje pods, deployments, statefulsets, jobs, cronjobs")
+  cond = (vap.dig("spec", "matchConditions") || []).map { |c| c["expression"] }.join(" ")
+  ok(cond.include?("system:serviceaccount:marketplace:deployer"), "Admission: tylko żądania od deployera (admin bez zmian)")
+  exprs = (vap.dig("spec", "validations") || []).map { |v| v["expression"] }.join(" ")
+  %w[privileged hostNetwork hostPID hostIPC hostPath NET_BIND_SERVICE].each { |w| ok(exprs.include?(w), "Admission: reguła na #{w}") }
+  ok(vapb.dig("spec", "validationActions") == ["Deny"], "Admission: validationActions [Deny]")
+  ok(vapb.dig("spec", "matchResources", "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") == "marketplace", "Admission: binding tylko dla namespace marketplace")
+end
+# Własne obciążenia muszą przejść tę politykę (inaczej deployer nie wdroży sklepu).
+WORKLOADS.each do |w|
+  spec = w[:spec]
+  bad = %w[hostNetwork hostPID hostIPC].select { |f| spec[f] } +
+        containers(spec).select { |c| c.dig("securityContext", "privileged") }.map { |c| "privileged:#{c['name']}" } +
+        (spec["volumes"] || []).select { |v| v["hostPath"] && v.dig("hostPath", "path") != "/var/backups/marketplace-k8s" }.map { |v| "hostPath:#{v['name']}" } +
+        containers(spec).flat_map { |c| (c.dig("securityContext", "capabilities", "add") || []) - ["NET_BIND_SERVICE"] }
+  ok(bad.empty?, "#{w[:kind]}/#{w[:name]}: przechodzi deployer-pod-guard#{bad.empty? ? '' : " (#{bad.join(', ')})"}")
+end
+
 puts OUT.map { |s, m| "#{s}|#{m}" }

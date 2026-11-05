@@ -65,6 +65,7 @@ deploy/k8s/
   namespace.yaml          etykiety Pod Security Admission (warn/audit: restricted)
   serviceaccounts.yaml    konta per aplikacja, bez tokena
   rbac.yaml               ServiceAccount + Role + RoleBinding `deployer`
+  admission-policy.yaml   ValidatingAdmissionPolicy: deployer bez privileged/hostPath
   networkpolicies.yaml    default-deny, DNS, egress w namespace, 9 polityk serwerów
   hpa.yaml                HorizontalPodAutoscaler catalog-app
   catalog.yaml …          securityContext, init kontener, startupProbe, track: stable
@@ -197,6 +198,23 @@ kubectl auth can-i patch deployments -n marketplace --as=system:serviceaccount:m
 kubectl auth can-i create pods/exec -n marketplace --as=system:serviceaccount:marketplace:deployer    # no
 kubectl auth can-i list secrets -n kube-system --as=system:serviceaccount:marketplace:deployer        # no
 ```
+
+**Role to za mało** (znalezione przez automatyczny przegląd bezpieczeństwa po
+pushu). Prawo tworzenia Deploymentów to prawo uruchomienia dowolnego poda:
+`privileged: true` albo hostPath na `/` daje roota na węźle, a stąd dostęp do całego
+klastra. Pod Security Admission by to zablokowało, ale namespace ma tylko
+warn/audit, a `enforce: baseline` zabrania hostPath, którego potrzebuje pg-backup.
+Bramką jest więc `ValidatingAdmissionPolicy` (`deploy/k8s/admission-policy.yaml`,
+CEL wbudowany w API server). Działa tylko dla żądań od deployera i odrzuca:
+
+- `privileged`,
+- `hostNetwork`, `hostPID` i `hostIPC`,
+- capabilities poza `NET_BIND_SERVICE`,
+- hostPath inny niż katalog backupu.
+
+`ckad-check.rb` sprawdza, że nasze obciążenia tę politykę przechodzą. Faza
+`hardening` próbuje jako deployer utworzyć pod privileged (`--dry-run=server`)
+i oczekuje odmowy.
 
 Uczciwie: Role ma `secrets`, bo deploy je wdraża (`es-app-roles` z
 secretGeneratora). Kto może wdrażać do namespace, ten widzi jego sekrety.

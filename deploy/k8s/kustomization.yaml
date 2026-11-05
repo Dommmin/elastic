@@ -14,6 +14,7 @@ resources:
   - serviceaccounts.yaml
   - networkpolicies.yaml
   - rbac.yaml
+  - admission-policy.yaml
   - elasticsearch.yaml
   - postgres.yaml
   - rabbitmq.yaml

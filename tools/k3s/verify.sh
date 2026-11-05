@@ -527,6 +527,21 @@ phase_hardening() {
   check "RBAC deployer: BEZ pods/exec" "no" "$(k auth can-i create pods/exec -n marketplace --as="${sa}")"
   check "RBAC deployer: BEZ sekretów kube-system" "no" "$(k auth can-i list secrets -n kube-system --as="${sa}")"
   check "RBAC deployer: BEZ kasowania namespace" "no" "$(k auth can-i delete namespaces --as="${sa}")"
+  # deployer może tworzyć Deploymenty, ale nie pody z uprawnieniami do węzła
+  # (ValidatingAdmissionPolicy deployer-pod-guard). --dry-run=server przechodzi
+  # przez admission, niczego nie tworząc.
+  local pf; pf="$(mktemp)"
+  cat > "${pf}" <<YAML
+apiVersion: v1
+kind: Pod
+metadata: { name: verify-privileged, namespace: marketplace }
+spec:
+  containers:
+    - { name: x, image: busybox:1.37, securityContext: { privileged: true } }
+YAML
+  check "deployer: pod privileged odrzucony przez admission (deployer-pod-guard)" "1" \
+    "$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" create --dry-run=server --as="${sa}" -f "${pf}" 2>&1 | grep -c 'privileged niedozwolone')"
+  rm -f "${pf}"
   check "konto catalog: zero uprawnień w API" "no" "$(k auth can-i list pods -n marketplace --as=system:serviceaccount:marketplace:catalog)"
 }
 
