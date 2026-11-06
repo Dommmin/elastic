@@ -1,6 +1,6 @@
 # 13 — ETAP G: Kubernetes na poziomie CKAD + produkcyjna obserwowalność
 
-> **Stan (2026-11-05):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony 2026-11-05 (hardening 26/26, netpol 20/20, ingress 12/13 — linki https czekają na obraz po merge #12, hpa 5/5, canary 5/5, exposure 17/17), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). Następny: G3.
+> **Stan (2026-11-06):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). Następny: G4.
 
 **Cel:** po ETAPIE D2 sklep działa na k3s, ale manifesty pokrywają mniej więcej połowę
 zakresu CKAD, a Prometheus/Grafana/Alertmanager działają tylko lokalnie w Compose.
@@ -104,6 +104,12 @@ Każdy element z realnym powodem w tej aplikacji:
 sprawdzarką (`tools/ckad/check.sh <zadanie>`) i rozwiązaniem imperatywnym (`kubectl
 create/run/expose/set`). Zadania wykonuje się w osobnym namespace `ckad-lab`,
 żeby nie ruszać sklepu.
+
+**Zrobione (2026-11-06):** [`docs/ckad/`](ckad/README.md) — 30 zadań w proporcjach wag
+egzaminu, `make ckad-lab-up|start|check|selftest|exam|scores`. Lab w `ckad-lab` i
+`ckad-lab-b` z kubeconfigiem ucznia (rola `admin` tylko w labie), ResourceQuota i
+LimitRange jako strażnicy węzła. Selftest 30/30: nierozwiązane = FAIL, rozwiązanie
+z dokumentu jako uczeń = PASS. Przewodnik: [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md).
 
 ## G4 — „zepsuj i napraw”
 

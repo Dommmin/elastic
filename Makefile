@@ -434,6 +434,32 @@ k3s-canary-status: ## Pody catalog-app po track (stable/canary), obrazy, udział
 k3s-canary-abort: ## Usuń canary — ruch wraca do stabilnych podów
 	@bash tools/k3s/canary.sh abort
 
+# --- ETAP G3: laboratorium CKAD (docs/ckad/) — wymaga tunelu: make k3s-tunnel ---
+.PHONY: ckad-lab-up ckad-lab-down ckad-reset ckad-start ckad-check ckad-selftest ckad-exam ckad-scores
+ckad-lab-up: ## Lab CKAD: namespace'y ckad-lab(-b), kwoty, kubeconfig ucznia ~/.kube/ckad-lab.yaml
+	@bash tools/ckad/lab.sh up
+
+ckad-lab-down: ## Usuń lab CKAD (oba namespace'y)
+	@bash tools/ckad/lab.sh down
+
+ckad-reset: ## Wyczyść lab CKAD bez usuwania namespace'ów
+	@bash tools/ckad/lab.sh reset
+
+ckad-start: ## Zadanie CKAD: reset, przygotowanie, treść, stoper (make ckad-start t=07)
+	@bash tools/ckad/start.sh $(t)
+
+ckad-check: ## Sprawdź zadanie CKAD i zapisz czas (make ckad-check t=07)
+	@bash tools/ckad/check.sh $(t)
+
+ckad-selftest: ## Dowód zadań CKAD: nierozwiązane = FAIL, rozwiązanie z docs = PASS (t="07 12" albo wszystkie)
+	@bash tools/ckad/selftest.sh $(t)
+
+ckad-exam: ## Symulacja egzaminu: losowe zadania na czas (make ckad-exam n=16 min=120)
+	@bash tools/ckad/exam.sh $(or $(n),16) $(or $(min),120)
+
+ckad-scores: ## Twoje wyniki CKAD: ostatnie podejścia i zadania do powtórki
+	@bash tools/ckad/scores.sh
+
 ## Ingress na k3s (ETAP G2): Traefik + cert-manager, hosty *.marketplace.test
 .PHONY: k3s-ingress
 k3s-ingress: ## Zainstaluj/zaktualizuj cert-manager, Traefik, CA i Ingressy (sklep, Grafana, Kibana)
