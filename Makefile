@@ -422,6 +422,31 @@ k3s: ## kubectl na klastrze VPS (make k3s k="get pods -n marketplace")
 k3s-deploy: ## Wdróż na k3s: ostatni build CI albo tag=<SHA> (infra -> Job migrate -> aplikacje)
 	@bash tools/k3s/deploy.sh $(tag)
 
+.PHONY: k3s-canary
+k3s-canary: ## Canary catalog-app: 1 pod wersji tag=<SHA> obok stabilnych (promocja = make k3s-deploy tag=<SHA>)
+	@bash tools/k3s/canary.sh start $(tag)
+
+.PHONY: k3s-canary-status
+k3s-canary-status: ## Pody catalog-app po track (stable/canary), obrazy, udział canary w ruchu
+	@bash tools/k3s/canary.sh status
+
+.PHONY: k3s-canary-abort
+k3s-canary-abort: ## Usuń canary — ruch wraca do stabilnych podów
+	@bash tools/k3s/canary.sh abort
+
+## Ingress na k3s (ETAP G2): Traefik + cert-manager, hosty *.marketplace.test
+.PHONY: k3s-ingress
+k3s-ingress: ## Zainstaluj/zaktualizuj cert-manager, Traefik, CA i Ingressy (sklep, Grafana, Kibana)
+	@bash tools/k3s/install-ingress.sh
+
+.PHONY: k3s-ingress-check
+k3s-ingress-check: ## Ingress bez klastra: render chartu Traefika, certyfikaty i Ingressy (CI)
+	@bash tools/k3s/ingress-check.sh
+
+.PHONY: k3s-ingress-tunnel
+k3s-ingress-tunnel: ## Tunel https://*.marketplace.test:8443 -> Traefik w klastrze (+ wpis do /etc/hosts, patrz przewodnik G2)
+	@bash tools/k3s/ingress-tunnel.sh
+
 ## Monitoring na k3s (ETAP G1 — docs/13-PLAN-ETAP-G-K8S.md)
 .PHONY: k3s-monitoring
 k3s-monitoring: ## Zainstaluj/zaktualizuj kube-prometheus-stack + ServiceMonitory, reguły i dashboardy z repo

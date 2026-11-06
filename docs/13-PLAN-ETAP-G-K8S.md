@@ -1,6 +1,6 @@
 # 13 — ETAP G: Kubernetes na poziomie CKAD + produkcyjna obserwowalność
 
-> **Stan (2026-11-05):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). Następny: G2.
+> **Stan (2026-11-05):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony 2026-11-05 (hardening 26/26, netpol 20/20, ingress 12/13 — linki https czekają na obraz po merge #12, hpa 5/5, canary 5/5, exposure 17/17), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). Następny: G3.
 
 **Cel:** po ETAPIE D2 sklep działa na k3s, ale manifesty pokrywają mniej więcej połowę
 zakresu CKAD, a Prometheus/Grafana/Alertmanager działają tylko lokalnie w Compose.
@@ -83,6 +83,20 @@ Każdy element z realnym powodem w tej aplikacji:
 - **startupProbe** dla wolno startujących (catalog-app, glitchtip) zamiast
   `initialDelaySeconds`.
 - **Canary** dla catalog-app (drugi Deployment z etykietą `track: canary`, ten sam Service).
+
+**Odstępstwa od planu (decyzje przy realizacji, RUNBOOK #083–#087):**
+
+- **Traefik zamiast ingress-nginx** — ingress-nginx wycofany (koniec utrzymania 03.2026).
+  Standardowy obiekt Ingress, Service ClusterIP, dostęp tunelem SSH na `:8443` (443 na Macu zajęty).
+- **NetworkPolicy:** egress „do całego namespace + DNS”, precyzja po stronie ingress serwera
+  (zasada: kto ma hasło, ten ma trasę). Ewaluator polityk w CI (`tools/k3s/ckad-check.rb`).
+- **securityContext:** profil restricted wszędzie poza rabbitmq (root w entrypoincie, G5)
+  i pg-backup (root, hostPath); `NET_BIND_SERVICE` tylko dla frankenphp (RUNBOOK #086).
+  PSA `warn`/`audit` restricted bez `enforce`.
+- **RBAC:** żaden pod nie potrzebuje API, więc wszystkie konta bez tokena; Role ma konto
+  `deployer` dla narzędzi wdrożeniowych (CI), nie Job.
+- **Canary generowany z żywego Deploymentu** (`tools/k3s/canary-render.rb`), nie plik w repo.
+- Przy okazji: webhook bramki płatności na k3s nie działał (RUNBOOK #085).
 
 ## G3 — ćwiczenia CKAD
 

@@ -1,0 +1,76 @@
+# ============================================================================
+#  Traefik jako kontroler Ingress na k3s (ETAP G2) — tylko różnice od chartu.
+#  Instalacja: make k3s-ingress (tools/k3s/install-ingress.sh, wersja przypięta tam).
+#
+#  Dlaczego Traefik, a nie ingress-nginx z planu: projekt ingress-nginx został
+#  wycofany (koniec utrzymania: marzec 2026) — nowa instalacja na nim to dług od
+#  pierwszego dnia. Traefik to domyślny Ingress w k3s (tu wyłączony przy
+#  instalacji, żeby nie otwierał 80/443 na węźle), utrzymywany i lekki.
+#  Używamy go przez STANDARDOWY obiekt Ingress (networking.k8s.io/v1), nie przez
+#  CRD IngressRoute — manifesty Ingress działają z każdym kontrolerem.
+#
+#  Dostęp: Service typu ClusterIP, nic nie słucha na publicznym adresie VPS.
+#  Z Maca: tunel SSH do adresu Service (make k3s-ingress-tunnel) -> localhost:8443.
+# ============================================================================
+deployment:
+  replicas: 1
+
+ingressClass:
+  enabled: true
+  isDefaultClass: true   # Ingress bez ingressClassName też trafia tutaj
+  name: traefik
+
+providers:
+  kubernetesIngress:
+    enabled: true
+  # CRD Traefika (IngressRoute, Middleware) i Gateway API wyłączone: jeden
+  # sposób opisu routingu w repo — standardowy Ingress.
+  kubernetesCRD:
+    enabled: false
+  kubernetesGateway:
+    enabled: false
+
+gateway:
+  enabled: false
+gatewayClass:
+  enabled: false
+
+ingressRoute:
+  dashboard:
+    enabled: false   # dashboard Traefika nie jest wystawiony (port-forward na 8080, gdy trzeba)
+
+service:
+  spec:
+    type: ClusterIP   # domyślny LoadBalancer na k3s bez ServiceLB wisiałby w <pending>
+
+ports:
+  web:
+    # Każde HTTP -> 301 na HTTPS (entrypoint websecure).
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    http:
+      tls:
+        enabled: true
+
+metrics:
+  prometheus:
+    service:
+      enabled: true
+    # Prometheus z G1 (selektory NilUsesHelmValues: false) bierze ServiceMonitor bez etykiety release.
+    serviceMonitor:
+      enabled: true
+      interval: 15s
+
+accessLog:
+  enabled: true
+  format: json
+
+# Zmierzone po instalacji: ~40Mi. Profil restricted (non-root, read-only) jest w chartcie domyślnie.
+resources:
+  requests: { memory: 64Mi, cpu: 20m }
+  limits: { memory: 192Mi }

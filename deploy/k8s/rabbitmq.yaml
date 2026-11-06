@@ -42,9 +42,21 @@ spec:
       labels:
         app: rabbitmq
     spec:
+      serviceAccountName: rabbitmq
+      automountServiceAccountToken: false
+      # WYJĄTEK od profilu restricted (tools/k3s/ckad-check.rb, EXCEPTIONS):
+      # infra/rabbitmq/entrypoint.sh zapisuje /etc/rabbitmq/definitions.json z hashem
+      # hasła i robi chown, a docker-entrypoint.sh przechodzi na użytkownika rabbitmq
+      # przez su-exec — to wymaga roota i CHOWN/SETUID/SETGID. Zostaje to, co nie
+      # przeszkadza: seccomp i zakaz eskalacji. G5 zastępuje ten StatefulSet
+      # operatorem RabbitMQ (pody od startu jako uid 999).
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: rabbitmq
           image: ghcr.io/dommmin/elastic-rabbitmq:placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
           env:
             - name: RABBITMQ_USER
               valueFrom: { configMapKeyRef: { name: marketplace-config, key: RABBITMQ_USER } }
@@ -57,13 +69,20 @@ spec:
           # Sonda TCP, NIE `rabbitmq-diagnostics`: wołanie CLI w trakcie bootu
           # node'a potrafiło położyć kontener (RUNBOOK #033). Port AMQP
           # otwiera się dopiero po wczytaniu definicji (kolejki istnieją).
+          #
+          # startupProbe (ETAP G2): wcześniej liveness miał initialDelaySeconds: 90
+          # „na wszelki wypadek” — za mało przy wolnym dysku (restart po OOM pętlił
+          # się), za dużo przy szybkim. Teraz do 5 min na boot, a liveness zaczyna
+          # pilnować od pierwszego otwarcia portu.
+          startupProbe:
+            tcpSocket: { port: 5672 }
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             tcpSocket: { port: 5672 }
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             tcpSocket: { port: 5672 }
-            initialDelaySeconds: 90
             periodSeconds: 20
             failureThreshold: 6
           resources:

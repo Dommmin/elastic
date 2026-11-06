@@ -15,6 +15,13 @@
 #    apps       Deploymenty, Job migracji, /up + X-App-Version, indeks (Task 6)
 #    stack      parytet z D1: dane = Compose, eval, E2E zmiana ceny    (Task 7)
 #    backup     repo + SLM w ECK, snapshot świeży, CronJob pg-backup   (Task 8)
+#    monitoring kube-prometheus-stack: cele, reguły, ścieżka alertu (G1)
+#    hardening  uid nie-root, read-only FS, brak tokena, PSA, RBAC (G2)
+#    netpol     NetworkPolicy na żywych podach: trasy OPEN/BLOCKED  (G2)
+#    ingress    Traefik + cert-manager, *.marketplace.test:8443    (G2)
+#    hpa        obciążenie przez Ingress -> HPA dodaje repliki      (G2)
+#    canary     drugi Deployment za Service, podział ruchu         (G2)
+#    g2         hardening + netpol + ingress + hpa + canary
 #    reboot     RESTARTUJE serwer: k3s i cały namespace wstają same     (Task 9)
 #               — tylko jawnie, NIE wchodzi w `all`
 #    all        wszystkie fazy (bez reboot)
@@ -476,9 +483,232 @@ YAML
   echo -e "  ${DIM}alerty firing teraz: ${firing:-brak} (Watchdog świeci zawsze — to test ścieżki alertów)${NC}"
 }
 
+# =================================================================== G2 =====
+# Połączenie TCP z wnętrza poda: php jest w obrazach catalog i search.
+# OPEN / BLOCKED (NetworkPolicy gubi pakiety -> timeout 3 s).
+tcp_from() { # tcp_from <deploy> <host> <port>
+  k -n marketplace exec "deploy/$1" -- php -r '$c=@fsockopen($argv[1],(int)$argv[2],$e,$m,3); echo $c?"OPEN":"BLOCKED";' "$2" "$3"
+}
+
+# ------------------------------------------------------------ hardening -----
+phase_hardening() {
+  tunnel_up
+  echo -e "\n${BLD}  hardening — securityContext, ServiceAccount, PSA, RBAC (ETAP G2)${NC}"
+  local d want
+  for d in catalog-app:33 outbox-publisher:33 catalog-worker:33 catalog-scheduler:33 search-consumer:33 search-metrics:33 glitchtip:5000; do
+    want="${d#*:}"; d="${d%%:*}"
+    check "${d}: proces jako uid ${want} (nie root)" "${want}" "$(k -n marketplace exec "deploy/${d}" -- id -u | tr -d '\r')"
+  done
+  check "postgres-0: baza jako uid 70" "70" "$(k -n marketplace exec postgres-0 -c postgres -- id -u)"
+  check "postgres-0: eksporter jako nobody (65534)" "65534" "$(k -n marketplace exec postgres-0 -c exporter -- id -u 2>/dev/null || k -n marketplace get pod postgres-0 -o jsonpath='{.spec.containers[?(@.name=="exporter")].securityContext.runAsUser}')"
+  check "redis-0: jako uid 999" "999" "$(k -n marketplace exec redis-0 -- id -u)"
+  check "catalog-app: system plików tylko do odczytu" "ro" \
+    "$(k -n marketplace exec deploy/catalog-app -- sh -c 'touch /app/.verify 2>&1 | grep -q Read-only && echo ro || echo rw')"
+  check "catalog-app: storage/ zapisywalny (emptyDir z init kontenera)" "ok" \
+    "$(k -n marketplace exec deploy/catalog-app -- sh -c 'touch /app/storage/framework/.verify && rm /app/storage/framework/.verify && echo ok')"
+  check "catalog-app: cache tras z obrazu przeniesiony (routes-v7.php)" "ok" \
+    "$(k -n marketplace exec deploy/catalog-app -- sh -c 'test -f /app/bootstrap/cache/routes-v7.php && echo ok')"
+  check "catalog-app: brak tokena API w podzie" "brak" \
+    "$(k -n marketplace exec deploy/catalog-app -- sh -c 'test -e /var/run/secrets/kubernetes.io/serviceaccount/token && echo JEST || echo brak')"
+  check "pody sklepu bez konta default (poza ECK)" "0" \
+    "$(k -n marketplace get pods -o json | jq '[.items[] | select(.metadata.labels["common.k8s.elastic.co/type"]==null) | select(.status.phase=="Running") | select(.spec.serviceAccountName=="default")] | length')"
+  check "catalog-app: startupProbe w żywym podzie" "/up" \
+    "$(k -n marketplace get deploy catalog-app -o jsonpath='{.spec.template.spec.containers[0].startupProbe.httpGet.path}')"
+  # PSA: suchy przebieg `enforce=restricted` wypisuje pody, które by nie przeszły.
+  # Lista ma się ograniczać do znanych wyjątków (rabbitmq, pg-backup, ECK).
+  # Ostrzeżenia idą na stderr, a k() go chowa — stąd kubectl wprost.
+  local psa others
+  psa="$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" label --dry-run=server --overwrite ns marketplace pod-security.kubernetes.io/enforce=restricted 2>&1)"
+  others="$(grep -oE 'Warning: [a-z0-9-]+' <<<"${psa}" | awk '{print $2}' | grep -vE '^(existing|rabbitmq-0|pg-backup-|marketplace-es-|marketplace-kb-)' | sort -u | tr '\n' ' ')"
+  check "PSA restricted: łamią go tylko znane wyjątki (rabbitmq, pg-backup, ECK)" "" "${others% }"
+  local sa=system:serviceaccount:marketplace:deployer
+  check "RBAC deployer: patch deployments w marketplace" "yes" "$(k auth can-i patch deployments -n marketplace --as="${sa}")"
+  check "RBAC deployer: delete jobs w marketplace" "yes" "$(k auth can-i delete jobs -n marketplace --as="${sa}")"
+  check "RBAC deployer: BEZ pods/exec" "no" "$(k auth can-i create pods/exec -n marketplace --as="${sa}")"
+  check "RBAC deployer: BEZ sekretów kube-system" "no" "$(k auth can-i list secrets -n kube-system --as="${sa}")"
+  check "RBAC deployer: BEZ kasowania namespace" "no" "$(k auth can-i delete namespaces --as="${sa}")"
+  # deployer może tworzyć Deploymenty, ale nie pody z uprawnieniami do węzła
+  # (ValidatingAdmissionPolicy deployer-pod-guard). --dry-run=server przechodzi
+  # przez admission, niczego nie tworząc. Deployment, nie Pod: podów deployer nie
+  # tworzy wcale (RBAC odmówiłby przed admission i test nic by nie mówił).
+  local pf; pf="$(mktemp)"
+  cat > "${pf}" <<YAML
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: verify-privileged, namespace: marketplace }
+spec:
+  selector: { matchLabels: { app: verify-privileged } }
+  template:
+    metadata: { labels: { app: verify-privileged } }
+    spec:
+      containers:
+        - { name: x, image: busybox:1.37, securityContext: { privileged: true } }
+YAML
+  check "deployer: pod privileged odrzucony przez admission (deployer-pod-guard)" "1" \
+    "$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" create --dry-run=server --as="${sa}" -f "${pf}" 2>&1 | grep -c 'privileged niedozwolone')"
+  rm -f "${pf}"
+  # Ta sama bramka dla CR-ów ECK: pod tworzy operator, ale z podTemplate od deployera.
+  check "deployer: privileged w podTemplate Elasticsearch odrzucony" "1" \
+    "$("${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_VPS}" -n marketplace patch elasticsearch marketplace --dry-run=server --as="${sa}" --type=json \
+      -p '[{"op":"add","path":"/spec/nodeSets/0/podTemplate/spec/containers/0/securityContext","value":{"privileged":true}}]' 2>&1 | grep -c 'privileged niedozwolone')"
+  check "ValidatingAdmissionPolicy: bez ostrzeżeń typów CEL" "0" \
+    "$(k get validatingadmissionpolicy deployer-pod-guard -o json | jq '[.status.typeChecking.expressionWarnings[]?] | length')"
+  check "konto catalog: zero uprawnień w API" "no" "$(k auth can-i list pods -n marketplace --as=system:serviceaccount:marketplace:catalog)"
+}
+
+# --------------------------------------------------------------- netpol -----
+phase_netpol() {
+  tunnel_up
+  echo -e "\n${BLD}  netpol — NetworkPolicy na żywych podach (ETAP G2)${NC}"
+  check "NetworkPolicy w marketplace (default-deny + reguły)" "1" \
+    "$(k -n marketplace get networkpolicy default-deny -o name | wc -l | tr -d ' ')"
+  # Trasy, które MAJĄ działać (z prawdziwych podów, przez Service DNS)
+  check "catalog-app -> postgres:5432" "OPEN" "$(tcp_from catalog-app postgres 5432)"
+  check "catalog-app -> redis:6379" "OPEN" "$(tcp_from catalog-app redis 6379)"
+  check "catalog-app -> rabbitmq:5672" "OPEN" "$(tcp_from catalog-app rabbitmq 5672)"
+  check "catalog-app -> ES:9200" "OPEN" "$(tcp_from catalog-app marketplace-es-http 9200)"
+  check "catalog-worker -> catalog-app:80 (webhook bramki)" "OPEN" "$(tcp_from catalog-worker catalog-app 80)"
+  check "search-consumer -> catalog-app:80 (projekcja)" "OPEN" "$(tcp_from search-consumer catalog-app 80)"
+  check "search-consumer -> rabbitmq:5672" "OPEN" "$(tcp_from search-consumer rabbitmq 5672)"
+  check "search-metrics -> postgres:5432" "OPEN" "$(tcp_from search-metrics postgres 5432)"
+  # Trasy, których ma NIE być
+  check "search-consumer -> redis:6379 zablokowane (brak hasła = brak trasy)" "BLOCKED" "$(tcp_from search-consumer redis 6379)"
+  check "search-metrics -> rabbitmq:5672 zablokowane" "BLOCKED" "$(tcp_from search-metrics rabbitmq 5672)"
+  check "catalog-scheduler -> ES:9200 zablokowane" "BLOCKED" "$(tcp_from catalog-scheduler marketplace-es-http 9200)"
+  check "catalog-app -> internet (1.1.1.1:443) zablokowane" "BLOCKED" "$(tcp_from catalog-app 1.1.1.1 443)"
+  check "catalog-app -> DNS działa (postgres się rozwiązuje)" "ok" \
+    "$(k -n marketplace exec deploy/catalog-app -- php -r 'echo gethostbyname("postgres")!=="postgres"?"ok":"brak";')"
+  # Obcy pod w namespace sklepu (jak `kubectl run` włamywacza albo debug).
+  local out
+  k -n marketplace delete pod verify-np --ignore-not-found --wait=true >/dev/null
+  k -n marketplace run verify-np --restart=Never --image=busybox:1.37 --labels=run=verify-np --command -- \
+    sh -c 'nslookup postgres.marketplace.svc.cluster.local >/dev/null 2>&1 && echo DNS_OK; nc -z -w 3 postgres 5432 && echo PG_OPEN || echo PG_BLOCKED; nc -z -w 3 catalog-app 80 && echo APP_OPEN || echo APP_BLOCKED' >/dev/null
+  k -n marketplace wait pod/verify-np --for=jsonpath='{.status.phase}'=Succeeded --timeout=90s >/dev/null
+  out="$(k -n marketplace logs verify-np)"
+  k -n marketplace delete pod verify-np --wait=false >/dev/null
+  check "obcy pod: DNS działa (allow-dns)" "1" "$(grep -c DNS_OK <<<"${out}")"
+  check "obcy pod -> postgres:5432 zablokowane" "1" "$(grep -c PG_BLOCKED <<<"${out}")"
+  check "obcy pod -> catalog-app:80 zablokowane" "1" "$(grep -c APP_BLOCKED <<<"${out}")"
+  # Ruch z innych namespace, który MUSI przechodzić: scrape (monitoring) i ECK.
+  check "Prometheus: żaden cel nie jest down (monitoring -> porty metryk)" "0" "$(prom_val 'count(up == 0) or vector(0)')"
+  check "ECK widzi ES (elastic-system -> 9200): health green" "green" \
+    "$(k -n marketplace get elasticsearch marketplace -o jsonpath='{.status.health}')"
+  check "ECK: ostatnia spec przetworzona (observedGeneration = generation)" "tak" \
+    "$(k -n marketplace get elasticsearch marketplace -o json | jq -r 'if .status.observedGeneration == .metadata.generation then "tak" else "nie" end')"
+}
+
+# -------------------------------------------------------------- ingress -----
+INGRESS_PORT="${INGRESS_PORT:-8443}"
+CA_FILE="${HOME}/.kube/marketplace-ca.crt"
+icurl() { # icurl <host> <ścieżka> [opcje curl...]
+  local host="$1" path="$2"; shift 2
+  curl -s --max-time 15 --cacert "${CA_FILE}" --resolve "${host}:${INGRESS_PORT}:127.0.0.1" "$@" "https://${host}:${INGRESS_PORT}${path}"
+}
+phase_ingress() {
+  tunnel_up
+  echo -e "\n${BLD}  ingress — Traefik + cert-manager, *.marketplace.test (ETAP G2)${NC}"
+  check "Traefik gotowy" "1" "$(k -n ingress get deploy traefik -o jsonpath='{.status.readyReplicas}')"
+  check "Service traefik: ClusterIP (bez portu na węźle)" "ClusterIP" "$(k -n ingress get svc traefik -o jsonpath='{.spec.type}')"
+  check "IngressClass traefik domyślna" "true" \
+    "$(k get ingressclass traefik -o jsonpath='{.metadata.annotations.ingressclass\.kubernetes\.io/is-default-class}')"
+  check "certyfikaty Ready (CA, marketplace-tls, grafana-tls)" "True True True" \
+    "$(echo "$(k -n cert-manager get certificate marketplace-ca -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" \
+            "$(k -n marketplace get certificate marketplace-tls -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" \
+            "$(k -n monitoring get certificate grafana-tls -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')")"
+  bash "${ROOT}/tools/k3s/ingress-tunnel.sh" >/dev/null 2>&1
+  check "tunel :${INGRESS_PORT} -> Traefik" "0" "$(nc -z 127.0.0.1 "${INGRESS_PORT}"; echo $?)"
+  check "shop: /up przez Ingress, certyfikat zaufany względem CA" "200" "$(icurl shop.marketplace.test /up -o /dev/null -w '%{http_code}')"
+  check "shop: wystawca certyfikatu = marketplace.test CA" "1" \
+    "$(echo | openssl s_client -connect "127.0.0.1:${INGRESS_PORT}" -servername shop.marketplace.test 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null | grep -c 'marketplace.test CA')"
+  check "shop: nagłówek X-App-Version (odpowiada catalog-app)" "1" "$(icurl shop.marketplace.test /up -D - -o /dev/null | grep -ci '^x-app-version:')"
+  # Laravel za proxy (TRUSTED_PROXIES): linki w HTML mają być https z portem tunelu.
+  check "shop: Laravel generuje linki https://…:${INGRESS_PORT} (zaufane proxy)" "tak" \
+    "$(icurl shop.marketplace.test /search | grep -q "https://shop.marketplace.test:${INGRESS_PORT}" && echo tak || echo nie)"
+  check "grafana: /api/health przez Ingress" "200" "$(icurl grafana.marketplace.test /api/health -o /dev/null -w '%{http_code}')"
+  check "kibana: odpowiada przez Ingress (200/302/401)" "tak" \
+    "$(icurl kibana.marketplace.test /api/status -o /dev/null -w '%{http_code}' | grep -qE '^(200|302|401)$' && echo tak || echo nie)"
+  check "nieznany host -> 404 z Traefika (nie domyślny backend)" "404" \
+    "$(curl -sk --max-time 10 --resolve "nope.marketplace.test:${INGRESS_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' "https://nope.marketplace.test:${INGRESS_PORT}/")"
+  check "Prometheus: cel Traefika up" "1" "$(prom_val 'min(up{namespace="ingress"})')"
+}
+
+# ------------------------------------------------------------------ hpa -----
+# Obciążenie z osobnego namespace `loadtest` PRZEZ Ingress (jak prawdziwy ruch):
+# NetworkPolicy nie wpuszcza nikogo na skróty do catalog-app:80.
+LOAD_IMAGE="curlimages/curl:8.17.0"
+start_load() { # start_load <nazwa> <liczba żądań>
+  local ip; ip="$(k -n ingress get svc traefik -o jsonpath='{.spec.clusterIP}')"
+  k create namespace loadtest --dry-run=client -o yaml > /tmp/verify-ns.$$ && k apply -f /tmp/verify-ns.$$ >/dev/null; rm -f /tmp/verify-ns.$$
+  k -n loadtest delete pod "$1" --ignore-not-found --wait=true >/dev/null
+  k -n loadtest run "$1" --restart=Never --image="${LOAD_IMAGE}" --labels=app=loadgen --command -- \
+    curl -sk --parallel --parallel-max 24 -o /dev/null --resolve "shop.marketplace.test:443:${ip}" \
+    "https://shop.marketplace.test/search?q=verify[1-$2]" >/dev/null
+}
+phase_hpa() {
+  tunnel_up
+  echo -e "\n${BLD}  hpa — HorizontalPodAutoscaler catalog-app pod obciążeniem (ETAP G2)${NC}"
+  check "HPA catalog-app: cel CPU 70%" "70" "$(k -n marketplace get hpa catalog-app -o jsonpath='{.spec.metrics[0].resource.target.averageUtilization}')"
+  local cpu; cpu="$(k -n marketplace get hpa catalog-app -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}')"
+  check "HPA widzi metrykę CPU (metrics-server), teraz ${cpu:-?}%" "tak" "$([[ "${cpu}" =~ ^[0-9]+$ ]] && echo tak || echo nie)"
+  local before; before="$(k -n marketplace get deploy catalog-app -o jsonpath='{.status.readyReplicas}')"
+  echo -e "  ${DIM}repliki przed testem: ${before}; start obciążenia (curl --parallel 24 przez Ingress)${NC}"
+  start_load verify-hpa 200000
+  local scaled="" i
+  for i in $(seq 1 48); do
+    [ "$(k -n marketplace get hpa catalog-app -o jsonpath='{.status.desiredReplicas}')" -ge 2 ] 2>/dev/null \
+      && [ "$(k -n marketplace get deploy catalog-app -o jsonpath='{.status.readyReplicas}')" -ge 2 ] 2>/dev/null \
+      && { scaled=$((i*5)); break; }
+    sleep 5
+  done
+  local peak; peak="$(k -n marketplace get hpa catalog-app -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}')"
+  check "HPA dodał repliki i są gotowe (${scaled:-timeout} s, CPU ${peak:-?}%)" "tak" "$([ -n "${scaled}" ] && echo tak || echo nie)"
+  check "nowe pody gotowe przez startupProbe (Ready == desired)" "tak" \
+    "$([ "$(k -n marketplace get deploy catalog-app -o jsonpath='{.status.readyReplicas}')" = "$(k -n marketplace get deploy catalog-app -o jsonpath='{.spec.replicas}')" ] && echo tak || echo nie)"
+  check "Prometheus widzi HPA (kube-state-metrics)" "tak" \
+    "$([ "$(prom_val 'kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler="catalog-app"}')" != brak ] && echo tak || echo nie)"
+  k delete namespace loadtest --wait=false >/dev/null
+  echo -e "  ${DIM}obciążenie zatrzymane; HPA zejdzie do 1 repliki po oknie stabilizacji (5 min, 1 pod/min)${NC}"
+}
+
+# --------------------------------------------------------------- canary -----
+phase_canary() {
+  tunnel_up
+  echo -e "\n${BLD}  canary — drugi Deployment za tym samym Service (ETAP G2)${NC}"
+  local tag; tag="$(k -n marketplace get deploy catalog-app -o jsonpath='{.spec.template.spec.containers[0].image}')"; tag="${tag##*:}"
+  bash "${ROOT}/tools/k3s/canary.sh" start "${tag}" >/dev/null 2>&1
+  check "canary gotowy (1/1)" "1" "$(k -n marketplace get deploy catalog-app-canary -o jsonpath='{.status.readyReplicas}')"
+  local canary_ip; canary_ip="$(k -n marketplace get pods -l app=catalog-app,track=canary -o jsonpath='{.items[0].status.podIP}')"
+  check "Service catalog-app ma w endpointach pod canary" "1" \
+    "$(k -n marketplace get endpointslices -l kubernetes.io/service-name=catalog-app -o json | jq --arg ip "${canary_ip}" '[.items[].endpoints[]? | select(.addresses[] == $ip)] | length')"
+  check "Deployment catalog-app NIE przejął poda canary (selektory rozłączne)" "0" \
+    "$(k -n marketplace get pods -l app=catalog-app,track=stable -o json | jq --arg ip "${canary_ip}" '[.items[] | select(.status.podIP == $ip)] | length')"
+  start_load verify-canary 600
+  k -n loadtest wait pod/verify-canary --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s >/dev/null
+  sleep 35   # dwa scrape'y (15 s), żeby przyrost był w Prometheusie
+  local q='sum by (track) (increase(caddy_http_request_duration_seconds_count{job="caddy",server!="metrics"}[3m]))'
+  local res; res="$(prom_q "${q}")"
+  local st cn
+  st="$(jq -r '[.data.result[] | select(.metric.track=="stable") | .value[1] | tonumber] | add // 0 | floor' <<<"${res}")"
+  cn="$(jq -r '[.data.result[] | select(.metric.track=="canary") | .value[1] | tonumber] | add // 0 | floor' <<<"${res}")"
+  check "ruch dzieli się między tracki (stable ${st}, canary ${cn} żądań w 3 min)" "tak" \
+    "$([ "${st:-0}" -ge 40 ] && [ "${cn:-0}" -ge 40 ] && echo tak || echo nie)"
+  bash "${ROOT}/tools/k3s/canary.sh" abort >/dev/null 2>&1
+  # Kończący się pod zostaje chwilę w EndpointSlice z conditions.terminating=true
+  # (ready=false) — ruch już do niego nie idzie. Liczą się tylko gotowe.
+  check "canary usunięty: gotowe endpointy to tylko stabilne" "0" \
+    "$(k -n marketplace get endpointslices -l kubernetes.io/service-name=catalog-app -o json | jq --arg ip "${canary_ip}" '[.items[].endpoints[]? | select(.conditions.ready == true) | select(.addresses[] == $ip)] | length')"
+  k delete namespace loadtest --wait=false >/dev/null
+}
+
 case "${1:-}" in
   cluster)  phase_cluster ;;
   monitoring) phase_monitoring ;;
+  hardening) phase_hardening ;;
+  netpol)   phase_netpol ;;
+  ingress)  phase_ingress ;;
+  hpa)      phase_hpa ;;
+  canary)   phase_canary ;;
+  g2)       phase_hardening; phase_netpol; phase_ingress; phase_hpa; phase_canary ;;
   exposure) phase_exposure ;;
   eck)      phase_eck ;;
   config)   phase_config ;;
@@ -489,7 +719,7 @@ case "${1:-}" in
   backup)   phase_backup ;;
   reboot)   phase_reboot ;;
   all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack; phase_backup ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|monitoring|reboot|all}" >&2; exit 2 ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|monitoring|hardening|netpol|ingress|hpa|canary|g2|reboot|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

@@ -11,11 +11,16 @@ namespace: marketplace
 
 resources:
   - namespace.yaml
+  - serviceaccounts.yaml
+  - networkpolicies.yaml
+  - rbac.yaml
+  - admission-policy.yaml
   - elasticsearch.yaml
   - postgres.yaml
   - rabbitmq.yaml
   - redis.yaml
   - catalog.yaml
+  - hpa.yaml
   - search-consumer.yaml
   - glitchtip.yaml
   - jobs/migrate.yaml

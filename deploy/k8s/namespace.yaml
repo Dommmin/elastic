@@ -2,3 +2,16 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: marketplace
+  labels:
+    # Pod Security Admission (ETAP G2): wbudowany w API server kontroler, który
+    # porównuje każdy nowy pod z profilem Pod Security Standards.
+    #   warn   — `kubectl apply` wypisuje ostrzeżenie dla poda łamiącego profil
+    #   audit  — wpis w logu audytu API servera
+    # Świadomie BEZ `enforce`: rabbitmq i pg-backup działają jako root (wyjątki
+    # w tools/k3s/ckad-check.rb), a pody ECK mają init kontenery z uprawnieniami.
+    # enforce=restricted odrzuciłby je przy następnym rolloucie. Lista ostrzeżeń
+    # = lista długu: `make k3s-verify faza=hardening` pilnuje, że nie rośnie.
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest

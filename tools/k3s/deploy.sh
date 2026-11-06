@@ -142,10 +142,40 @@ if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
     || { echo "[k3s-deploy] pody search-consumer nie zniknęły w 2 min" >&2; exit 1; }
 fi
 
+# Canary (tools/k3s/canary.sh) kończy się z każdym wdrożeniem: wdrożenie to albo
+# promocja tej wersji, albo powrót do poprzedniej. Canary nie ma pliku w repo,
+# więc apply by go nie dotknął — zostałby ze starym obrazem za tym samym Service.
+kk "${NS[@]}" delete deploy/catalog-app-canary --ignore-not-found
+
+# ETAP G2, jednorazowo: selektor catalog-app dostał `track: stable` (canary ma
+# `track: canary`). Selektor Deploymentu jest NIEZMIENNY — apply skończyłby się
+# "field is immutable". Usuwamy więc sam Deployment, zostawiając pody
+# (--cascade=orphan): dalej obsługują ruch przez Service, a nowy Deployment ich
+# nie przejmie (nie mają etykiety track). Po jego rolloucie sprzątamy stary
+# ReplicaSet razem z podami. Ruch nie ma przerwy. RUNBOOK #084.
+orphan_replicas=""
+if kk "${NS[@]}" get deploy/catalog-app >/dev/null 2>&1 \
+   && [ -z "$(kk "${NS[@]}" get deploy/catalog-app -o jsonpath='{.spec.selector.matchLabels.track}')" ]; then
+  # Ile podów obsługuje ruch TERAZ (HPA mógł skalować do 3): nowy Deployment
+  # startuje z domyślnym 1, więc bez tego po sprzątnięciu starych zostałby 1 pod.
+  orphan_replicas="$(kk "${NS[@]}" get deploy/catalog-app -o jsonpath='{.spec.replicas}')"
+  echo "    catalog-app: zmiana selektora (track: stable) — stary Deployment usunięty z --cascade=orphan (${orphan_replicas} replik)"
+  kk "${NS[@]}" delete deploy/catalog-app --cascade=orphan
+fi
+
 apply_sel "${OTHER_APPS_SEL}" step3_fail
+if [ "${orphan_replicas:-1}" -gt 1 ]; then
+  kk "${NS[@]}" scale deploy/catalog-app --replicas="${orphan_replicas}" || step3_fail "scale catalog-app do ${orphan_replicas}"
+fi
 for d in catalog-app outbox-publisher catalog-worker catalog-scheduler search-metrics; do
   kk "${NS[@]}" rollout status "deploy/${d}" --timeout=300s || step3_fail "rollout ${d} nie skończył się"
 done
+# Przy KAŻDYM wdrożeniu, nie tylko w przebiegu z migracją: jeśli tamten padł po
+# --cascade=orphan, a przed sprzątaniem, ponowny deploy już nie widzi starego
+# selektora — a pody bez `track` (stara wersja, bez właściciela, poza HPA)
+# dalej siedziałyby za Service. Gdy nic nie pasuje, to no-op.
+kk "${NS[@]}" delete rs -l 'app=catalog-app,!track' --wait=true \
+  || step3_fail "nie udało się usunąć starego ReplicaSetu catalog-app (pody bez track)"
 
 # Manifest ma `replicas: 1`, więc apply przywraca consumer (już nowy obraz).
 apply_sel "${SEARCH_SEL}" step3_fail

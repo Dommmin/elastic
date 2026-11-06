@@ -29,10 +29,22 @@ spec:
             app: pg-backup
         spec:
           restartPolicy: Never
+          serviceAccountName: postgres
+          automountServiceAccountToken: false
+          # WYJĄTEK: root (tools/k3s/ckad-check.rb, EXCEPTIONS). hostPath należy do roota
+          # (0755), a `make vps-backup-pull` czyta go jak w D1. Root BEZ capabilities
+          # (drop ALL) może pisać tylko tam, gdzie jest właścicielem — reszta profilu obowiązuje.
+          securityContext:
+            runAsUser: 0
+            seccompProfile: { type: RuntimeDefault }
           containers:
             - name: pg-dump
               # Nasz obraz Postgresa: pg_dump w tej samej wersji co serwer.
               image: ghcr.io/dommmin/elastic-postgres:placeholder
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
               command:
                 - sh
                 - -c

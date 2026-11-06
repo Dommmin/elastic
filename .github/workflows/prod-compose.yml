@@ -9,6 +9,8 @@
 #    - deploy-check.sh: strażnik k3s i węzły klastra w pierwszym `up` (atrapy ssh/scp).
 #    - manifests-check.sh + glitchtip-step-check.sh: manifesty k8s (kustomize) i krok GlitchTipa
 #      w tools/k3s/deploy.sh, bez klastra.
+#    - ingress-check.sh (ETAP G2): Traefik bez portów na węźle, każdy Ingress z certyfikatem z CA;
+#      asercje CKAD (securityContext, NetworkPolicy, HPA, canary, RBAC) są w manifests-check.sh
 #    - monitoring-check.sh (ETAP G1): PrometheusRule zsynchronizowany z regułami ETAPU 11,
 #      każdy ServiceMonitor trafia w istniejący Service i port, render chartu z values.yaml
 #      (helm jest w obrazie ubuntu-24.04 runnera).
@@ -66,3 +68,6 @@ jobs:
 
       - name: Monitoring k3s (reguły, ServiceMonitory, chart)
         run: bash tools/k3s/monitoring-check.sh
+
+      - name: Ingress k3s (chart Traefika, certyfikaty, Ingressy — ETAP G2)
+        run: bash tools/k3s/ingress-check.sh

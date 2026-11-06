@@ -1,0 +1,29 @@
+# ============================================================================
+#  cert-manager (ETAP G2) — tylko różnice od chartu.
+#  Instalacja: make k3s-ingress (tools/k3s/install-ingress.sh, wersja przypięta tam).
+#
+#  cert-manager pilnuje obiektów Certificate: wystawia certyfikat do Secretu,
+#  odnawia go przed wygaśnięciem i przywraca, gdy ktoś Secret skasuje. Tu bez
+#  Let's Encrypt (nie ma domeny ani otwartego portu 80 na ACME), więc wystawcą
+#  jest własne CA zrobione przez cert-manager (issuers.yaml).
+# ============================================================================
+crds:
+  enabled: true   # CRD instaluje chart (Certificate, Issuer, ClusterIssuer...)
+  keep: true      # `helm uninstall` nie kasuje CRD — a z nimi wszystkich certyfikatów
+
+prometheus:
+  enabled: true
+  servicemonitor:
+    enabled: true
+
+resources:
+  requests: { memory: 48Mi, cpu: 10m }
+  limits: { memory: 128Mi }
+webhook:
+  resources:
+    requests: { memory: 24Mi, cpu: 10m }
+    limits: { memory: 64Mi }
+cainjector:
+  resources:
+    requests: { memory: 48Mi, cpu: 10m }
+    limits: { memory: 128Mi }

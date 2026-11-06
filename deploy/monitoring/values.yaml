@@ -92,6 +92,12 @@ grafana:
     existingSecret: grafana-admin
     userKey: admin-user
     passwordKey: admin-password
+  # Adres, pod którym użytkownik widzi Grafanę (Ingress z ETAPU G2, tunel na 8443).
+  # Grafana składa z niego linki w alertach i przekierowania po logowaniu.
+  # `make k3s-grafana` (port-forward na :33000) działa dalej — enforce_domain jest wyłączone.
+  grafana.ini:
+    server:
+      root_url: https://grafana.marketplace.test:8443/
   # Bez trwałego dysku: dashboardy i źródła danych są w repo (ConfigMapy),
   # zmiana wyklikana w UI znika po restarcie poda — celowo, jak w Compose.
   persistence: { enabled: false }
