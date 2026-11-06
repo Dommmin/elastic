@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: site
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: site
+  template:
+    metadata:
+      labels:
+        app: site
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.29
+          ports:
+            - containerPort: 80
+          envFrom:
+            # Nazwę ConfigMapy podmieni Kustomize (prefiks + hash z generatora).
+            - configMapRef:
+                name: site-config

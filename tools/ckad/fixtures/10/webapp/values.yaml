@@ -1,0 +1,7 @@
+# Wartości domyślne — zadanie każe je nadpisać.
+replicaCount: 1
+image:
+  repository: nginx
+  tag: "1.29"
+service:
+  port: 80

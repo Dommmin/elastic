@@ -1,0 +1,6 @@
+apiVersion: v2
+name: webapp
+description: Prosty chart do zadania CKAD 10 (Deployment + Service)
+type: application
+version: 0.1.0
+appVersion: "1.29"

@@ -1,0 +1,31 @@
+# Manifest ze starego repozytorium: oba API zostały usunięte z Kubernetesa
+# (autoscaling/v2beta2 w 1.26, policy/v1beta1 w 1.25). Popraw apiVersion
+# tak, żeby zachować semantykę, i zastosuj.
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: legacy-web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: legacy-web
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+---
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: legacy-web
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: legacy-web
