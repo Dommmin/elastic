@@ -27,6 +27,16 @@ TAG="${1:-$("${ROOT}/tools/vps/latest-image-tag.sh")}"
 kk() { /opt/homebrew/bin/kubectl --kubeconfig "${HOME}/.kube/elastic-vps.yaml" --request-timeout=60s "$@"; }
 NS=(-n marketplace)
 
+# ETAP G4: w trakcie scenariusza chaosu Job chaos-undo przywróciłby po chwili migawkę
+# sprzed awarii, czyli ze STARYM obrazem — wdrożenie zostałoby po cichu cofnięte.
+nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
+chaos_lock="$(kk "${NS[@]}" get cm chaos-lock --ignore-not-found -o name)"   # błąd API = stop (set -e)
+if [[ -n "${chaos_lock}" ]]; then
+  chaos_s="$(kk "${NS[@]}" get cm chaos-lock -o jsonpath='{.data.scenario}' 2>/dev/null || true)"
+  echo "Trwa scenariusz chaosu ${chaos_s:-?} — make chaos-reset albo make chaos-check s=${chaos_s:-<s>}, potem wdrażaj." >&2
+  exit 1
+fi
+
 # `kk apply | grep -v unchanged || true` połykało błąd samego apply (tunel,
 # timeout 60 s): `|| true` jest tam potrzebne, bo grep ma exit 1, gdy wszystko
 # jest unchanged. Dlatego najpierw wynik apply, potem filtr.

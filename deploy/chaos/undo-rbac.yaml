@@ -1,0 +1,91 @@
+# ============================================================================
+#  deploy/chaos/undo-rbac.yaml — tożsamość i sieć Joba `chaos-undo` (ETAP G4)
+#
+#  Stosowane przez `tools/chaos/chaos.sh break` (kubectl apply), NIE przez
+#  kustomization sklepu: bez scenariusza chaosu nic tego nie używa.
+#  Etykieta part-of=chaos-rbac (nie `chaos`): to statyczne obiekty z repo, które
+#  zostają; „czysty klaster” = zero obiektów part-of=chaos.
+#
+#  Role = dokładnie to, czego wymaga `undo` scenariuszy (kubectl replace = update,
+#  rabbitmqctl przez exec = pods get + pods/exec create). ConfigMapy i Secrety tylko
+#  po nazwie (resourceNames) — Job nie przeczyta marketplace-secrets.
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-undo
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-undo
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "statefulsets/scale"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["elasticsearch.k8s.elastic.co"]
+    resources: ["elasticsearches"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["chaos-lock", "chaos-scripts"]
+    verbs: ["get", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["chaos-rotated-secrets"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-undo
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chaos-undo
+subjects:
+  - kind: ServiceAccount
+    name: chaos-undo
+    namespace: marketplace
+---
+# default-deny w marketplace (G2) blokuje wyjście poza namespace, także do API.
+# k3s: API na węźle (Endpoints `kubernetes` = 185.238.74.58:6443); NetworkPolicy działa
+# po DNAT ClusterIP -> endpoint, więc reguła na IP węzła:6443, a ClusterIP:443 na zapas.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chaos-undo-egress
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+spec:
+  podSelector:
+    matchLabels: { app: chaos-undo }
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock: { cidr: 185.238.74.58/32 }
+      ports:
+        - { protocol: TCP, port: 6443 }
+    - to:
+        - ipBlock: { cidr: 10.43.0.1/32 }
+      ports:
+        - { protocol: TCP, port: 443 }

@@ -460,6 +460,26 @@ ckad-exam: ## Symulacja egzaminu: losowe zadania na czas (make ckad-exam n=16 mi
 ckad-scores: ## Twoje wyniki CKAD: ostatnie podejścia i zadania do powtórki
 	@bash tools/ckad/scores.sh
 
+# --- ETAP G4: zepsuj i napraw na produkcji k3s (docs/chaos/) — wymaga tunelu: make k3s-tunnel ---
+.PHONY: chaos-list chaos-break chaos-check chaos-reset chaos-status chaos-selftest
+chaos-list: ## Scenariusze chaosu i ich objawy (bez rozwiązań)
+	@bash tools/chaos/chaos.sh list
+
+chaos-break: ## Awaria na produkcji z auto-wycofaniem (make chaos-break s=bad-probe [ttl=15])
+	@bash tools/chaos/chaos.sh break $(s) $(or $(ttl),15)
+
+chaos-check: ## Sprawdź naprawę; zielony kończy scenariusz i zapisuje czas (make chaos-check s=bad-probe)
+	@bash tools/chaos/chaos.sh check $(s)
+
+chaos-reset: ## Siłowe wycofanie trwającego scenariusza (i sprzątanie Joba chaos-undo)
+	@bash tools/chaos/chaos.sh reset
+
+chaos-status: ## Co trwa, od kiedy, kiedy auto-wycofanie, stan Joba chaos-undo
+	@bash tools/chaos/chaos.sh status
+
+chaos-selftest: ## Dowód scenariuszy: break, check FAIL, reset x2, check PASS (s="bad-probe" albo wszystkie)
+	@bash tools/chaos/selftest.sh $(s)
+
 ## Ingress na k3s (ETAP G2): Traefik + cert-manager, hosty *.marketplace.test
 .PHONY: k3s-ingress
 k3s-ingress: ## Zainstaluj/zaktualizuj cert-manager, Traefik, CA i Ingressy (sklep, Grafana, Kibana)
