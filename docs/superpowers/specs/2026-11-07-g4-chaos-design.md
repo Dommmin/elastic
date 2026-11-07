@@ -185,3 +185,85 @@ Czas: ~25 min bez alertów, ~60 min z `alerts=1`.
    przywraca 3 repliki bez restartu pozostałych węzłów.
 7. `rabbitmqctl` w podzie `rabbitmq-0` dostępny dla `pods/exec`; pierwotny
    `disk_free_limit` odczytywalny (`rabbitmq-diagnostics environment`).
+
+## 10. Fakty z kroku 0 (2026-11-07)
+
+Zebrane na produkcyjnym klastrze k3s (`kubectl` z `~/.kube/elastic-vps.yaml`) i z dokumentacji ECK 3.5.
+
+**Potwierdzone przy pisaniu planu**
+- `KubePodCrashLooping` i `KubeStatefulSetReplicasMismatch` są w załadowanych regułach (`kps-kubernetes-apps`, `for: 15m`).
+- `postgres-ingress` ma listę `app In [... catalog-worker ...]`; scenariusz `netpol-db` usuwa ten jeden element.
+- Readiness `search-metrics` = `httpGet /metrics:80` (`periodSeconds: 15`, `failureThreshold: 3`).
+- `catalog-worker`: kontener `worker`, limit 256Mi.
+- RabbitMQ: vhost `/`, kolejka `search.product.sync`, brak polityk; `disk_free_limit` = 1000000000.
+- Do RabbitMQ publikuje wyłącznie `outbox-publisher` (`PublishOutboxCommand`), więc alarm dysku nie blokuje żądań HTTP sklepu.
+- Prometheus: `kps-prometheus:9090`; Alertmanager: `kps-alertmanager:9093`.
+
+**Obraz narzędziowy (krok 1)**
+- Tag do przypięcia: `alpine/k8s:1.36.6` (najnowszy `1.36.x` na Docker Hub; są też 1.36.0–1.36.5 bez 1.36.3).
+- `docker run --rm alpine/k8s:1.36.6 bash -c 'kubectl version --client; bash --version | head -1'` →
+  `Client Version: v1.36.6`, `GNU bash, version 5.3.9`. Oba narzędzia są.
+
+**Dostęp do API z poda przy `default-deny` (krok 2)**
+- Namespace `marketplace` ma tylko `pod-security.kubernetes.io/warn=restricted` i `audit=restricted` (brak `enforce`); pod testowy
+  i tak spełniał `restricted` (`runAsNonRoot`, uid 65534, `drop: [ALL]`, `seccompProfile: RuntimeDefault`,
+  `allowPrivilegeEscalation: false`). Zadania/pody chaosu muszą mieć ten sam `securityContext`, żeby nie sypać ostrzeżeń.
+- Pod `chaos-undo` (etykieta `app=chaos-undo`, SA `default`, token zamontowany) NIE dosięga API:
+  `curl https://10.43.0.1:443/readyz` (ClusterIP) i `https://185.238.74.58:6443/readyz` (IP węzła, port endpointu `kubernetes`)
+  kończą się `Connection refused` (curl rc=7). Odmowa jest natychmiastowa (REJECT), nie timeout.
+  Wniosek: **potrzebna polityka `chaos-undo-egress`** (Task 1).
+- Istniejące polityki egress: `allow-dns` (tylko kube-dns:53) i `allow-egress-in-namespace` (`to: podSelector: {}`, tylko ten namespace).
+  Żadna nie pozwala wyjść poza namespace.
+- Co wpisać w `to`: k3s ma API na węźle (`kubernetes` Endpoints = `185.238.74.58:6443`). Reguły NetworkPolicy działają po DNAT
+  ClusterIP -> endpoint, więc `ipBlock` musi obejmować **IP węzła i port 6443** (nie 443). Zalecane: `ipBlock: 185.238.74.58/32`
+  + `ports: 6443/TCP`. Selftest w Task 1 musi to potwierdzić; jeśli nie przejdzie, dodać drugą regułę dla `10.43.0.1/32:443`.
+- Uwaga: `kubectl` 1.36.6 w tym obrazie, uruchomiony jako uid 65534 (`HOME=/`), nie wziął konfiguracji in-cluster
+  (próbował `localhost:8080`, mimo obecnych `KUBERNETES_SERVICE_HOST` i tokenu). Skrypt ma więc podawać jawnie
+  `--server=https://10.43.0.1:443 --token=... --certificate-authority=...` albo składać kubeconfig z tokenu SA
+  (`KUBECONFIG` w zapisywalnym `/tmp`). Do zweryfikowania w Task 1 po dodaniu polityki (tu nie dało się sprawdzić, bo ruch jest blokowany).
+- Pod testowy skasowany (`kubectl get pod chaos-probe` → NotFound).
+
+**`reject-publish` i outbox (krok 3)**
+- Polityka `{"max-length":0,"overflow":"reject-publish"}` na kolejce `chaos-probe` (kolejka quorum, domyślny typ):
+  bez polityki publisher confirm → `ack=1, nack=0`; z polityką → `ack=0, nack=1`. **`nack` przychodzi.**
+- Kolejkę trzeba deklarować jako `durable` (deklaracja nietrwała jest odrzucona: `Feature transient_nonexcl_queues is deprecated`).
+  `rabbitmqadmin delete queue` z poda dostaje `Not_Authorized`; kolejkę i politykę kasuje się przez
+  `rabbitmqctl delete_queue` / `rabbitmqctl clear_policy -p /`.
+- `PublishOutboxCommand.php`: handler `nack` tylko loguje ostrzeżenie; `published_at` jest ustawiane wyłącznie dla ID z `ack`
+  (`Outbox::whereIn('id', $confirmedIds)->update(...)`). **Przy `nack` wpis outbox zostaje `pending`** i wraca w następnej partii
+  (pętla co ~1 s) → rośnie `catalog_outbox_oldest_pending_age_seconds` → alert `OutboxStale` (`for: 1m`, próg 60 s).
+- Polityka i kolejka `chaos-probe` usunięte; `list_policies` puste, `list_queues` bez `chaos-probe`; `search.product.sync` nie ruszona.
+
+**ECK (krok 4, tylko dokumentacja, ECK operator 3.5.0 na klastrze)**
+- `eck.k8s.elastic.co/managed=false` jest od 3.5 **deprecated** i zostanie usunięte; nadal działa i zatrzymuje całą rekoncyliację.
+  Zamiennik: `eck.k8s.elastic.co/pause-orchestration: "true"` (GA od 3.5; akceptowane tylko `"true"`/`"false"`). Pauzuje zmiany
+  sterowane specyfikacją (aktualizacje StatefulSetów, skalowanie, rolling upgrade, rozszerzanie wolumenów), ale dalej robi
+  rotację certyfikatów, usługi, użytkowników/role, keystore, PDB i monitoring zdrowia.
+  Źródło: https://www.elastic.co/docs/deploy-manage/deploy/cloud-on-k8s/k8s-pause-orchestration
+- Zdjęcie adnotacji: warunek `OrchestrationPaused` znika, a ECK „natychmiast stosuje oczekujące zmiany zwykłą ścieżką rekoncyliacji”.
+  Dokumentacja **nie mówi wprost**, że StatefulSet wraca do `count: 3` ani że pozostałe pody nie są restartowane. Wynika to z tego,
+  że `spec` (`count: 3`) się nie zmienił, a StatefulSet jest przywracany do specyfikacji; brak zmiany szablonu poda
+  nie powoduje rolling restartu. To jest hipoteza do potwierdzenia w selteście (Task 3), nie fakt z dokumentacji.
+- Rekomendacja: scenariusz `es-scale` używa `pause-orchestration` zamiast `managed=false` (nie deprecated, zachowuje monitoring
+  i rotację certyfikatów). `chaos-undo` zdejmuje tę adnotację i czeka na `3/3`.
+
+**Alert dla `bad-probe` (krok 5)**
+- ServiceMonitor `monitoring/search` (`path: /metrics`, `port: metrics`, `interval: 15s`, selektor `app: search-metrics`)
+  scrapuje przez Endpoints usługi; usługa nie ma `publishNotReadyAddresses`, więc **niegotowy pod wypada z celów**
+  (brak serii `up`, nie `up == 0`). `TargetDown` (`up{job!="glitchtip"} == 0`, `for: 1m`) **nie zadziała**; nie zadziała też
+  `SearchMetricsScrapeError` (metryka z samego poda).
+- Deployment `search-metrics`: 1 replika, `RollingUpdate` 25%/25% (przy 1 replice `maxUnavailable` zaokrągla się do 0), `progressDeadlineSeconds: 600`.
+  Zły probe w nowym ReplicaSecie zostawia **stary pod w działaniu** (usługa dalej działa), więc `KubeDeploymentReplicasMismatch`
+  (`spec_replicas > replicas_available`) **nie odpali**.
+- Oczekiwany alert: **`KubePodNotReady`** (`for: 15m`, severity warning; nowy pod w `Running` z `ready=0`) oraz
+  **`KubeDeploymentRolloutStuck`** (`for: 15m`, warunek `Progressing=false` pojawia się po 600 s, czyli alert po ~25 min).
+  Pierwszy po ~15 min, więc jest to scenariusz „wolny” (łatwy do przeoczenia): karta ma o tym uprzedzić.
+
+**Aktywne alerty w Alertmanagerze (stan w chwili kroku 0)**
+- `Watchdog` (brak `namespace`, normalne).
+- `KubeJobFailed` x2, `namespace="marketplace"`: `pg-backup-29898870` (od 2026-11-06 02:45) i `pg-backup-29900310`
+  (od 2026-11-07 02:45). **Preflight odmawiający przy alertach `namespace="marketplace"` byłby więc zablokowany na stałe.**
+  Preflight musi albo ignorować `KubeJobFailed`/pg-backup, albo najpierw naprawić przyczynę (poniżej).
+- Przyczyna: `pg_dump: connection to server at "postgres" (10.42.0.170), port 5432 failed: Connection refused`.
+  Pody `pg-backup` nie mają etykiety dopuszczonej w `postgres-ingress` (polityki sieciowe mają ~46 h; ostatni udany backup `pg-backup-29897430`,
+  2026-11-05). To realna usterka produkcji niezwiązana z G4: **od 2 dób nie ma kopii zapasowych bazy.**
