@@ -90,3 +90,5 @@ potem `bash tools/chaos/index.sh`, `bash tools/chaos/test.sh` i
 | Scenariusz | Objaw | Alert | Limit |
 |---|---|---|---|
 | [bad-probe](bad-probe.md) | Rollout search-metrics stoi: nowy pod wisi 0/1, a kubectl rollout status nie kończy się | KubePodNotReady | 15 min |
+| [bad-secret](bad-secret.md) | Indeks wyszukiwania się nie aktualizuje: search-consumer w pętli restartów, a kolejka search.product.sync rośnie | SearchConsumerDown | 8 min |
+| [oom](oom.md) | Joby w kolejce stoją: pod catalog-worker restartuje się w kółko, a kolejka jobów rośnie | KubePodCrashLooping | 8 min |
