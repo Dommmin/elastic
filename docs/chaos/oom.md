@@ -70,8 +70,9 @@ kubectl -n marketplace rollout status deploy/catalog-worker
 make chaos-check s=oom
 ```
 
-`check` wymaga też, żeby przez 2 minuty nie było żadnego restartu, więc zielony
-wynik przychodzi po tym, jak nowy pod przeżyje start.
+`check` wymaga też, żeby w ostatnich 2 minutach żaden kontener workera się nie
+zakończył (pod odtworzony naprawą jest świeży, więc zwykle przechodzi od razu; worker
+kończy się też planowo co godzinę przez `--max-time=3600`, wtedy powtórz `check` po 2 min).
 
 **Jak temu zapobiec:** limity z pomiaru, nie z intuicji; alert `KubePodCrashLooping`
 oraz wykres pamięci workera w Grafanie; zmiana limitu przechodzi przez ten sam
