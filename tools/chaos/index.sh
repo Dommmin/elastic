@@ -10,7 +10,7 @@ marker='<!-- spis generowany: tools/chaos/index.sh -->'
 table="$(
   echo "| Scenariusz | Objaw | Alert | Limit |"
   echo "|---|---|---|---|"
-  for f in "${CHAOS_ROOT}"/tools/chaos/scenarios/*.sh; do
+  for f in "${CHAOS_SCENARIOS_DIR}"/*.sh; do
     s="$(basename "${f}" .sh)"
     (
       set +u

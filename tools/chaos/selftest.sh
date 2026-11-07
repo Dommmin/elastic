@@ -21,7 +21,7 @@ if [[ $# -gt 0 ]]; then
   list=("$@")
 else
   list=()
-  for f in "${CHAOS_ROOT}"/tools/chaos/scenarios/*.sh; do list+=("$(basename "${f}" .sh)"); done
+  for f in "${CHAOS_SCENARIOS_DIR}"/*.sh; do list+=("$(basename "${f}" .sh)"); done
 fi
 
 gens() { # gens <s> -> „rodzaj/nazwa=generation ...” celów scenariusza

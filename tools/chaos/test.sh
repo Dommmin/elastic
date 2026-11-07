@@ -89,6 +89,46 @@ fi
 grep -q 'part-of: chaos-rbac' "${rbac}" && ! grep -qE 'part-of: chaos *[},]?$|part-of: chaos }' "${rbac}" \
   && ok "${rbac}: etykiety part-of=chaos-rbac" || bad "${rbac}: obiekty statyczne mają mieć part-of=chaos-rbac"
 
+# --- Role chaos-undo pokrywa obiekty scenariuszy ----------------------------
+# Każdy obiekt z targets() (undo robi na nim PUT) musi być w resourceNames reguły
+# z czasownikiem update; exec rmq() (rabbitmq-0) w pods get + pods/exec create.
+# Inaczej scenariusz działa lokalnie, a auto-wycofanie w Jobie pada na Forbidden.
+if command -v ruby >/dev/null 2>&1; then
+  needs="$(
+    for f in tools/chaos/scenarios/*.sh; do
+      ( set +u
+        # shellcheck source=/dev/null
+        source tools/chaos/lib.sh
+        # shellcheck source=/dev/null
+        source "${f}"
+        for t in $(targets); do echo "$(basename "${f}" .sh) ${t} update"; done )
+    done
+    grep -q 'exec rabbitmq-0' tools/chaos/lib.sh && { echo "rmq pod/rabbitmq-0 get"; echo "rmq pods/exec/rabbitmq-0 create"; }
+  )"
+  missing="$(NEEDS="${needs}" ruby -ryaml -e '
+    short = { "deploy" => "deployments", "sts" => "statefulsets", "netpol" => "networkpolicies",
+              "es" => "elasticsearches", "cm" => "configmaps", "po" => "pods", "pod" => "pods",
+              "pods/exec" => "pods/exec" }
+    plural = lambda { |k|
+      k = k.downcase.split(".").first
+      next short[k] if short[k]
+      k =~ /(s|sh|ch|x)$/ ? k + "es" : (k.end_with?("y") ? k[0..-2] + "ies" : k + "s")
+    }
+    role = YAML.load_stream(File.read(ARGV[0])).find { |d| d && d["kind"] == "Role" }
+    ENV["NEEDS"].split("
+").reject(&:empty?).each do |line|
+      s, ref, verb = line.split(" ")
+      kind, name = ref.include?("pods/exec/") ? ["pods/exec", ref.split("/").last] : ref.split("/", 2)
+      res = plural.call(kind)
+      ok = role["rules"].any? { |r| r["resources"].include?(res) && (r["resourceNames"] || []).include?(name) && r["verbs"].include?(verb) }
+      puts "#{s}: #{res}/#{name} (#{verb})" unless ok
+    end' "${rbac}")"
+  if [[ -z "${missing}" ]]; then ok "Role chaos-undo pokrywa targets() scenariuszy i exec rabbitmq-0"
+  else bad "Role chaos-undo nie pokrywa: $(echo "${missing}" | tr '\n' ';')"; fi
+else
+  echo "  - pomijam pokrycie Role (brak ruby)"
+fi
+
 # --- spis w README ----------------------------------------------------------
 readme="docs/chaos/README.md"
 marker='<!-- spis generowany: tools/chaos/index.sh -->'

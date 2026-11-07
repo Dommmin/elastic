@@ -6,9 +6,10 @@
 #  Etykieta part-of=chaos-rbac (nie `chaos`): to statyczne obiekty z repo, które
 #  zostają; „czysty klaster” = zero obiektów part-of=chaos.
 #
-#  Role = dokładnie to, czego wymaga `undo` scenariuszy (kubectl replace = update,
-#  rabbitmqctl przez exec = pods get + pods/exec create). ConfigMapy i Secrety tylko
-#  po nazwie (resourceNames) — Job nie przeczyta marketplace-secrets.
+#  Role = dokładnie to, czego wymaga `undo` scenariuszy (PUT = update, rabbitmqctl przez
+#  exec = pods get + pods/exec create), i tylko na obiektach scenariuszy (resourceNames).
+#  Bez list/watch, bez exec do innych podów: Job nie przeczyta marketplace-secrets
+#  (ani przez Secret, ani przez env catalog-app) i nie zmieni catalog-app.
 # ============================================================================
 apiVersion: v1
 kind: ServiceAccount
@@ -25,23 +26,33 @@ metadata:
   namespace: marketplace
   labels: { app.kubernetes.io/part-of: chaos-rbac }
 rules:
+  # Tylko obiekty, które cofają scenariusze (resourceNames): granica „nie dotykaj
+  # catalog-app” jest egzekwowana przez RBAC, nie tylko przez konwencję skryptów.
+  # Nowy scenariusz = dopisz tu jego obiekt (test.sh sprawdza targets() z tą listą).
   - apiGroups: ["apps"]
     resources: ["deployments"]
+    resourceNames: ["search-metrics", "catalog-worker", "search-consumer"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["apps"]
     resources: ["statefulsets", "statefulsets/scale"]
+    resourceNames: ["marketplace-es-default"]
     verbs: ["get", "patch", "update"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
+    resourceNames: ["postgres-ingress"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["elasticsearch.k8s.elastic.co"]
     resources: ["elasticsearches"]
+    resourceNames: ["marketplace"]
     verbs: ["get", "patch"]
+  # rabbitmqctl przez exec: kubectl exec robi GET poda po nazwie + create pods/exec.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list"]
+    resourceNames: ["rabbitmq-0"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods/exec"]
+    resourceNames: ["rabbitmq-0"]
     verbs: ["create"]
   - apiGroups: [""]
     resources: ["configmaps"]

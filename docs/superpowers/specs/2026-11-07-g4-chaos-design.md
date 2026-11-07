@@ -28,7 +28,7 @@ alerty z G1, NetworkPolicy i RBAC z G2 oraz trzywęzłowy ES; kopia kosztowałab
 
 ```text
 make chaos-list                         # scenariusze + krótki objaw (bez rozwiązań)
-make chaos-break s=<scenariusz> [ttl=15] # preflight → blokada → awaria → Job wycofania
+make chaos-break s=<scenariusz> [ttl=15] # preflight → blokada → migawka → Job wycofania → awaria
 make chaos-check s=<scenariusz>          # ✓/✗ wymagań „zdrowy”, czas od break, zapis wyniku
 make chaos-reset                         # siłowe przywrócenie trwającego scenariusza
 make chaos-status                        # co trwa, od kiedy, kiedy auto-wycofanie
@@ -36,6 +36,11 @@ make k3s-verify faza=chaos [alerts=1]    # selftest wszystkich scenariuszy
 ```
 
 Pod spodem: `tools/chaos/chaos.sh list|break|check|reset|status <s>`.
+Kolejność w `break` jest celowo **blokada → migawka → Job → awaria**: Job wycofania
+istnieje, zanim cokolwiek zostanie zepsute, więc zerwany tunel w trakcie `break` nie
+zostawia produkcji bez auto-wycofania. Przerwany `break` (`trap` + jawne `||` na każdym
+kroku) robi `undo`, a Job i blokadę kasuje **dopiero po udanym undo**; gdy undo padnie,
+blokada zostaje i Job jest zakładany od nowa z terminem za ~60 s.
 Wynik zapisu (`~/.chaos-scores.tsv`): data, scenariusz, czas do zdrowego `check`,
 czy był `reset` (naprawa siłowa) — analogicznie do `~/.ckad-scores.tsv`.
 
@@ -63,8 +68,16 @@ ConfigMap `chaos-lock` w `marketplace` z etykietą `chaos.lab/lock=true`:
 | `scenario` | nazwa scenariusza |
 | `started` | epoch startu |
 | `deadline` | epoch auto-wycofania |
-| `snapshot.yaml` | oryginalne obiekty sprzed awarii (`kubectl get -o yaml`, oczyszczone z `status`, `resourceVersion`, `uid`, `managedFields`, adnotacji `last-applied`) |
+| `snapshot.yaml` | oryginalne obiekty sprzed awarii (`kubectl get -o json` — JSON to poprawny YAML), oczyszczone z `status`, `resourceVersion`, `uid`, `generation`, `creationTimestamp`, `managedFields` i adnotacji `deployment.kubernetes.io/revision`. Adnotacja `kubectl.kubernetes.io/last-applied-configuration` **zostaje**: to baza client-side apply w `deploy.sh` |
 | `extra` | dane scenariusza nie będące obiektem K8s (np. pierwotny `disk_free_limit`) |
+
+Przywracanie (`snapshot_restore`) to surowy PUT (`kubectl replace --raw`), nie
+`kubectl replace -f`: ten drugi przepisuje `last-applied` na pełny obiekt (psuje
+`kubectl apply` w `deploy.sh`), a dla Deploymentu każda zmiana adnotacji podbija
+`generation`. `deployment.kubernetes.io/revision` brane jest z obiektu na żywo, więc
+drugie undo na zdrowym stanie nie zmienia niczego (selftest to mierzy).
+Błąd API przy odczycie blokady (`lock_get` kod 2, `lock_state` = `err`) nigdy nie jest
+traktowany jak brak blokady albo brak migawki.
 
 Migawka z klastra, nie z repo: przywraca dokładnie stan sprzed awarii (obraz,
 repliki z HPA), a nie stan z gałęzi, która może się różnić od wdrożonej.
@@ -79,17 +92,38 @@ więc zamknięty laptop albo zerwany tunel nie zostawiają produkcji zepsutej.
   Skrypty scenariuszy montowane z ConfigMap `chaos-scripts` generowanej przy `break`
   z `tools/chaos/` (ten sam kod co lokalnie — jedna implementacja `undo`).
 - ServiceAccount `chaos-undo` + Role w `marketplace` (repo: `deploy/chaos/undo-rbac.yaml`,
-  stosowane przez `break`, nie przez kustomization sklepu): `get/patch/update` na
-  deployments, statefulsets, networkpolicies; `get/delete` na configmaps (tylko
-  `chaos-lock`, przez `resourceNames`) i secrets (tylko `chaos-*` — patrz bad-secret);
-  `create` na `pods/exec` (rabbitmqctl); `patch` na elasticsearches.
-  Bez uprawnień do czegokolwiek poza `marketplace`.
+  stosowane przez `break`, nie przez kustomization sklepu). **Każda reguła ma
+  `resourceNames`** — tylko obiekty siedmiu scenariuszy, więc granica „nie dotykaj
+  `catalog-app`” jest egzekwowana przez RBAC, nie tylko konwencją skryptów:
+  `get/update/patch` deployments `search-metrics`, `catalog-worker`, `search-consumer`;
+  `get/patch/update` statefulsets (+`/scale`) `marketplace-es-default`;
+  `get/update/patch` networkpolicies `postgres-ingress`; `get/patch` elasticsearches
+  `marketplace`; `get` pods i `create` pods/exec tylko `rabbitmq-0` (rabbitmqctl), bez
+  `list`; `get/delete` configmaps `chaos-lock`, `chaos-scripts`; `delete` secrets
+  `chaos-rotated-secrets`. `tools/chaos/test.sh` sprawdza, że każdy obiekt z `targets()`
+  jest w Role. Bez uprawnień do czegokolwiek poza `marketplace`.
+- Etykiety: obiekty tworzone na czas scenariusza (blokada, Job, `chaos-scripts`) mają
+  `app.kubernetes.io/part-of=chaos`; statyczne SA/Role/RoleBinding/NetworkPolicy z repo
+  mają `app.kubernetes.io/part-of=chaos-rbac` i zostają, więc „czysty klaster” to
+  dokładnie zero obiektów `part-of=chaos`.
 - NetworkPolicy: Job potrzebuje tylko API servera (egress z namespace jest dozwolony
   w obrębie klastra; API po adresie usługi `kubernetes.default`). Sprawdzane
   w selftest — jeśli `default-deny` blokuje API, dochodzi polityka `chaos-undo-egress`.
 - Budżet: requests 50m / 64Mi, limit 128Mi, jeden pod przez czas trwania scenariusza.
 
-Zielony `check` albo `reset` kasuje Job (nie czeka na sleep).
+Zielony `check` albo udany `reset` kasuje Job (nie czeka na sleep). Job uruchamiany jest
+jako uid 65534 (PSS `restricted`, `readOnlyRootFilesystem`, `HOME=/tmp` na emptyDir),
+z kubeconfigiem składanym z tokenu SA; NetworkPolicy `chaos-undo-egress` wpuszcza go
+do API (185.238.74.58:6443 i 10.43.0.1:443).
+
+### 3.5 Zmiany względem projektu (po implementacji Task 1, 2026-11-07)
+
+- migawka zachowuje `last-applied-configuration`, przywracanie surowym PUT (§ 3.2);
+- kolejność `break`: blokada → migawka → Job → awaria (§ 2);
+- Job i blokada kasowane dopiero po udanym undo; nieudane undo zakłada Job od nowa (§ 2);
+- statyczne RBAC z etykietą `part-of=chaos-rbac` (§ 3.3);
+- Role zawężona `resourceNames` do obiektów scenariuszy, exec tylko do `rabbitmq-0`, bez
+  `list` (§ 3.3; wcześniej czasowniki na wszystkich obiektach danego rodzaju).
 
 ### 3.4 Wycofanie jest idempotentne
 

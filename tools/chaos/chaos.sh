@@ -14,7 +14,7 @@ source "$(dirname "$0")/lib.sh"
 
 usage() { sed -n '3,9p' "$0" | sed 's/^#  \{0,1\}//'; exit 1; }
 
-scenarios() { local f; for f in "${CHAOS_ROOT}"/tools/chaos/scenarios/*.sh; do basename "${f}" .sh; done; }
+scenarios() { local f; for f in "${CHAOS_SCENARIOS_DIR}"/*.sh; do basename "${f}" .sh; done; }
 
 load_scenario() {
   local f; f="$(scenario_file "$1")"
@@ -56,14 +56,25 @@ preflight() {
 
 # Wycofanie przerwanego `break` (tunel padł, Ctrl-C, błąd kroku). Nigdy blokada bez Joba.
 BREAK_ARMED=0
+BREAK_S=""
 abort_break() {
   [[ ${BREAK_ARMED} -eq 1 ]] || return 0
   BREAK_ARMED=0
   trap - INT TERM HUP
-  echo "${RED}✗${RESET} break przerwany — wycofuję (undo, Job, blokada)" >&2
-  undo || echo "  undo nie przeszło — Job chaos-undo (jeśli powstał) albo make chaos-reset" >&2
-  undo_job_delete
-  lock_delete
+  echo "${RED}✗${RESET} break przerwany — wycofuję (undo, potem Job i blokada)" >&2
+  if undo; then
+    undo_job_delete
+    lock_delete
+    return 0
+  fi
+  # undo nie przeszło: produkcja może być zepsuta. Siatka zostaje: blokada (deploy.sh
+  # i preflight odmawiają) + Job chaos-undo z deadline za 60 s.
+  if rearm_undo "${BREAK_S}"; then
+    echo "${RED}${BLD}!! undo NIE przeszło. Blokada chaos-lock zostaje, Job chaos-undo spróbuje za ~60 s.${RESET}" >&2
+  else
+    echo "${RED}${BLD}!! undo NIE przeszło i Job chaos-undo nie powstał. Blokada zostaje (jeśli API pozwoliło).${RESET}" >&2
+  fi
+  echo "${RED}${BLD}!! Sprawdź: make chaos-status; napraw: make chaos-reset (albo karta scenariusza).${RESET}" >&2
 }
 
 cmd_break() {
@@ -72,6 +83,7 @@ cmd_break() {
   [[ "${ttl}" =~ ^[0-9]+$ && "${ttl}" -ge 1 ]] || die "ttl w minutach (liczba ≥ 1), dostałem '${ttl}'"
   preflight
   lock_create "${s}" "${ttl}" || die "nie udało się założyć blokady (trwa inny scenariusz?)"
+  BREAK_S="${s}"
   BREAK_ARMED=1
   trap 'abort_break; exit 1' INT TERM HUP
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/chaos-snap.XXXXXX")"
@@ -82,7 +94,7 @@ cmd_break() {
   # Job PRZED awarią: jeśli dalej coś padnie (np. tunel), klaster i tak wróci sam po ttl.
   undo_job_create "${s}" "${ttl}" || { abort_break; die "Job chaos-undo nie powstał"; }
   # shellcheck disable=SC2104  # to funkcja scenariusza, nie słowo kluczowe
-  break || { abort_break; die "awaria '${s}' nie weszła — wycofane"; }
+  break || { abort_break; die "awaria '${s}' nie weszła (stan wycofania wyżej)"; }
   BREAK_ARMED=0
   trap - INT TERM HUP
   echo
@@ -117,14 +129,18 @@ cmd_check() {
 }
 
 cmd_reset() {
-  local s
+  local s st lrc
   cluster_reachable || die "API k3s nie odpowiada. Uruchom: make k3s-tunnel"
-  s="$(lock_get scenario)"
-  if [[ -z "${s}" ]]; then
-    undo_job_delete
-    echo "Nic nie trwa (pozostałości Joba/skryptów usunięte, jeśli były)."
-    return 0
-  fi
+  st="$(lock_state)"
+  case "${st}" in
+    err) die "błąd API przy odczycie blokady — niczego nie ruszam (Job zostaje). Powtórz za chwilę." ;;
+    brak)
+      undo_job_delete
+      echo "Nic nie trwa (pozostałości Joba/skryptów usunięte, jeśli były)."
+      return 0 ;;
+  esac
+  s="$(lock_get scenario)"; lrc=$?
+  [[ ${lrc} -eq 0 && -n "${s}" ]] || die "nie odczytałem scenariusza z blokady (kod ${lrc}) — niczego nie ruszam"
   load_scenario "${s}"
   local started; started="$(lock_get started)"
   # CHAOS_KEEP_LOCK=1 (selftest): samo undo, blokada i Job zostają — tak wygląda wyścig
@@ -134,9 +150,16 @@ cmd_reset() {
     echo "Scenariusz '${s}': undo wykonane (blokada zostaje)."
     return 0
   fi
-  # Najpierw Job: żeby nie wycofywał równolegle z nami.
+  # Najpierw undo, dopiero po sukcesie Job i blokada. Równoległe undo Joba jest
+  # nieszkodliwe (idempotentne), a Job skasowany przed nieudanym undo zostawiłby
+  # produkcję zepsutą bez auto-wycofania.
+  if ! undo; then
+    if rearm_undo "${s}"; then
+      die "undo '${s}' NIE przeszło. Blokada zostaje, Job chaos-undo spróbuje ponownie za ~60 s. Popraw ręcznie (karta) i powtórz make chaos-reset."
+    fi
+    die "undo '${s}' NIE przeszło i Job chaos-undo nie powstał — automatycznego wycofania NIE MA. Blokada zostaje. Napraw ręcznie wg karty."
+  fi
   undo_job_delete
-  undo || die "undo '${s}' nie przeszło — blokada zostaje; popraw i powtórz make chaos-reset"
   lock_delete
   score_add "${s}" "$(( $(date +%s) - ${started:-$(date +%s)} ))" reset
   echo "Scenariusz '${s}' wycofany siłowo (reset)."

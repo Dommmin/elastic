@@ -222,7 +222,13 @@ api_path() {
 
 snapshot_restore() {
   local snap n refs live merged i item tmp rc=0
-  snap="$(lock_get snapshot.yaml)"
+  local lrc
+  snap="$(lock_get snapshot.yaml)"; lrc=$?
+  case "${lrc}" in
+    2) echo "  błąd API przy odczycie migawki — nic nie przywrócone" >&2; return 1 ;;
+    1) echo "  (brak blokady — nie ma czego przywracać)"; return 0 ;;
+  esac
+  # Blokada jest, a klucza nie ma: break przerwany przed zapisem migawki, nic nie zepsuto.
   [[ -n "${snap}" ]] || { echo "  (brak migawki w blokadzie)"; return 0; }
   n="$(jq '.items | length' <<<"${snap}" 2>/dev/null)"
   [[ "${n:-0}" -gt 0 ]] || return 0
@@ -273,9 +279,14 @@ lock_state() {
   out="$(k -n "${NS}" get configmap "${LOCK_CM}" --ignore-not-found -o name 2>/dev/null)" || { echo err; return; }
   [[ -n "${out}" ]] && echo jest || echo brak
 }
-# lock_get <klucz> -> wartość (pusta, gdy brak blokady albo klucza)
+# lock_get <klucz> -> wartość. Kody: 0 = blokada jest (wartość może być pusta, gdy brak
+# klucza), 1 = blokady nie ma, 2 = błąd API. Błąd API NIGDY nie wygląda jak brak blokady:
+# ścieżki, które kasują Job albo blokadę, muszą to rozróżniać.
 lock_get() {
-  k -n "${NS}" get configmap "${LOCK_CM}" -o json 2>/dev/null | jq -r --arg k "$1" '.data[$k] // empty' 2>/dev/null
+  local out
+  out="$(k -n "${NS}" get configmap "${LOCK_CM}" --ignore-not-found -o json 2>/dev/null)" || return 2
+  [[ -n "${out}" ]] || return 1
+  jq -r --arg k "$1" '.data[$k] // empty' <<<"${out}" 2>/dev/null || return 2
 }
 # lock_set <klucz> <plik|wartość>
 lock_set() {
@@ -290,7 +301,16 @@ lock_set() {
 lock_delete() { k -n "${NS}" delete configmap "${LOCK_CM}" --ignore-not-found --wait=false >/dev/null; }
 
 # -------------------------------------------------------- Job wycofania ------
-scenario_file() { echo "${CHAOS_ROOT}/tools/chaos/scenarios/$1.sh"; }
+# CHAOS_SCENARIOS_DIR: katalog scenariuszy (testy wstrzykują tu scenariusz-atrapę).
+CHAOS_SCENARIOS_DIR="${CHAOS_SCENARIOS_DIR:-${CHAOS_ROOT}/tools/chaos/scenarios}"
+scenario_file() { echo "${CHAOS_SCENARIOS_DIR}/$1.sh"; }
+
+# rearm_undo <s> — po NIEUDANYM undo: blokada zostaje, deadline za 60 s i świeży Job
+# chaos-undo (nowy pod czyta nowy deadline), żeby klaster wrócił sam mimo błędu.
+rearm_undo() {
+  lock_set deadline "$(( $(date +%s) + 60 ))" || return 1
+  undo_job_create "$1" 1
+}
 
 # undo_job_create <s> <ttl_min> — RBAC z repo, ConfigMap `chaos-scripts`, Job `chaos-undo`,
 # na końcu ownerReference skryptów na Job (TTL Joba sprząta też skrypty). Skrypty przed
