@@ -95,3 +95,4 @@ potem `bash tools/chaos/index.sh`, `bash tools/chaos/test.sh` i
 | [es-node-down](es-node-down.md) | Elasticsearch widzi 2 węzły zamiast 3 i nie kończy ApplyingChanges, a wyszukiwarka działa | - | 10 min |
 | [netpol-db](netpol-db.md) | Joby w kolejce stoją: pod catalog-worker po restarcie nie wstaje i restartuje się w kółko | KubePodCrashLooping | 8 min |
 | [oom](oom.md) | Joby w kolejce stoją: pod catalog-worker restartuje się w kółko, a kolejka jobów rośnie | KubePodCrashLooping | 8 min |
+| [queue-blocked](queue-blocked.md) | Zmiany produktów nie docierają do wyszukiwarki, a najstarsze zdarzenie w outbox starzeje się coraz bardziej | OutboxStale | 7 min |

@@ -124,6 +124,17 @@ do API (185.238.74.58:6443 i 10.43.0.1:443).
 - statyczne RBAC z etykietą `part-of=chaos-rbac` (§ 3.3);
 - Role zawężona `resourceNames` do obiektów scenariuszy, exec tylko do `rabbitmq-0`, bez
   `list` (§ 3.3; wcześniej czasowniki na wszystkich obiektach danego rodzaju).
+- `queue-blocked` (Task 4, 2026-11-08): zamiast polityki `max-length 0` + `reject-publish`
+  odebrane uprawnienie `write` użytkownikowi `marketplace` tylko do exchange
+  `marketplace.events` (regex `^(?!marketplace\.events$).*$`; configure i read bez zmian,
+  pierwotne wartości w `extra` blokady). Powód: kolejka quorum z `max-length 0` przyjmuje
+  jedną wiadomość do pustej kolejki i odrzuca dopiero następne (sprawdzone na tymczasowej
+  kolejce z tymi samymi argumentami: pierwsza publikacja `routed`, kolejne `rejected`; to samo
+  dla `max-length-bytes 0`), a `search-consumer` opróżnia `search.product.sync` w ~100 ms, więc
+  publisher nigdy nie dostawał `nack` (outbox pusty, wiek 0 przez minuty). Fakt z kroku 0 (nack)
+  dotyczył kolejki, która już coś zawierała. Nowy mechanizm daje `ACCESS_REFUSED` na publikacji
+  (kod 403), publisher wchodzi w `CrashLoopBackOff`, a `OutboxStale` płonie po 2–3 min; konsument
+  (`basic.get`, tylko `read`) i retry Messengera (`marketplace.delays`, `failed`) działają.
 
 ### 3.4 Wycofanie jest idempotentne
 
@@ -140,7 +151,7 @@ Każdy plik `tools/chaos/scenarios/<s>.sh` definiuje: `targets()` (obiekty do mi
 |---|---|---|---|
 | `oom` | limit pamięci kontenera `catalog-worker` → 40Mi | `KubePodCrashLooping` (reguły chartu), restarty w Grafanie; `describe` → `OOMKilled` | Deployment ready, 0 restartów w ostatnich 2 min, limit ≥ 128Mi |
 | `bad-secret` | `search-consumer` przepięty na nowy Secret `chaos-rotated-secrets` (kopia z literówką w haśle w `MESSENGER_TRANSPORT_DSN`) — historia „rotacja hasła się nie udała” | `SearchConsumerDown`; logi: `ACCESS_REFUSED` | konsument ready i pobiera z `search.product.sync`; Deployment nie odwołuje się do `chaos-rotated-secrets` |
-| `queue-blocked` | polityka RabbitMQ `chaos-block` na `search.product.sync`: `max-length 0`, `overflow reject-publish` | `OutboxStale` (outbox nie może publikować) | brak polityki z `max-length` na kolejce; wiek najstarszego wpisu outbox < 60 s |
+| `queue-blocked` | użytkownikowi RabbitMQ `marketplace` odebrane `write` do exchange `marketplace.events` (patrz § 3.5) | `OutboxStale`; publisher w `CrashLoopBackOff`, `ACCESS_REFUSED` w logu | `write` obejmuje exchange (pierwotne uprawnienia); wiek najstarszego wpisu outbox < 60 s |
 | `es-node-down` | ECK wstrzymany (`eck.k8s.elastic.co/managed=false`), StatefulSet `marketplace-es-default` 3→2 | `KubeStatefulSetReplicasMismatch`; ES `yellow`, nieprzydzielone repliki; wyszukiwarka działa — lekcja replik | 3/3 pody, ES `green`, ECK zarządza (`managed` nieobecne / `true`) |
 | `netpol-db` | z `postgres-ingress` usunięty wpis wpuszczający `catalog-worker` | `CatalogFailedJobs`, timeouty w logach workera; sklep działa | worker łączy się z bazą (test połączenia z poda workera), polityka zawiera wpis dla workera |
 | `bad-probe` | readiness `search-metrics` na ścieżkę `/healthz-old` | `SearchMetricsScrapeError` / `TargetDown`; pod 0/1, puste Endpoints | pod ready, Endpoints niepuste, cel `up == 1` |
