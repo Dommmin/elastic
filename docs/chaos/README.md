@@ -43,7 +43,7 @@ otwieraj je dopiero po `check`.
 
 Job działa jako uid 65534, z `readOnlyRootFilesystem`, `drop: [ALL]`,
 `seccompProfile: RuntimeDefault` (PSS `restricted`), 50m/64Mi, limit 128Mi.
-Skrypty (`lib.sh`, `scenarios/<s>.sh`, `undo-entry.sh`) dostaje z ConfigMap
+Skrypty (`lib.sh`, `scenarios/<s>.sh`, `undo-entry.sh`, generowany w `lib.sh`) dostaje z ConfigMap
 `chaos-scripts`, tworzonej przy `break` z tego samego kodu co lokalnie — jedna
 implementacja `undo`.
 

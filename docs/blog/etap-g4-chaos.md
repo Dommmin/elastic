@@ -9,10 +9,11 @@ na prawdziwym k3s, w siedmiu scenariuszach, tak że sklep cały czas serwuje
 strony, a awaria zawsze sama się wycofa, nawet gdy zamkniesz laptopa.*
 
 > **Stan:** gałąź `g4-chaos` (niewypchnięta).
-> **Na klastrze (2026-11-07/08):** 6 z 7 scenariuszy sprawdzonych w pełni:
-> `verify.sh chaos` PASS=10 FAIL=0, alerty potwierdzone dla pięciu z nich
-> ([wyniki](#wyniki-z-klastra)). `es-node-down` czeka na decyzję o replikach
-> ([Otwarte](#otwarte-es-node-down-i-repliki-spoiler)).
+> **Na klastrze (2026-11-07/08):** 6 z 7 scenariuszy przeszło selftest, fuse
+> (bezpiecznik Joba) sprawdzony na 3 z 6, alert potwierdzony dla 5 z 6
+> ([wyniki](#wyniki-z-klastra)); przebieg 1 na pierwszej wersji kodu dał PASS=10 FAIL=0,
+> pełny czysty przebieg końcowego kodu czeka. Ostatni scenariusz (`es-node-down`)
+> jest otwarty, czeka na decyzję ([Otwarte](#otwarte-es-node-down-i-repliki-spoiler)).
 > **Scenariusze:** [docs/chaos/README.md](../chaos/README.md) (jak grać, bezpieczniki, spis).
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-07-g4-chaos-design.md).
 > Plan: [`13-PLAN-ETAP-G-K8S.md`](../13-PLAN-ETAP-G-K8S.md).
@@ -73,10 +74,9 @@ docs/chaos/
   README.md                  jak grać, bezpieczniki, spis scenariuszy (generowany)
   <scenariusz>.md            karta: objaw, od czego zacząć, pytania, zwinięte rozwiązanie
 tools/chaos/
-  chaos.sh                   list | break | check | reset | status
-  lib.sh                     preflight, blokada, migawka, Job, wait_quiet, asercje
+  chaos.sh                   list | break | check | reset | status; tu też preflight
+  lib.sh                     blokada, migawka, Job, wait_quiet, asercje; generuje undo-entry.sh
   scenarios/<s>.sh           SUMMARY, ALERT, LIMIT_MIN, targets, break, check, undo
-  undo-entry.sh              punkt wejścia Joba w klastrze
   selftest.sh                break -> check FAIL -> reset x2 -> check PASS
   proof.sh                   fuse (Job wycofuje sam) i alert (alert naprawdę płonie)
   test.sh                    testy bez klastra (CI)
@@ -105,7 +105,9 @@ selftest w tle), a dwie awarie naraz to już nie ćwiczenie.
 
 Jeden szczegół, który kosztował czas: błąd odczytu z Prometheusa albo pusta
 odpowiedź **nie** oznaczają „zero alertów”. `wait_quiet` i preflight traktują je
-jako „nie wiem” i czekają. Lepiej odmówić niż założyć awarię w ciemno.
+jako „nie wiem”: preflight **odmawia** („Prometheus nie odpowiada”), a `wait_quiet`
+(używany w selfteście między scenariuszami) **czeka**. Lepiej odmówić niż założyć
+awarię w ciemno.
 
 ## Krok 2 — blokada i migawka
 
@@ -116,8 +118,8 @@ więc nie ma okna na wyścig). Dwa skutki uboczne, oba zamierzone:
 - `tools/k3s/deploy.sh` **odmawia wdrożenia**, gdy blokada istnieje. Gdyby
   wdrożenie przeszło w trakcie awarii, Job wycofujący przywróciłby po chwili
   migawkę ze starym obrazem i cofnął Ci wdrożenie.
-- Blokada jest też miejscem na dane scenariusza (`extra`), np. pierwotne
-  uprawnienia RabbitMQ.
+- Blokada jest też miejscem na dane scenariusza (`extra`): to, co `undo` musi
+  odtworzyć, a czego nie da się odczytać z migawki obiektów.
 
 W blokadzie leży **migawka** (`snapshot.yaml`): obiekty, które scenariusz
 zmieni, zapisane **z klastra, nie z repo**. To ważna różnica. Repo mówi, jak
@@ -162,12 +164,12 @@ blokadzie (ConfigMap `chaos-lock`), więc pod go czyta i po restarcie wciąż wi
 wycofać; Job kończy się sam i ma `ttlSecondsAfterFinished: 3600`, więc log
 da się przeczytać przez godzinę (`kubectl -n marketplace logs job/chaos-undo`),
 a potem klaster sprząta za Ciebie. Skrypty (`lib.sh`, `scenarios/<s>.sh`,
-`undo-entry.sh`) Job dostaje z ConfigMapy `chaos-scripts` tworzonej przy `break`
-z **tego samego kodu**, który działa lokalnie. Jedna implementacja `undo`,
+`undo-entry.sh`, generowany w `lib.sh`) Job dostaje z ConfigMapy `chaos-scripts`
+tworzonej przy `break` z **tego samego kodu**, który działa lokalnie. Jedna implementacja `undo`,
 zero ryzyka, że lokalna i klastrowa się rozjadą.
 
 Pod Joba spełnia profil `restricted` (uid 65534, `readOnlyRootFilesystem`,
-`drop: [ALL]`, `seccompProfile: RuntimeDefault`, 50m/64Mi), tak jak reszta sklepu
+`drop: [ALL]`, `seccompProfile: RuntimeDefault`, requests 50m/64Mi, limit 128Mi), tak jak reszta sklepu
 po G2.
 
 ## Krok 4 — uprawnienia Joba: RBAC i sieć
@@ -176,12 +178,12 @@ Job w klastrze to zarazem konto z uprawnieniami do psucia i naprawiania, więc
 granica „nie dotyka `catalog-app`” **nie może** zależeć od uczciwości skryptu.
 `deploy/chaos/undo-rbac.yaml`:
 
-- **Role `chaos-undo`:** każda reguła ma `resourceNames`. Konto widzi tylko obiekty
-  scenariuszy (`search-metrics`, `catalog-worker`, `search-consumer`,
-  `marketplace-es-default`, `postgres-ingress`, ES `marketplace`), exec dostaje
-  wyłącznie do `rabbitmq-0`, a `list` nie ma wcale. Skutek: Job nie zmieni
-  `catalog-app` i nie przeczyta `marketplace-secrets` ani Secretem, ani przez exec
-  do poda, który ma go w env. Granicę egzekwuje API server.
+- **Role `chaos-undo`:** każda reguła ma `resourceNames`, więc konto widzi tylko
+  obiekty, które Job może przywrócić, a `list` nie ma wcale. Exec dostaje wyłącznie
+  do jednego poda (brokera). Skutek: Job nie zmieni `catalog-app` i nie przeczyta
+  `marketplace-secrets` ani Secretem, ani przez exec do poda, który ma go w env.
+  Granicę egzekwuje API server. Konkretna lista obiektów zdradza, co psują
+  scenariusze, więc jest w `deploy/chaos/undo-rbac.yaml`, a nie tutaj.
 - **NetworkPolicy `chaos-undo-egress`:** `default-deny` z G2 zostaje w mocy. Job
   wychodzi tylko do API servera. To nie było oczywiste: przed napisaniem polityki
   sprawdziłem na klastrze (krok 0 planu), że pod z etykietą `app=chaos-undo`
@@ -199,10 +201,11 @@ klaster to zero obiektów `part-of=chaos`:
 
 ```bash
 kubectl get all,cm,secret,netpol,sa,role,rolebinding,job -A -l app.kubernetes.io/part-of=chaos
-# No resources found
 ```
 
-Dokładnie to wypisało sprawdzenie po zakończeniu pracy nad tym etapem (2026-11-08).
+Prawdziwe wyjście z klastra po zakończeniu przebiegów (2026-11-08, zapytanie tylko
+do odczytu): `No resources found`. Tę samą kontrolę robi faza chaosu w `verify.sh`
+(„po fazie: brak obiektów part-of=chaos poza RBAC”).
 
 ## Krok 5 — scenariusz od alertu do naprawy (`disk-full`)
 
@@ -219,7 +222,8 @@ make chaos-break s=disk-full     # ttl domyślnie 15 min
 
 `break` przechodzi preflight, zakłada blokadę, migawkę i Job, a potem psuje.
 Na końcu drukuje **kartę**, czyli to, co dostałbyś od kolegi z dyżuru
-(prawdziwe wyjście z klastra, 2026-11-08):
+(tekst karty `docs/chaos/disk-full.md` z wyjścia selftestu, skrócone: `...` to pominięte
+sekcje karty; przebiegi 1 i 3a):
 
 ```
 # Outbox, który się nie opróżnia
@@ -255,8 +259,7 @@ Alert `OutboxStale` płonie po 2–3 minutach od awarii. W teście na klastrze:
 **138 s** (`for: 60 s`, a resztę robią okresy scrape'u i ewaluacji reguł).
 
 Co alert mówi: „najstarsze zdarzenie w tabeli outbox czeka dłużej niż próg”. Czego
-nie mówi: dlaczego. Outbox jest w Postgresie, publisher czyta go i wysyła do
-RabbitMQ, więc kandydatów jest trzech: publisher, broker, sieć między nimi.
+nie mówi: dlaczego.
 
 ### 5.3 Diagnoza
 
@@ -268,10 +271,10 @@ kubectl -n marketplace logs deploy/outbox-publisher --tail=30  # co mówi?
 kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmqctl -q list_connections name state
 ```
 
-Pytania, które karta zadaje (nie podaje odpowiedzi): na jakim kroku kończy się log
-publishera (połączenie, publikacja, czekanie na potwierdzenie)? Co znaczą stany
-połączeń? Co zwraca `rabbitmq-diagnostics alarms`? Czym jest alarm brokera i czym
-różni się od błędu kolejki? Dlaczego zdarzenia nie giną, tylko czekają?
+Karta zadaje pytania prowadzące (bez odpowiedzi): na jakim kroku kończy się log
+publishera, co mówi stan połączeń z brokerem, co o brokerze mówi jego własna
+diagnostyka i dlaczego zdarzenia nie giną, tylko czekają. Pytania są w
+`docs/chaos/disk-full.md`.
 
 Spróbuj sam, zanim przejdziesz dalej. Jeśli utkniesz, wróć do pytań.
 
@@ -284,7 +287,7 @@ make chaos-check s=disk-full
 ```
 
 `check` to lista wymagań „zdrowy” jako asercji. Dopóki awaria trwa, jest czerwony
-i mówi dokładnie, czego brakuje (prawdziwe wyjście, 2026-11-08):
+i mówi dokładnie, czego brakuje (z logu selftestu, przebieg 3a):
 
 ```
 === check disk-full
@@ -293,7 +296,8 @@ i mówi dokładnie, czego brakuje (prawdziwe wyjście, 2026-11-08):
 CHORY — 2 z 2 wymagań niespełnionych
 ```
 
-Po naprawie:
+Po naprawie wygląda tak (z logu selftestu, przebieg 1, po `reset`, a nie po ręcznej
+naprawie ucznia):
 
 ```
 === check disk-full
@@ -371,8 +375,8 @@ dla `oom` i `netpol-db` trwa po kwadransie każdy. Wyniki poniżej.
 
 ## Wyniki z klastra
 
-`make k3s-verify faza=chaos` na 6 scenariuszach (bez `es-node-down`), przebieg 1:
-**PASS=10 FAIL=0**, 47 min 34 s.
+`make k3s-verify faza=chaos` na 6 scenariuszach (bez `es-node-down`), przebieg 1
+(na pierwszej wersji kodu, przed poprawkami): **PASS=10 FAIL=0**, 47 min 34 s.
 
 | Scenariusz | Selftest | Fuse (ttl 1 min) |
 |---|---|---|
@@ -384,8 +388,10 @@ dla `oom` i `netpol-db` trwa po kwadransie każdy. Wyniki poniżej.
 | queue-blocked | 424 s | nie sprawdzany |
 
 Fuse (Job wycofuje sam) faza sprawdza na trzech reprezentatywnych scenariuszach
-(`fuse_set` w `verify.sh`), selftest na wszystkich. Stąd 10 = 6 selftestów + 3 fuse
-+ 1 sprawdzenie „po fazie: brak obiektów part-of=chaos poza RBAC”.
+(`fuse_set` w `verify.sh`), selftest na wszystkich. Liczba 10 dotyczy
+tamtej wersji kodu: obecna faza liczy więcej sprawdzeń (walidacja `s=`/`skip=`, dowody
+alertów, końcowe czekanie na zdrowy sklep), więc nie jest do porównania. Pełny czysty
+przebieg końcowego kodu czeka na `es-node-down` (po decyzji o replikach).
 
 Alerty (`alerts=1`), czas od założenia awarii do `firing`:
 
@@ -396,7 +402,7 @@ Alerty (`alerts=1`), czas od założenia awarii do `firing`:
 | disk-full | `OutboxStale` | 60 s | 138 s |
 | netpol-db | `KubePodCrashLooping` | 900 s | 932 s |
 | oom | `KubePodCrashLooping` | 900 s | 955 s |
-| bad-probe | `KubePodNotReady` | 15 min | nie uruchomiony (`CHAOS_SLOW=1`) |
+| bad-probe | `KubePodNotReady` | 15 min | nie uruchomiony (`slow=1`) |
 
 Wniosek praktyczny: **alerty o skutku płoną po 1–2 minutach, a alerty o zdrowiu
 poda po kwadransie.** Awaria `oom` albo `netpol-db` na produkcji przeleży kwadrans
@@ -411,6 +417,9 @@ w backoffie CrashLoopBackOff; wrócił po około 6 minutach, stąd końcowe czek
 w fazie).
 
 ## Co wybuchło po drodze
+
+> **UWAGA: SPOILER.** Ta sekcja opisuje mechanizmy awarii kilku scenariuszy.
+> Jeśli zamierzasz grać bez podpowiedzi, zagraj najpierw i wróć tutaj.
 
 - **Tunel padł w środku testu bezpiecznika.** W przebiegu 3b tunel do API był
   nieczynny przez cały czas oczekiwania na alert `netpol-db`. Skrypt widział „API
@@ -466,9 +475,9 @@ w fazie).
 > **UWAGA: SPOILER.** Ta sekcja zdradza lekcję scenariusza `es-node-down`.
 > Jeśli chcesz go przejść bez podpowiedzi, przeskocz do [ściągi](#ściąga).
 
-`es-node-down` jako jedyny **nie został jeszcze uruchomiony na klastrze**. Powód
-jest ważniejszy niż samo uruchomienie: framework znalazł lukę w odporności sklepu,
-zanim cokolwiek zepsuł.
+`es-node-down` jest jedynym scenariuszem, który **nie przeszedł** selftestu, fuse,
+dowodu alertu ani `faza=chaos`. Powód jest ważniejszy niż samo uruchomienie:
+framework pokazał lukę w odporności sklepu.
 
 Indeks produktów `products-v1` ma `number_of_replicas: 0`
 ([`infra/elasticsearch/mappings/products-v1.json`](../../infra/elasticsearch/mappings/products-v1.json)).
@@ -476,10 +485,12 @@ Każdy shard ma więc **jedną** kopię. Scenariusz zdejmuje jeden z trzech węz
 Gdyby na tym węźle leżał jedyny shard, klaster poszedłby w `red`, a wyszukiwarka
 przestałaby działać, czyli złamałaby granicę „degradacja, nie awaria”.
 
-Zatrzymał to bezpiecznik w `break`: **odmawia, gdy jedyna kopia jakiegokolwiek
-shardu leży na węźle, który zniknie.** Czyli jest to dokładnie ta klasa odmowy, do
-której preflight ma służyć: chaos nie tylko psuje, ale też mówi, że system ma
-pojedynczy punkt awarii.
+Jak to wyszło: jeden ręczny przebieg `break`/`reset` na produkcji, jeszcze **przed**
+dodaniem bezpiecznika, nie dał `red` tylko dlatego, że shard akurat leżał na węźle,
+który został; lukę zauważyłem, gdy ES przetasował shardy. Potem dodałem bezpiecznik
+w `break`: **odmawia, gdy jedyna kopia jakiegokolwiek shardu leży na węźle, który
+zniknie.** Na produkcji odmówił (`jedyna kopia products-v1/0`) i nic nie zostało
+założone. Obecny `break es-node-down` więc odmawia, dopóki indeks nie ma replik.
 
 Decyzja do podjęcia (czeka na użytkownika):
 
@@ -507,6 +518,8 @@ cat ~/.chaos-scores.tsv               # historia: data scenariusz sekundy ok|res
 make chaos-selftest s="oom bad-secret"          # po zmianie scenariusza
 bash tools/chaos/test.sh                        # testy bez klastra (CI)
 make k3s-verify faza=chaos s="oom" alerts=1     # PSUJE produkcję; dowody + alert
+make k3s-verify faza=chaos s="bad-probe" alerts=1 slow=1   # alert po 15 min (wolny)
+make k3s-verify faza=chaos alerts=1 skip="selftest fuse"      # same alerty, bez powtórki dowodów
 ```
 
 Gdy coś poszło nie tak: [RUNBOOK #095](../RUNBOOK.md#095) („chaos-undo nie zadziałał”).

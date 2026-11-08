@@ -88,13 +88,13 @@
 | [085](#085) | Na k3s płatność nigdy nie jest potwierdzana — webhook bramki leci na localhost workera | k3s / ETAP F | G2 |
 | [086](#086) | `exec: frankenphp: Operation not permitted` po `capabilities: drop: [ALL]` | k3s / securityContext | G2 |
 | [087](#087) | Plan zakładał ingress-nginx, a projekt jest wycofany — Traefik przez standardowy Ingress | k3s / Ingress | G2 |
-| [088](#088) | `catalog-worker` w pętli restartów, kolejka jobów rośnie, `KubePodCrashLooping` po kwadransie — `OOMKilled` | k3s / chaos (oom) | G4 |
-| [089](#089) | Indeks wyszukiwania się nie aktualizuje, `search-consumer` restartuje się, w logu `ACCESS_REFUSED` — rotacja hasła w Secrecie | k3s / chaos (bad-secret) | G4 |
-| [090](#090) | `outbox-publisher` w `CrashLoopBackOff`, `ACCESS_REFUSED - write access to exchange` — broker odebrał uprawnienie `write` | k3s / chaos (queue-blocked) | G4 |
-| [091](#091) | `OutboxStale` przy zdrowych podach — RabbitMQ blokuje wydawców (alarm dysku) | k3s / chaos (disk-full) | G4 |
-| [092](#092) | `catalog-worker` w `CrashLoopBackOff`, `SQLSTATE[08006] Connection refused` do Postgresa — NetworkPolicy | k3s / chaos (netpol-db) | G4 |
-| [093](#093) | `kubectl rollout status` nie kończy się, nowy pod `0/1` bez restartów — readiness na nieistniejącą ścieżkę | k3s / chaos (bad-probe) | G4 |
-| [094](#094) | Elasticsearch widzi 2 węzły zamiast 3, `ApplyingChanges` — wstrzymane ECK i zeskalowany StatefulSet (niesprawdzone na klastrze) | k3s / chaos (es-node-down) | G4 |
+| [088](#088) | chaos: oom — `catalog-worker` w pętli restartów, kolejka jobów rośnie (spoiler) | k3s / chaos | G4 |
+| [089](#089) | chaos: bad-secret — `search-consumer` restartuje się, indeks wyszukiwania nieaktualny (spoiler) | k3s / chaos | G4 |
+| [090](#090) | chaos: queue-blocked — `outbox-publisher` w `CrashLoopBackOff`, outbox się starzeje (spoiler) | k3s / chaos | G4 |
+| [091](#091) | chaos: disk-full — `OutboxStale` przy zdrowych podach (spoiler) | k3s / chaos | G4 |
+| [092](#092) | chaos: netpol-db — `catalog-worker` w `CrashLoopBackOff`, joby stoją (spoiler) | k3s / chaos | G4 |
+| [093](#093) | chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1` (spoiler) | k3s / chaos | G4 |
+| [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler; scenariusz otwarty, nie przeszedł selftestu) | k3s / chaos | G4 |
 | [095](#095) | `chaos-undo` nie zadziałał — blokada `chaos-lock` zostaje, produkcja zepsuta | k3s / chaos | G4 |
 
 ---
@@ -4092,9 +4092,11 @@ zanim przypniesz wersję. „Wszyscy tego używają” to informacja o przeszło
 ---
 
 <a id="088"></a>
-## 088 — `catalog-worker` w pętli restartów, kolejka jobów rośnie (OOMKilled)
+## 088 — chaos: oom — `catalog-worker` w pętli restartów, kolejka jobów rośnie
 
-> ETAP G4, scenariusz `oom` ([karta](chaos/oom.md)), 2026-11-07. **Spoiler:** przyczyna i naprawa. Jeśli ćwiczysz scenariusz, najpierw zagraj.
+> ETAP G4, scenariusz `oom` ([karta](chaos/oom.md)), 2026-11-07. 
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 Pod `catalog-worker` w `CrashLoopBackOff`, kolejka jobów rośnie, sklep serwuje strony.
@@ -4127,9 +4129,11 @@ czekania na alert. Limity z pomiaru, nie z intuicji.
 ---
 
 <a id="089"></a>
-## 089 — `search-consumer` restartuje się, indeks wyszukiwania nieaktualny (`ACCESS_REFUSED`)
+## 089 — chaos: bad-secret — `search-consumer` restartuje się, indeks nieaktualny
 
-> ETAP G4, scenariusz `bad-secret` ([karta](chaos/bad-secret.md)), 2026-11-07. **Spoiler.**
+> ETAP G4, scenariusz `bad-secret` ([karta](chaos/bad-secret.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 ```
@@ -4162,9 +4166,11 @@ Deployment nie wskazuje Secretów spoza manifestu.
 ---
 
 <a id="090"></a>
-## 090 — `outbox-publisher` w `CrashLoopBackOff`: `ACCESS_REFUSED - write access to exchange`
+## 090 — chaos: queue-blocked — `outbox-publisher` w `CrashLoopBackOff`, outbox się starzeje
 
-> ETAP G4, scenariusz `queue-blocked` ([karta](chaos/queue-blocked.md)), 2026-11-08. **Spoiler.**
+> ETAP G4, scenariusz `queue-blocked` ([karta](chaos/queue-blocked.md)), 2026-11-08.
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 `OutboxStale` płonie po 77 s, wiek najstarszego wpisu outbox rośnie, publisher restartuje się
@@ -4197,9 +4203,11 @@ samymi argumentami, zanim zbudujesz na niej scenariusz.
 ---
 
 <a id="091"></a>
-## 091 — `OutboxStale` przy zdrowych podach: RabbitMQ blokuje wydawców
+## 091 — chaos: disk-full — `OutboxStale` przy zdrowych podach
 
-> ETAP G4, scenariusz `disk-full` ([karta](chaos/disk-full.md)), 2026-11-07. **Spoiler.**
+> ETAP G4, scenariusz `disk-full` ([karta](chaos/disk-full.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 Wiek najstarszego wpisu outbox rośnie, `OutboxStale` płonie po 2–3 min (138 s na klastrze).
@@ -4209,7 +4217,7 @@ Wiek najstarszego wpisu outbox rośnie, `OutboxStale` płonie po 2–3 min (138 
 ```bash
 kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmq-diagnostics -q alarms
 kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmqctl -q list_connections name state
-kubectl -n marketplace logs rabbitmq-0 --tail=30 | grep -i disk
+kubectl -n marketplace logs rabbitmq-0 -c rabbitmq --tail=30 | grep -i disk
 ```
 
 **Przyczyna**
@@ -4231,9 +4239,11 @@ Zdrowe pody i zielone sondy nie znaczą zdrowego przepływu: patrz na wiek outbo
 ---
 
 <a id="092"></a>
-## 092 — `catalog-worker` w `CrashLoopBackOff`: `SQLSTATE[08006] Connection refused`
+## 092 — chaos: netpol-db — `catalog-worker` w `CrashLoopBackOff`, joby stoją
 
-> ETAP G4, scenariusz `netpol-db` ([karta](chaos/netpol-db.md)), 2026-11-07. **Spoiler.**
+> ETAP G4, scenariusz `netpol-db` ([karta](chaos/netpol-db.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 Joby stoją, worker restartuje się po każdym starcie, Postgres działa, sklep serwuje strony
@@ -4263,9 +4273,11 @@ polityk: `make k3s-verify faza=netpol`. „Connection refused” natychmiast = R
 ---
 
 <a id="093"></a>
-## 093 — Rollout `search-metrics` nie kończy się, nowy pod `0/1`
+## 093 — chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1`
 
-> ETAP G4, scenariusz `bad-probe` ([karta](chaos/bad-probe.md)), 2026-11-07. **Spoiler.**
+> ETAP G4, scenariusz `bad-probe` ([karta](chaos/bad-probe.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 Dwa pody: stary `1/1`, nowy `0/1` w stanie `Running` bez restartów; `kubectl rollout status`
@@ -4280,9 +4292,10 @@ kubectl -n marketplace describe pod -l app=search-metrics | grep -A3 -i readines
 ```
 
 **Przyczyna**
-Readiness wskazuje `/healthz-old`, na które aplikacja odpowiada `404`. Przy jednej replice
-stary pod zostaje (maxUnavailable 0), więc nic nie przerywa serwowania. `TargetDown` nie
-płonie: niegotowy pod nie trafia do Endpoints, więc nie ma serii `up == 0`.
+Readiness wskazuje `/healthz-old`, na które aplikacja odpowiada `404` (sprawdzone w selfteście).
+Przy jednej replice stary pod zostaje, więc nic nie przerywa serwowania. Hipoteza,
+niesprawdzona na klastrze (alert `KubePodNotReady` nie był uruchamiany): `TargetDown`
+nie płonie, bo niegotowy pod nie trafia do Endpoints i nie ma serii `up == 0`.
 
 **Naprawa**
 `kubectl -n marketplace rollout undo deploy/search-metrics` albo `patch` ścieżki sondy
@@ -4295,9 +4308,11 @@ endpoint, który jest w kodzie i w teście.
 ---
 
 <a id="094"></a>
-## 094 — Elasticsearch widzi 2 węzły zamiast 3 (`es-node-down`, niesprawdzone na klastrze)
+## 094 — chaos: es-node-down — ES widzi 2 węzły zamiast 3 (scenariusz otwarty)
 
-> ETAP G4, scenariusz `es-node-down` ([karta](chaos/es-node-down.md)), 2026-11-08. **Spoiler.** Scenariusz nie był uruchomiony na klastrze, wpis pochodzi z karty i z odmowy `break`.
+> ETAP G4, scenariusz `es-node-down` ([karta](chaos/es-node-down.md)), 2026-11-08. Scenariusz otwarty: nie przeszedł selftestu, fuse ani alertu.
+
+> ⚠️ Spoiler — przyczyna poniżej.
 
 **Objaw**
 ES ma 2 węzły i nie kończy `ApplyingChanges`; wyszukiwarka działa.
@@ -4313,7 +4328,7 @@ kubectl -n marketplace get sts marketplace-es-default -o jsonpath='{.spec.replic
 Adnotacja `eck.k8s.elastic.co/pause-orchestration: "true"` na zasobie ES i ręczne
 `scale` StatefulSetu do 2. Wyszukiwarka przeżywa tylko dlatego, że jedyny shard
 `products-v1` (`number_of_replicas: 0`) leżał na węźle, który został. `break` odmawia,
-gdy jedyna kopia shardu leży na węźle, który zniknie: bez tego bezpiecznika byłoby `red`.
+gdy jedyna kopia shardu leży na węźle, który zniknie: bez tego bezpiecznika byłoby `red`. Wpis pochodzi z karty i z jednego ręcznego przebiegu sprzed bezpiecznika; obecnie `break` odmawia (`products-v1` bez replik).
 
 **Naprawa**
 ```bash
