@@ -38,7 +38,10 @@ qb_perms() {
 # Zapisane uprawnienia z blokady, a gdy ich brak albo są uszkodzone: domyślne.
 qb_saved() {
   local x; x="$(lock_get extra)"
-  jq -e '.c and .w and .r' <<<"${x}" >/dev/null 2>&1 && jq -c . <<<"${x}" || echo "${QB_DEFAULT}"
+  # Zapisane `w` równe awaryjnemu regexowi to uszkodzenie (break nie powinien tego zapisać):
+  # nie przywracamy awarii, tylko wartość domyślną.
+  jq -e --arg bad "${QB_WRITE_BAD}" '.c and .w and .r and (.w != $bad)' <<<"${x}" >/dev/null 2>&1 \
+    && jq -c . <<<"${x}" || echo "${QB_DEFAULT}"
 }
 
 qb_apply() { # qb_apply <json c/w/r>
