@@ -61,36 +61,69 @@ es_ready_pods() {
       | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length' 2>/dev/null || echo 0
 }
 
-# es_lonely_shards -> indeksy, których JEDYNA uruchomiona kopia shardu leży na węźle, który
-# zniknie (STS skaluje w dół od najwyższego numeru). Odczyt _cat/shards z poda ${ES_STS}-0:
-# hasło `elastic` idzie do curl przez stdin (-K -), nie trafia do argumentów ani na ekran.
-# Kod 2 = nie udało się odczytać (wtedy break odmawia).
-es_lonely_shards() {
-  local victim out
-  victim="${ES_STS}-$(( $(es_count) - 1 ))"
-  out="$(k -n "${NS}" get secret "${ES_CR}-es-elastic-user" -o json 2>/dev/null \
+# es_api <ścieżka> -> odpowiedź GET z ES (z poda ${ES_STS}-0). Hasło `elastic` idzie do curl
+# przez stdin (-K -), nie trafia do argumentów ani na ekran. Kod ≠ 0 = brak odczytu.
+es_api() {
+  k -n "${NS}" get secret "${ES_CR}-es-elastic-user" -o json 2>/dev/null \
     | jq -r '"user = \"elastic:" + (.data.elastic | @base64d) + "\""' 2>/dev/null \
     | k -n "${NS}" exec -i "${ES_STS}-0" -c elasticsearch -- \
-        curl -sf -K - 'http://127.0.0.1:9200/_cat/shards?format=json&h=index,shard,prirep,state,node' 2>/dev/null)" || return 2
+        curl -sf -K - "http://127.0.0.1:9200$1" 2>/dev/null
+}
+
+# es_lonely_shards -> powody odmowy (pusto = bezpiecznie): shardy w ruchu albo indeksy,
+# których JEDYNA uruchomiona kopia shardu leży na węźle, który zniknie (STS skaluje w dół
+# od najwyższego numeru). _cat/shards bez wzorca obejmuje też indeksy ukryte i systemowe.
+# Pole node dla RELOCATING to „źródło -> ip id cel”: węzeł ofiary = pierwsze albo ostatnie
+# słowo. Kod 2 = nie udało się odczytać (wtedy break odmawia).
+es_lonely_shards() {
+  local victim health shards moving
+  victim="${ES_STS}-$(( $(es_count) - 1 ))"
+  health="$(es_api '/_cluster/health?filter_path=relocating_shards,initializing_shards')" || return 2
+  moving="$(jq -r 'if (.relocating_shards == 0 and .initializing_shards == 0) then "" else "shardy w ruchu (relocating \(.relocating_shards), initializing \(.initializing_shards))" end' <<<"${health}" 2>/dev/null)" || return 2
+  [[ -n "${moving}" ]] && { echo "${moving}"; return 0; }
+  shards="$(es_api '/_cat/shards?format=json&h=index,shard,prirep,state,node')" || return 2
   jq -r --arg v "${victim}" '
+    def nodes: (.node // "" | split(" ") | map(select(length > 0))) as $w
+      | if ($w | length) == 0 then [] else [$w[0], $w[-1]] end;
     group_by(.index + "/" + .shard)[]
-    | select(any(.[]; .node == $v) and (any(.[]; .state == "STARTED" and .node != $v) | not))
-    | .[0].index' <<<"${out}" 2>/dev/null | sort -u || return 2
+    | select(any(.[]; nodes | index($v))
+             and (any(.[]; .state == "STARTED" and ((nodes | index($v)) | not)) | not))
+    | "jedyna kopia " + .[0].index + "/" + .[0].shard' <<<"${shards}" 2>/dev/null | sort -u || return 2
+}
+
+# es_guard — break odmawia (kod 1), gdy odczyt się nie udał albo strażnik coś znalazł.
+es_guard() {
+  local why rc
+  why="$(es_lonely_shards)"; rc=$?
+  [[ ${rc} -eq 0 ]] || { echo "nie odczytałem stanu shardów (_cluster/health, _cat/shards) — nie ruszam klastra" >&2; return 1; }
+  [[ -z "${why}" ]] || { echo "odmowa (węzeł ${ES_STS}-$(( $(es_count) - 1 ))): $(echo "${why}" | tr '\n' ';' | sed 's/;$//')" >&2; return 1; }
+}
+
+# es_wait_yellow <sekundy> — 0 = yellow, 1 = red (od razu, bez czekania) albo limit czasu.
+es_wait_yellow() {
+  local deadline=$((SECONDS + $1)) h
+  while :; do
+    h="$(es_health)"
+    [[ "${h}" == yellow ]] && return 0
+    [[ "${h}" == red ]] && { echo "Elasticsearch RED po skalowaniu — natychmiastowe wycofanie" >&2; return 1; }
+    (( SECONDS >= deadline )) && { echo "Elasticsearch nie przeszedł w yellow w $1 s" >&2; return 1; }
+    sleep 2
+  done
 }
 
 break() {
   [[ "$(sts_replicas)" == "$(es_count)" ]] || { echo "${ES_STS}: replicas ≠ count z CR, klaster nie jest w stanie wyjściowym" >&2; return 1; }
   # Bezpiecznik: węzeł, który zniknie, nie może mieć jedynej kopii shardu (indeks bez
   # repliki = red i niedziałające wyszukiwanie zamiast lekcji o replikach).
-  local lonely rc
-  lonely="$(es_lonely_shards)"; rc=$?
-  [[ ${rc} -eq 0 ]] || { echo "nie odczytałem rozkładu shardów (_cat/shards) — nie ruszam klastra" >&2; return 1; }
-  [[ -z "${lonely}" ]] || { echo "odmowa: jedyna kopia shardów na ${ES_STS}-$(( $(es_count) - 1 )): $(echo "${lonely}" | tr '\n' ' ')" >&2; return 1; }
+  es_guard || return 1
   k -n "${NS}" annotate elasticsearch "${ES_CR}" "${ES_PAUSE}=true" --overwrite >/dev/null || return 1
   # ECK potwierdza pauzę warunkiem OrchestrationPaused; bez niego skalowanie mogłoby wrócić.
   wait_for 60 es_paused || { echo "ECK nie potwierdził pauzy (warunek OrchestrationPaused) w 60 s" >&2; return 1; }
+  # Drugi raz tuż przed skalowaniem: w czasie oczekiwania na pauzę ES mógł przenieść shard.
+  es_guard || return 1
   k -n "${NS}" scale statefulset "${ES_STS}" --replicas=$(( $(es_count) - 1 )) >/dev/null || return 1
-  wait_for 300 es_yellow || { echo "Elasticsearch nie przeszedł w yellow w 5 min" >&2; return 1; }
+  # Red = strażnik coś przeoczył: kod 1 od razu, chaos.sh woła undo (scale + zdjęcie adnotacji).
+  es_wait_yellow 300 || return 1
   [[ "$(sts_replicas)" == "$(( $(es_count) - 1 ))" ]] || { echo "${ES_STS}: ktoś przywrócił replicas mimo pauzy" >&2; return 1; }
 }
 
@@ -107,22 +140,33 @@ check() {
 }
 
 # Idempotentne: na zdrowym klastrze (bez adnotacji, STS = count, green) tylko odczyty.
+# Najpierw kroki zmieniające stan (sekundy): adnotacje i scale do count. Bez czekania na ECK:
+# na klastrze po zdjęciu pauzy ECK nie przywrócił replicas sam w 60 s (managedFields: właścicielem
+# spec.replicas jest kubectl), a scale do count z CR jest zgodny ze spec — ECK nie ma z czym walczyć.
+# Potem weryfikacja: lokalnie (reset, abort_break) twarda, do 10 + 10 min. W Jobie
+# (CHAOS_IN_CLUSTER=1) najwyżej ES_JOB_WAIT s i bez porażki: Job ma po przebudzeniu tylko
+# ~600 s (activeDeadlineSeconds = ttl·60 + 600), a blokada ma zniknąć przed tym terminem.
+# Klaster i tak dochodzi do green sam (pauza zdjęta, replicas = count); sprawdzi to check/preflight.
+ES_JOB_WAIT=300
 undo() {
-  local a
+  local a want
   for a in "${ES_PAUSE}" "${ES_MANAGED}"; do
     if [[ -n "$(es_ann "${a}")" ]]; then
       k -n "${NS}" annotate elasticsearch "${ES_CR}" "${a}-" >/dev/null || return 1
     fi
   done
-  # Po zdjęciu pauzy ECK sam wraca do count; po 60 s skalujemy sami.
+  want="$(es_count)"
   if ! sts_back; then
-    if wait_for 60 sts_back; then
-      echo "  ${ES_STS}: ECK przywrócił replicas=$(es_count)"
-    else
-      echo "  ${ES_STS}: po 60 s nadal $(sts_replicas) — scale --replicas=$(es_count)"
-      k -n "${NS}" scale statefulset "${ES_STS}" --replicas="$(es_count)" >/dev/null || return 1
-    fi
+    echo "  ${ES_STS}: replicas $(sts_replicas) -> ${want}"
+    k -n "${NS}" scale statefulset "${ES_STS}" --replicas="${want}" >/dev/null || return 1
+  fi
+  if [[ "${CHAOS_IN_CLUSTER:-0}" == "1" ]]; then
+    local end=$((SECONDS + ES_JOB_WAIT))
+    wait_for "${ES_JOB_WAIT}" sts_full || true
+    wait_for "$(( end > SECONDS ? end - SECONDS : 1 ))" es_whole \
+      || echo "  uwaga: ES jeszcze nie green z ${want} węzłami (pauza zdjęta, replicas=${want}); dojdzie sam — make chaos-check s=es-node-down"
+    return 0
   fi
   wait_for 600 sts_full || { echo "${ES_STS}: nie wszystkie pody gotowe po 10 min" >&2; return 1; }
-  wait_for 600 es_whole || { echo "Elasticsearch nie wrócił do green z $(es_count) węzłami w 10 min" >&2; return 1; }
+  wait_for 600 es_whole || { echo "Elasticsearch nie wrócił do green z ${want} węzłami w 10 min" >&2; return 1; }
 }
