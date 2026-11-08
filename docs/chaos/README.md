@@ -91,6 +91,7 @@ potem `bash tools/chaos/index.sh`, `bash tools/chaos/test.sh` i
 |---|---|---|---|
 | [bad-probe](bad-probe.md) | Rollout search-metrics stoi: nowy pod wisi 0/1, a kubectl rollout status nie kończy się | KubePodNotReady | 15 min |
 | [bad-secret](bad-secret.md) | Indeks wyszukiwania się nie aktualizuje: search-consumer w pętli restartów, a kolejka search.product.sync rośnie | SearchConsumerDown | 8 min |
+| [disk-full](disk-full.md) | Zmiany produktów nie docierają do wyszukiwarki, a najstarsze zdarzenie w outbox starzeje się coraz bardziej | OutboxStale | 8 min |
 | [es-node-down](es-node-down.md) | Elasticsearch widzi 2 węzły zamiast 3 i nie kończy ApplyingChanges, a wyszukiwarka działa | - | 10 min |
 | [netpol-db](netpol-db.md) | Joby w kolejce stoją: pod catalog-worker po restarcie nie wstaje i restartuje się w kółko | KubePodCrashLooping | 8 min |
 | [oom](oom.md) | Joby w kolejce stoją: pod catalog-worker restartuje się w kółko, a kolejka jobów rośnie | KubePodCrashLooping | 8 min |
