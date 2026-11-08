@@ -94,7 +94,7 @@ grep -q 'part-of: chaos-rbac' "${rbac}" && ! grep -qE 'part-of: chaos *[},]?$|pa
 # auto-wycofanie w Jobie pada na Forbidden), i nic ponad to (nadmiarowe prawa).
 #  - targets(): snapshot_restore robi GET po nazwie i PUT (update);
 #  - rmq() (exec rabbitmq-0): pods get + pods/exec create;
-#  - es-node-down: annotate ES (get, patch), scale STS (get sts, patch /scale);
+#  - es-node-down: annotate ES (get, patch), scale STS (get sts, get+patch /scale — get celowo, Ruling 17);
 #  - bad-secret: delete Secretu; Job: get i delete blokady.
 if command -v ruby >/dev/null 2>&1; then
   needs="$(
@@ -110,7 +110,7 @@ if command -v ruby >/dev/null 2>&1; then
           echo "${n} elasticsearch/${ES_CR} get"; echo "${n} elasticsearch/${ES_CR} patch"
         fi
         if [[ -n "${ES_STS:-}" ]]; then
-          echo "${n} statefulset/${ES_STS} get"; echo "${n} statefulsets/scale/${ES_STS} patch"
+          echo "${n} statefulset/${ES_STS} get"; echo "${n} statefulsets/scale/${ES_STS} get"; echo "${n} statefulsets/scale/${ES_STS} patch"
         fi
         [[ -n "${BS_SECRET:-}" ]] && echo "${n} secret/${BS_SECRET} delete"
         : )
