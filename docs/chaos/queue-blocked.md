@@ -65,8 +65,8 @@ każda zmiana ręczna przez `rabbitmqctl` jest dryfem, który trzeba wykryć.
 zawężone regexem `^(?!marketplace\.events$).*$`, który obejmuje wszystko poza exchange
 `marketplace.events`. Publisher na pierwszej publikacji dostaje
 `ACCESS_REFUSED - write access to exchange 'marketplace.events' ... refused for user
-'marketplace'` (kod 403, wyjątek `AMQPProtocolChannelException`), kończy się kodem 1,
-kubelet restartuje go z rosnącym opóźnieniem, a wiersze outboxa zostają nieopublikowane.
+'marketplace'` (kod 403), pod kończy się błędem (`Last State: Terminated`, `Reason: Error`,
+`Exit Code: 1`), kubelet restartuje go z rosnącym opóźnieniem, a wiersze outboxa zostają nieopublikowane.
 Konsument potrzebuje tylko `read`, więc działa. Dowód:
 
 ```bash

@@ -26,13 +26,16 @@ df_alarms() { k -n "${NS}" exec rabbitmq-0 -c rabbitmq -- rabbitmq-diagnostics -
 df_clear() { df_alarms | grep -q 'reported no alarms'; }
 df_alarm_on() { df_alarms | grep -qi 'disk'; }
 df_limit() { rmq eval 'rabbit_disk_monitor:get_disk_free_limit().' 2>/dev/null | tr -d '[:space:]'; }
+# df_sane <limit>: liczba bajtów poniżej progu awarii (1000GB). Limit równy awaryjnemu
+# (albo większy) to uszkodzenie: nie przywracamy awarii, tylko wartość domyślną.
+df_sane() { [[ "$1" =~ ^[0-9]{1,15}$ ]] && (( $1 < 1000000000000 )); }
 df_age_under() { awk -v v="$(prom_val "${DF_AGE_METRIC}")" -v t="$1" 'BEGIN { exit !(v ~ /^[0-9.]+$/ && v + 0 < t) }'; }
 
 break() {
   local orig
   orig="$(df_limit)"
   # Limit względny albo nieodczytany: wracamy do wartości domyślnej z konfiguracji.
-  [[ "${orig}" =~ ^[0-9]+$ ]] || orig="${DF_DEFAULT_LIMIT}"
+  df_sane "${orig}" || orig="${DF_DEFAULT_LIMIT}"
   lock_set extra "${orig}" || { echo "nie zapisałem pierwotnego limitu do blokady" >&2; return 1; }
   rmq set_disk_free_limit "${DF_BAD_LIMIT}" >/dev/null || return 1
   touch_product || { echo "touch_product nie wygenerował zdarzenia outbox" >&2; return 1; }
@@ -52,7 +55,7 @@ check() {
 undo() {
   local orig
   orig="$(lock_get extra)"
-  [[ "${orig}" =~ ^[0-9]+$ ]] || orig="${DF_DEFAULT_LIMIT}"
+  df_sane "${orig}" || orig="${DF_DEFAULT_LIMIT}"
   rmq set_disk_free_limit "${orig}" >/dev/null || return 1
   wait_for 60 df_clear || { echo "alarm dysku nie zniknął w 60 s po przywróceniu limitu ${orig}" >&2; return 1; }
 }

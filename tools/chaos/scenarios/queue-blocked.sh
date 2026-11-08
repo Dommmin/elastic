@@ -53,6 +53,10 @@ break() {
   local orig c r
   orig="$(qb_perms)"
   [[ -n "${orig}" ]] || { echo "nie odczytałem uprawnień użytkownika ${QB_USER}" >&2; return 1; }
+  # Uprawnienia już zawężone (zostałe po nieudanym wycofaniu): klaster nie jest zdrowy,
+  # a zapisanie ich jako „oryginału” sprawiłoby, że undo przywróciłoby awarię.
+  [[ "$(jq -r .w <<<"${orig}")" != "${QB_WRITE_BAD}" ]] \
+    || { echo "uprawnienia ${QB_USER} są już zawężone (write: ${QB_WRITE_BAD}) — klaster nie jest w stanie wyjściowym" >&2; return 1; }
   lock_set extra "${orig}" || { echo "nie zapisałem uprawnień do blokady" >&2; return 1; }
   c="$(jq -r .c <<<"${orig}")"; r="$(jq -r .r <<<"${orig}")"
   rmq set_permissions -p "${QB_VHOST}" "${QB_USER}" "${c}" "${QB_WRITE_BAD}" "${r}" >/dev/null || return 1

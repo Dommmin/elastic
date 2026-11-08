@@ -84,8 +84,8 @@ make chaos-check s=disk-full
 Limit ustawiony `rabbitmqctl` żyje do restartu poda: po restarcie `rabbitmq-0`
 wraca wartość z `rabbitmq.conf`, więc `kubectl -n marketplace delete pod rabbitmq-0`
 też naprawia (kosztem chwilowej niedostępności brokera). `check` czeka do 60 s, aż alarm
-zniknie, i do 90 s, aż outbox się opróżni. Publisher próbuje co sekundę, więc nadrabia
-sam, bez ręcznego uruchamiania.
+zniknie, i do 90 s, aż outbox się opróżni. Po zdjęciu alarmu zaległe wiersze
+wychodzą bez żadnej akcji na publisherze (w teście wiek najstarszego wpisu wrócił do 0).
 
 **Jak temu zapobiec:** alert `OutboxStale` łapie skutek; alert na wolne miejsce
 na węźle i na `rabbitmq_alarms_free_disk_space_watermark` łapie przyczynę wcześniej. Limit RabbitMQ zmienia się
