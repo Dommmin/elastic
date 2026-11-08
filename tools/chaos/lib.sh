@@ -137,8 +137,14 @@ marketplace_alerts() {
 # alert_for_seconds <alertname> -> `for:` reguły w sekundach (pusto, gdy API nie odpowiada
 # albo reguły nie ma).
 alert_for_seconds() {
-  k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null \
-    | jq -r --arg n "$1" '[.data.groups[].rules[] | select(.name == $n) | .duration] | first // empty' 2>/dev/null
+  local i v
+  for i in 1 2 3 4 5; do
+    v="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null \
+      | jq -r --arg n "$1" '[.data.groups[].rules[] | select(.name == $n) | .duration] | first // empty' 2>/dev/null)"
+    [[ "${v}" =~ ^[0-9]+$ ]] && { echo "${v}"; return 0; }
+    sleep 5
+  done
+  return 1
 }
 
 # wait_quiet [limit_s=600] — czeka, aż sklep będzie „zdrowy do awarii”: brak płonących

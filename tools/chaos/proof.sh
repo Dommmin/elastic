@@ -59,8 +59,9 @@ proof_alert() {
     echo "  ${DIM}- ${s}: pomijam (ALERT='${alert}', zależny od ruchu: '${traffic:-nie}')${RESET}"; return 3
   fi
   local for_s cap ttl
-  for_s="$(alert_for_seconds "${alert}")"
-  [[ "${for_s}" =~ ^[0-9]+$ ]] || for_s=600
+  # Gdy Prometheus nie poda `for:` (5 prób), zakładamy 900 s — najdłuższe `for` wśród
+  # scenariuszy (KubePodCrashLooping 15 min), żeby limit nie był za krótki.
+  for_s="$(alert_for_seconds "${alert}")" || for_s=900
   cap=$((for_s + 180))
   ttl=$(( (cap + 59) / 60 + 3 ))
   wait_quiet 600 || { echo "  ${RED}✗${RESET} sklep nie ucichł w 10 min — nie psuję"; return 1; }

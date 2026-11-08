@@ -407,7 +407,8 @@ phase_reboot() {
 # Scenariusze chaosu na PRODUKCJI (ETAP G4). Sterowanie zmiennymi środowiska:
 #   CHAOS_S="a b"   podzbiór scenariuszy (domyślnie wszystkie z tools/chaos/scenarios)
 #   ALERTS=1        dowód, że ALERT każdego scenariusza płonie (wolne: for: + 3 min)
-#   CHAOS_SLOW=1    w trybie ALERTS dołącz scenariusze z for: >= 10 min (bad-probe)
+#   CHAOS_SLOW=1    w trybie ALERTS dołącz bad-probe (alert z for: 15 min)
+#   CHAOS_SKIP="selftest fuse"  pomiń podfazy (np. powtórka samych alertów)
 phase_chaos() {
   tunnel_up
   echo -e "\n${BLD}  chaos — PSUJE produkcję (namespace marketplace), potem naprawia${NC}"
@@ -419,6 +420,7 @@ phase_chaos() {
   echo -e "  ${DIM}scenariusze:${list:+ }${list}${NC}"
   # 1. selftest: break -> check FAIL -> reset x2 -> check PASS (czeka na ciszę przed każdym)
   for s in ${list}; do
+    case " ${CHAOS_SKIP:-} " in *" selftest "*) continue ;; esac
     t0=$(date +%s)
     bash "${ROOT}/tools/chaos/selftest.sh" "${s}"; rc=$?
     check "selftest ${s}: break, check czerwony, reset x2, check zielony ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
@@ -426,6 +428,7 @@ phase_chaos() {
   # 2. bezpiecznik: Job chaos-undo (ttl 1 min) sam wycofuje, bez akcji ucznia
   for s in ${fuse_set}; do
     case " ${list} " in *" ${s} "*) ;; *) continue ;; esac
+    case " ${CHAOS_SKIP:-} " in *" fuse "*) continue ;; esac
     t0=$(date +%s)
     bash "${ROOT}/tools/chaos/proof.sh" fuse "${s}"; rc=$?
     check "bezpiecznik ${s}: Job chaos-undo sam wycofał awarię w ttl 1 min ($(( $(date +%s) - t0 )) s)" "0" "${rc}"

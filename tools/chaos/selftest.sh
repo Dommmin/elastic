@@ -81,7 +81,11 @@ for s in "${list[@]}"; do
       echo "  generation po reset 2: ${g2:-<brak celów>}"
       if [[ "${g1}" != "${g2}" ]]; then
         stage="reset 2 zmienił generation"
-      elif ! bash "${CHAOS}" check "${s}"; then
+      # Po undo workload dochodzi do siebie z opóźnieniem (np. outbox-publisher po
+      # crashloopie wstaje z backoffem i drenuje zaległe wpisy), więc zielony check
+      # ma do 2,5 min — jak uczeń odpytujący make chaos-check.
+      elif ! wait_for 150 bash "${CHAOS}" check "${s}"; then
+        bash "${CHAOS}" check "${s}" || true
         stage="check czerwony po reset"
       fi
     fi

@@ -406,8 +406,8 @@ k3s-manifests-check: ## Manifesty k8s bez klastra: kustomize, ERROR_TRACKING_PRO
 	@bash tools/k3s/glitchtip-step-check.sh
 
 .PHONY: k3s-verify
-k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all; faza=chaos PSUJE produkcję: s="oom bad-probe" alerts=1 slow=1)
-	@CHAOS_S="$(s)" ALERTS="$(alerts)" CHAOS_SLOW="$(slow)" bash tools/k3s/verify.sh $(or $(faza),all)
+k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all; faza=chaos PSUJE produkcję: s="oom bad-probe" alerts=1 slow=1 skip="selftest fuse")
+	@CHAOS_S="$(s)" ALERTS="$(alerts)" CHAOS_SLOW="$(slow)" CHAOS_SKIP="$(skip)" bash tools/k3s/verify.sh $(or $(faza),all)
 
 .PHONY: k3s-tunnel
 k3s-tunnel: ## Tunel do API k3s w tle (localhost:26443); potem: make k3s k="get pods -A"
