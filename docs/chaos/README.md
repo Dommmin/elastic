@@ -36,10 +36,17 @@ otwieraj je dopiero po `check`.
 | Blokada: ConfigMap `chaos-lock` (`chaos.lab/lock=true`) zakładana atomowo (`kubectl create`) | dwa scenariusze naraz; `tools/k3s/deploy.sh` odmawia wdrożenia, gdy blokada istnieje (Job przywróciłby po chwili migawkę ze starym obrazem) |
 | Migawka w blokadzie (`snapshot.yaml`): obiekty sprzed awarii z klastra, nie z repo | `undo` przywraca dokładnie stan sprzed `break` (obraz, repliki) surowym PUT (`kubectl replace --raw`): ten sam szablon = brak nowego rolloutu, a adnotacja `last-applied` (baza `kubectl apply` w `deploy.sh`) zostaje nietknięta |
 | Job `chaos-undo` w klastrze: śpi do `deadline`, wywołuje `undo` scenariusza, zdejmuje blokadę | zamknięty laptop albo zerwany tunel nie zostawiają produkcji zepsutej; powstaje **przed** awarią |
-| ServiceAccount + Role `chaos-undo` (`deploy/chaos/undo-rbac.yaml`): każda reguła z `resourceNames` — tylko obiekty scenariuszy (`search-metrics`, `catalog-worker`, `search-consumer`, `marketplace-es-default`, `postgres-ingress`, ES `marketplace`), exec wyłącznie do `rabbitmq-0`, bez `list` | Job nie może zmienić `catalog-app`, nie dostanie się do `marketplace-secrets` (ani Secretem, ani exec do poda z nim w env); granica jest egzekwowana przez RBAC, nie tylko konwencję. Nowy scenariusz = dopisz obiekt do Role (`test.sh` sprawdza `targets()`) |
+| ServiceAccount + Role `chaos-undo` (`deploy/chaos/undo-rbac.yaml`): każda reguła z `resourceNames` — tylko obiekty scenariuszy (lista niżej, zwinięta jako spoiler), bez `list` | Job nie może zmienić `catalog-app`, nie dostanie się do `marketplace-secrets` (ani Secretem, ani przez exec); granica jest egzekwowana przez RBAC, nie tylko konwencję. Nowy scenariusz = dopisz obiekt do Role (`test.sh` sprawdza `targets()`) |
 | NetworkPolicy `chaos-undo-egress` | `default-deny` z G2 zostaje; Job wychodzi tylko do API servera |
 | `trap` w `break`, undo przed sprzątaniem | przerwany `break` (Ctrl-C, błąd kroku) wycofuje się sam; Job i blokada znikają **dopiero po udanym undo**. Gdy undo padnie (tu albo w `reset`), blokada zostaje, a Job `chaos-undo` jest zakładany od nowa z deadline za ~60 s; błąd API przy odczycie blokady nigdy nie jest brany za „brak blokady” |
 | Granica scenariuszy | żaden nie dotyka `catalog-app`, `marketplace-secrets`, PVC ani danych |
+
+<details>
+<summary>Spoiler: co dotyka każdy scenariusz</summary>
+
+Role `chaos-undo`: obiekty `search-metrics`, `catalog-worker`, `search-consumer`, `marketplace-es-default`, `postgres-ingress`, ES `marketplace`; exec wyłącznie do `rabbitmq-0`.
+
+</details>
 
 Job działa jako uid 65534, z `readOnlyRootFilesystem`, `drop: [ALL]`,
 `seccompProfile: RuntimeDefault` (PSS `restricted`), 50m/64Mi, limit 128Mi.

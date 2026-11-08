@@ -4292,7 +4292,7 @@ kubectl -n marketplace describe pod -l app=search-metrics | grep -A3 -i readines
 ```
 
 **Przyczyna**
-Readiness wskazuje `/healthz-old`, na które aplikacja odpowiada `404` (sprawdzone w selfteście).
+Readiness wskazuje `/healthz-old`, na które aplikacja odpowiada `404` według karty.
 Przy jednej replice stary pod zostaje, więc nic nie przerywa serwowania. Hipoteza,
 niesprawdzona na klastrze (alert `KubePodNotReady` nie był uruchamiany): `TargetDown`
 nie płonie, bo niegotowy pod nie trafia do Endpoints i nie ma serii `up == 0`.
@@ -4340,7 +4340,7 @@ Nie kasuj podów ani PVC Elasticsearcha.
 
 **Czego się nauczyłem**
 Indeks bez replik na klastrze z trzema węzłami to pojedynczy punkt awarii. Otwarta
-decyzja o `number_of_replicas: 1` w [przewodniku G4](blog/etap-g4-chaos.md#otwarte-es-node-down-i-repliki-spoiler).
+decyzja o `number_of_replicas: 1` w [przewodniku G4](blog/etap-g4-chaos.md#otwarte-es-node-down-spoiler).
 
 ---
 

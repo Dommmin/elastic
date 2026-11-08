@@ -13,7 +13,7 @@ strony, a awaria zawsze sama się wycofa, nawet gdy zamkniesz laptopa.*
 > (bezpiecznik Joba) sprawdzony na 3 z 6, alert potwierdzony dla 5 z 6
 > ([wyniki](#wyniki-z-klastra)); przebieg 1 na pierwszej wersji kodu dał PASS=10 FAIL=0,
 > pełny czysty przebieg końcowego kodu czeka. Ostatni scenariusz (`es-node-down`)
-> jest otwarty, czeka na decyzję ([Otwarte](#otwarte-es-node-down-i-repliki-spoiler)).
+> jest otwarty, czeka na decyzję ([Otwarte](#otwarte-es-node-down-spoiler)).
 > **Scenariusze:** [docs/chaos/README.md](../chaos/README.md) (jak grać, bezpieczniki, spis).
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-07-g4-chaos-design.md).
 > Plan: [`13-PLAN-ETAP-G-K8S.md`](../13-PLAN-ETAP-G-K8S.md).
@@ -33,7 +33,7 @@ strony, a awaria zawsze sama się wycofa, nawet gdy zamkniesz laptopa.*
 9. [Wyniki z klastra](#wyniki-z-klastra)
 10. [Co wybuchło po drodze](#co-wybuchło-po-drodze)
 11. [Czego G4 nie robi](#czego-g4-nie-robi)
-12. [Otwarte: `es-node-down` i repliki (spoiler)](#otwarte-es-node-down-i-repliki-spoiler)
+12. [Otwarte: `es-node-down` (spoiler)](#otwarte-es-node-down-spoiler)
 13. [Ściąga](#ściąga)
 14. [Twoja kolej](#twoja-kolej)
 
@@ -180,8 +180,8 @@ granica „nie dotyka `catalog-app`” **nie może** zależeć od uczciwości sk
 
 - **Role `chaos-undo`:** każda reguła ma `resourceNames`, więc konto widzi tylko
   obiekty, które Job może przywrócić, a `list` nie ma wcale. Exec dostaje wyłącznie
-  do jednego poda (brokera). Skutek: Job nie zmieni `catalog-app` i nie przeczyta
-  `marketplace-secrets` ani Secretem, ani przez exec do poda, który ma go w env.
+  do jednego poda. Skutek: Job nie zmieni `catalog-app` i nie przeczyta
+  `marketplace-secrets`.
   Granicę egzekwuje API server. Konkretna lista obiektów zdradza, co psują
   scenariusze, więc jest w `deploy/chaos/undo-rbac.yaml`, a nie tutaj.
 - **NetworkPolicy `chaos-undo-egress`:** `default-deny` z G2 zostaje w mocy. Job
@@ -391,7 +391,7 @@ Fuse (Job wycofuje sam) faza sprawdza na trzech reprezentatywnych scenariuszach
 (`fuse_set` w `verify.sh`), selftest na wszystkich. Liczba 10 dotyczy
 tamtej wersji kodu: obecna faza liczy więcej sprawdzeń (walidacja `s=`/`skip=`, dowody
 alertów, końcowe czekanie na zdrowy sklep), więc nie jest do porównania. Pełny czysty
-przebieg końcowego kodu czeka na `es-node-down` (po decyzji o replikach).
+przebieg końcowego kodu czeka na `es-node-down` (po decyzji w sekcji ze spoilerem).
 
 Alerty (`alerts=1`), czas od założenia awarii do `firing`:
 
@@ -410,8 +410,8 @@ bez powiadomienia. To jest najcenniejsza informacja z całego etapu i powód, dl
 którego karty każą zaczynać od `kubectl get pods`, a nie od czekania na alert.
 
 Stan klastra po przebiegach: zero obiektów `part-of=chaos`, wszystkie 8 Deploymentów
-i 4 StatefulSety gotowe, ES `green`, uprawnienia RabbitMQ `.* .* .*`, żadnych polityk
-od chaosu, żadnych alarmów brokera. `make k3s-verify faza=apps` PASS=12 FAIL=0
+i 4 StatefulSety gotowe, ES `green`, stan brokera wrócił do wyjściowego, żadnych polityk
+od chaosu. `make k3s-verify faza=apps` PASS=12 FAIL=0
 (za pierwszym razem 11/12: `catalog-worker` tuż po `netpol-db` jeszcze siedział
 w backoffie CrashLoopBackOff; wrócił po około 6 minutach, stąd końcowe czekanie
 w fazie).
@@ -470,7 +470,7 @@ w fazie).
 - **Tryb „losowy scenariusz bez nazwy”** (`s=random`). Możliwy później, gdy karty
   okrzepną. Dziś `chaos-list` pokazuje objawy, więc wiesz, w co grasz.
 
-## Otwarte: `es-node-down` i repliki (spoiler)
+## Otwarte: `es-node-down` (spoiler)
 
 > **UWAGA: SPOILER.** Ta sekcja zdradza lekcję scenariusza `es-node-down`.
 > Jeśli chcesz go przejść bez podpowiedzi, przeskocz do [ściągi](#ściąga).
@@ -535,7 +535,7 @@ Gdy coś poszło nie tak: [RUNBOOK #095](../RUNBOOK.md#095) („chaos-undo nie z
    15 minutach, a powinien po jednej”. Zastanów się, jaką regułę dopisałbyś, i
    sprawdź ją w `infra/obs/prometheus/rules/marketplace.yml` (a `promtool` w CI
    powie, czy się zgadza).
-3. Zdecyduj o replikach `products-v1` ([Otwarte](#otwarte-es-node-down-i-repliki-spoiler)).
+3. Rozstrzygnij otwarty punkt `es-node-down` ([Otwarte](#otwarte-es-node-down-spoiler)).
    Po decyzji uruchom `es-node-down`, a wynik dopisz do przewodnika.
 4. Napisz scenariusz 8 sam: wybierz coś, czego nie ma w spisie (np. zły `ConfigMap`
    workera, wygasły certyfikat cert-managera, przepełniony `emptyDir`). Plik
