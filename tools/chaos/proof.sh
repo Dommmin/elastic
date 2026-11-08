@@ -17,9 +17,23 @@ export CHAOS_NO_SCORE=1
 mode="${1:-}"; s="${2:-}"
 [[ -n "${s}" && -f "$(scenario_file "${s}")" ]] || die "użycie: proof.sh fuse|alert <scenariusz>"
 
+# api_ok — API k3s odpowiada (tunel żyje). Przy awarii tunelu nie wolno liczyć czasu
+# oczekiwania jako „alert nie zapłonął”: limit przedłużamy o czas niedostępności (≤ 10 min).
+api_ok() { k get --raw /readyz >/dev/null 2>&1; }
+
+# reset_retry — reset z ponowieniami (≤ 10 × 30 s): tunel potrafi paść akurat przy sprzątaniu.
+reset_retry() {
+  local i=0
+  while (( i < 10 )); do
+    bash "${CHAOS}" reset >/dev/null 2>&1 && return 0
+    i=$((i + 1)); sleep 30
+  done
+  return 1
+}
+
 # Zawsze zostawiamy produkcję zdrową: siłowy reset, jeśli blokada nadal jest nasza.
 cleanup() {
-  [[ "$(lock_get scenario 2>/dev/null)" == "${s}" ]] && bash "${CHAOS}" reset >/dev/null 2>&1
+  [[ "$(lock_get scenario 2>/dev/null)" == "${s}" ]] && reset_retry
   return 0
 }
 trap cleanup EXIT
@@ -31,9 +45,12 @@ proof_fuse() {
   echo "  awaria założona, ttl 1 min, nie ruszam niczego"
   local st
   st="$(lock_state)"
-  while [[ "${st}" != brak ]] && (( SECONDS - t0 < 180 )); do
+  local lim=180 lost=0
+  while [[ "${st}" != brak ]] && (( SECONDS - t0 < lim )); do
     sleep 5
     st="$(lock_state)"
+    # lock_state=err: API (tunel) nie odpowiada — to nie „Job nie zadziałał”.
+    [[ "${st}" == err && ${lost} -lt 600 ]] && { lim=$((lim + 5)); lost=$((lost + 5)); }
   done
   if [[ "${st}" != brak ]]; then
     echo "  ${RED}✗${RESET} blokada nadal jest po 180 s (Job: $(undo_job_state))"; return 1
@@ -66,14 +83,19 @@ proof_alert() {
   ttl=$(( (cap + 59) / 60 + 3 ))
   wait_quiet 600 || { echo "  ${RED}✗${RESET} sklep nie ucichł w 10 min — nie psuję"; return 1; }
   bash "${CHAOS}" break "${s}" "${ttl}" >/dev/null || { echo "  ${RED}✗${RESET} break ${s} odmówił"; return 1; }
-  local t0=${SECONDS} fired=nie
+  local t0=${SECONDS} fired=nie lost=0
   echo "  awaria założona; czekam na ${alert} (for ${for_s} s, limit ${cap} s)"
   # alert_firing: błąd API = „nie”, czyli czekamy dalej; potwierdzenie tylko z odpowiedzi.
-  while [[ "${fired}" != tak ]] && (( SECONDS - t0 < cap )); do
-    [[ "$(alert_firing "${alert}")" == tak ]] && fired=tak || sleep 15
+  while [[ "${fired}" != tak ]] && (( SECONDS - t0 < cap + lost )); do
+    if [[ "$(alert_firing "${alert}")" == tak ]]; then fired=tak
+    else
+      # API nie odpowiada: przedłuż limit o ten czas (≤ 10 min), bo to nie dowód braku alertu.
+      api_ok || { [[ ${lost} -lt 600 ]] && lost=$((lost + 15)); }
+      sleep 15
+    fi
   done
   local took=$((SECONDS - t0))
-  bash "${CHAOS}" reset >/dev/null || echo "  ${RED}!${RESET} reset zwrócił błąd (cleanup spróbuje ponownie)"
+  reset_retry || echo "  ${RED}!${RESET} reset nie przeszedł po 10 próbach (Job chaos-undo wycofa po ttl)"
   if [[ "${fired}" == tak ]]; then
     echo "  ${GREEN}✓${RESET} ${s}: ${alert} płonie po ${took} s (for ${for_s} s)"
   else
