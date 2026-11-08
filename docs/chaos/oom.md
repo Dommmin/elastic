@@ -1,4 +1,4 @@
-# Worker, który nie przeżywa własnego startu
+# Joby, które nigdy się nie kończą
 
 **Oczekiwany alert:** `KubePodCrashLooping` (po kilku minutach) · **Limit:** 8 min
 
@@ -7,8 +7,8 @@
 Sprzedawca zgłasza, że zablokowane konto nadal ma widoczne oferty, a zamówienia
 „wiszą” w kroku, który zwykle trwa sekundy. Strony sklepu ładują się normalnie.
 W `kubectl get pods` pod `catalog-worker` ma rosnący licznik restartów i na zmianę
-`Error` oraz `CrashLoopBackOff`; w tabeli `jobs` w Postgresie przybywa wierszy.
-Ktoś wczoraj „zaoszczędził pamięci na węźle”.
+`CrashLoopBackOff` oraz status błędu; w tabeli `jobs` w Postgresie przybywa wierszy.
+Ktoś wczoraj tylko poprawił konfigurację Deploymentu.
 
 ## Zacznij od
 

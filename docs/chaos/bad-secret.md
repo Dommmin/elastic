@@ -30,12 +30,11 @@ kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmqctl -q list_queues
 2. Pod nie jest w `CreateContainerConfigError`, więc Secret i klucz istnieją.
    Skąd zatem wartość `MESSENGER_TRANSPORT_DSN` w tym podzie
    (`kubectl get deploy search-consumer -o yaml`)? Czym różni się od innych Deploymentów?
+   Kto jest właścicielem prawdy o haśle: Secret, broker, `.env`?
 3. Dlaczego `search-metrics` ma ten sam klucz i działa dalej? Co z tego wynika
    dla zasięgu awarii?
 4. Czemu `consumers` w `list_queues` pokazuje 0 nawet przy zdrowym konsumencie
    i jaki sygnał naprawdę mówi, że ktoś odpytuje kolejkę?
-5. Skąd wartość `MESSENGER_TRANSPORT_DSN` w tym podzie i czym różni się od wartości
-   w innych Deploymentach? Kto jest właścicielem prawdy o haśle: Secret, broker, `.env`?
 
 ## Po co to w życiu
 
