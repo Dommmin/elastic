@@ -45,10 +45,12 @@ rules:
     resourceNames: ["marketplace-es-default"]
     verbs: ["get"]
   # kubectl scale bez --current-replicas/--resource-version = PATCH podzasobu /scale.
+  # get zostaje celowo: ścieżka ES nie ma jeszcze dowodu w Jobie (es-node-down), a brak
+  # uprawnienia ujawniłby się dopiero wtedy, gdy bezpiecznik jest potrzebny.
   - apiGroups: ["apps"]
     resources: ["statefulsets/scale"]
     resourceNames: ["marketplace-es-default"]
-    verbs: ["patch"]
+    verbs: ["get", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     resourceNames: ["postgres-ingress"]
