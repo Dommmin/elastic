@@ -1,6 +1,6 @@
 # 13 — ETAP G: Kubernetes na poziomie CKAD + produkcyjna obserwowalność
 
-> **Stan (2026-11-06):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). Następny: G4.
+> **Stan (2026-11-06):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). G4 zrobione, poza `es-node-down` (czeka na decyzję o replikach `products-v1`): 6 scenariuszy sprawdzonych na klastrze (`faza=chaos` 10/0), przewodnik [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md). Następny: G5.
 
 **Cel:** po ETAPIE D2 sklep działa na k3s, ale manifesty pokrywają mniej więcej połowę
 zakresu CKAD, a Prometheus/Grafana/Alertmanager działają tylko lokalnie w Compose.
@@ -113,10 +113,22 @@ z dokumentu jako uczeń = PASS. Przewodnik: [`blog/etap-g3-ckad-lab.md`](blog/et
 
 ## G4 — „zepsuj i napraw”
 
-`tools/chaos/<scenariusz>.sh break|check|reset`: OOMKilled, zły Secret, zablokowana
-kolejka, padnięty węzeł ES, NetworkPolicy odcinająca bazę, zła sonda, pełny PVC.
-Każdy scenariusz ma kartę w `docs/chaos/`: objaw, od którego alertu/dashboardu
-zacząć, ścieżka diagnozy — bez rozwiązania na pierwszej stronie.
+`make chaos-break|check|reset|status|selftest` (`tools/chaos/`): 7 scenariuszy na produkcyjnym
+k3s: OOMKilled, zły Secret, zablokowana kolejka, padnięty węzeł ES, NetworkPolicy odcinająca
+bazę, zła sonda, alarm dysku. Każdy ma kartę w [`docs/chaos/`](chaos/README.md): objaw, od
+którego alertu/dashboardu zacząć, pytania prowadzące, rozwiązanie zwinięte na końcu.
+Bezpieczniki: preflight, blokada `chaos-lock`, migawka z klastra, Job `chaos-undo` w klastrze
+(wycofuje sam po `ttl`), RBAC z `resourceNames`, NetworkPolicy egress.
+
+**Zrobione (2026-11-08), poza `es-node-down`:** `make k3s-verify faza=chaos` PASS=10 FAIL=0 na
+6 scenariuszach (selftest, fuse, brak obiektów `part-of=chaos`); alerty potwierdzone dla
+`oom` (955 s), `bad-secret` (108 s), `queue-blocked` (77 s), `disk-full` (138 s), `netpol-db`
+(932 s); `bad-probe` (`for` 15 min) nieuruchomiony. **`es-node-down` czeka na decyzję:**
+`products-v1` ma `number_of_replicas: 0`, więc zdjęcie węzła ES dałoby `red`; `break`
+odmawia (bezpiecznik shardów). Do wyboru: repliki 1 albo zmiana scenariusza. Po decyzji pełny
+przebieg `faza=chaos`. Przewodnik: [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md); projekt:
+[`superpowers/specs/2026-11-07-g4-chaos-design.md`](superpowers/specs/2026-11-07-g4-chaos-design.md);
+RUNBOOK #088–#095.
 
 ## G5 — RabbitMQ wyżej
 
