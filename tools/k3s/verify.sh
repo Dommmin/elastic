@@ -445,6 +445,11 @@ phase_chaos() {
   fi
   # Na koniec: nic z part-of=chaos nie zostaje (Job i skrypty po bezpieczniku).
   bash "${ROOT}/tools/chaos/chaos.sh" reset >/dev/null 2>&1
+  # Po ostatnim scenariuszu pody w backoffie (do 5 min) dochodzą do siebie; faza nie
+  # oddaje klastra w połowie leczenia (apps/stack zaraz po niej dałyby fałszywy FAIL).
+  local quiet=1
+  (source "${ROOT}/tools/chaos/lib.sh"; wait_quiet 600 >/dev/null 2>&1) && quiet=0
+  check "po fazie: sklep zdrowy (bez alertów, ES green, wszystko gotowe; <= 10 min)" "0" "${quiet}"
   check "po fazie: brak obiektów part-of=chaos poza RBAC" "0" \
     "$(k get all,configmap,secret,networkpolicy -n marketplace -l 'app.kubernetes.io/part-of=chaos' -o name 2>/dev/null | wc -l | tr -d ' ')"
 }
