@@ -468,11 +468,11 @@ chaos-list: ## Scenariusze chaosu i ich objawy (bez rozwiązań)
 chaos-break: ## Awaria na produkcji z auto-wycofaniem (make chaos-break s=bad-probe [ttl=15])
 	@bash tools/chaos/chaos.sh break $(s) $(or $(ttl),15)
 
-chaos-check: ## Sprawdź naprawę; zielony kończy scenariusz i zapisuje czas (make chaos-check s=bad-probe)
-	@bash tools/chaos/chaos.sh check $(s)
+chaos-check: ## Sprawdź naprawę; zielony kończy scenariusz i zapisuje czas (make chaos-check s=bad-probe [force=1])
+	@bash tools/chaos/chaos.sh check $(s) $(if $(force),--force)
 
-chaos-reset: ## Siłowe wycofanie trwającego scenariusza (i sprzątanie Joba chaos-undo)
-	@bash tools/chaos/chaos.sh reset
+chaos-reset: ## Siłowe wycofanie trwającego scenariusza (i sprzątanie Joba chaos-undo) [force=1: break padł w połowie]
+	@bash tools/chaos/chaos.sh reset $(if $(force),--force)
 
 chaos-status: ## Co trwa, od kiedy, kiedy auto-wycofanie, stan Joba chaos-undo
 	@bash tools/chaos/chaos.sh status

@@ -423,6 +423,13 @@ phase_chaos() {
   check "skip= zawiera tylko selftest/fuse" "" "$(echo "${bad}" | tr ' ' '\n' | grep '^skip:' | tr '\n' ' ' | sed 's/ $//')"
   [ -z "${bad# }" ] || return 0
   tunnel_up
+  # Trwający (cudzy) scenariusz: selftesty padłyby na preflight, a końcowy reset
+  # wycofałby go i zapisał „reset”. Błąd API = nie wiem = też odmowa.
+  local lk lrc
+  lk="$(k -n marketplace get configmap chaos-lock --ignore-not-found -o name 2>/dev/null)"; lrc=$?
+  [ "${lrc}" = "0" ] || lk="błąd API (kod ${lrc})"
+  check "przed fazą: nie trwa żaden scenariusz (chaos-lock)" "" "${lk}"
+  [ -z "${lk}" ] || return 0
   list="${CHAOS_S:-}"
   if [ -z "${list}" ]; then
     for s in "${ROOT}"/tools/chaos/scenarios/*.sh; do list="${list:+${list} }$(basename "${s}" .sh)"; done
@@ -466,8 +473,11 @@ phase_chaos() {
   local quiet=1
   (source "${ROOT}/tools/chaos/lib.sh"; wait_quiet 600 >/dev/null 2>&1) && quiet=0
   check "po fazie: sklep zdrowy (bez alertów, ES green, wszystko gotowe; <= 10 min)" "0" "${quiet}"
-  check "po fazie: brak obiektów part-of=chaos poza RBAC" "0" \
-    "$(k get all,configmap,secret,networkpolicy -n marketplace -l 'app.kubernetes.io/part-of=chaos' -o name 2>/dev/null | wc -l | tr -d ' ')"
+  # Błąd kubectl to „nie wiem”, nie „0 obiektów”.
+  local left lrc2 nleft
+  left="$(k get all,configmap,secret,networkpolicy -n marketplace -l 'app.kubernetes.io/part-of=chaos' -o name 2>/dev/null)"; lrc2=$?
+  if [ "${lrc2}" = "0" ]; then nleft="$(printf '%s' "${left}" | grep -c .)"; else nleft="błąd API (kod ${lrc2})"; fi
+  check "po fazie: brak obiektów part-of=chaos poza RBAC" "0" "${nleft}"
 }
 
 # ----------------------------------------------------------- monitoring -----

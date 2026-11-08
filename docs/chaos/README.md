@@ -35,10 +35,11 @@ otwieraj je dopiero po `check`.
 | Preflight `break`: ES `green`, każdy Deployment i StatefulSet gotowy, zero płonących alertów sklepu (grupa `marketplace` albo `namespace="marketplace"`; bez `Watchdog`, `InfoInhibitor`, `KubeJobFailed`) | awaria na już chorym systemie myli diagnozę i grozi kaskadą |
 | Blokada: ConfigMap `chaos-lock` (`chaos.lab/lock=true`) zakładana atomowo (`kubectl create`) | dwa scenariusze naraz; `tools/k3s/deploy.sh` odmawia wdrożenia, gdy blokada istnieje (Job przywróciłby po chwili migawkę ze starym obrazem) |
 | Migawka w blokadzie (`snapshot.yaml`): obiekty sprzed awarii z klastra, nie z repo | `undo` przywraca dokładnie stan sprzed `break` (obraz, repliki) surowym PUT (`kubectl replace --raw`): ten sam szablon = brak nowego rolloutu, a adnotacja `last-applied` (baza `kubectl apply` w `deploy.sh`) zostaje nietknięta |
-| Job `chaos-undo` w klastrze: śpi do `deadline`, wywołuje `undo` scenariusza, zdejmuje blokadę | zamknięty laptop albo zerwany tunel nie zostawiają produkcji zepsutej; powstaje **przed** awarią |
-| ServiceAccount + Role `chaos-undo` (`deploy/chaos/undo-rbac.yaml`): każda reguła z `resourceNames` — tylko obiekty scenariuszy (lista niżej, zwinięta jako spoiler), bez `list` | Job nie może zmienić `catalog-app`, nie dostanie się do `marketplace-secrets` (ani Secretem, ani przez exec); granica jest egzekwowana przez RBAC, nie tylko konwencję. Nowy scenariusz = dopisz obiekt do Role (`test.sh` sprawdza `targets()`) |
+| Job `chaos-undo` w klastrze: śpi do `deadline` (czyta go z blokady co 15 s), wywołuje `undo` scenariusza, zdejmuje blokadę | zamknięty laptop albo zerwany tunel nie zostawiają produkcji zepsutej; powstaje **przed** awarią, a awaria wchodzi dopiero, gdy pod Joba działa i odczytał blokadę (≤ 120 s; inaczej `break` się wycofuje, nic nie psując) |
+| ServiceAccount + Role `chaos-undo` (`deploy/chaos/undo-rbac.yaml`): każda reguła z `resourceNames` — tylko obiekty scenariuszy (lista niżej, zwinięta jako spoiler) i tylko czasowniki, których używa `undo`; bez `list` | Job nie może zmienić `catalog-app`, nie przeczyta Secretów wprost i nie zrobi exec poza `rabbitmq-0`; granica jest egzekwowana przez RBAC, nie tylko konwencję. Ryzyko szczątkowe (zaakceptowane): `update` na trzech Deploymentach pozwala wgrać szablon, który uruchomi kod z ich Secretami — cena przywracania migawki PUT-em. Nowy scenariusz = dopisz obiekt do Role (`test.sh` sprawdza zgodność w obie strony) |
 | NetworkPolicy `chaos-undo-egress` | `default-deny` z G2 zostaje; Job wychodzi tylko do API servera |
-| `trap` w `break`, undo przed sprzątaniem | przerwany `break` (Ctrl-C, błąd kroku) wycofuje się sam; Job i blokada znikają **dopiero po udanym undo**. Gdy undo padnie (tu albo w `reset`), blokada zostaje, a Job `chaos-undo` jest zakładany od nowa z deadline za ~60 s; błąd API przy odczycie blokady nigdy nie jest brany za „brak blokady” |
+| `trap` w `break`, undo przed sprzątaniem | przerwany `break` (Ctrl-C, błąd kroku) wycofuje się sam (kolejne Ctrl-C jest ignorowane do końca wycofania); Job i blokada znikają **dopiero po udanym undo**. Gdy **lokalne** undo padnie (tu albo w `reset`), blokada zostaje, a `deadline` przesuwa się na ~60 s: działający Job sam go odczyta, a gdy Joba nie ma albo się zakończył, powstaje nowy. Nieudane undo w samym Jobie niczego nie uzbraja ponownie — wtedy `make chaos-reset`. Błąd API przy odczycie blokady nigdy nie jest brany za „brak blokady” |
+| Właściciel i faza blokady (`owner`, `phase`: `breaking` → `broken`) | druga powłoka: `check` i `reset` odmawiają, gdy trwa `break` (faza `breaking`), a `break` tuż przed awarią i po niej sprawdza, że blokada nadal jest jego (gdy nie — nie psuje albo wycofuje od razu). Gdy `break` padł w połowie (np. `kill -9`): `make chaos-reset force=1` |
 | Granica scenariuszy | żaden nie dotyka `catalog-app`, `marketplace-secrets`, PVC ani danych |
 
 <details>
@@ -65,7 +66,7 @@ i zostają.
 ## Co gdy Job nie zadziałał
 
 ```bash
-make chaos-status                                  # stan Joba: active / succeeded / failed
+make chaos-status                                  # faza blokady, stan Joba i poda (np. Pending (ErrImagePull))
 kubectl -n marketplace logs job/chaos-undo         # co zrobił (albo dlaczego nie)
 make chaos-reset                                   # undo z migawki, kasuje Job i blokadę
 ```
@@ -77,6 +78,7 @@ scenariusza (sekcja „Rozwiązanie”) i zdejmij blokadę:
 kubectl -n marketplace delete cm chaos-lock
 kubectl -n marketplace delete job chaos-undo --ignore-not-found
 kubectl -n marketplace delete cm chaos-scripts --ignore-not-found
+kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
 ```
 
 ## Dla autora scenariusza

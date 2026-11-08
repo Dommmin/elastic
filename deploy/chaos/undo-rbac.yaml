@@ -6,10 +6,17 @@
 #  Etykieta part-of=chaos-rbac (nie `chaos`): to statyczne obiekty z repo, które
 #  zostają; „czysty klaster” = zero obiektów part-of=chaos.
 #
-#  Role = dokładnie to, czego wymaga `undo` scenariuszy (PUT = update, rabbitmqctl przez
-#  exec = pods get + pods/exec create), i tylko na obiektach scenariuszy (resourceNames).
-#  Bez list/watch, bez exec do innych podów: Job nie przeczyta marketplace-secrets
-#  (ani przez Secret, ani przez env catalog-app) i nie zmieni catalog-app.
+#  Role = dokładnie czasowniki, których używa `undo` scenariuszy i Job (test.sh pilnuje
+#  równości w obie strony), tylko na obiektach scenariuszy (resourceNames):
+#   - snapshot_restore: GET po nazwie + PUT (update) celów z targets();
+#   - kubectl annotate ES = get + patch; kubectl scale STS = get statefulset + patch /scale;
+#   - rabbitmqctl przez exec = pods get + pods/exec create (tylko rabbitmq-0);
+#   - blokada: get + delete chaos-lock; Secret po bad-secret: delete.
+#  Bez list/watch, bez exec do innych podów. Job NIE zmieni catalog-app i nie przeczyta
+#  Secretów wprost (ani exec poza rabbitmq-0). Ryzyko szczątkowe (zaakceptowane, spec
+#  § 3.3): `update` na trzech Deploymentach pozwala posiadaczowi tokenu wgrać szablon,
+#  który uruchomi dowolny kod z ich Secretami (catalog-worker i search-consumer czytają
+#  marketplace-secrets) — to cena przywracania migawki PUT-em.
 # ============================================================================
 apiVersion: v1
 kind: ServiceAccount
@@ -32,15 +39,20 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     resourceNames: ["search-metrics", "catalog-worker", "search-consumer"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["get", "update"]
   - apiGroups: ["apps"]
-    resources: ["statefulsets", "statefulsets/scale"]
+    resources: ["statefulsets"]
     resourceNames: ["marketplace-es-default"]
-    verbs: ["get", "patch", "update"]
+    verbs: ["get"]
+  # kubectl scale bez --current-replicas/--resource-version = PATCH podzasobu /scale.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale"]
+    resourceNames: ["marketplace-es-default"]
+    verbs: ["patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     resourceNames: ["postgres-ingress"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["get", "update"]
   - apiGroups: ["elasticsearch.k8s.elastic.co"]
     resources: ["elasticsearches"]
     resourceNames: ["marketplace"]
@@ -56,7 +68,7 @@ rules:
     verbs: ["create"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["chaos-lock", "chaos-scripts"]
+    resourceNames: ["chaos-lock"]
     verbs: ["get", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]

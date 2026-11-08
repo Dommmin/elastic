@@ -89,10 +89,13 @@ fi
 grep -q 'part-of: chaos-rbac' "${rbac}" && ! grep -qE 'part-of: chaos *[},]?$|part-of: chaos }' "${rbac}" \
   && ok "${rbac}: etykiety part-of=chaos-rbac" || bad "${rbac}: obiekty statyczne mają mieć part-of=chaos-rbac"
 
-# --- Role chaos-undo pokrywa obiekty scenariuszy ----------------------------
-# Każdy obiekt z targets() (undo robi na nim PUT) musi być w resourceNames reguły
-# z czasownikiem update; exec rmq() (rabbitmq-0) w pods get + pods/exec create.
-# Inaczej scenariusz działa lokalnie, a auto-wycofanie w Jobie pada na Forbidden.
+# --- Role chaos-undo = dokładnie to, czego używa undo ------------------------
+# W obie strony: każdy potrzebny (zasób, nazwa, czasownik) jest w Role (inaczej
+# auto-wycofanie w Jobie pada na Forbidden), i nic ponad to (nadmiarowe prawa).
+#  - targets(): snapshot_restore robi GET po nazwie i PUT (update);
+#  - rmq() (exec rabbitmq-0): pods get + pods/exec create;
+#  - es-node-down: annotate ES (get, patch), scale STS (get sts, patch /scale);
+#  - bad-secret: delete Secretu; Job: get i delete blokady.
 if command -v ruby >/dev/null 2>&1; then
   needs="$(
     for f in tools/chaos/scenarios/*.sh; do
@@ -101,32 +104,50 @@ if command -v ruby >/dev/null 2>&1; then
         source tools/chaos/lib.sh
         # shellcheck source=/dev/null
         source "${f}"
-        for t in $(targets); do echo "$(basename "${f}" .sh) ${t} update"; done )
+        n="$(basename "${f}" .sh)"
+        for t in $(targets); do echo "${n} ${t} get"; echo "${n} ${t} update"; done
+        if [[ -n "${ES_CR:-}" ]]; then
+          echo "${n} elasticsearch/${ES_CR} get"; echo "${n} elasticsearch/${ES_CR} patch"
+        fi
+        if [[ -n "${ES_STS:-}" ]]; then
+          echo "${n} statefulset/${ES_STS} get"; echo "${n} statefulsets/scale/${ES_STS} patch"
+        fi
+        [[ -n "${BS_SECRET:-}" ]] && echo "${n} secret/${BS_SECRET} delete"
+        : )
     done
     grep -q 'exec rabbitmq-0' tools/chaos/lib.sh && { echo "rmq pod/rabbitmq-0 get"; echo "rmq pods/exec/rabbitmq-0 create"; }
+    ( set +u
+      # shellcheck source=/dev/null
+      source tools/chaos/lib.sh
+      echo "job configmap/${LOCK_CM} get"; echo "job configmap/${LOCK_CM} delete" )
   )"
   missing="$(NEEDS="${needs}" ruby -ryaml -e '
     short = { "deploy" => "deployments", "sts" => "statefulsets", "netpol" => "networkpolicies",
-              "es" => "elasticsearches", "cm" => "configmaps", "po" => "pods", "pod" => "pods",
-              "pods/exec" => "pods/exec" }
+              "es" => "elasticsearches", "cm" => "configmaps", "po" => "pods", "pod" => "pods" }
     plural = lambda { |k|
       k = k.downcase.split(".").first
       next short[k] if short[k]
       k =~ /(s|sh|ch|x)$/ ? k + "es" : (k.end_with?("y") ? k[0..-2] + "ies" : k + "s")
     }
     role = YAML.load_stream(File.read(ARGV[0])).find { |d| d && d["kind"] == "Role" }
-    ENV["NEEDS"].split("
-").reject(&:empty?).each do |line|
+    granted = {}
+    role["rules"].each { |r| r["resources"].each { |res| (r["resourceNames"] || ["*"]).each { |nm|
+      r["verbs"].each { |v| granted["#{res}/#{nm} #{v}"] = true } } } }
+    need = {}
+    ENV["NEEDS"].split("\n").reject(&:empty?).each do |line|
       s, ref, verb = line.split(" ")
-      kind, name = ref.include?("pods/exec/") ? ["pods/exec", ref.split("/").last] : ref.split("/", 2)
-      res = plural.call(kind)
-      ok = role["rules"].any? { |r| r["resources"].include?(res) && (r["resourceNames"] || []).include?(name) && r["verbs"].include?(verb) }
-      puts "#{s}: #{res}/#{name} (#{verb})" unless ok
-    end' "${rbac}")"
-  if [[ -z "${missing}" ]]; then ok "Role chaos-undo pokrywa targets() scenariuszy i exec rabbitmq-0"
-  else bad "Role chaos-undo nie pokrywa: $(echo "${missing}" | tr '\n' ';')"; fi
+      parts = ref.split("/")
+      # pods/exec/<nazwa>, statefulsets/scale/<nazwa> = podzasób
+      res, name = parts.size == 3 ? [parts[0] + "/" + parts[1], parts[2]] : [plural.call(parts[0]), parts[1]]
+      key = "#{res}/#{name} #{verb}"
+      need[key] = true
+      puts "brak: #{s}: #{key}" unless granted[key]
+    end
+    (granted.keys - need.keys).each { |k| puts "nadmiar: #{k}" }' "${rbac}")"
+  if [[ -z "${missing}" ]]; then ok "Role chaos-undo = dokładnie czasowniki undo (targets, exec rabbitmq-0, ES, Secret, blokada)"
+  else bad "Role chaos-undo niezgodna z undo: $(echo "${missing}" | tr '\n' ';')"; fi
 else
-  echo "  - pomijam pokrycie Role (brak ruby)"
+  echo "  - pomijam zgodność Role (brak ruby)"
 fi
 
 # --- spis w README ----------------------------------------------------------

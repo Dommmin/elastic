@@ -3,16 +3,25 @@
 #
 #    chaos.sh list                 # scenariusze i objawy (bez rozwiązań)
 #    chaos.sh break <s> [ttl=15]   # preflight → blokada → migawka → Job wycofania → awaria
-#    chaos.sh check <s>            # ✓/✗ wymagań „zdrowy”; zielony kończy scenariusz
-#    chaos.sh reset                # siłowe wycofanie trwającego scenariusza
+#    chaos.sh check <s> [--force]  # ✓/✗ wymagań „zdrowy”; zielony kończy scenariusz
+#    chaos.sh reset [--force]      # siłowe wycofanie trwającego scenariusza
 #    chaos.sh status               # co trwa, od kiedy, kiedy auto-wycofanie
+#
+#  check i reset odmawiają, gdy w innej powłoce trwa break (blokada w fazie
+#  „breaking”); --force (make ... force=1) tylko gdy break padł w połowie.
 #
 #  Kody wyjścia: 0 = sukces/zielony, 1 = czerwony/odmowa.
 #  Uwaga: scenariusz definiuje funkcję `break`, która przesłania słowo kluczowe —
 #  w tym pliku (i w lib.sh) nie używamy `break` w pętlach.
 source "$(dirname "$0")/lib.sh"
 
-usage() { sed -n '3,9p' "$0" | sed 's/^#  \{0,1\}//'; exit 1; }
+usage() { sed -n '3,12p' "$0" | sed 's/^#  \{0,1\}//'; exit 1; }
+
+# --force wyjmujemy z argumentów (pusta tablica pod set -u w bash 3.2: ${a[@]+...}).
+FORCE=0
+_args=()
+for _a in "$@"; do if [[ "${_a}" == --force ]]; then FORCE=1; else _args+=("${_a}"); fi; done
+set -- ${_args[@]+"${_args[@]}"}
 
 scenarios() { local f; for f in "${CHAOS_SCENARIOS_DIR}"/*.sh; do basename "${f}" .sh; done; }
 
@@ -55,35 +64,67 @@ preflight() {
 }
 
 # Wycofanie przerwanego `break` (tunel padł, Ctrl-C, błąd kroku). Nigdy blokada bez Joba.
+#  BREAK_ARMED=1  — blokada założona przez TEN proces (BREAK_OWNER), abort ma sprzątać;
+#  BREAK_FAULT=1  — funkcja `break` scenariusza ruszyła, abort musi zrobić undo.
+#  Przed awarią nic nie jest zepsute: abort tylko zdejmuje Job i blokadę (jeśli nasza).
 BREAK_ARMED=0
+BREAK_FAULT=0
 BREAK_S=""
+BREAK_OWNER=""
+lock_set_retry() { local _i; for _i in 1 2 3; do lock_set "$@" && return 0; sleep 2; done; return 1; }
 abort_break() {
   [[ ${BREAK_ARMED} -eq 1 ]] || return 0
   BREAK_ARMED=0
-  trap - INT TERM HUP
-  echo "${RED}✗${RESET} break przerwany — wycofuję (undo, potem Job i blokada)" >&2
+  # Kolejne Ctrl-C nie może przerwać wycofania w połowie (np. między undo a rearm).
+  trap '' INT TERM HUP
+  local own; own="$(lock_owner_state "${BREAK_OWNER}")"
+  if [[ ${BREAK_FAULT} -eq 0 ]]; then
+    echo "${RED}✗${RESET} break przerwany PRZED awarią — nic nie zepsute, sprzątam Job i blokadę" >&2
+    if [[ "${own}" == mine ]]; then
+      undo_job_delete
+      lock_delete || echo "${RED}!! nie zdjąłem blokady chaos-lock — make chaos-reset force=1${RESET}" >&2
+    else
+      echo "${RED}!! blokada nie jest już tego break (${own}) — Joba ani blokady nie ruszam.${RESET}" >&2
+    fi
+    echo "${DIM}Sprawdź: make chaos-status${RESET}" >&2
+    return 0
+  fi
+  echo "${RED}✗${RESET} break przerwany — wycofuję (undo, potem Job i blokada; Ctrl-C ignorowane do końca)" >&2
   if undo; then
-    undo_job_delete
-    lock_delete
+    if [[ "${own}" == mine ]]; then
+      undo_job_delete
+      lock_delete
+    else
+      echo "${RED}!! undo przeszło, ale blokada nie jest już tego break (${own}) — Joba ani blokady nie ruszam.${RESET}" >&2
+    fi
+    echo "${DIM}Sprawdź: make chaos-status${RESET}" >&2
     return 0
   fi
   # undo nie przeszło: produkcja może być zepsuta. Siatka zostaje: blokada (deploy.sh
-  # i preflight odmawiają) + Job chaos-undo z deadline za 60 s.
-  if rearm_undo "${BREAK_S}"; then
-    echo "${RED}${BLD}!! undo NIE przeszło. Blokada chaos-lock zostaje, Job chaos-undo spróbuje za ~60 s.${RESET}" >&2
+  # i preflight odmawiają) + Job chaos-undo z deadline za 60 s. Faza „aborted”, żeby
+  # make chaos-reset nie odmawiał jak przy trwającym break.
+  if [[ "${own}" == mine || "${own}" == err ]]; then
+    lock_set phase aborted 2>/dev/null
+    if rearm_undo "${BREAK_S}"; then
+      echo "${RED}${BLD}!! undo NIE przeszło. Blokada chaos-lock zostaje, Job chaos-undo spróbuje za ~60 s.${RESET}" >&2
+    else
+      echo "${RED}${BLD}!! undo NIE przeszło i Joba chaos-undo nie udało się uzbroić. Blokada zostaje (jeśli API pozwoliło).${RESET}" >&2
+    fi
   else
-    echo "${RED}${BLD}!! undo NIE przeszło i Job chaos-undo nie powstał. Blokada zostaje (jeśli API pozwoliło).${RESET}" >&2
+    echo "${RED}${BLD}!! undo NIE przeszło, a blokady tego break już nie ma (${own}) — auto-wycofania może NIE BYĆ.${RESET}" >&2
   fi
   echo "${RED}${BLD}!! Sprawdź: make chaos-status; napraw: make chaos-reset (albo karta scenariusza).${RESET}" >&2
 }
 
 cmd_break() {
-  local s="${1:-}" ttl="${2:-15}"
+  local s="${1:-}" ttl="${2:-15}" own
   load_scenario "${s}"
   [[ "${ttl}" =~ ^[0-9]+$ && "${ttl}" -ge 1 ]] || die "ttl w minutach (liczba ≥ 1), dostałem '${ttl}'"
   preflight
-  lock_create "${s}" "${ttl}" || die "nie udało się założyć blokady (trwa inny scenariusz?)"
+  BREAK_OWNER="$(date +%s)-$$-${RANDOM}"
+  lock_create "${s}" "${ttl}" "${BREAK_OWNER}" || die "nie udało się założyć blokady (trwa inny scenariusz?)"
   BREAK_S="${s}"
+  BREAK_FAULT=0
   BREAK_ARMED=1
   trap 'abort_break; exit 1' INT TERM HUP
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/chaos-snap.XXXXXX")"
@@ -93,8 +134,29 @@ cmd_break() {
   rm -f "${tmp}"
   # Job PRZED awarią: jeśli dalej coś padnie (np. tunel), klaster i tak wróci sam po ttl.
   undo_job_create "${s}" "${ttl}" || { abort_break; die "Job chaos-undo nie powstał"; }
+  # Job, który istnieje, to jeszcze nie Job, który zadziała (obraz się nie ściąga, pod
+  # Pending, webhook). Awaria wchodzi dopiero, gdy pod działa i odczytał blokadę.
+  echo "${DIM}czekam, aż pod Joba chaos-undo wystartuje (≤ 120 s)…${RESET}"
+  if ! wait_for 120 undo_job_started; then
+    local info; info="$(undo_pod_info)"
+    abort_break
+    die "pod Joba chaos-undo nie wystartował w 120 s (pod: ${info}) — awarii NIE wprowadzono"
+  fi
+  # Druga powłoka (check/reset --force) mogła zdjąć albo podmienić blokadę.
+  own="$(lock_owner_state "${BREAK_OWNER}")"
+  [[ "${own}" == mine ]] || { abort_break; die "blokada nie jest już tego break (${own}) — awarii NIE wprowadzono"; }
+  BREAK_FAULT=1
   # shellcheck disable=SC2104  # to funkcja scenariusza, nie słowo kluczowe
   break || { abort_break; die "awaria '${s}' nie weszła (stan wycofania wyżej)"; }
+  # Blokada zniknęła albo zmieniła właściciela w trakcie: awaria bez siatki — wycofujemy od razu.
+  own="$(lock_owner_state "${BREAK_OWNER}")"
+  case "${own}" in
+    mine) ;;
+    err) echo "${RED}!${RESET} nie mogę potwierdzić blokady (błąd API) — bezpiecznikiem zostaje Job chaos-undo" >&2 ;;
+    *) abort_break; die "blokada zniknęła albo zmieniła właściciela w trakcie break (${own}) — awaria wycofana" ;;
+  esac
+  lock_set_retry phase broken \
+    || echo "${RED}!${RESET} nie zapisałem fazy broken w blokadzie — check/reset będą wymagały force=1" >&2
   BREAK_ARMED=0
   trap - INT TERM HUP
   echo
@@ -103,13 +165,34 @@ cmd_break() {
   echo "${DIM}Auto-wycofanie za ${ttl} min (Job chaos-undo). Gdy naprawisz: make chaos-check s=${s}${RESET}"
 }
 
+# refuse_if_breaking <faza> <scenariusz> — check/reset nie mogą wejść w trwający break
+# z innej powłoki (zjadłyby jego Job i blokadę albo sprzątnęły to, co break właśnie
+# założył). --force: break padł w połowie (np. kill -9) i faza „breaking” została.
+refuse_if_breaking() {
+  [[ "$1" == breaking && ${FORCE} -ne 1 ]] || return 0
+  die "trwa break scenariusza '${2}' (blokada w fazie breaking) — poczekaj, aż się skończy. Gdy break padł w połowie: dodaj force=1 (make) albo --force."
+}
+
 cmd_check() {
   local s="${1:-}"
   load_scenario "${s}"
+  # Tożsamość blokady PRZED asercjami: zielony check zdejmuje blokadę i Job tylko wtedy,
+  # gdy po asercjach to nadal TA SAMA blokada (inaczej zjadłby break z innej powłoki,
+  # który zaczął się w trakcie check).
+  local id0 rc0 st0="" ph0="" sc0=""
+  id0="$(lock_ident)"; rc0=$?
+  if [[ ${rc0} -eq 0 ]]; then
+    IFS='|' read -r _ st0 ph0 sc0 <<<"${id0}"
+    refuse_if_breaking "${ph0}" "${sc0}"
+  fi
   echo "${BLD}=== check ${s}${RESET}"
   check
-  local mine=0 started=""
-  if [[ "$(lock_get scenario)" == "${s}" ]]; then mine=1; started="$(lock_get started)"; fi
+  local mine=0 started="" id1 rc1
+  if [[ ${rc0} -eq 0 && "${sc0}" == "${s}" ]]; then
+    id1="$(lock_ident)"; rc1=$?
+    if [[ ${rc1} -eq 0 && "${id1}" == "${id0}" ]]; then mine=1; started="${st0}"; fi
+  fi
+  [[ "${started}" =~ ^[0-9]+$ ]] || started=""
   # CHAOS_KEEP_LOCK=1 (selftest): fałszywie zielony check nie może zjeść blokady z migawką.
   [[ "${CHAOS_KEEP_LOCK:-0}" == "1" ]] && mine=0
   if [[ ${FAIL} -eq 0 ]]; then
@@ -129,7 +212,7 @@ cmd_check() {
 }
 
 cmd_reset() {
-  local s st lrc
+  local s st lrc id0 st0 ph0 sc0
   cluster_reachable || die "API k3s nie odpowiada. Uruchom: make k3s-tunnel"
   st="$(lock_state)"
   case "${st}" in
@@ -139,10 +222,13 @@ cmd_reset() {
       echo "Nic nie trwa (pozostałości Joba/skryptów usunięte, jeśli były)."
       return 0 ;;
   esac
-  s="$(lock_get scenario)"; lrc=$?
-  [[ ${lrc} -eq 0 && -n "${s}" ]] || die "nie odczytałem scenariusza z blokady (kod ${lrc}) — niczego nie ruszam"
+  id0="$(lock_ident)"; lrc=$?
+  [[ ${lrc} -eq 0 ]] || die "nie odczytałem blokady (kod ${lrc}) — niczego nie ruszam"
+  IFS='|' read -r _ st0 ph0 sc0 <<<"${id0}"
+  s="${sc0}"
+  [[ -n "${s}" ]] || die "blokada bez scenariusza — niczego nie ruszam (make chaos-status)"
+  refuse_if_breaking "${ph0}" "${s}"
   load_scenario "${s}"
-  local started; started="$(lock_get started)"
   # CHAOS_KEEP_LOCK=1 (selftest): samo undo, blokada i Job zostają — tak wygląda wyścig
   # „Job wycofuje stan, który uczeń już naprawił”; następny reset zrobi undo drugi raz.
   if [[ "${CHAOS_KEEP_LOCK:-0}" == "1" ]]; then
@@ -157,27 +243,51 @@ cmd_reset() {
     if rearm_undo "${s}"; then
       die "undo '${s}' NIE przeszło. Blokada zostaje, Job chaos-undo spróbuje ponownie za ~60 s. Popraw ręcznie (karta) i powtórz make chaos-reset."
     fi
-    die "undo '${s}' NIE przeszło i Job chaos-undo nie powstał — automatycznego wycofania NIE MA. Blokada zostaje. Napraw ręcznie wg karty."
+    die "undo '${s}' NIE przeszło i Joba chaos-undo nie udało się uzbroić — automatycznego wycofania może NIE BYĆ. Blokada zostaje. Napraw ręcznie wg karty."
+  fi
+  # Sprzątamy tylko blokadę, którą wycofaliśmy (nie nową z innej powłoki).
+  if [[ "$(lock_ident)" != "${id0}" ]]; then
+    echo "Scenariusz '${s}': undo wykonane, ale blokada zmieniła się w trakcie — Joba ani blokady nie ruszam (make chaos-status)."
+    return 0
   fi
   undo_job_delete
   lock_delete
-  score_add "${s}" "$(( $(date +%s) - ${started:-$(date +%s)} ))" reset
+  [[ "${st0}" =~ ^[0-9]+$ ]] || st0="$(date +%s)"
+  score_add "${s}" "$(( $(date +%s) - st0 ))" reset
   echo "Scenariusz '${s}' wycofany siłowo (reset)."
 }
 
 cmd_status() {
   cluster_reachable || die "API k3s nie odpowiada. Uruchom: make k3s-tunnel"
-  local s now started deadline
-  s="$(lock_get scenario)"; now="$(date +%s)"
-  if [[ -z "${s}" ]]; then
-    echo "Nic nie trwa. Job chaos-undo: $(undo_job_state)"
-    return 0
+  local st id started phase s now deadline
+  st="$(lock_state)"
+  case "${st}" in
+    err)
+      echo "${RED}Blokada: NIE WIEM${RESET} — błąd API przy odczycie chaos-lock (nie znaczy: nic nie trwa)."
+      echo "Job chaos-undo:  $(undo_job_state)"
+      return 1 ;;
+    brak)
+      echo "Nic nie trwa. Job chaos-undo: $(undo_job_state)"
+      return 0 ;;
+  esac
+  id="$(lock_ident)" || { echo "${RED}Blokada jest, ale nie odczytałem jej treści (błąd API).${RESET}"; return 1; }
+  IFS='|' read -r _ started phase s <<<"${id}"
+  deadline="$(lock_get deadline)"
+  now="$(date +%s)"
+  echo "Scenariusz:      ${s:-? (brak w blokadzie)}"
+  echo "Faza:            ${phase:-?}"
+  if [[ "${started}" =~ ^[0-9]+$ ]]; then
+    echo "Od startu:       $(( (now - started) / 60 )) min"
+  else
+    echo "Od startu:       ? (brak started w blokadzie)"
   fi
-  started="$(lock_get started)"; deadline="$(lock_get deadline)"
-  echo "Scenariusz:      ${s}"
-  echo "Od startu:       $(( (now - started) / 60 )) min"
-  echo "Do wycofania:    $(( (deadline - now + 59) / 60 )) min"
-  echo "Job chaos-undo:  $(undo_job_state)"
+  if [[ "${deadline}" =~ ^[0-9]+$ ]]; then
+    if (( deadline >= now )); then echo "Do wycofania:    $(( (deadline - now + 59) / 60 )) min"
+    else echo "${RED}Do wycofania:    po terminie o $(( (now - deadline) / 60 )) min${RESET}"; fi
+  else
+    echo "Do wycofania:    ? (brak deadline w blokadzie)"
+  fi
+  echo "Job chaos-undo:  $(undo_job_state), pod: $(undo_pod_info)"
 }
 
 cmd_list() {

@@ -4367,8 +4367,11 @@ migawka.
 
 **Przyczyna**
 `undo` zakończył się błędem. Wtedy blokada **celowo zostaje** (Job i blokada znikają dopiero po
-udanym undo), a Job jest zakładany od nowa z `deadline` za ok. 60 s. Błąd API przy odczycie
-blokady nigdy nie jest brany za „brak blokady”.
+udanym undo). Błąd API przy odczycie blokady nigdy nie jest brany za „brak blokady”.
+Ponowne uzbrojenie (deadline za ok. 60 s; działający Job go odczyta, brakujący albo zakończony
+powstaje od nowa) dzieje się **tylko** po nieudanym undo **lokalnym** — w przerwanym `break`
+albo w `make chaos-reset`. Gdy padło undo w samym Jobie (`undo-entry.sh` kończy się kodem 1,
+backoff, Job `failed`), nic nie uzbraja się samo: uruchom `make chaos-reset`.
 
 **Naprawa**
 1. `make chaos-reset` — undo z migawki, kasuje Job i blokadę (jest idempotentny, można powtórzyć).
@@ -4378,7 +4381,10 @@ blokady nigdy nie jest brany za „brak blokady”.
 kubectl -n marketplace delete cm chaos-lock
 kubectl -n marketplace delete job chaos-undo --ignore-not-found
 kubectl -n marketplace delete cm chaos-scripts --ignore-not-found
+kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
 ```
+   Gdy `reset` odmawia z „trwa break (faza breaking)”, a żaden `break` już nie działa (padł
+   w połowie): `make chaos-reset force=1`.
 3. Sprawdź czystość: `kubectl get all,cm,secret,netpol,sa,role,rolebinding,job -A -l app.kubernetes.io/part-of=chaos`
    (powinno być `No resources found`; `part-of=chaos-rbac` zostaje).
 

@@ -154,10 +154,25 @@ Kolejność w `break` ma znaczenie:
 Job powstaje **przed** awarią. Gdyby było odwrotnie, przerwanie między „psuje” a
 „zakłada Job” zostawiłoby awarię bez zegara.
 
-Dodatkowo `trap` w `break`: Ctrl-C albo błąd kroku wywołuje `undo` natychmiast.
-Job i blokada znikają **dopiero po udanym undo**. Gdy undo padnie (w `break` albo
-w `reset`), blokada zostaje, a Job jest zakładany od nowa z deadline za około 60 s.
-Błąd API przy odczycie blokady nigdy nie jest brany za „blokady nie ma”.
+Dodatkowo `trap` w `break`: Ctrl-C albo błąd kroku wywołuje `undo` natychmiast
+(kolejne Ctrl-C jest wtedy ignorowane, żeby nie przerwać wycofania w połowie).
+Job i blokada znikają **dopiero po udanym undo**. Gdy lokalne undo padnie (w `break`
+albo w `reset`), blokada zostaje, a `deadline` przesuwa się na około 60 s. Działającego
+Joba nikt nie kasuje: jego pod czyta `deadline` z blokady co 15 s. Nowy Job powstaje
+tylko wtedy, gdy starego nie ma albo już się zakończył, więc nie ma chwili bez
+bezpiecznika. Błąd API przy odczycie blokady nigdy nie jest brany za „blokady nie ma”.
+
+Dwie rzeczy dopisałem po przeglądzie końcowym:
+
+- **Job, który istnieje, to jeszcze nie Job, który zadziała.** Obraz może się nie
+  ściągnąć, pod może wisieć w `Pending`. Dlatego `break` czeka (≤ 120 s), aż pod Joba
+  działa i zaloguje „śpię” (czyli w klastrze odczytał blokadę: obraz, RBAC i sieć
+  działają). Dopiero potem wchodzi awaria; inaczej `break` sprząta Job i blokadę, nic
+  nie psując.
+- **Druga powłoka.** Blokada ma właściciela (`owner`, nonce procesu `break`) i fazę
+  (`breaking` → `broken`). `check` i `reset` odmawiają w fazie `breaking`, a `break`
+  tuż przed awarią i po niej sprawdza, że blokada nadal jest jego. Zielony `check`
+  zdejmuje blokadę tylko wtedy, gdy przed i po asercjach to ta sama blokada.
 
 Dlaczego Job, a nie CronJob albo `sleep` w osobnym podzie? `deadline` leży w
 blokadzie (ConfigMap `chaos-lock`), więc pod go czyta i po restarcie wciąż wie, kiedy
@@ -179,9 +194,12 @@ granica „nie dotyka `catalog-app`” **nie może** zależeć od uczciwości sk
 `deploy/chaos/undo-rbac.yaml`:
 
 - **Role `chaos-undo`:** każda reguła ma `resourceNames`, więc konto widzi tylko
-  obiekty, które Job może przywrócić, a `list` nie ma wcale. Exec dostaje wyłącznie
-  do jednego poda. Skutek: Job nie zmieni `catalog-app` i nie przeczyta
-  `marketplace-secrets`.
+  obiekty, które Job może przywrócić, tylko z czasownikami, których używa `undo`
+  (`test.sh` pilnuje zgodności w obie strony), a `list` nie ma wcale. Exec dostaje
+  wyłącznie do jednego poda. Skutek: Job nie zmieni `catalog-app` i nie przeczyta
+  Secretów wprost. Uczciwie: `update` na trzech Deploymentach pozwala posiadaczowi
+  tokenu wgrać szablon, który uruchomi kod z ich Secretami. To cena przywracania
+  migawki PUT-em, zaakceptowana świadomie.
   Granicę egzekwuje API server. Konkretna lista obiektów zdradza, co psują
   scenariusze, więc jest w `deploy/chaos/undo-rbac.yaml`, a nie tutaj.
 - **NetworkPolicy `chaos-undo-egress`:** `default-deny` z G2 zostaje w mocy. Job

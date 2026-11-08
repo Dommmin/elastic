@@ -95,13 +95,15 @@ więc zamknięty laptop albo zerwany tunel nie zostawiają produkcji zepsutej.
   stosowane przez `break`, nie przez kustomization sklepu). **Każda reguła ma
   `resourceNames`** — tylko obiekty siedmiu scenariuszy, więc granica „nie dotykaj
   `catalog-app`” jest egzekwowana przez RBAC, nie tylko konwencją skryptów:
-  `get/update/patch` deployments `search-metrics`, `catalog-worker`, `search-consumer`;
-  `get/patch/update` statefulsets (+`/scale`) `marketplace-es-default`;
-  `get/update/patch` networkpolicies `postgres-ingress`; `get/patch` elasticsearches
+  `get/update` deployments `search-metrics`, `catalog-worker`, `search-consumer`;
+  `get` statefulsets i `patch` statefulsets/scale `marketplace-es-default`;
+  `get/update` networkpolicies `postgres-ingress`; `get/patch` elasticsearches
   `marketplace`; `get` pods i `create` pods/exec tylko `rabbitmq-0` (rabbitmqctl), bez
-  `list`; `get/delete` configmaps `chaos-lock`, `chaos-scripts`; `delete` secrets
-  `chaos-rotated-secrets`. `tools/chaos/test.sh` sprawdza, że każdy obiekt z `targets()`
-  jest w Role. Bez uprawnień do czegokolwiek poza `marketplace`.
+  `list`; `get/delete` configmaps `chaos-lock`; `delete` secrets
+  `chaos-rotated-secrets`. `tools/chaos/test.sh` sprawdza zgodność Role z czasownikami
+  `undo` w obie strony (brak = Forbidden w Jobie, nadmiar = zbędne prawa). Bez uprawnień
+  do czegokolwiek poza `marketplace`. Ryzyko szczątkowe: `update` na Deploymentach pozwala
+  posiadaczowi tokenu uruchomić kod z ich Secretami (przywracanie migawki PUT-em).
 - Etykiety: obiekty tworzone na czas scenariusza (blokada, Job, `chaos-scripts`) mają
   `app.kubernetes.io/part-of=chaos`; statyczne SA/Role/RoleBinding/NetworkPolicy z repo
   mają `app.kubernetes.io/part-of=chaos-rbac` i zostają, więc „czysty klaster” to

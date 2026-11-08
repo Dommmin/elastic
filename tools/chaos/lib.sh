@@ -106,9 +106,14 @@ die() { printf '%s✗%s %s\n' "${RED}" "${RESET}" "$*" >&2; exit 1; }
 prom_q() { # prom_q <PromQL> -> surowy JSON /api/v1/query
   k get --raw "/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/query?query=$(jq -rn --arg q "$1" '$q|@uri')"
 }
-prom_val() { # prom_val <PromQL> -> pierwsza wartość albo „brak”
-  local v; v="$(prom_q "$1" 2>/dev/null | jq -r '.data.result[0].value[1] // "brak"' 2>/dev/null)"
-  echo "${v:-brak}"
+# prom_val <PromQL> -> pierwsza wartość, „brak” (Prometheus odpowiedział: pusty wynik)
+# albo „err” (transport, proxy, zły JSON). „err” nigdy nie wygląda jak zdrowe „brak”.
+prom_val() {
+  local raw v
+  raw="$(prom_q "$1" 2>/dev/null)" || { echo err; return 0; }
+  v="$(jq -r 'if .status == "success" and (.data.result | type) == "array"
+              then (.data.result[0].value[1] // "brak") else "err" end' <<<"${raw}" 2>/dev/null)" || v=err
+  echo "${v:-err}"
 }
 alert_firing() { # alert_firing <nazwa> -> tak|nie (Alertmanager, state=active)
   local n
@@ -241,12 +246,16 @@ sts_ready() {
 # recent_restarts <app> <sekundy> -> liczba kontenerów podów app=<app>, które
 # zakończyły się (lastState.terminated.finishedAt) w ostatnich N sekundach.
 # Liczone z czasu, nie z licznika restartCount: licznik nie maleje po naprawie.
+# Błąd API albo jq -> „?” (nigdy „0”, które wyglądałoby jak zdrowie).
 recent_restarts() {
-  k -n "${NS}" get pods -l "app=$1" -o json 2>/dev/null | jq --argjson s "$2" '
+  local raw n
+  raw="$(k -n "${NS}" get pods -l "app=$1" -o json 2>/dev/null)" || { echo "?"; return 0; }
+  n="$(jq --argjson s "$2" '
     [ .items[].status.containerStatuses[]?
       | .lastState.terminated.finishedAt // empty
       | select((now - fromdateiso8601) < $s) ] | length
-  ' 2>/dev/null || echo 0
+  ' <<<"${raw}" 2>/dev/null)"
+  [[ "${n}" =~ ^[0-9]+$ ]] && echo "${n}" || echo "?"
 }
 
 # generation <rodzaj/nazwa> -> metadata.generation
@@ -337,12 +346,16 @@ snapshot_restore() {
 }
 
 # ------------------------------------------------------------- blokada -------
-# lock_create <s> <ttl_min> — atomowe `kubectl create`: AlreadyExists = trwa inny scenariusz.
+# lock_create <s> <ttl_min> <owner> — atomowe `kubectl create`: AlreadyExists = trwa inny
+# scenariusz. `owner` (nonce procesu break) i `phase` (breaking -> broken | aborted) chronią
+# przed drugą powłoką: check/reset odmawiają w fazie breaking, a break przed awarią i po
+# niej sprawdza, że blokada nadal jest jego.
 lock_create() {
   local now; now="$(date +%s)"
   k -n "${NS}" create configmap "${LOCK_CM}" \
     --from-literal=scenario="$1" --from-literal=started="${now}" \
     --from-literal=deadline="$((now + $2 * 60))" --from-literal=ttl="$2" \
+    --from-literal=owner="$3" --from-literal=phase=breaking \
     --dry-run=client -o json \
     | jq '.metadata.labels = {"app.kubernetes.io/part-of": "chaos", "chaos.lab/lock": "true"}' \
     | k -n "${NS}" create -f - >/dev/null
@@ -363,6 +376,21 @@ lock_get() {
   [[ -n "${out}" ]] || return 1
   jq -r --arg k "$1" '.data[$k] // empty' <<<"${out}" 2>/dev/null || return 2
 }
+# lock_ident -> „owner|started|phase|scenario” jednym odczytem (kody jak lock_get).
+# Tożsamość blokady: check porównuje ją przed i po swoich asercjach.
+lock_ident() {
+  local out
+  out="$(k -n "${NS}" get configmap "${LOCK_CM}" --ignore-not-found -o json 2>/dev/null)" || return 2
+  [[ -n "${out}" ]] || return 1
+  jq -r '[.data.owner // "", .data.started // "", .data.phase // "", .data.scenario // ""] | join("|")' <<<"${out}" 2>/dev/null || return 2
+}
+# lock_owner_state <owner> -> mine|other|brak|err
+lock_owner_state() {
+  local o rc
+  o="$(lock_get owner)"; rc=$?
+  case "${rc}" in 1) echo brak; return 0 ;; 2) echo err; return 0 ;; esac
+  [[ -n "$1" && "${o}" == "$1" ]] && echo mine || echo other
+}
 # lock_set <klucz> <plik|wartość>
 lock_set() {
   local patch
@@ -380,10 +408,19 @@ lock_delete() { k -n "${NS}" delete configmap "${LOCK_CM}" --ignore-not-found --
 CHAOS_SCENARIOS_DIR="${CHAOS_SCENARIOS_DIR:-${CHAOS_ROOT}/tools/chaos/scenarios}"
 scenario_file() { echo "${CHAOS_SCENARIOS_DIR}/$1.sh"; }
 
-# rearm_undo <s> — po NIEUDANYM undo: blokada zostaje, deadline za 60 s i świeży Job
-# chaos-undo (nowy pod czyta nowy deadline), żeby klaster wrócił sam mimo błędu.
+# rearm_undo <s> — po NIEUDANYM undo: blokada zostaje, deadline za 60 s, żeby klaster
+# wrócił sam mimo błędu. Działający Job NIE jest kasowany: jego pod czyta deadline
+# z blokady co 15 s, więc samo przesunięcie deadline wystarcza i nie ma chwili bez Joba.
+# Nowy Job powstaje tylko, gdy starego nie ma albo już się zakończył (wtedy i tak nic
+# by nie zrobił). Błąd API przy odczycie stanu Joba = niczego nie kasujemy.
 rearm_undo() {
+  local js
   lock_set deadline "$(( $(date +%s) + 60 ))" || return 1
+  js="$(undo_job_state)"
+  case "${js}" in
+    active) echo "  Job chaos-undo działa: przeczyta nowy deadline w ≤ 15 s" >&2; return 0 ;;
+    err) echo "  błąd API przy odczycie Joba chaos-undo — nie ruszam go" >&2; return 1 ;;
+  esac
   undo_job_create "$1" 1
 }
 
@@ -415,10 +452,18 @@ sc="\$(lock_get scenario)"
 read_deadline() { local i d; for i in 1 2 3 4 5 6; do d="\$(lock_get deadline)"; [[ "\${d}" =~ ^[0-9]+\$ ]] && { echo "\${d}"; return 0; }; sleep 10; done; return 1; }
 deadline="\$(read_deadline)" || { echo "nie odczytałem deadline z blokady — kończę błędem (backoffLimit ponowi)"; exit 1; }
 left=\$(( \${deadline:-0} - \$(date +%s) ))
-echo "chaos-undo ${s}: śpię \${left} s do wycofania"
+echo "chaos-undo ${s}: śpię \${left} s do wycofania (deadline z blokady, odczyt co 15 s)"
 # sleep w tle + wait: TERM (usunięcie Joba przez check/reset) przerywa od razu.
 trap 'echo "przerwany (Job usunięty)"; exit 0' TERM INT
-if (( left > 0 )); then sleep "\${left}" & wait \$!; fi
+# Drzemki po ≤ 15 s z ponownym odczytem deadline: rearm_undo przesuwa deadline w blokadzie
+# zamiast kasować i zakładać Job od nowa. Chwilowy błąd odczytu = zostaje stary deadline.
+while (( \$(date +%s) < deadline )); do
+  nap=\$(( deadline - \$(date +%s) )); (( nap > 15 )) && nap=15; (( nap < 1 )) && nap=1
+  sleep "\${nap}" & wait \$!
+  d="\$(lock_get deadline)"; rc=\$?
+  [[ \${rc} -eq 1 ]] && { echo "blokada zniknęła w trakcie (check/reset) — koniec"; exit 0; }
+  [[ "\${d}" =~ ^[0-9]+\$ ]] && deadline="\${d}"
+done
 st="\$(state)"
 [[ "\${st}" == brak ]] && { echo "blokada zniknęła w trakcie (check/reset) — koniec"; exit 0; }
 for i in 1 2 3; do
@@ -483,9 +528,46 @@ spec:
         emptyDir: { sizeLimit: 16Mi }
 EOF
   # ownerReference na Job: TTL Joba (ttlSecondsAfterFinished) sprząta też skrypty.
-  uid="$(k -n "${NS}" get job "${UNDO_JOB}" -o jsonpath='{.metadata.uid}')" || return 1
-  k -n "${NS}" patch configmap "${SCRIPTS_CM}" --type merge -p \
-    "{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\"name\":\"${UNDO_JOB}\",\"uid\":\"${uid}\"}]}}" >/dev/null
+  # Job już istnieje, więc błąd tutaj to tylko ostrzeżenie (skrypty sprzątnie reset/break).
+  uid="$(k -n "${NS}" get job "${UNDO_JOB}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+  if [[ -z "${uid}" ]] || ! k -n "${NS}" patch configmap "${SCRIPTS_CM}" --type merge -p \
+    "{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"batch/v1\",\"kind\":\"Job\",\"name\":\"${UNDO_JOB}\",\"uid\":\"${uid}\"}]}}" >/dev/null 2>&1; then
+    echo "  uwaga: ownerReference chaos-scripts -> Job nie ustawione (Job jest; skrypty zdejmie make chaos-reset)" >&2
+  fi
+  return 0
+}
+
+# undo_pod_json -> JSON najnowszego poda BIEŻĄCEGO Joba chaos-undo (po uid Joba, więc
+# kończący się pod poprzedniego Joba o tej samej nazwie się nie liczy); pusto = brak.
+# Kod 2 = błąd API.
+undo_pod_json() {
+  local uid out
+  uid="$(k -n "${NS}" get job "${UNDO_JOB}" --ignore-not-found -o jsonpath='{.metadata.uid}' 2>/dev/null)" || return 2
+  [[ -n "${uid}" ]] || return 0
+  out="$(k -n "${NS}" get pods -l "batch.kubernetes.io/controller-uid=${uid}" -o json 2>/dev/null)" || return 2
+  jq -c '[.items[] | select(.metadata.deletionTimestamp == null)]
+         | sort_by(.metadata.creationTimestamp) | last // empty' <<<"${out}" 2>/dev/null || return 2
+}
+
+# undo_job_started — 0, gdy pod bieżącego Joba jest Running i zalogował „śpię” (czyli
+# w klastrze odczytał blokadę: RBAC, sieć i obraz działają). Inaczej 1.
+undo_job_started() {
+  local pod name logs
+  pod="$(undo_pod_json)" || return 1
+  [[ -n "${pod}" ]] || return 1
+  [[ "$(jq -r '.status.phase' <<<"${pod}")" == Running ]] || return 1
+  name="$(jq -r '.metadata.name' <<<"${pod}")"
+  logs="$(k -n "${NS}" logs "${name}" 2>/dev/null)" || return 1
+  [[ "${logs}" == *"śpię"* ]]
+}
+
+# undo_pod_info -> „Running”, „Pending (ErrImagePull)”, „brak poda” albo „err”.
+undo_pod_info() {
+  local pod
+  pod="$(undo_pod_json)" || { echo err; return 0; }
+  [[ -n "${pod}" ]] || { echo "brak poda"; return 0; }
+  jq -r '.status.phase + ([.status.containerStatuses[]?.state.waiting.reason // empty][0]
+         | if . then " (" + . + ")" else "" end)' <<<"${pod}" 2>/dev/null || echo err
 }
 
 # undo_job_delete — Job (z podami) i ConfigMap skryptów; brak = sukces.
@@ -495,12 +577,15 @@ undo_job_delete() {
   return 0
 }
 
-# undo_job_state -> active|succeeded|failed|brak
+# undo_job_state -> active|succeeded|failed|brak|err (err = API nie odpowiedziało)
 undo_job_state() {
-  k -n "${NS}" get job "${UNDO_JOB}" -o json 2>/dev/null | jq -r '
+  local out
+  out="$(k -n "${NS}" get job "${UNDO_JOB}" --ignore-not-found -o json 2>/dev/null)" || { echo err; return 0; }
+  [[ -n "${out}" ]] || { echo brak; return 0; }
+  jq -r '
     if (.status.succeeded // 0) > 0 then "succeeded"
     elif any(.status.conditions[]?; .type == "Failed" and .status == "True") then "failed"
-    else "active" end' 2>/dev/null || echo brak
+    else "active" end' <<<"${out}" 2>/dev/null || echo err
 }
 
 # -------------------------------------------------------------- wyniki -------
