@@ -122,6 +122,8 @@ alert_firing() { # alert_firing <nazwa> -> tak|nie (Alertmanager, state=active)
 marketplace_alerts() {
   local raw
   raw="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null)" || return 2
+  # Pusta albo błędna odpowiedź (timeout proxy) to „nie wiem”, nie „brak alertów”.
+  jq -e '.status == "success" and (.data.groups | type == "array")' <<<"${raw}" >/dev/null 2>&1 || return 2
   jq -r --arg ign " ${PREFLIGHT_IGNORED_ALERTS} " '
     .data.groups[] | .name as $g | .rules[] | .alerts[]?
     | select(.state == "firing")
@@ -130,6 +132,49 @@ marketplace_alerts() {
     | (.labels.job_name // .labels.deployment // .labels.statefulset // .labels.pod) as $o
     | $n + (if $o then " (" + $o + ")" else "" end)
   ' <<<"${raw}" || return 2
+}
+
+# alert_for_seconds <alertname> -> `for:` reguły w sekundach (pusto, gdy API nie odpowiada
+# albo reguły nie ma).
+alert_for_seconds() {
+  k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null \
+    | jq -r --arg n "$1" '[.data.groups[].rules[] | select(.name == $n) | .duration] | first // empty' 2>/dev/null
+}
+
+# wait_quiet [limit_s=600] — czeka, aż sklep będzie „zdrowy do awarii”: brak płonących
+# alertów marketplace, ES green, Deploymenty i StatefulSety gotowe (te same warunki co
+# preflight w chaos.sh). Po resecie alerty (OutboxStale, KubePodCrashLooping) gasną
+# minutami, a preflight odmawia kolejnej awarii. Błąd API Prometheusa to „nie wiem,
+# czekam dalej”, nigdy „brak alertów”. Wymaga dwóch czystych odczytów z rzędu (20 s).
+# Kod 0 = cicho, 1 = limit czasu (na stderr: co jeszcze przeszkadza).
+wait_quiet() {
+  local limit="${1:-600}" deadline clean=0 why alerts rc n last=0
+  deadline=$((SECONDS + limit))
+  while :; do
+    why=""
+    alerts="$(marketplace_alerts)"; rc=$?
+    if [[ ${rc} -ne 0 ]]; then why="Prometheus nie odpowiada (nie wiem, czy są alerty)"
+    elif [[ -n "${alerts}" ]]; then why="alerty: $(echo "${alerts}" | sort -u | tr '\n' ',' | sed 's/,$//')"
+    elif [[ "$(k -n "${NS}" get elasticsearch marketplace -o jsonpath='{.status.health}' 2>/dev/null)" != green ]]; then why="ES nie jest green"
+    elif [[ -z "$(k -n "${NS}" get deployments -o name 2>/dev/null)" ]]; then why="API nie zwraca Deploymentów"
+    else
+      for n in $(k -n "${NS}" get deployments -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        [[ "$(deploy_ready "${n}")" == tak ]] || why="Deployment ${n} niegotowy"
+      done
+      for n in $(k -n "${NS}" get statefulsets -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        [[ "$(sts_ready "${n}")" == tak ]] || why="StatefulSet ${n} niegotowy"
+      done
+    fi
+    if [[ -z "${why}" ]]; then
+      clean=$((clean + 1))
+      [[ ${clean} -ge 2 ]] && return 0
+      sleep 20; continue
+    fi
+    clean=0
+    if (( SECONDS >= deadline )); then echo "  wait_quiet: limit ${limit} s — ${why}" >&2; return 1; fi
+    if (( SECONDS - last >= 60 )); then echo "  ${DIM}czekam na ciszę (${why})${RESET}"; last=${SECONDS}; fi
+    sleep 15
+  done
 }
 
 # --------------------------------------------------------- stan obiektów -----

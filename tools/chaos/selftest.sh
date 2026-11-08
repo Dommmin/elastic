@@ -9,6 +9,7 @@
 #      zmienić metadata.generation obiektów z targets() (idempotentne undo = brak nowego
 #      rolloutu); scenariusz bez targets musi tylko zakończyć drugi reset kodem 0,
 #   4. check MUSI dać PASS.
+#  Przed każdym break: wait_quiet (lib.sh) — czeka ≤ 10 min na wygaśnięcie alertów.
 #  Wynik: OK <s> / BAD <s> (<etap>), kod 1 przy którymkolwiek BAD.
 #
 #    make chaos-selftest              # wszystkie
@@ -58,7 +59,11 @@ for s in "${list[@]}"; do
   echo "${BLD}=== ${s}${RESET}"
   stage=""
   t0=${SECONDS}
-  if ! bash "${CHAOS}" break "${s}" 30; then
+  # Alerty po poprzednim scenariuszu gasną minutami, a preflight odmawia awarii przy
+  # płonących. Czekamy (limit 10 min); błąd API = czekamy dalej, nie „cicho”.
+  if ! wait_quiet 600; then
+    stage="alerty/stan sklepu nie ucichły w 10 min"
+  elif ! bash "${CHAOS}" break "${s}" 30; then
     stage="break"
   elif CHAOS_KEEP_LOCK=1 bash "${CHAOS}" check "${s}"; then
     stage="check zielony po break"

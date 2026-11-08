@@ -15,6 +15,10 @@
 #      każdy ServiceMonitor trafia w istniejący Service i port, render chartu z values.yaml
 #      (helm jest w obrazie ubuntu-24.04 runnera).
 #
+#    - chaos/test.sh (ETAP G4): scenariusze „zepsuj i napraw” bez klastra — składnia, shellcheck,
+#      kontrakt scenariuszy i kart, render RBAC Joba wycofania, pokrycie Role, spis w README.
+#      Faza `chaos` w tools/k3s/verify.sh psuje produkcję, więc w CI jej nie ma.
+#
 #  Bezpieczeństwo workflow: wyzwalacz pull_request (nie pull_request_target), token
 #  tylko do odczytu, żadnych sekretów, akcje przypięte do pełnego SHA.
 # ============================================================================
@@ -33,6 +37,9 @@ on:
       - infra/obs/prometheus/rules/**
       - infra/obs/grafana/dashboards/**
       - tools/k3s/**
+      - tools/chaos/**
+      - docs/chaos/**
+      - deploy/chaos/**
       - .github/workflows/prod-compose.yml
   workflow_dispatch:
 
@@ -71,3 +78,6 @@ jobs:
 
       - name: Ingress k3s (chart Traefika, certyfikaty, Ingressy — ETAP G2)
         run: bash tools/k3s/ingress-check.sh
+
+      - name: Chaos (scenariusze, karty, RBAC Joba — ETAP G4, bez klastra)
+        run: bash tools/chaos/test.sh
