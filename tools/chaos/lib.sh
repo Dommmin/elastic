@@ -123,7 +123,8 @@ marketplace_alerts() {
   local raw
   raw="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null)" || return 2
   # Pusta albo błędna odpowiedź (timeout proxy) to „nie wiem”, nie „brak alertów”.
-  jq -e '.status == "success" and (.data.groups | type == "array")' <<<"${raw}" >/dev/null 2>&1 || return 2
+  # Brak grupy `marketplace` (reguły się nie załadowały) to też „nie wiem”.
+  jq -e '.status == "success" and (.data.groups | type == "array") and any(.data.groups[]; .name == "marketplace")' <<<"${raw}" >/dev/null 2>&1 || return 2
   jq -r --arg ign " ${PREFLIGHT_IGNORED_ALERTS} " '
     .data.groups[] | .name as $g | .rules[] | .alerts[]?
     | select(.state == "firing")
@@ -132,6 +133,21 @@ marketplace_alerts() {
     | (.labels.job_name // .labels.deployment // .labels.statefulset // .labels.pod) as $o
     | $n + (if $o then " (" + $o + ")" else "" end)
   ' <<<"${raw}" || return 2
+}
+
+# alert_state_marketplace <alertname> -> tak|nie|err: czy alert płonie (state=firing)
+# w regułach sklepu (grupa `marketplace` albo label namespace="marketplace"), według
+# Prometheusa. „err” = API nie odpowiedziało poprawnie (nie mylić z „nie”). Alert o tej
+# samej nazwie z innego namespace'u (generyczne reguły kube-prometheus) nie liczy się.
+alert_state_marketplace() {
+  local raw n
+  raw="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null)" || { echo err; return 0; }
+  jq -e '.status == "success" and any(.data.groups[]; .name == "marketplace")' <<<"${raw}" >/dev/null 2>&1 || { echo err; return 0; }
+  n="$(jq --arg a "$1" '[.data.groups[] | .name as $g | .rules[] | .alerts[]?
+        | select(.state == "firing" and .labels.alertname == $a)
+        | select($g == "marketplace" or .labels.namespace == "marketplace")] | length' <<<"${raw}" 2>/dev/null)"
+  [[ "${n}" =~ ^[0-9]+$ ]] || { echo err; return 0; }
+  [[ "${n}" -ge 1 ]] && echo tak || echo nie
 }
 
 # alert_for_seconds <alertname> -> `for:` reguły w sekundach (pusto, gdy API nie odpowiada
@@ -162,14 +178,22 @@ wait_quiet() {
     if [[ ${rc} -ne 0 ]]; then why="Prometheus nie odpowiada (nie wiem, czy są alerty)"
     elif [[ -n "${alerts}" ]]; then why="alerty: $(echo "${alerts}" | sort -u | tr '\n' ',' | sed 's/,$//')"
     elif [[ "$(k -n "${NS}" get elasticsearch marketplace -o jsonpath='{.status.health}' 2>/dev/null)" != green ]]; then why="ES nie jest green"
-    elif [[ -z "$(k -n "${NS}" get deployments -o name 2>/dev/null)" ]]; then why="API nie zwraca Deploymentów"
     else
-      for n in $(k -n "${NS}" get deployments -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-        [[ "$(deploy_ready "${n}")" == tak ]] || why="Deployment ${n} niegotowy"
-      done
-      for n in $(k -n "${NS}" get statefulsets -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-        [[ "$(sts_ready "${n}")" == tak ]] || why="StatefulSet ${n} niegotowy"
-      done
+      # Listy bierzemy RAZ i do niczego nie przepuszczamy pustej: błąd API albo pusta
+      # lista to „nie wiem” (pętla po pustej liście wyglądałaby jak „wszystko gotowe”).
+      local deps sts
+      deps="$(k -n "${NS}" get deployments -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" || deps=""
+      sts="$(k -n "${NS}" get statefulsets -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" || sts=""
+      if [[ -z "${deps}" ]]; then why="API nie zwraca Deploymentów"
+      elif [[ -z "${sts}" ]]; then why="API nie zwraca StatefulSetów"
+      else
+        for n in ${deps}; do
+          [[ "$(deploy_ready "${n}")" == tak ]] || why="Deployment ${n} niegotowy"
+        done
+        for n in ${sts}; do
+          [[ "$(sts_ready "${n}")" == tak ]] || why="StatefulSet ${n} niegotowy"
+        done
+      fi
     fi
     if [[ -z "${why}" ]]; then
       clean=$((clean + 1))

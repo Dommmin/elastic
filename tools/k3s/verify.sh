@@ -410,19 +410,30 @@ phase_reboot() {
 #   CHAOS_SLOW=1    w trybie ALERTS dołącz bad-probe (alert z for: 15 min)
 #   CHAOS_SKIP="selftest fuse"  pomiń podfazy (np. powtórka samych alertów)
 phase_chaos() {
-  tunnel_up
   echo -e "\n${BLD}  chaos — PSUJE produkcję (namespace marketplace), potem naprawia${NC}"
-  local list s t0 rc fuse_set="bad-probe bad-secret disk-full"
+  local list="" s t0 rc ran=0 bad="" fuse_set="bad-probe bad-secret disk-full"
+  # Walidacja PRZED jakąkolwiek awarią: literówka w s=/skip= nie może dać cichego PASS.
+  for s in ${CHAOS_S:-}; do
+    [ -f "${ROOT}/tools/chaos/scenarios/${s}.sh" ] || bad="${bad} ${s}"
+  done
+  check "scenariusze z s= istnieją (nieznane:${bad:- brak})" "" "${bad# }"
+  for s in ${CHAOS_SKIP:-}; do
+    case "${s}" in selftest|fuse) ;; *) bad="${bad} skip:${s}" ;; esac
+  done
+  check "skip= zawiera tylko selftest/fuse" "" "$(echo "${bad}" | tr ' ' '\n' | grep '^skip:' | tr '\n' ' ' | sed 's/ $//')"
+  [ -z "${bad# }" ] || return 0
+  tunnel_up
   list="${CHAOS_S:-}"
   if [ -z "${list}" ]; then
-    for s in "${ROOT}"/tools/chaos/scenarios/*.sh; do list="${list} $(basename "${s}" .sh)"; done
+    for s in "${ROOT}"/tools/chaos/scenarios/*.sh; do list="${list:+${list} }$(basename "${s}" .sh)"; done
   fi
-  echo -e "  ${DIM}scenariusze:${list:+ }${list}${NC}"
+  echo -e "  ${DIM}scenariusze: ${list}${NC}"
   # 1. selftest: break -> check FAIL -> reset x2 -> check PASS (czeka na ciszę przed każdym)
   for s in ${list}; do
     case " ${CHAOS_SKIP:-} " in *" selftest "*) continue ;; esac
     t0=$(date +%s)
     bash "${ROOT}/tools/chaos/selftest.sh" "${s}"; rc=$?
+    ran=$((ran + 1))
     check "selftest ${s}: break, check czerwony, reset x2, check zielony ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
   done
   # 2. bezpiecznik: Job chaos-undo (ttl 1 min) sam wycofuje, bez akcji ucznia
@@ -431,6 +442,7 @@ phase_chaos() {
     case " ${CHAOS_SKIP:-} " in *" fuse "*) continue ;; esac
     t0=$(date +%s)
     bash "${ROOT}/tools/chaos/proof.sh" fuse "${s}"; rc=$?
+    ran=$((ran + 1))
     check "bezpiecznik ${s}: Job chaos-undo sam wycofał awarię w ttl 1 min ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
   done
   # 3. alerty (opcjonalnie)
@@ -440,11 +452,15 @@ phase_chaos() {
       case "${s}" in bad-probe) [ "${CHAOS_SLOW:-0}" = "1" ] || { echo -e "  ${DIM}- alert ${s}: pomijam (for 15 min; CHAOS_SLOW=1 włącza)${NC}"; continue; } ;; esac
       bash "${ROOT}/tools/chaos/proof.sh" alert "${s}"; rc=$?
       [ "${rc}" = "3" ] && continue
+      ran=$((ran + 1))
       check "alert ${s}: płonie w limicie for+3 min ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
     done
   fi
   # Na koniec: nic z part-of=chaos nie zostaje (Job i skrypty po bezpieczniku).
-  bash "${ROOT}/tools/chaos/chaos.sh" reset >/dev/null 2>&1
+  # Faza musi coś uruchomić: samo sprzątanie na zdrowym sklepie nie jest dowodem.
+  check "faza uruchomiła co najmniej jeden dowód (selftest/bezpiecznik/alert)" "tak" "$([ "${ran}" -gt 0 ] && echo tak || echo "nie (0; po s=/skip=/alerts= nic nie zostało do uruchomienia)")"
+  bash "${ROOT}/tools/chaos/chaos.sh" reset >/dev/null 2>&1; rc=$?
+  [ "${rc}" = "0" ] || echo -e "  ${RED}!${NC} końcowy chaos.sh reset zwrócił ${rc} (sprawdź: make chaos-status)"
   # Po ostatnim scenariuszu pody w backoffie (do 5 min) dochodzą do siebie; faza nie
   # oddaje klastra w połowie leczenia (apps/stack zaraz po niej dałyby fałszywy FAIL).
   local quiet=1

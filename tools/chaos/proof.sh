@@ -45,12 +45,13 @@ proof_fuse() {
   echo "  awaria założona, ttl 1 min, nie ruszam niczego"
   local st
   st="$(lock_state)"
-  local lim=180 lost=0
+  local lim=180 lost=0 it
   while [[ "${st}" != brak ]] && (( SECONDS - t0 < lim )); do
     sleep 5
+    it=${SECONDS}
     st="$(lock_state)"
     # lock_state=err: API (tunel) nie odpowiada — to nie „Job nie zadziałał”.
-    [[ "${st}" == err && ${lost} -lt 600 ]] && { lim=$((lim + 5)); lost=$((lost + 5)); }
+    [[ "${st}" == err && ${lost} -lt 600 ]] && { lim=$((lim + SECONDS - it + 5)); lost=$((lost + SECONDS - it + 5)); }
   done
   if [[ "${st}" != brak ]]; then
     echo "  ${RED}✗${RESET} blokada nadal jest po 180 s (Job: $(undo_job_state))"; return 1
@@ -82,24 +83,39 @@ proof_alert() {
   cap=$((for_s + 180))
   ttl=$(( (cap + 59) / 60 + 3 ))
   wait_quiet 600 || { echo "  ${RED}✗${RESET} sklep nie ucichł w 10 min — nie psuję"; return 1; }
+  # Baza: alert nie może płonąć PRZED awarią (zalegający z poprzedniego scenariusza
+  # dałby natychmiastowe, fałszywe PASS). „err” (API) = nie wiem, ponawiamy do 2 min.
+  local base="err" tries=0
+  while [[ "${base}" == err && ${tries} -lt 12 ]]; do
+    base="$(alert_state_marketplace "${alert}")"
+    [[ "${base}" == err ]] && { sleep 10; tries=$((tries + 1)); }
+  done
+  if [[ "${base}" != nie ]]; then
+    echo "  ${RED}✗${RESET} ${s}: baza przed awarią: ${alert} = ${base} (płonie już albo nieznany) — nie psuję"; return 1
+  fi
   bash "${CHAOS}" break "${s}" "${ttl}" >/dev/null || { echo "  ${RED}✗${RESET} break ${s} odmówił"; return 1; }
-  local t0=${SECONDS} fired=nie lost=0
-  echo "  awaria założona; czekam na ${alert} (for ${for_s} s, limit ${cap} s)"
-  # alert_firing: błąd API = „nie”, czyli czekamy dalej; potwierdzenie tylko z odpowiedzi.
+  local t0=${SECONDS} fired=nie lost=0 st it
+  echo "  baza: ${alert} nie płonie; awaria założona; czekam na ${alert} (for ${for_s} s, limit ${cap} s)"
+  # Tylko alert z reguł sklepu (marketplace) liczy się jako dowód. „err” (API) to nie „nie”:
+  # czas takiej iteracji jest doliczany do limitu (≤ 10 min).
   while [[ "${fired}" != tak ]] && (( SECONDS - t0 < cap + lost )); do
-    if [[ "$(alert_firing "${alert}")" == tak ]]; then fired=tak
+    it=${SECONDS}
+    st="$(alert_state_marketplace "${alert}")"
+    if [[ "${st}" == tak ]]; then fired=tak
     else
-      # API nie odpowiada: przedłuż limit o ten czas (≤ 10 min), bo to nie dowód braku alertu.
-      api_ok || { [[ ${lost} -lt 600 ]] && lost=$((lost + 15)); }
+      if [[ "${st}" == err && ${lost} -lt 600 ]]; then lost=$((lost + SECONDS - it + 15)); fi
       sleep 15
     fi
   done
-  local took=$((SECONDS - t0))
-  reset_retry || echo "  ${RED}!${RESET} reset nie przeszedł po 10 próbach (Job chaos-undo wycofa po ttl)"
+  local took=$((SECONDS - t0)) rrc=0
+  reset_retry || rrc=1
   if [[ "${fired}" == tak ]]; then
     echo "  ${GREEN}✓${RESET} ${s}: ${alert} płonie po ${took} s (for ${for_s} s)"
   else
-    echo "  ${RED}✗${RESET} ${s}: ${alert} NIE zapłonął w ${cap} s"; return 1
+    echo "  ${RED}✗${RESET} ${s}: ${alert} NIE zapłonął w ${cap} s (+${lost} s niedostępności API)"; return 1
+  fi
+  if [[ ${rrc} -ne 0 ]]; then
+    echo "  ${RED}✗${RESET} ${s}: alert potwierdzony, ale reset nie przeszedł po 10 próbach (Job chaos-undo wycofa po ttl)"; return 1
   fi
 }
 
