@@ -51,6 +51,8 @@ for f in tools/chaos/scenarios/*.sh; do
     source "${f}"
     [[ -n "${SUMMARY:-}" ]] || echo "puste SUMMARY"
     [[ "${LIMIT_MIN:-}" =~ ^[0-9]+$ ]] || echo "LIMIT_MIN nie jest liczbą: '${LIMIT_MIN:-}'"
+    [[ "${FUSE_TTL:-1}" =~ ^[1-9][0-9]*$ ]] || echo "FUSE_TTL nie jest liczbą ≥ 1: '${FUSE_TTL:-}'"
+    [[ "${FUSE_LIMIT_S:-180}" =~ ^[1-9][0-9]*$ ]] || echo "FUSE_LIMIT_S nie jest liczbą ≥ 1: '${FUSE_LIMIT_S:-}'"
     declare -p ALERT >/dev/null 2>&1 || echo "brak zmiennej ALERT"
     for fn in targets break check undo; do declare -F "${fn}" >/dev/null || echo "brak funkcji ${fn}"; done
   )"

@@ -4,6 +4,9 @@
 #   fuse <s>   bezpiecznik: break z ttl 1 min, NIC nie robimy — Job chaos-undo sam
 #              wycofuje awarię i zdejmuje blokadę (≤ 3 min), check zielony, Job zakończony
 #              sukcesem. Dowód, że auto-wycofanie działa dla czasowników tego scenariusza.
+#              Scenariusz z długim breakiem ustawia FUSE_TTL (min) i FUSE_LIMIT_S (s): termin
+#              liczy się od założenia blokady, więc ttl krótszy niż sam break = Job wycofuje
+#              w trakcie breaku (es-node-down: pauza ECK + czekanie na yellow > 1 min).
 #   alert <s>  alert: break, czekamy aż Alertmanager pokaże ALERT scenariusza (limit:
 #              `for:` reguły z Prometheusa + 3 min), potem reset. ALERT bierzemy ze
 #              scenariusza, nie z tego pliku.
@@ -40,12 +43,17 @@ trap cleanup EXIT
 
 proof_fuse() {
   wait_quiet 600 || { echo "  ${RED}✗${RESET} sklep nie ucichł w 10 min — nie psuję"; return 1; }
-  bash "${CHAOS}" break "${s}" 1 >/dev/null || { echo "  ${RED}✗${RESET} break ${s} (ttl 1) odmówił"; return 1; }
+  local ttl lim0
+  # shellcheck source=/dev/null
+  ttl="$( set +u; source "$(scenario_file "${s}")"; echo "${FUSE_TTL:-1}" )"
+  # shellcheck source=/dev/null
+  lim0="$( set +u; source "$(scenario_file "${s}")"; echo "${FUSE_LIMIT_S:-180}" )"
+  bash "${CHAOS}" break "${s}" "${ttl}" >/dev/null || { echo "  ${RED}✗${RESET} break ${s} (ttl ${ttl}) odmówił"; return 1; }
   local t0=${SECONDS}
-  echo "  awaria założona, ttl 1 min, nie ruszam niczego"
+  echo "  awaria założona, ttl ${ttl} min, nie ruszam niczego"
   local st
   st="$(lock_state)"
-  local lim=180 lost=0 it
+  local lim=${lim0} lost=0 it
   while [[ "${st}" != brak ]] && (( SECONDS - t0 < lim )); do
     sleep 5
     it=${SECONDS}
@@ -54,7 +62,7 @@ proof_fuse() {
     [[ "${st}" == err && ${lost} -lt 600 ]] && { lim=$((lim + SECONDS - it + 5)); lost=$((lost + SECONDS - it + 5)); }
   done
   if [[ "${st}" != brak ]]; then
-    echo "  ${RED}✗${RESET} blokada nadal jest po 180 s (Job: $(undo_job_state))"; return 1
+    echo "  ${RED}✗${RESET} blokada nadal jest po ${lim0} s (Job: $(undo_job_state))"; return 1
   fi
   local took=$((SECONDS - t0))
   # Blokada zeszła, więc check niczego już nie zdejmuje — tylko ocenia zdrowie.

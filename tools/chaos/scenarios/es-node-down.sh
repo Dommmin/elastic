@@ -20,6 +20,11 @@ SUMMARY="Elasticsearch widzi 2 węzły zamiast 3 i nie kończy ApplyingChanges, 
 # wyrażenie reguły bez wyniku przez cały czas awarii.
 ALERT=""
 LIMIT_MIN=10
+# Dowód bezpiecznika: break (pauza ECK + czekanie na yellow) trwa ponad minutę, więc ttl 1
+# kończył się w trakcie breaku (Job przywracał węzeł, break się wycofywał). 4 min ttl +
+# undo z czekaniem na green (ES_JOB_WAIT) mieszczą się w 12 min.
+FUSE_TTL=4
+FUSE_LIMIT_S=720
 
 ES_CR="marketplace"
 ES_STS="marketplace-es-default"

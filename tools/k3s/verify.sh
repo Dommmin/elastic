@@ -411,7 +411,7 @@ phase_reboot() {
 #   CHAOS_SKIP="selftest fuse"  pomiń podfazy (np. powtórka samych alertów)
 phase_chaos() {
   echo -e "\n${BLD}  chaos — PSUJE produkcję (namespace marketplace), potem naprawia${NC}"
-  local list="" s t0 rc ran=0 bad="" fuse_set="bad-probe bad-secret disk-full"
+  local list="" s t0 rc ran=0 bad="" fuse_set="bad-probe bad-secret disk-full es-node-down"
   # Walidacja PRZED jakąkolwiek awarią: literówka w s=/skip= nie może dać cichego PASS.
   for s in ${CHAOS_S:-}; do
     [ -f "${ROOT}/tools/chaos/scenarios/${s}.sh" ] || bad="${bad} ${s}"
