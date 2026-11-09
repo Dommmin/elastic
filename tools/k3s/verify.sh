@@ -450,7 +450,7 @@ phase_chaos() {
     t0=$(date +%s)
     bash "${ROOT}/tools/chaos/proof.sh" fuse "${s}"; rc=$?
     ran=$((ran + 1))
-    check "bezpiecznik ${s}: Job chaos-undo sam wycofał awarię w ttl 1 min ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
+    check "bezpiecznik ${s}: Job chaos-undo sam wycofał awarię bez akcji ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
   done
   # 3. alerty (opcjonalnie)
   if [ "${ALERTS:-0}" = "1" ]; then
