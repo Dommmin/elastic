@@ -134,9 +134,9 @@ proof_alert() {
   # Zapłon według Prometheusa; bez odczytu activeAt — chwila zobaczenia (górne oszacowanie).
   if [[ "${fat}" =~ ^[0-9]+$ ]]; then fire_s=$(( fat - t0e )); else fire_s=${took}; fi
   if (( fire_s > cap )); then
-    echo "  ${RED}✗${RESET} ${s}: ${alert} zapłonął po ${fire_s} s od awarii (limit ${cap} s; zobaczony po ${took} s)"; return 1
+    echo "  ${RED}✗${RESET} ${s}: ${alert} zapłonął po ${fire_s} s od końca break (limit ${cap} s; zobaczony po ${took} s)"; return 1
   fi
-  echo "  ${GREEN}✓${RESET} ${s}: ${alert} płonie po ${fire_s} s od awarii (for ${for_s} s; zobaczony po ${took} s)"
+  echo "  ${GREEN}✓${RESET} ${s}: ${alert} płonie po ${fire_s} s od końca break (for ${for_s} s; zobaczony po ${took} s)"
   if [[ ${rrc} -ne 0 ]]; then
     echo "  ${RED}✗${RESET} ${s}: alert potwierdzony, ale reset nie przeszedł po 10 próbach (Job chaos-undo wycofa po ttl)"; return 1
   fi

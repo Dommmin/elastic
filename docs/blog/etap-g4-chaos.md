@@ -34,8 +34,9 @@ strony, a awaria zawsze sama się wycofa, nawet gdy zamkniesz laptopa.*
 10. [Co wybuchło po drodze](#co-wybuchło-po-drodze)
 11. [Czego G4 nie robi](#czego-g4-nie-robi)
 12. [`es-node-down`: luka znaleziona i zamknięta (spoiler)](#es-node-down-luka-znaleziona-i-zamknięta-spoiler)
-13. [Ściąga](#ściąga)
-14. [Twoja kolej](#twoja-kolej)
+13. [Poprawki po przeglądach](#poprawki-po-przeglądach)
+14. [Ściąga](#ściąga)
+15. [Twoja kolej](#twoja-kolej)
 
 ---
 
@@ -143,7 +144,8 @@ Reset jest idempotentny, a sklep nie widzi żadnego rolloutu.
 
 Najważniejsza decyzja etapu: **wycofanie żyje w klastrze, nie na Twoim laptopie.**
 `break` zakłada Job `chaos-undo`, który śpi do `deadline` (domyślnie 15 minut,
-`ttl=30` daje 30), po czym wywołuje `undo` scenariusza i zdejmuje blokadę.
+`ttl=30` daje 30, liczone od chwili, w której awaria weszła), po czym wywołuje `undo`
+scenariusza i zdejmuje blokadę.
 Zamknięta klapa laptopa, zerwany tunel SSH albo zasypiająca sesja nie zostawiają
 produkcji zepsutej.
 
@@ -207,7 +209,9 @@ granica „nie dotyka `catalog-app`” **nie może** zależeć od uczciwości sk
   sprawdziłem na klastrze (krok 0 planu), że pod z etykietą `app=chaos-undo`
   dostaje `Connection refused` zarówno na ClusterIP API (`10.43.0.1:443`), jak
   i na IP węzła. Odmowa jest natychmiastowa (REJECT), nie timeout, więc brak
-  polityki wygląda jak „API nie istnieje”.
+  polityki wygląda jak „API nie istnieje”. Polityki nie ma w repo jako YAML: jej
+  adresy (endpointy usługi `kubernetes`, w k3s IP węzła i port 6443) `break` czyta
+  z EndpointSlice i składa ją przy każdym uruchomieniu (`undo_netpol_apply` w `lib.sh`).
 
 Nowy scenariusz oznacza dopisanie jego obiektu do Role. `test.sh` sprawdza, że
 każde `targets()` jest pokryte (czerwony test przed pierwszym uruchomieniem na
@@ -378,11 +382,12 @@ trzy dowody (`make k3s-verify faza=chaos`, poza `all`, bo psuje produkcję):
 1. **selftest** (`make chaos-selftest s=<s>`): `break` → `check` czerwony → `reset`
    dwa razy → `check` zielony. Dowodzi, że `check` rozróżnia stan zepsuty od
    zdrowego i że `reset` jest idempotentny. Zielony `check` na końcu jest ponawiany
-   do 150 s, bo po resecie system potrzebuje chwili (np. outbox z `disk-full` miał
+   do 150 s i musi wyjść dwa razy z rzędu (20 s odstępu), bo po resecie system potrzebuje chwili (np. outbox z `disk-full` miał
    188 s opóźnienia tuż po resecie i opróżnił się sam).
-2. **fuse** (`proof.sh fuse <s>`): awaria z `ttl 1` (scenariusz może ustawić własny przez `FUSE_TTL`
-   i `FUSE_LIMIT_S`, gdy jego `break` trwa dłużej), **żadnej akcji**. Dowodzi, że
-   sam Job wycofuje awarię: blokada znika w 180 s (przy `ttl 1`), `check` zielony, Job `Succeeded`.
+2. **fuse** (`proof.sh fuse <s>`): awaria z `ttl 1`, **żadnej akcji**. Dowodzi, że
+   sam Job wycofuje awarię: Job `Succeeded` w 180 s od wejścia awarii (czas liczony
+   z `completionTime` Joba; scenariusz z długim `undo` ustawia `FUSE_LIMIT_S`),
+   blokada zdjęta, `check` zielony.
    To jest test bezpiecznika „zamknięty laptop”.
 3. **alert** (`proof.sh alert <s>`, `alerts=1`): awaria założona, czekamy, aż
    **oczekiwany alert naprawdę zapłonie** w Prometheusie, w limicie `for + 3 min`.
@@ -548,8 +553,103 @@ być dłuższy niż sam `break`. Dla scenariusza z długim `break` ttl 1 min jes
 błędem projektu dowodu, nie bezpiecznika. Dowód fuse, który nie przeszedł, a nic
 nie zepsuł, też jest wynikiem: dobrze, że wycofanie w `break` zadziałało.
 
+> Aktualizacja: ta lekcja doprowadziła do zmiany samego bezpiecznika. `ttl` liczy się
+> teraz od wejścia awarii, a `FUSE_TTL` zniknął; zob. [Poprawki po przeglądach](#poprawki-po-przeglądach).
+
 Alertu `es-node-down` nie ma (scenariusz nie ma `ALERT`), a alert `bad-probe`
 nadal nie był uruchomiany.
+
+## Poprawki po przeglądach
+
+Przegląd końcowy G4 był czysty, ale zostawił listę drobiazgów „nie blokuje merge”.
+Żaden nie zostawiał awarii bez blokady przy domyślnym `ttl`, więc odłożyłem je na
+osobną gałąź (`g4-chaos-minors`). Warto je przejrzeć, bo każdy uczy jednej rzeczy
+o bezpiecznikach: **siatka bezpieczeństwa najczęściej pęka na ścieżce błędu, której
+nikt nie uruchomił.**
+
+### Bezpieczniki
+
+| Problem | Skutek przed | Poprawka |
+|---|---|---|
+| `ttl` liczony od założenia blokady | czekanie na pod Joba (≤ 120 s) i długi `break` zjadały czas na diagnozę; `es-node-down` potrzebował osobnego `FUSE_TTL=4` | blokada startuje z `deadline = teraz + ttl + budżet break` (600 s, `es-node-down` 900 s); po udanym `break` deadline przesuwa się na **koniec break + ttl**. Job czyta deadline co ≤ 15 s, więc nic nie trzeba restartować. `FUSE_TTL` zniknął |
+| abort przed awarią + błąd odczytu blokady | komunikat „blokada nie jest już tego break (err)”, faza `breaking` zostawała, `reset` wymagał `force=1` | 3 próby odczytu; przy dalszym błędzie nic nie kasujemy, ale fazę `aborted` zapisujemy **warunkowo**: JSON patch z operacją `test` na `data.owner`, więc API samo odrzuci zapis na cudzej blokadzie |
+| `reset` bez blokady | kasował Job na podstawie odczytu sprzed chwili — mógł zjeść świeży Job breaka z drugiej powłoki | kasuje tylko Job zakończony, po ponownym potwierdzeniu braku blokady; działający Job bez blokady kończy się sam w ≤ 15 s |
+| sprzątanie po udanym undo | wynik `lock_delete`/`undo_job_delete` ignorowany, komunikat „zdjęte” mógł kłamać | `finish_lock`: najpierw blokada, potem Job, każdy wynik sprawdzony. Kolejność ma znaczenie: Job bez blokady sam się kończy, blokada bez Joba blokuje wdrożenia bez auto-wycofania |
+| IP węzła w `undo-rbac.yaml` | zmiana IP albo drugi węzeł = Job bez dostępu do API, czyli bezpiecznik, który nie działa | NetworkPolicy składana z EndpointSlice usługi `kubernetes` przy każdym `break`; `test.sh` pilnuje, że w YAML nie ma adresu IP |
+| `backoffLimit: 2` | dłuższa niedostępność API = Job `Failed`, brak auto-wycofania | `backoffLimit: 6` (backoff do 6 min), górną granicę trzyma `activeDeadlineSeconds` |
+| PUT migawki bez `resourceVersion` | zapis bezwarunkowy: mógł po cichu nadpisać zmianę z ostatniej sekundy | PUT ze świeżym `resourceVersion` (409 → ponowny odczyt, 3 próby) |
+| obraz Joba po tagu | tag można przepchnąć na inny obraz, a ten obraz dostaje token z prawem PUT | `alpine/k8s:1.36.6@sha256:…`, `test.sh` wymaga digestu |
+| `deploy.sh` sprawdzał blokadę raz | między sprawdzeniem a `apply` mija do 15 min (czekanie na ES) | `chaos_guard` przed każdym `apply`, `scale` i usunięciem Joba `migrate` |
+
+### Ciche PASS-y
+
+Ciche PASS to test, który przechodzi, bo nie sprawdził tego, co miał:
+
+- `preflight` robił `for n in $(kubectl get …)`: błąd API dawał pustą listę, a pętla po
+  pustej liście to „wszystko gotowe”. Teraz pusta lista jest powodem odmowy.
+- `proof.sh alert` przy braku `for:` zakładał 900 s. Literówka w `ALERT` dawała więc
+  kwadrans czekania i FAIL z mylącym powodem. Teraz: brak reguły = FAIL od razu,
+  z nazwą reguły.
+- Limity dowodów przedłużane o czas niedostępności API oceniały **chwilę, w której
+  skrypt coś zobaczył**. Teraz przerwa w tunelu wydłuża tylko obserwację, a o wyniku
+  decyduje zegar klastra: `completionTime` Joba (fuse) i `activeAt + for` z
+  Prometheusa (alert).
+- Selftest wymagał jednego zielonego `check`. Pod w CrashLoopBackOff potrafi na chwilę
+  wyglądać na gotowy, więc teraz `check` musi być zielony dwa razy z rzędu, 20 s odstępu.
+- `qb_saved` (queue-blocked) przepuszczał puste uprawnienia, bo w jq `""` jest prawdą.
+  `set_permissions` z pustym regexem odebrałby wszystko.
+- Przy `alerts=1`, gdy wszystkie alerty zostały pominięte, komunikat „0 dowodów” nie
+  mówił dlaczego. Teraz mówi, ile pominięto i z jakich powodów.
+
+### Scenariusze
+
+- **oom:** `check` liczył każde zakończenie kontenera w ostatnich 2 min. `catalog-worker`
+  kończy `queue:work --max-time=3600` co godzinę z kodem 0, więc ~3% checków dawało
+  fałszywy FAIL. Liczą się tylko zakończenia z kodem ≠ 0.
+- **bad-secret:** `check` kasował Secret, czyli ocena zmieniała klaster. Sprzątanie
+  przeniosłem do haka `on_green` (chaos.sh woła go po zielonym `check`). Plik z DSN
+  w katalogu tymczasowym znika teraz także przy Ctrl-C (podpowłoka z pułapką EXIT).
+- **disk-full:** `break` kończył się na alarmie brokera, czyli na przyczynie. Teraz
+  czeka też na objaw: wpis outbox czekający > 30 s.
+- **`check` zdradzał przyczynę.** „limit pamięci ≥ 128Mi” albo „write do
+  marketplace.events” na czerwono zaraz po `break` to gotowe rozwiązanie, wbrew zasadzie
+  kart. Nowa asercja `expect_hidden`: niespełniona pokazuje tylko objaw („broker
+  przyjmuje publikacje”), spełniona pełny opis.
+- **Karty bez dowodu.** Na klastrze (2026-11-09) sprawdziłem obserwacje z sekcji
+  „Objaw”. `queue-blocked`: publisher `0/1`, na zmianę `Error` i `CrashLoopBackOff`,
+  `ACCESS_REFUSED` w logu, `rabbitmq-0` i `search-consumer` gotowe, wiek rośnie
+  o 15 s co scrape. Wszystko się zgadza. `disk-full`: publisher `Running 1/1`, wiek
+  rośnie o 15 s co scrape. Karta mówiła jednak „z zerem restartów”, a licznik miał
+  38 z poprzednich scenariuszy. Poprawiłem na „licznik restartów stoi w miejscu”.
+  Licznik restartów nie maleje, więc karta nie może obiecywać zera.
+- **Inne fazy `verify.sh` w trakcie scenariusza** (np. test „zmiana produktu dociera do
+  wyszukiwarki” w trakcie `queue-blocked`) padają, i tak ma być. Teraz `verify.sh`
+  ostrzega na starcie, że trwa scenariusz i FAIL-e mogą być jego objawami.
+
+### Wynik
+
+`bash tools/chaos/test.sh`: PASS (13 plików, shellcheck czysty). `make k3s-verify
+faza=chaos` na gałęzi `g4-chaos-minors` (2026-11-09): **PASS=17 FAIL=0**, około 53 min.
+
+| Scenariusz | Selftest | Fuse: Job wycofał po (od końca break) |
+|---|---|---|
+| bad-probe | 314 s | 64 s |
+| bad-secret | 128 s | 63 s |
+| disk-full | 391 s | 66 s |
+| es-node-down | 402 s | 131 s (bez `FUSE_TTL`, limit 540 s) |
+| netpol-db | 447 s | nie sprawdzany |
+| oom | 186 s | nie sprawdzany |
+| queue-blocked | 437 s | nie sprawdzany |
+
+Selftesty trwają dłużej niż wcześniej, bo zielony `check` musi wyjść dwa razy z rzędu.
+Fuse mierzy teraz sam bezpiecznik: około 60 s `ttl` plus odczyt deadline i `undo`.
+`es-node-down` przeszedł z `ttl 1`, czego wcześniej nie dało się zrobić: 131 s
+zamiast 240 s z `FUSE_TTL=4`.
+
+Dowód alertu po zmianie (`make k3s-verify faza=chaos s=queue-blocked alerts=1
+skip="selftest fuse"`): PASS=7 FAIL=0, `OutboxStale` płonie 56 s po końcu `break`
+(według `activeAt + for`; skrypt zobaczył go po 62 s). Mniej niż `for: 60s`, bo
+awaria zaczyna się wewnątrz `break`: ten czeka, aż wiek outboxa przekroczy 60 s.
 
 ## Ściąga
 
