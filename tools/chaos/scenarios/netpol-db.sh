@@ -74,7 +74,7 @@ check() {
   wait_for 300 nd_healthy || true
   expect "Deployment ${ND_CLIENT}: pod gotowy" "tak" "$(deploy_ready "${ND_CLIENT}")"
   expect "catalog-worker otwiera połączenie z postgres:5432" "tak" "$(nd_conn && echo tak || echo nie)"
-  expect "${ND_POLICY}: ${ND_CLIENT} na liście klientów 5432" "tak" \
+  expect_hidden "ruch do bazy jak przed awarią" "${ND_POLICY}: ${ND_CLIENT} na liście klientów 5432" "tak" \
     "$([[ "$(nd_count)" =~ ^[1-9] ]] && echo tak || echo nie)"
 }
 

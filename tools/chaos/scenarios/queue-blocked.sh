@@ -40,7 +40,10 @@ qb_saved() {
   local x; x="$(lock_get extra)"
   # Zapisane `w` równe awaryjnemu regexowi to uszkodzenie (break nie powinien tego zapisać):
   # nie przywracamy awarii, tylko wartość domyślną.
-  jq -e --arg bad "${QB_WRITE_BAD}" '.c and .w and .r and (.w != $bad)' <<<"${x}" >/dev/null 2>&1 \
+  # Każde z c/w/r musi być NIEPUSTYM napisem: w jq "" jest prawdą, a set_permissions
+  # z pustym regexem odebrałby wszystkie uprawnienia.
+  jq -e --arg bad "${QB_WRITE_BAD}" '
+    all(.c, .w, .r; type == "string" and length > 0) and (.w != $bad)' <<<"${x}" >/dev/null 2>&1 \
     && jq -c . <<<"${x}" || echo "${QB_DEFAULT}"
 }
 
@@ -72,8 +75,10 @@ check() {
   local want got
   want="$(qb_saved)"; got="$(qb_perms)"
   # Uczeń może przywrócić `.*` zamiast oryginału: wystarczy, że write znów obejmuje exchange.
-  expect "użytkownik ${QB_USER} ma write do marketplace.events" "tak" "$(qb_write_ok && echo tak || echo nie)"
-  expect "uprawnienia ${QB_USER} jak przed awarią ($(jq -r '[.c,.w,.r]|join(" ")' <<<"${want}"))" "${want}" "${got}"
+  expect_hidden "outbox-publisher może publikować zdarzenia" \
+    "użytkownik ${QB_USER} ma write do marketplace.events" "tak" "$(qb_write_ok && echo tak || echo nie)"
+  expect_hidden "konfiguracja brokera jak przed awarią" \
+    "uprawnienia ${QB_USER} jak przed awarią ($(jq -r '[.c,.w,.r]|join(" ")' <<<"${want}"))" "${want}" "${got}"
   wait_for 240 qb_age_under 60 || true
   expect "najstarszy wpis outbox młodszy niż 60 s (jest: $(prom_val "${QB_AGE_METRIC}"))" "tak" \
     "$(qb_age_under 60 && echo tak || echo nie)"
