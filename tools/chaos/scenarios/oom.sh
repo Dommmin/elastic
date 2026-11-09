@@ -65,9 +65,11 @@ check() {
   expect "Deployment ${OOM_DEPLOY}: rollout skończony, pod gotowy" "tak" "$(deploy_ready "${OOM_DEPLOY}")"
   lim="$(oom_limit)"
   mib="$(oom_mib "${lim:-0}")"
-  expect "limit pamięci kontenera ${OOM_CONTAINER} ≥ ${OOM_MIN_MIB}Mi (jest: ${lim:-brak})" "tak" \
+  expect_hidden "catalog-worker ma warunki do stabilnej pracy" \
+    "limit pamięci kontenera ${OOM_CONTAINER} ≥ ${OOM_MIN_MIB}Mi (jest: ${lim:-brak})" "tak" \
     "$([[ "${mib}" =~ ^[0-9]+$ && "${mib}" -ge ${OOM_MIN_MIB} ]] && echo tak || echo nie)"
-  expect "brak restartów ${OOM_DEPLOY} w ostatnich 2 min" "0" "$(recent_restarts "${OOM_DEPLOY}" 120)"
+  # Tylko zakończenia z błędem (exitCode ≠ 0): planowy restart queue:work co godzinę to Completed.
+  expect "brak awaryjnych restartów ${OOM_DEPLOY} w ostatnich 2 min" "0" "$(recent_restarts "${OOM_DEPLOY}" 120)"
 }
 
 undo() { snapshot_restore; }

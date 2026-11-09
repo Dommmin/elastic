@@ -29,6 +29,7 @@ df_limit() { rmq eval 'rabbit_disk_monitor:get_disk_free_limit().' 2>/dev/null |
 # df_sane <limit>: liczba bajtów poniżej progu awarii (1000GB). Limit równy awaryjnemu
 # (albo większy) to uszkodzenie: nie przywracamy awarii, tylko wartość domyślną.
 df_sane() { [[ "$1" =~ ^[0-9]{1,15}$ ]] && (( $1 < 1000000000000 )); }
+df_age_over() { awk -v v="$(prom_val "${DF_AGE_METRIC}")" -v t="$1" 'BEGIN { exit !(v ~ /^[0-9.]+$/ && v + 0 > t) }'; }
 df_age_under() { awk -v v="$(prom_val "${DF_AGE_METRIC}")" -v t="$1" 'BEGIN { exit !(v ~ /^[0-9.]+$/ && v + 0 < t) }'; }
 
 break() {
@@ -40,11 +41,14 @@ break() {
   rmq set_disk_free_limit "${DF_BAD_LIMIT}" >/dev/null || return 1
   touch_product || { echo "touch_product nie wygenerował zdarzenia outbox" >&2; return 1; }
   wait_for 120 df_alarm_on || { echo "RabbitMQ nie zgłosił alarmu dysku w 120 s" >&2; return 1; }
+  # Alarm to przyczyna, nie objaw: awaria jest prawdziwa dopiero, gdy wpis outbox czeka
+  # (bez tego karta obiecywałaby objaw, którego nie ma — np. publisher nic nie wysyłał).
+  wait_for 180 df_age_over 30 || { echo "wiek najstarszego wpisu outbox nie przekroczył 30 s w 180 s" >&2; return 1; }
 }
 
 check() {
   wait_for 60 df_clear || true
-  expect "RabbitMQ bez alarmów" "tak" "$(df_clear && echo tak || echo nie)"
+  expect_hidden "broker przyjmuje publikacje" "RabbitMQ bez alarmów (disk_free_limit)" "tak" "$(df_clear && echo tak || echo nie)"
   wait_for 90 df_age_under 60 || true
   expect "najstarszy wpis outbox młodszy niż 60 s (jest: $(prom_val "${DF_AGE_METRIC}"))" "tak" \
     "$(df_age_under 60 && echo tak || echo nie)"
