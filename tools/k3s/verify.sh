@@ -24,7 +24,13 @@
 #    g2         hardening + netpol + ingress + hpa + canary
 #    reboot     RESTARTUJE serwer: k3s i cały namespace wstają same     (Task 9)
 #               — tylko jawnie, NIE wchodzi w `all`
-#    all        wszystkie fazy (bez reboot)
+#    chaos      PSUJE PRODUKCJĘ (G4): selftest scenariuszy tools/chaos (jeden check
+#               na scenariusz) + dowód bezpiecznika Joba chaos-undo (ttl 1) dla
+#               bad-probe, bad-secret, disk-full; ALERTS=1 dodatkowo dowodzi, że
+#               alert scenariusza płonie. Podzbiór: CHAOS_S="oom bad-probe"
+#               (make k3s-verify faza=chaos s="oom bad-probe" alerts=1 slow=1).
+#               Czeka na ciszę alertów między scenariuszami. NIE wchodzi w `all`
+#    all        wszystkie fazy (bez reboot i chaos)
 #
 #  kubectl z Maca: tunel SSH elastic-vps-k8s (26443 -> 127.0.0.1:6443),
 #  kubeconfig ~/.kube/elastic-vps.yaml. Tunel startuje sam, jeśli go nie ma.
@@ -397,6 +403,83 @@ phase_reboot() {
   check "eval identyczny jak przed restartem (${before:-?} -> ${after:-?})" "${before:-brak}" "${after:-brak}"
 }
 
+# ------------------------------------------------------------------ chaos -----
+# Scenariusze chaosu na PRODUKCJI (ETAP G4). Sterowanie zmiennymi środowiska:
+#   CHAOS_S="a b"   podzbiór scenariuszy (domyślnie wszystkie z tools/chaos/scenarios)
+#   ALERTS=1        dowód, że ALERT każdego scenariusza płonie (wolne: for: + 3 min)
+#   CHAOS_SLOW=1    w trybie ALERTS dołącz bad-probe (alert z for: 15 min)
+#   CHAOS_SKIP="selftest fuse"  pomiń podfazy (np. powtórka samych alertów)
+phase_chaos() {
+  echo -e "\n${BLD}  chaos — PSUJE produkcję (namespace marketplace), potem naprawia${NC}"
+  local list="" s t0 rc ran=0 bad="" fuse_set="bad-probe bad-secret disk-full es-node-down"
+  # Walidacja PRZED jakąkolwiek awarią: literówka w s=/skip= nie może dać cichego PASS.
+  for s in ${CHAOS_S:-}; do
+    [ -f "${ROOT}/tools/chaos/scenarios/${s}.sh" ] || bad="${bad} ${s}"
+  done
+  check "scenariusze z s= istnieją (nieznane:${bad:- brak})" "" "${bad# }"
+  for s in ${CHAOS_SKIP:-}; do
+    case "${s}" in selftest|fuse) ;; *) bad="${bad} skip:${s}" ;; esac
+  done
+  check "skip= zawiera tylko selftest/fuse" "" "$(echo "${bad}" | tr ' ' '\n' | grep '^skip:' | tr '\n' ' ' | sed 's/ $//')"
+  [ -z "${bad# }" ] || return 0
+  tunnel_up
+  # Trwający (cudzy) scenariusz: selftesty padłyby na preflight, a końcowy reset
+  # wycofałby go i zapisał „reset”. Błąd API = nie wiem = też odmowa.
+  local lk lrc
+  lk="$(k -n marketplace get configmap chaos-lock --ignore-not-found -o name 2>/dev/null)"; lrc=$?
+  [ "${lrc}" = "0" ] || lk="błąd API (kod ${lrc})"
+  check "przed fazą: nie trwa żaden scenariusz (chaos-lock)" "" "${lk}"
+  [ -z "${lk}" ] || return 0
+  list="${CHAOS_S:-}"
+  if [ -z "${list}" ]; then
+    for s in "${ROOT}"/tools/chaos/scenarios/*.sh; do list="${list:+${list} }$(basename "${s}" .sh)"; done
+  fi
+  echo -e "  ${DIM}scenariusze: ${list}${NC}"
+  # 1. selftest: break -> check FAIL -> reset x2 -> check PASS (czeka na ciszę przed każdym)
+  for s in ${list}; do
+    case " ${CHAOS_SKIP:-} " in *" selftest "*) continue ;; esac
+    t0=$(date +%s)
+    bash "${ROOT}/tools/chaos/selftest.sh" "${s}"; rc=$?
+    ran=$((ran + 1))
+    check "selftest ${s}: break, check czerwony, reset x2, check zielony ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
+  done
+  # 2. bezpiecznik: Job chaos-undo (ttl 1 min) sam wycofuje, bez akcji ucznia
+  for s in ${fuse_set}; do
+    case " ${list} " in *" ${s} "*) ;; *) continue ;; esac
+    case " ${CHAOS_SKIP:-} " in *" fuse "*) continue ;; esac
+    t0=$(date +%s)
+    bash "${ROOT}/tools/chaos/proof.sh" fuse "${s}"; rc=$?
+    ran=$((ran + 1))
+    check "bezpiecznik ${s}: Job chaos-undo sam wycofał awarię bez akcji ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
+  done
+  # 3. alerty (opcjonalnie)
+  if [ "${ALERTS:-0}" = "1" ]; then
+    for s in ${list}; do
+      t0=$(date +%s)
+      case "${s}" in bad-probe) [ "${CHAOS_SLOW:-0}" = "1" ] || { echo -e "  ${DIM}- alert ${s}: pomijam (for 15 min; CHAOS_SLOW=1 włącza)${NC}"; continue; } ;; esac
+      bash "${ROOT}/tools/chaos/proof.sh" alert "${s}"; rc=$?
+      [ "${rc}" = "3" ] && continue
+      ran=$((ran + 1))
+      check "alert ${s}: płonie w limicie for+3 min ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
+    done
+  fi
+  # Na koniec: nic z part-of=chaos nie zostaje (Job i skrypty po bezpieczniku).
+  # Faza musi coś uruchomić: samo sprzątanie na zdrowym sklepie nie jest dowodem.
+  check "faza uruchomiła co najmniej jeden dowód (selftest/bezpiecznik/alert)" "tak" "$([ "${ran}" -gt 0 ] && echo tak || echo "nie (0; po s=/skip=/alerts= nic nie zostało do uruchomienia)")"
+  bash "${ROOT}/tools/chaos/chaos.sh" reset >/dev/null 2>&1; rc=$?
+  [ "${rc}" = "0" ] || echo -e "  ${RED}!${NC} końcowy chaos.sh reset zwrócił ${rc} (sprawdź: make chaos-status)"
+  # Po ostatnim scenariuszu pody w backoffie (do 5 min) dochodzą do siebie; faza nie
+  # oddaje klastra w połowie leczenia (apps/stack zaraz po niej dałyby fałszywy FAIL).
+  local quiet=1
+  (source "${ROOT}/tools/chaos/lib.sh"; wait_quiet 600 >/dev/null 2>&1) && quiet=0
+  check "po fazie: sklep zdrowy (bez alertów, ES green, wszystko gotowe; <= 10 min)" "0" "${quiet}"
+  # Błąd kubectl to „nie wiem”, nie „0 obiektów”.
+  local left lrc2 nleft
+  left="$(k get all,configmap,secret,networkpolicy -n marketplace -l 'app.kubernetes.io/part-of=chaos' -o name 2>/dev/null)"; lrc2=$?
+  if [ "${lrc2}" = "0" ]; then nleft="$(printf '%s' "${left}" | grep -c .)"; else nleft="błąd API (kod ${lrc2})"; fi
+  check "po fazie: brak obiektów part-of=chaos poza RBAC" "0" "${nleft}"
+}
+
 # ----------------------------------------------------------- monitoring -----
 # ETAP G1. Zapytania przez proxy API Kubernetesa (`get --raw .../services/
 # <svc>:<port>/proxy/...`): bez port-forwardu i bez exec — działa przez sam
@@ -718,8 +801,9 @@ case "${1:-}" in
   stack)    phase_stack ;;
   backup)   phase_backup ;;
   reboot)   phase_reboot ;;
+  chaos)    phase_chaos ;;
   all)      phase_cluster; phase_exposure; phase_eck; phase_config; phase_es; phase_data; phase_apps; phase_stack; phase_backup ;;
-  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|monitoring|hardening|netpol|ingress|hpa|canary|g2|reboot|all}" >&2; exit 2 ;;
+  *) echo "użycie: $0 {cluster|exposure|eck|config|es|data|apps|stack|backup|monitoring|hardening|netpol|ingress|hpa|canary|g2|reboot|chaos|all}" >&2; exit 2 ;;
 esac
 
 echo -e "\n  PASS=${PASS} FAIL=${FAIL}\n"

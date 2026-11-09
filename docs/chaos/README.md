@@ -1,0 +1,107 @@
+# Zepsuj i napraw (ETAP G4)
+
+Ćwiczenie diagnozy awarii na **prawdziwym** sklepie: namespace `marketplace` na
+produkcyjnym k3s. Każdy scenariusz to jedna realistyczna awaria z jednej linijki
+konfiguracji. Zaczynasz od sygnału, który na produkcji przychodzi pierwszy (alert,
+dashboard, objaw), znajdujesz przyczynę i naprawiasz ją sam w `kubectl`.
+Scenariusze psują procesy w tle (wyszukiwarka, kolejka, joby, metryki), nigdy
+`catalog-app` ani dane: sklep cały czas serwuje strony. Projekt i uzasadnienie:
+[docs/superpowers/specs/2026-11-07-g4-chaos-design.md](../superpowers/specs/2026-11-07-g4-chaos-design.md).
+
+## Jak grać
+
+```bash
+make k3s-tunnel                       # tunel do API k3s (127.0.0.1:26443)
+make chaos-list                       # scenariusze i objawy (bez rozwiązań)
+make chaos-break s=bad-probe          # awaria + karta: objaw i od czego zacząć
+# ... diagnozujesz i naprawiasz w kubectl (kubeconfig ~/.kube/elastic-vps.yaml) ...
+make chaos-check s=bad-probe          # ✓/✗ wymagań „zdrowy”; zielony kończy scenariusz
+make chaos-status                     # co trwa, od kiedy, kiedy auto-wycofanie
+make chaos-reset                      # poddajesz się: siłowe wycofanie
+```
+
+Zielony `check` to koniec scenariusza: zdejmuje blokadę i kasuje Job wycofania,
+a czas od `break` trafia do `~/.chaos-scores.tsv` (`data  scenariusz  sekundy  ok|reset`).
+Twoja naprawa jest naprawą — `reset` nie jest potrzebny. Karta scenariusza
+(`docs/chaos/<s>.md`) ma pytania prowadzące, a rozwiązanie jest zwinięte na końcu:
+otwieraj je dopiero po `check`.
+
+`ttl` (minuty do auto-wycofania, domyślnie 15): `make chaos-break s=bad-probe ttl=30`.
+
+## Bezpieczniki
+
+| Mechanizm | Co chroni |
+|---|---|
+| Preflight `break`: ES `green`, każdy Deployment i StatefulSet gotowy, zero płonących alertów sklepu (grupa `marketplace` albo `namespace="marketplace"`; bez `Watchdog`, `InfoInhibitor`, `KubeJobFailed`) | awaria na już chorym systemie myli diagnozę i grozi kaskadą |
+| Blokada: ConfigMap `chaos-lock` (`chaos.lab/lock=true`) zakładana atomowo (`kubectl create`) | dwa scenariusze naraz; `tools/k3s/deploy.sh` odmawia wdrożenia, gdy blokada istnieje (Job przywróciłby po chwili migawkę ze starym obrazem) |
+| Migawka w blokadzie (`snapshot.yaml`): obiekty sprzed awarii z klastra, nie z repo | `undo` przywraca dokładnie stan sprzed `break` (obraz, repliki) surowym PUT (`kubectl replace --raw`): ten sam szablon = brak nowego rolloutu, a adnotacja `last-applied` (baza `kubectl apply` w `deploy.sh`) zostaje nietknięta |
+| Job `chaos-undo` w klastrze: śpi do `deadline` (czyta go z blokady co 15 s), wywołuje `undo` scenariusza, zdejmuje blokadę | zamknięty laptop albo zerwany tunel nie zostawiają produkcji zepsutej; powstaje **przed** awarią, a awaria wchodzi dopiero, gdy pod Joba działa i odczytał blokadę (≤ 120 s; inaczej `break` się wycofuje, nic nie psując) |
+| ServiceAccount + Role `chaos-undo` (`deploy/chaos/undo-rbac.yaml`): każda reguła z `resourceNames` — tylko obiekty scenariuszy (lista niżej, zwinięta jako spoiler) i tylko czasowniki, których używa `undo`; bez `list` | Job nie może zmienić `catalog-app`, nie przeczyta Secretów wprost i nie zrobi exec poza `rabbitmq-0`; granica jest egzekwowana przez RBAC, nie tylko konwencję. Ryzyko szczątkowe (zaakceptowane): `update` na trzech Deploymentach pozwala wgrać szablon, który uruchomi kod z ich Secretami — cena przywracania migawki PUT-em. Nowy scenariusz = dopisz obiekt do Role (`test.sh` sprawdza zgodność w obie strony) |
+| NetworkPolicy `chaos-undo-egress` | `default-deny` z G2 zostaje; Job wychodzi tylko do API servera |
+| `trap` w `break`, undo przed sprzątaniem | przerwany `break` (Ctrl-C, błąd kroku) wycofuje się sam (kolejne Ctrl-C jest ignorowane do końca wycofania); Job i blokada znikają **dopiero po udanym undo**. Gdy **lokalne** undo padnie (tu albo w `reset`), blokada zostaje, a `deadline` przesuwa się na ~60 s: działający Job sam go odczyta, a gdy Joba nie ma albo się zakończył, powstaje nowy. Nieudane undo w samym Jobie niczego nie uzbraja ponownie — wtedy `make chaos-reset`. Błąd API przy odczycie blokady nigdy nie jest brany za „brak blokady” |
+| Właściciel i faza blokady (`owner`, `phase`: `breaking` → `broken`) | druga powłoka: `check` i `reset` odmawiają, gdy trwa `break` (faza `breaking`), a `break` tuż przed awarią i po niej sprawdza, że blokada nadal jest jego (gdy nie — nie psuje albo wycofuje od razu). Gdy `break` padł w połowie (np. `kill -9`): `make chaos-reset force=1` |
+| Granica scenariuszy | żaden nie dotyka `catalog-app`, `marketplace-secrets`, PVC ani danych |
+
+<details>
+<summary>Spoiler: co dotyka każdy scenariusz</summary>
+
+Role `chaos-undo`: obiekty `search-metrics`, `catalog-worker`, `search-consumer`, `marketplace-es-default`, `postgres-ingress`, ES `marketplace`; exec wyłącznie do `rabbitmq-0`.
+
+</details>
+
+Job działa jako uid 65534, z `readOnlyRootFilesystem`, `drop: [ALL]`,
+`seccompProfile: RuntimeDefault` (PSS `restricted`), 50m/64Mi, limit 128Mi.
+Skrypty (`lib.sh`, `scenarios/<s>.sh`, `undo-entry.sh`, generowany w `lib.sh`) dostaje z ConfigMap
+`chaos-scripts`, tworzonej przy `break` z tego samego kodu co lokalnie — jedna
+implementacja `undo`.
+
+Po auto-wycofaniu zakończony Job `chaos-undo` i ConfigMap `chaos-scripts` zostają
+na godzinę (`ttlSecondsAfterFinished: 3600`), żeby dało się przeczytać log:
+`kubectl -n marketplace logs job/chaos-undo`. `chaos-scripts` ma ownerReference na
+Job, więc znika razem z nim. Od razu sprząta je `make chaos-reset` (bez trwającego
+scenariusza tylko to robi) albo następny `break`. Czysty klaster: zero obiektów
+`app.kubernetes.io/part-of=chaos`; statyczne RBAC i polityka mają `part-of=chaos-rbac`
+i zostają.
+
+## Co gdy Job nie zadziałał
+
+```bash
+make chaos-status                                  # faza blokady, stan Joba i poda (np. Pending (ErrImagePull))
+kubectl -n marketplace logs job/chaos-undo         # co zrobił (albo dlaczego nie)
+make chaos-reset                                   # undo z migawki, kasuje Job i blokadę
+```
+
+Gdy `reset` nie może przejść (np. migawka uszkodzona), napraw stan ręcznie wg karty
+scenariusza (sekcja „Rozwiązanie”) i zdejmij blokadę:
+
+```bash
+kubectl -n marketplace delete cm chaos-lock
+kubectl -n marketplace delete job chaos-undo --ignore-not-found
+kubectl -n marketplace delete cm chaos-scripts --ignore-not-found
+kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
+```
+
+## Dla autora scenariusza
+
+Plik `tools/chaos/scenarios/<s>.sh` (sourcowany przez `chaos.sh` i przez Job):
+`SUMMARY`, `ALERT` (może być pusty), `LIMIT_MIN`, funkcje `targets` (`rodzaj/nazwa`
+do migawki, może nic), `break`, `check` (asercje `expect`/`expect_match`), `undo`
+(idempotentne; zwykle `snapshot_restore` plus reszta). Funkcja `break` przesłania
+słowo kluczowe powłoki, więc w skryptach chaosu **nie używaj `break` w pętlach**
+(`test.sh` to sprawdza). Do tego karta `docs/chaos/<s>.md` (sekcje jak w `bad-probe.md`),
+potem `bash tools/chaos/index.sh`, `bash tools/chaos/test.sh` i
+`make chaos-selftest s=<s>` (break → check FAIL → reset ×2 → check PASS).
+
+## Scenariusze
+
+<!-- spis generowany: tools/chaos/index.sh -->
+
+| Scenariusz | Objaw | Alert | Limit |
+|---|---|---|---|
+| [bad-probe](bad-probe.md) | Rollout search-metrics stoi: nowy pod wisi 0/1, a kubectl rollout status nie kończy się | KubePodNotReady | 15 min |
+| [bad-secret](bad-secret.md) | Indeks wyszukiwania się nie aktualizuje: search-consumer w pętli restartów, a kolejka search.product.sync rośnie | SearchConsumerDown | 8 min |
+| [disk-full](disk-full.md) | Zmiany produktów nie docierają do wyszukiwarki, a najstarsze zdarzenie w outbox starzeje się coraz bardziej | OutboxStale | 8 min |
+| [es-node-down](es-node-down.md) | Elasticsearch widzi 2 węzły zamiast 3 i nie kończy ApplyingChanges, a wyszukiwarka działa | - | 10 min |
+| [netpol-db](netpol-db.md) | Joby w kolejce stoją: pod catalog-worker po restarcie nie wstaje i restartuje się w kółko | KubePodCrashLooping | 8 min |
+| [oom](oom.md) | Joby w kolejce stoją: pod catalog-worker restartuje się w kółko, a kolejka jobów rośnie | KubePodCrashLooping | 8 min |
+| [queue-blocked](queue-blocked.md) | Zmiany produktów nie docierają do wyszukiwarki, a najstarsze zdarzenie w outbox starzeje się coraz bardziej | OutboxStale | 7 min |

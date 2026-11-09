@@ -406,8 +406,8 @@ k3s-manifests-check: ## Manifesty k8s bez klastra: kustomize, ERROR_TRACKING_PRO
 	@bash tools/k3s/glitchtip-step-check.sh
 
 .PHONY: k3s-verify
-k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all)
-	@bash tools/k3s/verify.sh $(or $(faza),all)
+k3s-verify: ## Weryfikacja ETAPU D2 z Maca (make k3s-verify faza=cluster|exposure|all; faza=chaos PSUJE produkcję: s="oom bad-probe" alerts=1 slow=1 skip="selftest fuse")
+	@CHAOS_S="$(s)" ALERTS="$(alerts)" CHAOS_SLOW="$(slow)" CHAOS_SKIP="$(skip)" bash tools/k3s/verify.sh $(or $(faza),all)
 
 .PHONY: k3s-tunnel
 k3s-tunnel: ## Tunel do API k3s w tle (localhost:26443); potem: make k3s k="get pods -A"
@@ -459,6 +459,26 @@ ckad-exam: ## Symulacja egzaminu: losowe zadania na czas (make ckad-exam n=16 mi
 
 ckad-scores: ## Twoje wyniki CKAD: ostatnie podejścia i zadania do powtórki
 	@bash tools/ckad/scores.sh
+
+# --- ETAP G4: zepsuj i napraw na produkcji k3s (docs/chaos/) — wymaga tunelu: make k3s-tunnel ---
+.PHONY: chaos-list chaos-break chaos-check chaos-reset chaos-status chaos-selftest
+chaos-list: ## Scenariusze chaosu i ich objawy (bez rozwiązań)
+	@bash tools/chaos/chaos.sh list
+
+chaos-break: ## Awaria na produkcji z auto-wycofaniem (make chaos-break s=bad-probe [ttl=15])
+	@bash tools/chaos/chaos.sh break $(s) $(or $(ttl),15)
+
+chaos-check: ## Sprawdź naprawę; zielony kończy scenariusz i zapisuje czas (make chaos-check s=bad-probe [force=1])
+	@bash tools/chaos/chaos.sh check $(s) $(if $(force),--force)
+
+chaos-reset: ## Siłowe wycofanie trwającego scenariusza (i sprzątanie Joba chaos-undo) [force=1: break padł w połowie]
+	@bash tools/chaos/chaos.sh reset $(if $(force),--force)
+
+chaos-status: ## Co trwa, od kiedy, kiedy auto-wycofanie, stan Joba chaos-undo
+	@bash tools/chaos/chaos.sh status
+
+chaos-selftest: ## Dowód scenariuszy: break, check FAIL, reset x2, check PASS (s="bad-probe" albo wszystkie)
+	@bash tools/chaos/selftest.sh $(s)
 
 ## Ingress na k3s (ETAP G2): Traefik + cert-manager, hosty *.marketplace.test
 .PHONY: k3s-ingress

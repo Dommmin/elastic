@@ -1,0 +1,116 @@
+# ============================================================================
+#  deploy/chaos/undo-rbac.yaml — tożsamość i sieć Joba `chaos-undo` (ETAP G4)
+#
+#  Stosowane przez `tools/chaos/chaos.sh break` (kubectl apply), NIE przez
+#  kustomization sklepu: bez scenariusza chaosu nic tego nie używa.
+#  Etykieta part-of=chaos-rbac (nie `chaos`): to statyczne obiekty z repo, które
+#  zostają; „czysty klaster” = zero obiektów part-of=chaos.
+#
+#  Role = dokładnie czasowniki, których używa `undo` scenariuszy i Job (test.sh pilnuje
+#  równości w obie strony), tylko na obiektach scenariuszy (resourceNames):
+#   - snapshot_restore: GET po nazwie + PUT (update) celów z targets();
+#   - kubectl annotate ES = get + patch; kubectl scale STS = get statefulset + patch /scale;
+#   - rabbitmqctl przez exec = pods get + pods/exec create (tylko rabbitmq-0);
+#   - blokada: get + delete chaos-lock; Secret po bad-secret: delete.
+#  Bez list/watch, bez exec do innych podów. Job NIE zmieni catalog-app i nie przeczyta
+#  Secretów wprost (ani exec poza rabbitmq-0). Ryzyko szczątkowe (zaakceptowane, spec
+#  § 3.3): `update` na trzech Deploymentach pozwala posiadaczowi tokenu wgrać szablon,
+#  który uruchomi dowolny kod z ich Secretami (catalog-worker i search-consumer czytają
+#  marketplace-secrets) — to cena przywracania migawki PUT-em.
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-undo
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-undo
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+rules:
+  # Tylko obiekty, które cofają scenariusze (resourceNames): granica „nie dotykaj
+  # catalog-app” jest egzekwowana przez RBAC, nie tylko przez konwencję skryptów.
+  # Nowy scenariusz = dopisz tu jego obiekt (test.sh sprawdza targets() z tą listą).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["search-metrics", "catalog-worker", "search-consumer"]
+    verbs: ["get", "update"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    resourceNames: ["marketplace-es-default"]
+    verbs: ["get"]
+  # kubectl scale bez --current-replicas/--resource-version = PATCH podzasobu /scale.
+  # get zostaje celowo: ścieżka ES nie ma jeszcze dowodu w Jobie (es-node-down), a brak
+  # uprawnienia ujawniłby się dopiero wtedy, gdy bezpiecznik jest potrzebny.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets/scale"]
+    resourceNames: ["marketplace-es-default"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    resourceNames: ["postgres-ingress"]
+    verbs: ["get", "update"]
+  - apiGroups: ["elasticsearch.k8s.elastic.co"]
+    resources: ["elasticsearches"]
+    resourceNames: ["marketplace"]
+    verbs: ["get", "patch"]
+  # rabbitmqctl przez exec: kubectl exec robi GET poda po nazwie + create pods/exec.
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: ["rabbitmq-0"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    resourceNames: ["rabbitmq-0"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["chaos-lock"]
+    verbs: ["get", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["chaos-rotated-secrets"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-undo
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chaos-undo
+subjects:
+  - kind: ServiceAccount
+    name: chaos-undo
+    namespace: marketplace
+---
+# default-deny w marketplace (G2) blokuje wyjście poza namespace, także do API.
+# k3s: API na węźle (Endpoints `kubernetes` = 185.238.74.58:6443); NetworkPolicy działa
+# po DNAT ClusterIP -> endpoint, więc reguła na IP węzła:6443, a ClusterIP:443 na zapas.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chaos-undo-egress
+  namespace: marketplace
+  labels: { app.kubernetes.io/part-of: chaos-rbac }
+spec:
+  podSelector:
+    matchLabels: { app: chaos-undo }
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock: { cidr: 185.238.74.58/32 }
+      ports:
+        - { protocol: TCP, port: 6443 }
+    - to:
+        - ipBlock: { cidr: 10.43.0.1/32 }
+      ports:
+        - { protocol: TCP, port: 443 }

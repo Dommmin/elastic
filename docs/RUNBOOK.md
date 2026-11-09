@@ -88,6 +88,14 @@
 | [085](#085) | Na k3s płatność nigdy nie jest potwierdzana — webhook bramki leci na localhost workera | k3s / ETAP F | G2 |
 | [086](#086) | `exec: frankenphp: Operation not permitted` po `capabilities: drop: [ALL]` | k3s / securityContext | G2 |
 | [087](#087) | Plan zakładał ingress-nginx, a projekt jest wycofany — Traefik przez standardowy Ingress | k3s / Ingress | G2 |
+| [088](#088) | chaos: oom — `catalog-worker` w pętli restartów, kolejka jobów rośnie (spoiler) | k3s / chaos | G4 |
+| [089](#089) | chaos: bad-secret — `search-consumer` restartuje się, indeks wyszukiwania nieaktualny (spoiler) | k3s / chaos | G4 |
+| [090](#090) | chaos: queue-blocked — `outbox-publisher` w `CrashLoopBackOff`, outbox się starzeje (spoiler) | k3s / chaos | G4 |
+| [091](#091) | chaos: disk-full — `OutboxStale` przy zdrowych podach (spoiler) | k3s / chaos | G4 |
+| [092](#092) | chaos: netpol-db — `catalog-worker` w `CrashLoopBackOff`, joby stoją (spoiler) | k3s / chaos | G4 |
+| [093](#093) | chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1` (spoiler) | k3s / chaos | G4 |
+| [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler) | k3s / chaos | G4 |
+| [095](#095) | `chaos-undo` nie zadziałał — blokada `chaos-lock` zostaje, produkcja zepsuta | k3s / chaos | G4 |
 
 ---
 
@@ -4080,6 +4088,310 @@ się z kontrolerem. Następny krok w tym kierunku to Gateway API.
 **Czego się nauczyłem**
 Przy każdym nowym komponencie: sprawdź status projektu i datę ostatniego wydania,
 zanim przypniesz wersję. „Wszyscy tego używają” to informacja o przeszłości.
+
+---
+
+<a id="088"></a>
+## 088 — chaos: oom — `catalog-worker` w pętli restartów, kolejka jobów rośnie
+
+> ETAP G4, scenariusz `oom` ([karta](chaos/oom.md)), 2026-11-07. 
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+Pod `catalog-worker` w `CrashLoopBackOff`, kolejka jobów rośnie, sklep serwuje strony.
+`KubePodCrashLooping` płonie dopiero po ok. 15 min (`for: 15m`; na klastrze 955 s).
+
+**Diagnoza**
+```bash
+kubectl -n marketplace get pod -l app=catalog-worker \
+  -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated}{"\n"}'
+kubectl -n marketplace get deploy catalog-worker \
+  -o jsonpath='{.spec.template.spec.containers[0].resources}{"\n"}'
+```
+`Reason: OOMKilled`, `Exit Code: 137`, limit pamięci `40Mi`.
+
+**Przyczyna**
+Limit pamięci kontenera `worker` (`40Mi`) jest mniejszy, niż potrzebuje `queue:work`
+po załadowaniu frameworka. Jądro zabija kontener, kubelet restartuje z rosnącym opóźnieniem.
+
+**Naprawa**
+```bash
+kubectl -n marketplace set resources deploy/catalog-worker -c worker \
+  --requests=memory=64Mi --limits=memory=256Mi
+kubectl -n marketplace rollout status deploy/catalog-worker
+```
+
+**Czego się nauczyłem**
+Alerty o zdrowiu poda są wolne (kwadrans), więc diagnozę zaczynaj od `get pods`, nie od
+czekania na alert. Limity z pomiaru, nie z intuicji.
+
+---
+
+<a id="089"></a>
+## 089 — chaos: bad-secret — `search-consumer` restartuje się, indeks nieaktualny
+
+> ETAP G4, scenariusz `bad-secret` ([karta](chaos/bad-secret.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+```
+Server connection error: 403, message: ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN
+```
+Kolejka `search.product.sync` rośnie, `SearchConsumerDown` płonie po ok. 2 min (108 s na klastrze).
+Pod nim Symfony drukuje opis komendy, co wygląda jak błąd argumentów, ale nim nie jest.
+
+**Diagnoza**
+```bash
+kubectl -n marketplace logs deploy/search-consumer --previous --tail=60 | grep -E 'ACCESS_REFUSED|connect'
+kubectl -n marketplace logs rabbitmq-0 -c rabbitmq | grep -i 'login refused' | tail -3
+kubectl -n marketplace get secret --show-labels
+```
+Nie wypisuj wartości Secretów.
+
+**Przyczyna**
+Deployment czyta `MESSENGER_TRANSPORT_DSN` z Secretu `chaos-rotated-secrets`, w którym hasło
+różni się o jeden znak (historia „rotacja się nie udała”). `search-metrics` czyta z
+`marketplace-secrets`, więc działa.
+
+**Naprawa**
+Wskaż Secret z manifestu (`marketplace-secrets`) przez `kubectl patch ... --type json`
+na `secretKeyRef/name`, potem `rollout status`. Indeks zmiennej w `env` z `get deploy -o yaml`.
+
+**Czego się nauczyłem**
+Po rotacji hasła restartuj konsumentów i patrz na `SearchConsumerDown`. Jedno źródło haseł,
+Deployment nie wskazuje Secretów spoza manifestu.
+
+---
+
+<a id="090"></a>
+## 090 — chaos: queue-blocked — `outbox-publisher` w `CrashLoopBackOff`, outbox się starzeje
+
+> ETAP G4, scenariusz `queue-blocked` ([karta](chaos/queue-blocked.md)), 2026-11-08.
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+`OutboxStale` płonie po 77 s, wiek najstarszego wpisu outbox rośnie, publisher restartuje się
+(`Reason: Error`, `Exit Code: 1`), konsument i `rabbitmq-0` zdrowe.
+
+**Diagnoza**
+```bash
+kubectl -n marketplace logs deploy/outbox-publisher --previous | grep -m1 ACCESS_REFUSED
+kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmqctl -q list_user_permissions marketplace
+```
+
+**Przyczyna**
+Uprawnienie `write` użytkownika `marketplace` zawężono do wszystkiego poza exchange
+`marketplace.events`. Pierwotnie scenariusz miał używać kolejki z `max-length 0`, ale
+kolejka quorum przyjmuje jedną wiadomość do pustej kolejki i konsument opróżnia ją w ~100 ms,
+więc publisher nie dostawał `nack` (zob. spec § 3.5).
+
+**Naprawa**
+```bash
+kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- \
+  rabbitmqctl -q set_permissions -p / marketplace '.*' '.*' '.*'
+kubectl -n marketplace delete pod -l app=outbox-publisher   # bez czekania na backoff
+```
+
+**Czego się nauczyłem**
+Uprawnienia brokera zmienia się tylko z repo. Osobny użytkownik na aplikację = odmowa
+od razu wskazuje, której. Hipotezę o mechanizmie awarii sprawdzaj na kolejce z tymi
+samymi argumentami, zanim zbudujesz na niej scenariusz.
+
+---
+
+<a id="091"></a>
+## 091 — chaos: disk-full — `OutboxStale` przy zdrowych podach
+
+> ETAP G4, scenariusz `disk-full` ([karta](chaos/disk-full.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+Wiek najstarszego wpisu outbox rośnie, `OutboxStale` płonie po 2–3 min (138 s na klastrze).
+`outbox-publisher` i `rabbitmq-0` są `Running`, `1/1`, bez restartów.
+
+**Diagnoza**
+```bash
+kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmq-diagnostics -q alarms
+kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmqctl -q list_connections name state
+kubectl -n marketplace logs rabbitmq-0 -c rabbitmq --tail=30 | grep -i disk
+```
+
+**Przyczyna**
+`disk_free_limit` brokera ustawiony ponad realne wolne miejsce: alarm dysku, połączenia
+wydawców w stanie `blocked`. Konsumenci pracują. W scenariuszu to alarm, a nie
+zapełniony wolumen: `local-path` nie egzekwuje rozmiaru PVC, więc prawdziwe zapchanie
+zapchałoby cały dysk węzła.
+
+**Naprawa**
+```bash
+kubectl -n marketplace exec rabbitmq-0 -c rabbitmq -- rabbitmqctl -q set_disk_free_limit 1000000000
+```
+(W prawdziwej awarii: zwolnić miejsce, nie zmieniać progu.) Limit ustawiony `rabbitmqctl` wraca
+do wartości z `rabbitmq.conf` po restarcie poda.
+
+**Czego się nauczyłem**
+Zdrowe pody i zielone sondy nie znaczą zdrowego przepływu: patrz na wiek outboxu i alarmy brokera.
+
+---
+
+<a id="092"></a>
+## 092 — chaos: netpol-db — `catalog-worker` w `CrashLoopBackOff`, joby stoją
+
+> ETAP G4, scenariusz `netpol-db` ([karta](chaos/netpol-db.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+Joby stoją, worker restartuje się po każdym starcie, Postgres działa, sklep serwuje strony
+(`catalog-app` jest na liście dozwolonych). `KubePodCrashLooping` po ok. 15 min (932 s).
+
+**Diagnoza**
+```bash
+kubectl -n marketplace logs deploy/catalog-worker --previous | grep -m1 'Connection refused'
+kubectl -n marketplace get networkpolicy postgres-ingress \
+  -o jsonpath='{.spec.ingress[0].from[0].podSelector.matchExpressions[0].values}{"\n"}'
+kubectl -n marketplace get pod -l app=catalog-worker --show-labels
+```
+
+**Przyczyna**
+Z listy klientów w `postgres-ingress` zniknął `catalog-worker`. Przy `default-deny` kube-router
+odrzuca nowe połączenia (REJECT, `Connection refused`, nie timeout).
+
+**Naprawa**
+Dopisz wpis z powrotem przez `kubectl patch networkpolicy ... --type json` (`add .../values/-`),
+potem `delete pod -l app=catalog-worker`, żeby nie czekać na backoff. `kubectl apply` całego
+`networkpolicies.yaml` też naprawia, ale nadpisuje wszystkie polityki naraz.
+
+**Czego się nauczyłem**
+Zmiana polityki sieciowej może przeleżeć niezauważona aż do restartu poda. Po zmianie
+polityk: `make k3s-verify faza=netpol`. „Connection refused” natychmiast = REJECT polityki, nie awaria serwera.
+
+---
+
+<a id="093"></a>
+## 093 — chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1`
+
+> ETAP G4, scenariusz `bad-probe` ([karta](chaos/bad-probe.md)), 2026-11-07.
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+Dwa pody: stary `1/1`, nowy `0/1` w stanie `Running` bez restartów; `kubectl rollout status`
+wisi. Metryki płyną, sklep działa. `KubePodNotReady` dopiero po 15 min (alert nie był
+uruchamiany na klastrze).
+
+**Diagnoza**
+```bash
+kubectl -n marketplace rollout status deploy/search-metrics --timeout=20s
+kubectl -n marketplace get pods,rs -l app=search-metrics
+kubectl -n marketplace describe pod -l app=search-metrics | grep -A3 -i readiness
+```
+
+**Przyczyna**
+Readiness wskazuje `/healthz-old`, na które aplikacja odpowiada `404` według karty.
+Przy jednej replice stary pod zostaje, więc nic nie przerywa serwowania. Hipoteza,
+niesprawdzona na klastrze (alert `KubePodNotReady` nie był uruchamiany): `TargetDown`
+nie płonie, bo niegotowy pod nie trafia do Endpoints i nie ma serii `up == 0`.
+
+**Naprawa**
+`kubectl -n marketplace rollout undo deploy/search-metrics` albo `patch` ścieżki sondy
+na `/metrics`, potem `rollout status`.
+
+**Czego się nauczyłem**
+Każde wdrożenie kończy się `rollout status --timeout` z kodem błędu. Sonda wskazuje
+endpoint, który jest w kodzie i w teście.
+
+---
+
+<a id="094"></a>
+## 094 — chaos: es-node-down — ES widzi 2 węzły zamiast 3
+
+> ETAP G4, scenariusz `es-node-down` ([karta](chaos/es-node-down.md)), 2026-11-08, zamknięty 2026-11-09: selftest OK (399 s), fuse OK (`FUSE_TTL=4`), alertu brak.
+
+> ⚠️ Spoiler — przyczyna poniżej.
+
+**Objaw**
+ES ma 2 węzły i nie kończy `ApplyingChanges`; wyszukiwarka działa.
+
+**Diagnoza**
+```bash
+kubectl -n marketplace get elasticsearch marketplace \
+  -o jsonpath='{.metadata.annotations}{"\n"}{.status.conditions[?(@.type=="OrchestrationPaused")]}{"\n"}'
+kubectl -n marketplace get sts marketplace-es-default -o jsonpath='{.spec.replicas}{"\n"}'
+```
+
+**Przyczyna**
+Adnotacja `eck.k8s.elastic.co/pause-orchestration: "true"` na zasobie ES i ręczne
+`scale` StatefulSetu do 2. Wyszukiwarka przeżywa tylko dlatego, że jedyny shard
+`products-v1` (`number_of_replicas: 0`) leżał na węźle, który został. `break` odmawia,
+gdy jedyna kopia shardu leży na węźle, który zniknie: bez tego bezpiecznika byłoby `red`. Wpis pochodził z karty i z jednego ręcznego przebiegu sprzed bezpiecznika. Naprawione: `products-v1` ma teraz `number_of_replicas: 1` (commit `2bc71c6`), więc utrata węzła daje `yellow`, nie `red`.
+Wynik na klastrze (2026-11-09): selftest OK w 399 s (przy zepsutym stanie `yellow`, 2 z 3 węzłów, `check` 4 z 4 czerwone, `reset` przywrócił replicas 2 -> 3). Fuse przeszedł dopiero z `FUSE_TTL=4`: z `ttl 1` Job przywracał węzeł w środku `break`, bo termin liczy się od utworzenia blokady, a `break` trwa dłużej niż minutę (nic nie zostało zepsute). Dowód: zdrowo po 240 s, Job Succeeded.
+
+**Naprawa**
+```bash
+kubectl -n marketplace annotate elasticsearch marketplace eck.k8s.elastic.co/pause-orchestration-
+kubectl -n marketplace scale statefulset marketplace-es-default --replicas=3
+kubectl -n marketplace rollout status statefulset marketplace-es-default
+```
+Nie kasuj podów ani PVC Elasticsearcha.
+
+**Czego się nauczyłem**
+Indeks bez replik na klastrze z trzema węzłami to pojedynczy punkt awarii. Decyzja
+o `number_of_replicas: 1` opisana w [przewodniku G4](blog/etap-g4-chaos.md#es-node-down-luka-znaleziona-i-zamknięta-spoiler). Termin `ttl` Joba liczy się od utworzenia blokady, więc musi być dłuższy niż `break`.
+
+---
+
+<a id="095"></a>
+## 095 — `chaos-undo` nie zadziałał: blokada zostaje, produkcja zepsuta
+
+> ETAP G4, awaria narzędzia chaosu, 2026-11-08.
+
+**Objaw**
+`make chaos-status` pokazuje trwający scenariusz po upływie `deadline`, albo Job `chaos-undo`
+w stanie `failed`. `tools/k3s/deploy.sh` odmawia wdrożenia,
+bo istnieje ConfigMap `chaos-lock`.
+
+**Diagnoza**
+```bash
+make chaos-status                                  # active / succeeded / failed
+kubectl -n marketplace get cm chaos-lock -o yaml   # scenariusz, deadline, snapshot
+kubectl -n marketplace get job chaos-undo
+kubectl -n marketplace logs job/chaos-undo         # co zrobił albo dlaczego nie
+```
+Typowe powody: API było niedostępne w chwili wycofania (tunel nie jest potrzebny Jobowi,
+ale potrzebny Tobie do podglądu), brak obiektu w Role `chaos-undo` (`Forbidden`), uszkodzona
+migawka.
+
+**Przyczyna**
+`undo` zakończył się błędem. Wtedy blokada **celowo zostaje** (Job i blokada znikają dopiero po
+udanym undo). Błąd API przy odczycie blokady nigdy nie jest brany za „brak blokady”.
+Ponowne uzbrojenie (deadline za ok. 60 s; działający Job go odczyta, brakujący albo zakończony
+powstaje od nowa) dzieje się **tylko** po nieudanym undo **lokalnym** — w przerwanym `break`
+albo w `make chaos-reset`. Gdy padło undo w samym Jobie (`undo-entry.sh` kończy się kodem 1,
+backoff, Job `failed`), nic nie uzbraja się samo: uruchom `make chaos-reset`.
+
+**Naprawa**
+1. `make chaos-reset` — undo z migawki, kasuje Job i blokadę (jest idempotentny, można powtórzyć).
+2. Gdy `reset` nie przechodzi (np. migawka uszkodzona): napraw stan ręcznie wg sekcji
+   „Rozwiązanie” karty scenariusza, potem zdejmij blokadę:
+```bash
+kubectl -n marketplace delete cm chaos-lock
+kubectl -n marketplace delete job chaos-undo --ignore-not-found
+kubectl -n marketplace delete cm chaos-scripts --ignore-not-found
+kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
+```
+   Gdy `reset` odmawia z „trwa break (faza breaking)”, a żaden `break` już nie działa (padł
+   w połowie): `make chaos-reset force=1`.
+3. Sprawdź czystość: `kubectl get all,cm,secret,netpol,sa,role,rolebinding,job -A -l app.kubernetes.io/part-of=chaos`
+   (powinno być `No resources found`; `part-of=chaos-rbac` zostaje).
+
+**Czego się nauczyłem**
+Bezpiecznik musi żyć w klastrze: w teście z martwym tunelem Job sam przywrócił politykę
+i zdjął blokadę. Ręczne usunięcie blokady dopiero po ręcznej naprawie stanu, nigdy przed.
 
 ---
 
