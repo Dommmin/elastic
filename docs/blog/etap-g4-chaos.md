@@ -9,11 +9,11 @@ na prawdziwym k3s, w siedmiu scenariuszach, tak że sklep cały czas serwuje
 strony, a awaria zawsze sama się wycofa, nawet gdy zamkniesz laptopa.*
 
 > **Stan:** gałąź `g4-chaos` (niewypchnięta).
-> **Na klastrze (2026-11-07/08):** 6 z 7 scenariuszy przeszło selftest, fuse
-> (bezpiecznik Joba) sprawdzony na 3 z 6, alert potwierdzony dla 5 z 6
-> ([wyniki](#wyniki-z-klastra)); przebieg 1 na pierwszej wersji kodu dał PASS=10 FAIL=0,
-> pełny czysty przebieg końcowego kodu czeka. Ostatni scenariusz (`es-node-down`)
-> jest otwarty, czeka na decyzję ([Otwarte](#otwarte-es-node-down-spoiler)).
+> **Na klastrze (2026-11-07/09):** wszystkie 7 scenariuszy przeszło selftest, fuse
+> (bezpiecznik Joba) sprawdzony na 4 z 7, alert potwierdzony dla 5 z 7
+> ([wyniki](#wyniki-z-klastra)); pełny czysty przebieg końcowego kodu
+> (`faza=chaos`) dał PASS=17 FAIL=0 w 44 min 56 s. Scenariusz `es-node-down`
+> miał lukę, która jest zamknięta ([sekcja ze spoilerem](#es-node-down-luka-znaleziona-i-zamknięta-spoiler)).
 > **Scenariusze:** [docs/chaos/README.md](../chaos/README.md) (jak grać, bezpieczniki, spis).
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-07-g4-chaos-design.md).
 > Plan: [`13-PLAN-ETAP-G-K8S.md`](../13-PLAN-ETAP-G-K8S.md).
@@ -33,7 +33,7 @@ strony, a awaria zawsze sama się wycofa, nawet gdy zamkniesz laptopa.*
 9. [Wyniki z klastra](#wyniki-z-klastra)
 10. [Co wybuchło po drodze](#co-wybuchło-po-drodze)
 11. [Czego G4 nie robi](#czego-g4-nie-robi)
-12. [Otwarte: `es-node-down` (spoiler)](#otwarte-es-node-down-spoiler)
+12. [`es-node-down`: luka znaleziona i zamknięta (spoiler)](#es-node-down-luka-znaleziona-i-zamknięta-spoiler)
 13. [Ściąga](#ściąga)
 14. [Twoja kolej](#twoja-kolej)
 
@@ -380,8 +380,9 @@ trzy dowody (`make k3s-verify faza=chaos`, poza `all`, bo psuje produkcję):
    zdrowego i że `reset` jest idempotentny. Zielony `check` na końcu jest ponawiany
    do 150 s, bo po resecie system potrzebuje chwili (np. outbox z `disk-full` miał
    188 s opóźnienia tuż po resecie i opróżnił się sam).
-2. **fuse** (`proof.sh fuse <s>`): awaria z `ttl 1`, **żadnej akcji**. Dowodzi, że
-   sam Job wycofuje awarię: blokada znika w 180 s, `check` zielony, Job `Succeeded`.
+2. **fuse** (`proof.sh fuse <s>`): awaria z `ttl 1` (scenariusz może ustawić własny przez `FUSE_TTL`
+   i `FUSE_LIMIT_S`, gdy jego `break` trwa dłużej), **żadnej akcji**. Dowodzi, że
+   sam Job wycofuje awarię: blokada znika w 180 s (przy `ttl 1`), `check` zielony, Job `Succeeded`.
    To jest test bezpiecznika „zamknięty laptop”.
 3. **alert** (`proof.sh alert <s>`, `alerts=1`): awaria założona, czekamy, aż
    **oczekiwany alert naprawdę zapłonie** w Prometheusie, w limicie `for + 3 min`.
@@ -393,23 +394,27 @@ dla `oom` i `netpol-db` trwa po kwadransie każdy. Wyniki poniżej.
 
 ## Wyniki z klastra
 
-`make k3s-verify faza=chaos` na 6 scenariuszach (bez `es-node-down`), przebieg 1
-(na pierwszej wersji kodu, przed poprawkami): **PASS=10 FAIL=0**, 47 min 34 s.
+`make k3s-verify faza=chaos` na końcowym kodzie (commit `d7bbfc0`), wszystkie
+7 scenariuszy: **PASS=17 FAIL=0**, 44 min 56 s. Dochodzą sprawdzenia „faza uruchomiła
+co najmniej jeden dowód”, „po fazie: sklep zdrowy” i „brak obiektów `part-of=chaos`
+poza RBAC”. Historia: przebieg 1 na pierwszej wersji kodu (6 scenariuszy, bez
+`es-node-down`) dał PASS=10 FAIL=0 w 47 min 34 s; liczby nie są porównywalne,
+bo faza liczy dziś więcej sprawdzeń.
 
-| Scenariusz | Selftest | Fuse (ttl 1 min) |
+| Scenariusz | Selftest | Fuse: łączny czas dowodu / zdrowo po |
 |---|---|---|
-| bad-probe | 131 s | zdrowo 53 s po powrocie `break`, Job Succeeded |
-| bad-secret | 107 s | 54 s |
-| disk-full | 147 s | 54 s |
-| netpol-db | 1332 s (głównie oczekiwanie na ciszę) | nie sprawdzany |
-| oom | 379 s | nie sprawdzany |
-| queue-blocked | 424 s | nie sprawdzany |
+| bad-probe | 136 s | 116 s / 48 s |
+| bad-secret | 87 s | 103 s / 48 s |
+| disk-full | 153 s | 108 s / 48 s |
+| es-node-down | 398 s | 679 s / 234 s (`FUSE_TTL=4`) |
+| netpol-db | 390 s | nie sprawdzany |
+| oom | 87 s | nie sprawdzany |
+| queue-blocked | 405 s | nie sprawdzany |
 
-Fuse (Job wycofuje sam) faza sprawdza na trzech reprezentatywnych scenariuszach
-(`fuse_set` w `verify.sh`), selftest na wszystkich. Liczba 10 dotyczy
-tamtej wersji kodu: obecna faza liczy więcej sprawdzeń (walidacja `s=`/`skip=`, dowody
-alertów, końcowe czekanie na zdrowy sklep), więc nie jest do porównania. Pełny czysty
-przebieg końcowego kodu czeka na `es-node-down` (po decyzji w sekcji ze spoilerem).
+Fuse (Job wycofuje sam) faza sprawdza na czterech scenariuszach
+(`fuse_set` w `verify.sh`: bad-probe, bad-secret, disk-full, es-node-down),
+selftest na wszystkich. Ten przebieg nie miał `alerts=1`; wyniki alertów
+z 2026-11-08 poniżej nadal obowiązują.
 
 Alerty (`alerts=1`), czas od założenia awarii do `firing`:
 
@@ -488,18 +493,18 @@ w fazie).
 - **Tryb „losowy scenariusz bez nazwy”** (`s=random`). Możliwy później, gdy karty
   okrzepną. Dziś `chaos-list` pokazuje objawy, więc wiesz, w co grasz.
 
-## Otwarte: `es-node-down` (spoiler)
+## `es-node-down`: luka znaleziona i zamknięta (spoiler)
 
 > **UWAGA: SPOILER.** Ta sekcja zdradza lekcję scenariusza `es-node-down`.
 > Jeśli chcesz go przejść bez podpowiedzi, przeskocz do [ściągi](#ściąga).
 
-`es-node-down` jest jedynym scenariuszem, który **nie przeszedł** selftestu, fuse,
-dowodu alertu ani `faza=chaos`. Powód jest ważniejszy niż samo uruchomienie:
-framework pokazał lukę w odporności sklepu.
+`es-node-down` był ostatnim scenariuszem i przez pewien czas jedynym, który nie
+przechodził. Powód był ważniejszy niż samo uruchomienie: framework pokazał lukę
+w odporności sklepu.
 
-Indeks produktów `products-v1` ma `number_of_replicas: 0`
+Indeks produktów `products-v1` miał `number_of_replicas: 0`
 ([`infra/elasticsearch/mappings/products-v1.json`](../../infra/elasticsearch/mappings/products-v1.json)).
-Każdy shard ma więc **jedną** kopię. Scenariusz zdejmuje jeden z trzech węzłów ES.
+Każdy shard miał więc **jedną** kopię. Scenariusz zdejmuje jeden z trzech węzłów ES.
 Gdyby na tym węźle leżał jedyny shard, klaster poszedłby w `red`, a wyszukiwarka
 przestałaby działać, czyli złamałaby granicę „degradacja, nie awaria”.
 
@@ -508,19 +513,43 @@ dodaniem bezpiecznika, nie dał `red` tylko dlatego, że shard akurat leżał na
 który został; lukę zauważyłem, gdy ES przetasował shardy. Potem dodałem bezpiecznik
 w `break`: **odmawia, gdy jedyna kopia jakiegokolwiek shardu leży na węźle, który
 zniknie.** Na produkcji odmówił (`jedyna kopia products-v1/0`) i nic nie zostało
-założone. Obecny `break es-node-down` więc odmawia, dopóki indeks nie ma replik.
+założone.
 
-Decyzja do podjęcia (czeka na użytkownika):
+### Decyzja (historia)
 
 | Opcja | Skutek |
 |---|---|
 | `number_of_replicas: 1` dla `products-v1` | Każdy węzeł może zniknąć bez utraty dostępności. Koszt: dwa razy więcej miejsca na dane indeksu i więcej pracy przy indeksowaniu. `es-node-down` przechodzi bez zmian. |
 | Zostawić 0 i zmienić scenariusz | Scenariusz celuje w indeks z replikami (np. systemowy) albo uczy czegoś innego. Luka zostaje. |
 
-Gdy zapadnie decyzja, wynik zostanie dopisany do tej sekcji i do karty. Na razie
-przebiegi na klastrze wyłączały go przez `s=` (domyślnie faza bierze wszystkie
-scenariusze z `tools/chaos/scenarios`), a `tools/chaos/test.sh` sprawdza go wyłącznie
-bez klastra. Pełny przebieg `make k3s-verify faza=chaos` po decyzji musi go objąć.
+Wybrane: **`number_of_replicas: 1`** (commit `2bc71c6`). Koszt jest znikomy:
+indeks ma 1,2 MB i 6017 dokumentów, więc druga kopia nic nie waży, a luka jest
+zamknięta. Na produkcji indeks jest `green`: primary na `marketplace-es-default-2`,
+replika na `marketplace-es-default-0`.
+
+### Wynik na klastrze (2026-11-09)
+
+- **Selftest:** OK w 399 s. Przy zepsutym stanie ES był `yellow` (nie `red`), z 2 z 3
+  węzłów. `check` pokazał 4 z 4 wymagań na czerwono, a `reset` przywrócił
+  `replicas` 2 -> 3.
+- **Fuse:** pierwsza próba z `ttl 1` **nie przeszła**. Termin liczy się od utworzenia
+  blokady, a `break` tego scenariusza (pauza ECK i czekanie na `yellow`) trwa dłużej
+  niż minutę. Job przywrócił węzeł w środku `break`, `break` zauważył „ktoś
+  przywrócił replicas mimo pauzy” i sam się wycofał. Nic nie zostało zepsute.
+- **Poprawka** (commit `d7bbfc0`): scenariusz może ustawić `FUSE_TTL` (minuty)
+  i `FUSE_LIMIT_S` (sekundy), czyta je `tools/chaos/proof.sh`. `es-node-down` używa
+  `FUSE_TTL=4` i `FUSE_LIMIT_S=720`, i jest teraz w zbiorze fuse fazy chaos.
+- **Druga próba: PASS.** Zdrowo bez akcji po 240 s, Job zakończył się na przyciętej
+  Role. Log Joba: „śpię 235 s do wycofania”, „marketplace-es-default: replicas 2 -> 3”,
+  „wycofane, blokada zdjęta”. To pierwszy dowód ścieżki wycofania ES wewnątrz Joba.
+
+**Lekcja o bezpieczniku:** `ttl` jest terminem od utworzenia blokady, więc musi
+być dłuższy niż sam `break`. Dla scenariusza z długim `break` ttl 1 min jest
+błędem projektu dowodu, nie bezpiecznika. Dowód fuse, który nie przeszedł, a nic
+nie zepsuł, też jest wynikiem: dobrze, że wycofanie w `break` zadziałało.
+
+Alertu `es-node-down` nie ma (scenariusz nie ma `ALERT`), a alert `bad-probe`
+nadal nie był uruchomiany.
 
 ## Ściąga
 
@@ -544,7 +573,7 @@ Gdy coś poszło nie tak: [RUNBOOK #095](../RUNBOOK.md#095) („chaos-undo nie z
 
 ## Twoja kolej
 
-1. Przejdź po kolei sześć scenariuszy bez zaglądania do rozwiązań. Zacznij od
+1. Przejdź po kolei siedem scenariuszy bez zaglądania do rozwiązań. Zacznij od
    `bad-probe` (alert po kwadransie, więc uczy zaczynania od `kubectl`, nie od
    alertu). Każdy, który zakończysz `reset`, trafi do `~/.chaos-scores.tsv` jako
    „do powtórki”.
@@ -553,8 +582,8 @@ Gdy coś poszło nie tak: [RUNBOOK #095](../RUNBOOK.md#095) („chaos-undo nie z
    15 minutach, a powinien po jednej”. Zastanów się, jaką regułę dopisałbyś, i
    sprawdź ją w `infra/obs/prometheus/rules/marketplace.yml` (a `promtool` w CI
    powie, czy się zgadza).
-3. Rozstrzygnij otwarty punkt `es-node-down` ([Otwarte](#otwarte-es-node-down-spoiler)).
-   Po decyzji uruchom `es-node-down`, a wynik dopisz do przewodnika.
+3. Przeczytaj sekcję o `es-node-down` ([spoiler](#es-node-down-luka-znaleziona-i-zamknięta-spoiler)) dopiero po
+   przejściu scenariusza, i zastanów się, jak sprawdzisz, że luka jest zamknięta.
 4. Napisz scenariusz 8 sam: wybierz coś, czego nie ma w spisie (np. zły `ConfigMap`
    workera, wygasły certyfikat cert-managera, przepełniony `emptyDir`). Plik
    `tools/chaos/scenarios/<s>.sh`, karta w `docs/chaos/`, wpis do Role

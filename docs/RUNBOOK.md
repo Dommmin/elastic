@@ -94,7 +94,7 @@
 | [091](#091) | chaos: disk-full — `OutboxStale` przy zdrowych podach (spoiler) | k3s / chaos | G4 |
 | [092](#092) | chaos: netpol-db — `catalog-worker` w `CrashLoopBackOff`, joby stoją (spoiler) | k3s / chaos | G4 |
 | [093](#093) | chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1` (spoiler) | k3s / chaos | G4 |
-| [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler; scenariusz otwarty, nie przeszedł selftestu) | k3s / chaos | G4 |
+| [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler) | k3s / chaos | G4 |
 | [095](#095) | `chaos-undo` nie zadziałał — blokada `chaos-lock` zostaje, produkcja zepsuta | k3s / chaos | G4 |
 
 ---
@@ -4308,9 +4308,9 @@ endpoint, który jest w kodzie i w teście.
 ---
 
 <a id="094"></a>
-## 094 — chaos: es-node-down — ES widzi 2 węzły zamiast 3 (scenariusz otwarty)
+## 094 — chaos: es-node-down — ES widzi 2 węzły zamiast 3
 
-> ETAP G4, scenariusz `es-node-down` ([karta](chaos/es-node-down.md)), 2026-11-08. Scenariusz otwarty: nie przeszedł selftestu, fuse ani alertu.
+> ETAP G4, scenariusz `es-node-down` ([karta](chaos/es-node-down.md)), 2026-11-08, zamknięty 2026-11-09: selftest OK (399 s), fuse OK (`FUSE_TTL=4`), alertu brak.
 
 > ⚠️ Spoiler — przyczyna poniżej.
 
@@ -4328,7 +4328,8 @@ kubectl -n marketplace get sts marketplace-es-default -o jsonpath='{.spec.replic
 Adnotacja `eck.k8s.elastic.co/pause-orchestration: "true"` na zasobie ES i ręczne
 `scale` StatefulSetu do 2. Wyszukiwarka przeżywa tylko dlatego, że jedyny shard
 `products-v1` (`number_of_replicas: 0`) leżał na węźle, który został. `break` odmawia,
-gdy jedyna kopia shardu leży na węźle, który zniknie: bez tego bezpiecznika byłoby `red`. Wpis pochodzi z karty i z jednego ręcznego przebiegu sprzed bezpiecznika; obecnie `break` odmawia (`products-v1` bez replik).
+gdy jedyna kopia shardu leży na węźle, który zniknie: bez tego bezpiecznika byłoby `red`. Wpis pochodził z karty i z jednego ręcznego przebiegu sprzed bezpiecznika. Naprawione: `products-v1` ma teraz `number_of_replicas: 1` (commit `2bc71c6`), więc utrata węzła daje `yellow`, nie `red`.
+Wynik na klastrze (2026-11-09): selftest OK w 399 s (przy zepsutym stanie `yellow`, 2 z 3 węzłów, `check` 4 z 4 czerwone, `reset` przywrócił replicas 2 -> 3). Fuse przeszedł dopiero z `FUSE_TTL=4`: z `ttl 1` Job przywracał węzeł w środku `break`, bo termin liczy się od utworzenia blokady, a `break` trwa dłużej niż minutę (nic nie zostało zepsute). Dowód: zdrowo po 240 s, Job Succeeded.
 
 **Naprawa**
 ```bash
@@ -4339,8 +4340,8 @@ kubectl -n marketplace rollout status statefulset marketplace-es-default
 Nie kasuj podów ani PVC Elasticsearcha.
 
 **Czego się nauczyłem**
-Indeks bez replik na klastrze z trzema węzłami to pojedynczy punkt awarii. Otwarta
-decyzja o `number_of_replicas: 1` w [przewodniku G4](blog/etap-g4-chaos.md#otwarte-es-node-down-spoiler).
+Indeks bez replik na klastrze z trzema węzłami to pojedynczy punkt awarii. Decyzja
+o `number_of_replicas: 1` opisana w [przewodniku G4](blog/etap-g4-chaos.md#es-node-down-luka-znaleziona-i-zamknięta-spoiler). Termin `ttl` Joba liczy się od utworzenia blokady, więc musi być dłuższy niż `break`.
 
 ---
 

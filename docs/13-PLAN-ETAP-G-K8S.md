@@ -1,6 +1,6 @@
 # 13 — ETAP G: Kubernetes na poziomie CKAD + produkcyjna obserwowalność
 
-> **Stan (2026-11-06):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). G4 zrobione, poza `es-node-down` (czeka na decyzję): 6 scenariuszy przeszło selftest na klastrze, przewodnik [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md). Następny: G5.
+> **Stan (2026-11-09):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). G4 zrobione: wszystkie 7 scenariuszy przeszło selftest na klastrze, `faza=chaos` PASS=17 FAIL=0 (2026-11-09), `es-node-down` zamknięty, przewodnik [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md). Następny: G5.
 
 **Cel:** po ETAPIE D2 sklep działa na k3s, ale manifesty pokrywają mniej więcej połowę
 zakresu CKAD, a Prometheus/Grafana/Alertmanager działają tylko lokalnie w Compose.
@@ -118,9 +118,9 @@ produkcyjnym k3s, lista z objawami w [`docs/chaos/`](chaos/README.md) (karta: ob
 czego zacząć, pytania, rozwiązanie zwinięte na końcu). Bezpieczniki: preflight, blokada,
 migawka z klastra, Job `chaos-undo` w klastrze wycofujący sam po `ttl`, RBAC z `resourceNames`.
 
-**Stan (2026-11-08):** 6 z 7 scenariuszy przeszło selftest na klastrze, alert potwierdzony
-dla 5 z 6; przebieg 1 `faza=chaos` (pierwsza wersja kodu) PASS=10 FAIL=0, pełny czysty przebieg
-końcowego kodu czeka. `es-node-down`: otwarte, czeka na decyzję (szczegóły w sekcji ze spoilerem w przewodniku).
+**Stan (2026-11-09):** wszystkie 7 scenariuszy przeszło selftest na klastrze, alert potwierdzony
+dla 5 z 7; pełny czysty przebieg końcowego kodu `faza=chaos` PASS=17 FAIL=0 (44 min 56 s).
+`es-node-down` zamknięty (szczegóły w sekcji ze spoilerem w przewodniku).
 Przewodnik: [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md); projekt:
 [`superpowers/specs/2026-11-07-g4-chaos-design.md`](superpowers/specs/2026-11-07-g4-chaos-design.md);
 RUNBOOK #088–#095 (spoilery).
