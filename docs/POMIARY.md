@@ -570,9 +570,10 @@ prefetch pokazała 28 800 zamiast 30 000). W przebiegach 3 i 4 w kolejce było m
   **1 091 ms**, min–max 1 017–1 186 ms. Szybciej niż po skasowaniu poda; przyczyny nie badałem
   (hipoteza: `docker stop` zrywa połączenia od razu, a kasowany pod zamyka się łagodnie).
 - **Utracone potwierdzone: 0 we wszystkich 6 przebiegach**; żaden `nacked`; producent kończył się sukcesem
-  (kod 0). Wartości poniżej 9 000 (8 994–8 997) to koniec przebiegu: ostatnich kilka wiadomości nie zdążyło
-  być potwierdzonych przy ostatnim odczycie metryk (co 0,25 s) i nie ma ich w kolejce; niepotwierdzona
-  wiadomość nie wchodzi do zobowiązania brokera, więc to nie jest utrata.
+  (kod 0). Wartości poniżej 9 000 (8 994–8 997) to koniec przebiegu: ostatnich kilka wiadomości nie zostało
+  policzonych jako potwierdzone przy ostatnim odczycie metryk (co 0,25 s). W przebiegach 3 i 4 nie ma ich
+  w kolejce (w kolejce tyle, ile potwierdzonych); w przebiegu 5 są w kolejce (9 000), tylko nie były jeszcze
+  policzone jako potwierdzone. Niepotwierdzona wiadomość nie wchodzi do zobowiązania brokera, więc to nie jest utrata.
 - Węzeł `agent-1` po `docker start` wraca sam; kubelet i pod rabbitmq-ha-server-0 wstają w ciągu
   kilkudziesięciu sekund, `AllReplicasReady=True` po ~1–2 min (RUNBOOK: po `docker start` adresy IP
   węzłów k3d potrafią się przetasować i `kubectl exec` chwilę pada na certyfikacie).
@@ -601,7 +602,7 @@ generatorem perf-test: kolejka quorum `g5.prefetch` wstępnie napełniona 30 000
 Wartość faktycznie działa: przed pomiarem `rabbitmqctl list_consumers queue_name prefetch_count`
 pokazało dokładnie 1, 10 i 50.
 
-| Prefetch konsumenta | Odbiór, msg/s (`receiving rate avg` perf-test; mediana, min–max) | Czas opróżnienia 30 000 wiadomości, s (zawiera start Joba: scheduling, czekanie na trasę, JVM, narzut ok. 5–10 s, wyliczony: 30 000 / przepustowość vs czas) | Load avg (1 min) |
+| Prefetch konsumenta | Odbiór, msg/s (`receiving rate avg` perf-test; mediana, min–max) | Czas opróżnienia 30 000 wiadomości, s (zawiera start Joba: scheduling, czekanie na trasę, JVM, narzut ok. 5–10 s, wyliczony per przebieg: 30 000 / przepustowość tego samego przebiegu vs jego czas) | Load avg (1 min) |
 |---|---|---|---|
 | 1 | 576 (509–581) | 61,8 (56,5–67,0) | 9,07 (8,83–9,28) |
 | 10 | 2 487 (2 260–2 696) | 20,9 (20,9–21,0) | 9,05 (8,48–11,19) |
@@ -610,8 +611,8 @@ pokazało dokładnie 1, 10 i 50.
 Przy prefetch 1 konsument czeka na ack i kolejne dostarczenie (przypuszczalnie zapis do większości replik plus RTT; nie mierzyłem) po każdej
 wiadomości, więc przepustowość to ok. 1 / (czas jednego cyklu) ≈ 580 msg/s. Wg przepustowości (mediany)
 okno 10 daje ~4,3 ×, a 50 ~13,7 ×; kolumna czasu pokazuje mniejsze ilorazy (2,9 × i 5,8 ×), bo
-każdy czas zawiera stały narzut startu Joba, który **wyliczyłem, nie zmierzyłem** (30 000 / mediana
-przepustowości vs zmierzony czas: ok. 5–10 s). To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
+każdy czas zawiera stały narzut startu Joba, który **wyliczyłem, nie zmierzyłem** (30 000 / przepustowość
+tego samego przebiegu vs jego czas: ok. 5–10 s). To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
 pojedynczo przez `basic.get`.
 
 **Stan wyjściowy `search-consumer`** (jedyne, co da się o nim zmierzyć): reindeks 1 500 zdarzeń
