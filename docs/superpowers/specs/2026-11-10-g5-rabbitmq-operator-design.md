@@ -15,8 +15,10 @@ Kubernetesa, Streams i migracja bez utraty wiadomości, wszystko na zdarzeniach 
 
 **Kryteria sukcesu (wszystkie mierzalne, wszystkie w `verify` fazie `g5`):**
 
-1. `RabbitmqCluster` z 3 replikami, każda na innym węźle k3d, pody jako uid 999
-   (wyjątek „root” dla rabbitmq znika z `tools/k3s/ckad-check.rb`).
+1. `RabbitmqCluster` z 3 replikami, każda na innym węźle k3d, pody jako uid 999.
+   W końcowym overlayu (`g5-local-ha`) nie ma już poda RabbitMQ działającego jako root.
+   Baza `deploy/k8s` (przyszła produkcja) zachowuje stary StatefulSet i jego wyjątek
+   w `tools/k3s/ckad-check.rb`, dopóki nie będzie wdrożenia na serwer (poza zakresem).
 2. Cała topologia (exchange, kolejki, bindingi, użytkownik, uprawnienia, polityki)
    istnieje jako CR-y Messaging Topology Operatora. `definitions.json` nie jest już
    źródłem prawdy dla k8s (Compose dalej go używa).
@@ -56,9 +58,11 @@ Kubernetesa, Streams i migracja bez utraty wiadomości, wszystko na zdarzeniach 
   `outbox-publisher`, `search-consumer` i ES przez ECK z **1 węzłem** (łatka `count: 1`,
   heap 512m). Zasoby zmniejszone łatkami. Baza `deploy/k8s` nie dostaje żadnej zmiany
   pod k3d.
-- Nowe pliki bazowe RabbitMQ (`deploy/k8s/rabbitmq-cluster/`): `RabbitmqCluster`
-  + CR-y topologii. Są w bazie, nie w overlayu, bo to docelowa architektura dla każdego
-  środowiska. Overlay `g5-local` dokłada je przez `resources`.
+- Nowe pliki RabbitMQ w osobnym katalogu `deploy/k8s/rabbitmq-cluster/` (własny
+  `kustomization.yaml`): `RabbitmqCluster` + CR-y topologii + ich NetworkPolicy. To
+  docelowa architektura dla każdego środowiska, ale bazowy `kustomization.yaml` ich nie
+  włącza (bez operatora w klastrze CR-y byłyby „nieznanym typem”). Overlaye `g5-local`
+  i `g5-local-ha` dokładają je przez `resources`.
 - NetworkPolicy z G2 obowiązują także na k3d (k3d ma ten sam kube-router). Nowe trasy:
   operator → pody RabbitMQ (management API), pody RabbitMQ między sobą (4369, 25672,
   5672 dla Shovela), klienci → 5672. Trasa każdego klienta jest w tabeli `ALLOWED`
@@ -106,7 +110,9 @@ Kolejność (każdy krok to osobna komenda w przewodniku i sprawdzenie w `verify
    Idempotencja przez `ProcessedEvent` chroni przed duplikatami z okna przełączenia.
 5. Sprawdzenie: stare kolejki = 0, DLQ = 0 (stare i nowe), outbox opublikowany w całości,
    `ProcessedEvent` = liczba zdarzeń, `_count` w ES zgodny z bazą katalogu.
-6. Usunięcie StatefulSetu `rabbitmq`, jego Service i wyjątku w `ckad-check.rb`.
+6. Stan końcowy jako kod: overlay `g5-local-ha` (aplikacje na `rabbitmq-ha`, bez
+   StatefulSetu `rabbitmq` i jego Service). Kroki 2 i 4 to operacje na żywo w czasie
+   migracji, a `kubectl apply` overlayu końcowego niczego już nie zmienia (repo = prawda).
 
 Dowód „bez utraty” to liczenie na obu końcach, nie brak błędów w logach.
 
