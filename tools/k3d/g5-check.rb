@@ -13,7 +13,7 @@ ok = lambda do |cond, msg|
   fails += 1 unless cond
 end
 
-WORKLOAD_KINDS = %w[Deployment StatefulSet DaemonSet Job CronJob Elasticsearch Kibana].freeze
+WORKLOAD_KINDS = %w[Deployment StatefulSet DaemonSet Job CronJob Elasticsearch Kibana RabbitmqCluster].freeze
 workloads = docs.select { |d| WORKLOAD_KINDS.include?(d["kind"]) }
 names = workloads.map { |d| "#{d['kind']}/#{d.dig('metadata', 'name')}" }.sort
 
@@ -42,7 +42,7 @@ puts "Overlay #{overlay}"
 case overlay
 when "g5-local"
   want = %w[Deployment/catalog-app Deployment/outbox-publisher Deployment/search-consumer Elasticsearch/marketplace
-            Job/migrate StatefulSet/postgres StatefulSet/rabbitmq].sort
+            Job/migrate RabbitmqCluster/rabbitmq-ha StatefulSet/postgres StatefulSet/rabbitmq].sort
   ok.(names == want, "obciążenia = #{want.join(', ')} (jest: #{names.join(', ')})")
 
   es = docs.find { |d| d["kind"] == "Elasticsearch" }
@@ -63,7 +63,10 @@ when "g5-local"
   ok.(!docs.any? { |d| d["kind"] == "CronJob" && d.dig("metadata", "name") == "pg-backup" }, "bez CronJob pg-backup")
   ok.(!docs.any? { |d| d["kind"] == "Job" && d.dig("metadata", "name").to_s.start_with?("glitchtip") }, "bez Jobów glitchtip")
 
-  total = workloads.flat_map { |d| containers.(d) }.sum { |c| to_mi.(c.dig("resources", "limits", "memory")) }
+  # RabbitmqCluster: operator sam generuje StatefulSet, więc limit z spec.resources liczymy × replicas.
+  rmq = docs.find { |d| d["kind"] == "RabbitmqCluster" && d.dig("metadata", "name") == "rabbitmq-ha" }
+  rmq_mi = rmq ? to_mi.(rmq.dig("spec", "resources", "limits", "memory")) * rmq.dig("spec", "replicas").to_i : 0
+  total = workloads.flat_map { |d| containers.(d) }.sum { |c| to_mi.(c.dig("resources", "limits", "memory")) } + rmq_mi
   ok.(total <= 6144, "suma limitów pamięci kontenerów #{total} Mi <= 6144 Mi (6 Gi; k3d i operatory poza renderem)")
 
   # Obrazy aplikacji: wyłącznie tag g5-local (initContainers też).
@@ -78,6 +81,57 @@ when "g5-local"
   end.compact.select { |i| i.start_with?("ghcr.io/dommmin/") }
   bad = imgs.reject { |i| i.end_with?(":g5-local") }
   ok.(!imgs.empty? && bad.empty?, "obrazy aplikacji z tagiem g5-local#{bad.empty? ? '' : " (zły: #{bad.uniq.join(', ')})"}")
+
+  # --- rabbitmq-ha (operator RabbitMQ) ---
+  ok.(rmq && rmq.dig("spec", "replicas") == 3, "RabbitmqCluster rabbitmq-ha: replicas: 3")
+  aa = rmq && rmq.dig("spec", "affinity", "podAntiAffinity", "requiredDuringSchedulingIgnoredDuringExecution")
+  ok.(aa.is_a?(Array) && aa.any? { |t| t["topologyKey"] == "kubernetes.io/hostname" },
+      "rabbitmq-ha: podAntiAffinity required po kubernetes.io/hostname")
+  ok.(rmq && rmq.dig("spec", "resources", "limits", "memory") == "512Mi", "rabbitmq-ha: limit pamięci 512Mi")
+  plugins = rmq ? (rmq.dig("spec", "rabbitmq", "additionalPlugins") || []) : []
+  %w[rabbitmq_prometheus rabbitmq_shovel rabbitmq_shovel_management rabbitmq_stream].each do |pl|
+    ok.(plugins.include?(pl), "rabbitmq-ha: wtyczka #{pl}")
+  end
+  cfg = rmq ? rmq.dig("spec", "rabbitmq", "additionalConfig").to_s : ""
+  ok.(cfg =~ /^\s*default_queue_type\s*=\s*quorum\s*$/, "rabbitmq-ha: default_queue_type = quorum")
+  ok.(rmq && rmq.dig("spec", "image").to_s =~ %r{\Arabbitmq:\d+\.\d+\.\d+-management\z}, "rabbitmq-ha: obraz przypięty (rabbitmq:X.Y.Z-management)")
+  ovr = rmq ? rmq.dig("spec", "override", "statefulSet", "spec", "template", "spec") : nil
+  main = ovr && (ovr["containers"] || []).find { |c| c["name"] == "rabbitmq" }
+  sc = main && main["securityContext"]
+  ok.(sc && sc["allowPrivilegeEscalation"] == false && sc.dig("capabilities", "drop") == ["ALL"] &&
+      sc.dig("seccompProfile", "type") == "RuntimeDefault", "rabbitmq-ha: securityContext (drop ALL, bez eskalacji, seccomp RuntimeDefault)")
+  init = ovr && (ovr["initContainers"] || []).find { |c| c["name"] == "setup-container" }
+  isc = init && init["securityContext"]
+  ok.(isc && isc["allowPrivilegeEscalation"] == false && isc.dig("capabilities", "drop") == ["ALL"], "rabbitmq-ha: securityContext initContainera setup-container")
+
+  netpols = docs.select { |d| d["kind"] == "NetworkPolicy" }
+  ha = netpols.find { |d| d.dig("metadata", "name") == "rabbitmq-ha-ingress" }
+  ok.(!ha.nil?, "NetworkPolicy rabbitmq-ha-ingress")
+  rules = ha ? (ha.dig("spec", "ingress") || []) : []
+  ports_of = ->(r) { (r["ports"] || []).map { |x| x["port"] }.sort }
+  apps_of = lambda do |r|
+    (r["from"] || []).flat_map do |f|
+      ex = f.dig("podSelector", "matchExpressions") || []
+      ex.flat_map { |e| e["values"] || [] } + [f.dig("podSelector", "matchLabels", "app")].compact
+    end.sort
+  end
+  clients = rules.find { |r| ports_of.(r) == [5552, 5672] && apps_of.(r) == %w[outbox-publisher perf-test search-consumer] }
+  ok.(!clients.nil?, "rabbitmq-ha-ingress: outbox-publisher, search-consumer, perf-test na 5672 i 5552")
+  peers = rules.find do |r|
+    (r["from"] || []).any? { |f| f.dig("podSelector", "matchLabels", "app.kubernetes.io/name") == "rabbitmq-ha" }
+  end
+  ok.(peers && ports_of.(peers) == [4369, 5552, 5672, 25672], "rabbitmq-ha-ingress: pody rabbitmq-ha między sobą na 4369, 25672, 5672, 5552")
+  ops = rules.find do |r|
+    (r["from"] || []).any? { |f| f.dig("namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") == "rabbitmq-system" }
+  end
+  ok.(ops && ports_of.(ops) == [15672], "rabbitmq-ha-ingress: namespace rabbitmq-system na 15672")
+  ok.(rules.size == 3, "rabbitmq-ha-ingress: dokładnie trzy reguły, nic więcej z marketplace (jest: #{rules.size})")
+  ok.(netpols.any? { |d| d.dig("metadata", "name") == "rabbitmq-ha-egress-api" }, "NetworkPolicy rabbitmq-ha-egress-api (peer discovery -> API)")
+  from_ha = netpols.find { |d| d.dig("metadata", "name") == "rabbitmq-from-ha" }
+  ok.(from_ha && from_ha.dig("spec", "podSelector", "matchLabels", "app") == "rabbitmq" &&
+      (from_ha.dig("spec", "ingress") || []).any? { |r| ports_of.(r) == [5672] &&
+        (r["from"] || []).any? { |f| f.dig("podSelector", "matchLabels", "app.kubernetes.io/name") == "rabbitmq-ha" } },
+      "NetworkPolicy rabbitmq-from-ha: rabbitmq-ha -> stary rabbitmq:5672 (Shovel)")
 
   pols = docs.select { |d| d["kind"] == "NetworkPolicy" }.map { |d| d.dig("metadata", "name") }
   %w[default-deny allow-dns allow-egress-in-namespace].each do |n|

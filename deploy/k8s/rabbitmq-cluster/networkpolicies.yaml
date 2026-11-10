@@ -1,0 +1,81 @@
+# ============================================================================
+#  Polityki sieciowe rabbitmq-ha (ETAP G5). Baza ma default-deny Ingress+Egress,
+#  allow-dns i allow-egress-in-namespace (ruch między podami namespace).
+#  Tu: kto wchodzi do rabbitmq-ha, dokąd wychodzi rabbitmq-ha i kto może do
+#  starego rabbitmq (źródło Shovela).
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ha-ingress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+  policyTypes: [Ingress]
+  ingress:
+    # Klienci AMQP (5672) i stream (5552). perf-test = obciążenie z późniejszych zadań.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [outbox-publisher, search-consumer, perf-test]
+      ports:
+        - port: 5672
+        - port: 5552
+    # Węzły klastra: epmd (4369), dystrybucja Erlanga (25672), AMQP i stream
+    # (klienci stream i kolejki kworum rozmawiają też między replikami).
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+      ports:
+        - port: 4369
+        - port: 25672
+        - port: 5672
+        - port: 5552
+    # Operatory (rabbitmq-system) wołają API zarządzania — tak działa m.in.
+    # messaging-topology-operator.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: rabbitmq-system }
+      ports:
+        - port: 15672
+---
+# Peer discovery (rabbit_peer_discovery_k8s) pyta API Kubernetes o endpointy.
+# default-deny Egress to blokuje; allow-egress-in-namespace obejmuje tylko pody.
+# W k3d serwer API stoi na węźle server-0 (sieć Dockera, port 6443); ClusterIP
+# kubernetes.default:443 jest DNAT-owany na ten adres. 443 zostaje dla klastrów,
+# gdzie API słucha na 443.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ha-egress-api
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+        - ipBlock: { cidr: 172.16.0.0/12 }
+        - ipBlock: { cidr: 192.168.0.0/16 }
+      ports:
+        - { port: 6443, protocol: TCP }
+        - { port: 443, protocol: TCP }
+---
+# Shovel: rabbitmq-ha (cel) czyta ze starego rabbitmq:5672. Egress rabbitmq-ha
+# do podów namespace przepuszcza allow-egress-in-namespace; brakuje ingressu.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-from-ha
+spec:
+  podSelector:
+    matchLabels: { app: rabbitmq }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+      ports:
+        - port: 5672

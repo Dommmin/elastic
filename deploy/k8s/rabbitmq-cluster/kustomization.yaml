@@ -1,0 +1,12 @@
+# ============================================================================
+#  Klaster RabbitMQ z operatora (ETAP G5). NIE wchodzi do bazy deploy/k8s —
+#  baza = przyszła produkcja; dołącza go overlay (np. g5-local).
+#  Wymaga CRD z deploy/k8s/vendor/rabbitmq-cluster-operator-* (tools/k3d/install-operators.sh).
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: marketplace
+
+resources:
+  - rabbitmq-ha.yaml
+  - networkpolicies.yaml

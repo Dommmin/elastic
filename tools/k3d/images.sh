@@ -56,11 +56,18 @@ log "build rabbitmq"
 docker build --build-arg "RABBITMQ_VERSION=${RABBITMQ_VERSION}" \
   -t "${REGISTRY}/elastic-rabbitmq:${TAG}" infra/rabbitmq || die "build rabbitmq nie powiódł się"
 
+# Obraz RabbitmqCluster (operator, G5): oficjalny debianowy, ta sama wersja co stary rabbitmq.
+# Pull na hoście + import — pull z Docker Huba wewnątrz k3d jest wolny.
+RMQ_OPERATOR_IMAGE="rabbitmq:${RABBITMQ_VERSION}-management"
+log "pull $RMQ_OPERATOR_IMAGE"
+docker pull --platform linux/arm64 "$RMQ_OPERATOR_IMAGE" >/dev/null || die "pull $RMQ_OPERATOR_IMAGE nie powiódł się"
+
 log "import do $CLUSTER"
 k3d image import -c "$CLUSTER" \
   "${REGISTRY}/elastic-catalog:${TAG}" \
   "${REGISTRY}/elastic-search:${TAG}" \
   "${REGISTRY}/elastic-postgres:${TAG}" \
   "${REGISTRY}/elastic-elasticsearch:${TAG}" \
-  "${REGISTRY}/elastic-rabbitmq:${TAG}" || die "k3d image import nie powiódł się"
+  "${REGISTRY}/elastic-rabbitmq:${TAG}" \
+  "$RMQ_OPERATOR_IMAGE" || die "k3d image import nie powiódł się"
 log "obrazy zaimportowane"

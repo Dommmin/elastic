@@ -2,13 +2,15 @@
 #  Overlay g5-local (ETAP G5): ścieżka komunikatów sklepu na starym RabbitMQ,
 #  lokalny k3d `elastic-g5`. Baza bez zmian; obrazy z `make g5-images`.
 #  Zostają: postgres, rabbitmq (stary), catalog-app (read-back konsumenta),
-#  outbox-publisher, search-consumer, ES (1 węzeł), Job migrate. Reszta kasowana w delete-unneeded.yaml.
+#  outbox-publisher, search-consumer, ES (1 węzeł), Job migrate,
+#  RabbitmqCluster rabbitmq-ha (deploy/k8s/rabbitmq-cluster, operator). Reszta kasowana w delete-unneeded.yaml.
 # ============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../../k8s
+  - ../../k8s/rabbitmq-cluster
 
 configurations:
   - kustomizeconfig.yaml

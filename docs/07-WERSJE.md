@@ -54,6 +54,10 @@ Sprawdzone 2026-11-10 (`brew install k3d`, `k3d version`).
 | **k3d** | **v5.9.0** | Homebrew (`brew install k3d`) | domyślny k3s tej wersji to v1.36.4, więc obraz węzłów podajemy jawnie |
 | **k3s (węzły k3d)** | **v1.36.5-k3s1** | `rancher/k3s:v1.36.5-k3s1` w `tools/k3d/up.sh` | ta sama linia co produkcja (`tools/k3s/install-k3s.sh`) |
 | Obrazy lokalne | `g5-local` | `ghcr.io/dommmin/elastic-{catalog,search,postgres}:g5-local` | budowane przez `tools/k3d/images.sh`, import `k3d image import` |
+| **cert-manager** | **v1.21.2** | helm `jetstack/cert-manager`, `tools/k3d/install-operators.sh` | ta sama wersja co na VPS; na k3d bez ServiceMonitor |
+| **RabbitMQ cluster-operator** | **2.23.2** | `deploy/k8s/vendor/rabbitmq-cluster-operator-2.23.2/cluster-operator.yml` | sprawdzone 2026-11-10 (GitHub Releases `rabbitmq/cluster-operator`); sha256 w nagłówku pliku |
+| **messaging-topology-operator** | **1.20.5** | `deploy/k8s/vendor/messaging-topology-operator-1.20.5/messaging-topology-operator-with-certmanager.yaml` | sprawdzone 2026-11-10 (`rabbitmq/messaging-topology-operator`); sha256 w nagłówku pliku |
+| Obraz RabbitmqCluster | **4.3.4** | `rabbitmq:4.3.4-management` (debianowy, uid 999) w `deploy/k8s/rabbitmq-cluster/rabbitmq-ha.yaml` | ta sama wersja co `RABBITMQ_VERSION`; alpine ma uid 100, więc nie pasuje do operatora; import przez `tools/k3d/images.sh` |
 
 ### PHP — zależności
 
