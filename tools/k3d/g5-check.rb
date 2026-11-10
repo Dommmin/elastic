@@ -95,6 +95,9 @@ when "g5-local"
   cfg = rmq ? rmq.dig("spec", "rabbitmq", "additionalConfig").to_s : ""
   ok.(cfg =~ /^\s*default_queue_type\s*=\s*quorum\s*$/, "rabbitmq-ha: default_queue_type = quorum")
   ok.(rmq && rmq.dig("spec", "image").to_s =~ %r{\Arabbitmq:\d+\.\d+\.\d+-management\z}, "rabbitmq-ha: obraz przypięty (rabbitmq:X.Y.Z-management)")
+  env_ver = File.read(File.expand_path("../../.env.example", __dir__), encoding: "UTF-8")[/^RABBITMQ_VERSION=(\S+)/, 1]
+  ok.(env_ver && rmq && rmq.dig("spec", "image") == "rabbitmq:#{env_ver}-management",
+      "rabbitmq-ha: spec.image = rabbitmq:<RABBITMQ_VERSION z .env.example>-management (#{env_ver})")
   ovr = rmq ? rmq.dig("spec", "override", "statefulSet", "spec", "template", "spec") : nil
   main = ovr && (ovr["containers"] || []).find { |c| c["name"] == "rabbitmq" }
   sc = main && main["securityContext"]
@@ -126,7 +129,13 @@ when "g5-local"
   end
   ok.(ops && ports_of.(ops) == [15672], "rabbitmq-ha-ingress: namespace rabbitmq-system na 15672")
   ok.(rules.size == 3, "rabbitmq-ha-ingress: dokładnie trzy reguły, nic więcej z marketplace (jest: #{rules.size})")
-  ok.(netpols.any? { |d| d.dig("metadata", "name") == "rabbitmq-ha-egress-api" }, "NetworkPolicy rabbitmq-ha-egress-api (peer discovery -> API)")
+  eg = netpols.find { |d| d.dig("metadata", "name") == "rabbitmq-ha-egress-api" }
+  ok.(eg && eg.dig("spec", "podSelector", "matchLabels") == { "app.kubernetes.io/name" => "rabbitmq-ha" } &&
+      eg.dig("spec", "policyTypes") == ["Egress"], "rabbitmq-ha-egress-api: wybiera wyłącznie pody rabbitmq-ha, tylko Egress")
+  eg_rules = eg ? (eg.dig("spec", "egress") || []) : []
+  ok.(eg_rules.size == 1 && (eg_rules[0]["to"] || []).map { |t| t["ipBlock"] } == [{ "cidr" => "172.22.0.0/16" }] &&
+      (eg_rules[0]["ports"] || []).map { |x| [x["port"], x["protocol"]] } == [[6443, "TCP"]],
+      "rabbitmq-ha-egress-api: jedna reguła, tylko 172.22.0.0/16 (sieć k3d) na 6443/TCP")
   from_ha = netpols.find { |d| d.dig("metadata", "name") == "rabbitmq-from-ha" }
   ok.(from_ha && from_ha.dig("spec", "podSelector", "matchLabels", "app") == "rabbitmq" &&
       (from_ha.dig("spec", "ingress") || []).any? { |r| ports_of.(r) == [5672] &&

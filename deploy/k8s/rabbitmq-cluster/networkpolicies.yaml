@@ -43,9 +43,14 @@ spec:
 ---
 # Peer discovery (rabbit_peer_discovery_k8s) pyta API Kubernetes o endpointy.
 # default-deny Egress to blokuje; allow-egress-in-namespace obejmuje tylko pody.
-# W k3d serwer API stoi na węźle server-0 (sieć Dockera, port 6443); ClusterIP
-# kubernetes.default:443 jest DNAT-owany na ten adres. 443 zostaje dla klastrów,
-# gdzie API słucha na 443.
+# kube-router ocenia egress PO DNAT-cie Service'u, więc realnym celem nie jest
+# kubernetes.default (10.43.0.1:443), tylko Endpoints `kubernetes`: węzeł server-0
+# na porcie 6443 (k3d: 172.22.0.3:6443). Reguła: tylko 6443 i tylko sieć Dockera
+# k3d-elastic-g5 (172.22.0.0/16, tam są wyłącznie węzły). /32 odrzucone: adres
+# server-0 zmienia się po odtworzeniu klastra, podsieć sieci k3d nie.
+# Podsieć sprawdź: `docker network inspect k3d-elastic-g5 -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'`;
+# inna niż 172.22.0.0/16 = popraw tu i w tools/k3d/g5-check.rb. Na VPS (k3s,
+# API na IP hosta:6443) ta polityka nie jest używana — to dodatek overlayu G5.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -56,12 +61,9 @@ spec:
   policyTypes: [Egress]
   egress:
     - to:
-        - ipBlock: { cidr: 10.0.0.0/8 }
-        - ipBlock: { cidr: 172.16.0.0/12 }
-        - ipBlock: { cidr: 192.168.0.0/16 }
+        - ipBlock: { cidr: 172.22.0.0/16 }
       ports:
         - { port: 6443, protocol: TCP }
-        - { port: 443, protocol: TCP }
 ---
 # Shovel: rabbitmq-ha (cel) czyta ze starego rabbitmq:5672. Egress rabbitmq-ha
 # do podów namespace przepuszcza allow-egress-in-namespace; brakuje ingressu.
