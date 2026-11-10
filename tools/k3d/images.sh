@@ -11,15 +11,20 @@ TAG="g5-local"
 REGISTRY="ghcr.io/dommmin"
 
 command -v k3d >/dev/null 2>&1 || die "brak k3d (brew install k3d)"
-k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$CLUSTER" \
-  || die "klaster $CLUSTER nie istnieje (make g5-up)"
+cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 
-# Wersje z .env.example (jedno źródło prawdy, jak w images.yml).
-ver() { grep -E "^$1=" "$REPO_ROOT/.env.example" | head -1 | cut -d= -f2; }
-FRANKENPHP_VERSION="$(ver FRANKENPHP_VERSION)"
-PHP_VERSION="$(ver PHP_VERSION)"
-NODE_VERSION="$(ver NODE_VERSION)"
-POSTGRES_VERSION="$(ver POSTGRES_VERSION)"
+# Wersje z .env.example (jedno źródło prawdy, jak w images.yml). ENV_EXAMPLE: nadpisanie do testów.
+ENV_EXAMPLE="${ENV_EXAMPLE:-$REPO_ROOT/.env.example}"
+ver() {
+  local v
+  v="$(grep -E "^$1=" "$ENV_EXAMPLE" | head -1 | cut -d= -f2)"
+  [ -n "$v" ] || die "brak klucza $1 w $ENV_EXAMPLE"
+  printf '%s\n' "$v"
+}
+FRANKENPHP_VERSION="$(ver FRANKENPHP_VERSION)" || exit 1
+PHP_VERSION="$(ver PHP_VERSION)" || exit 1
+NODE_VERSION="$(ver NODE_VERSION)" || exit 1
+POSTGRES_VERSION="$(ver POSTGRES_VERSION)" || exit 1
 
 cd "$REPO_ROOT" || die "brak katalogu repo"
 

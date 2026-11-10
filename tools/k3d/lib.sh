@@ -12,7 +12,8 @@ set -uo pipefail
 CLUSTER="elastic-g5"
 CTX="k3d-elastic-g5"
 NS="marketplace"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" \
+  || { printf '[g5] BŁĄD: nie da się ustalić katalogu repo\n' >&2; exit 1; }
 
 # kk: w namespace sklepu; kc: bez namespace (węzły, operatory, CRD).
 kk() { kubectl --context "$CTX" -n "$NS" "$@"; }
@@ -33,9 +34,20 @@ wait_for() {
   return 0
 }
 
-# docker_free_mb — wolna pamięć Docker VM w MB (kolumna `available` z `free -m`).
+# cluster_exists — czy klaster k3d $CLUSTER istnieje (uruchomiony lub zatrzymany).
+cluster_exists() {
+  k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$CLUSTER"
+}
+
+# docker_free_mb — wolna pamięć Docker VM w MB (kolumna `available` z `free -m`,
+# wybrana po nazwie nagłówka). Przy błędzie: komunikat docker-a na stderr, kod 1, pusty stdout.
 docker_free_mb() {
-  docker run --rm --privileged --pid=host alpine:3.20 \
-    nsenter -t 1 -m sh -c 'free -m' 2>/dev/null \
-    | awk '/^Mem:/ { print $7 }'
+  local out val
+  out="$(docker run --rm --privileged --pid=host alpine:3.20 \
+    nsenter -t 1 -m sh -c 'free -m')" || return 1
+  val="$(printf '%s\n' "$out" | awk '
+    NR==1 { for (i=1;i<=NF;i++) if ($i=="available") col=i; next }
+    /^Mem:/ && col { print $(col+1); exit }')"
+  [ -n "$val" ] || return 1
+  printf '%s\n' "$val"
 }

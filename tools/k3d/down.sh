@@ -5,7 +5,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v k3d >/dev/null 2>&1 || die "brak k3d (brew install k3d)"
-if k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$CLUSTER"; then
+if cluster_exists; then
   k3d cluster delete "$CLUSTER" || die "k3d cluster delete nie powiodło się"
 else
   log "klastra $CLUSTER nie ma — nic do usunięcia"
