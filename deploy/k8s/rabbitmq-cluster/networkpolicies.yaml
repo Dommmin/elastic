@@ -37,6 +37,9 @@ spec:
         # Bez tego stream search.analytics.stream wisi (connection_refused na replice)
         # i wstrzymuje list_queues, mimo że CR ma Ready=True.
         - { port: 6000, endPort: 6500, protocol: TCP }
+        # CLI RabbitMQ (rabbitmqctl, rabbitmq-queues) to osobny węzeł Erlanga na 35672-35682;
+        # polecenia klastrowe (list_queues, quorum_status) łączą się zwrotnie z węzła peera.
+        - { port: 35672, endPort: 35682, protocol: TCP }
     # Operatory (rabbitmq-system) wołają API zarządzania — tak działa m.in.
     # messaging-topology-operator.
     - from:

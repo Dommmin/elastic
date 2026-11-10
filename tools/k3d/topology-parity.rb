@@ -61,6 +61,7 @@ user = by_kind.("User").find { |d| d.dig("metadata", "name") == "marketplace" }
 ok.(user && user.dig("spec", "importCredentialsSecret", "name") == "rabbitmq-ha-marketplace-user",
     "User marketplace: importCredentialsSecret = rabbitmq-ha-marketplace-user")
 ok.(user && (user.dig("spec", "tags") || []) == [], "User marketplace: bez tagów (nie administrator)")
+ok.(by_kind.("Permission").size == 1, "Permission: dokładnie jeden CR")
 perm = by_kind.("Permission").first
 p = perm && perm.dig("spec", "permissions")
 ok.(perm && perm.dig("spec", "userReference", "name") == "marketplace" && perm.dig("spec", "vhost") == "/",
