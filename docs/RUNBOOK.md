@@ -4706,9 +4706,9 @@ zostają `Ready=False` z `Error 400 (bad_request): vhost_or_user_not_found` i ni
 
 **Diagnoza**
 ```bash
-kubectl get rabbitmqcluster rabbitmq-ha
-kubectl get permissions.rabbitmq.com -o jsonpath='{range .items[*]}{.metadata.name} {.status.conditions[0].message}{"\n"}{end}'
-kubectl -n rabbitmq-system logs deploy/messaging-topology-operator | grep -i permission
+kubectl --context k3d-elastic-g5 -n marketplace get rabbitmqcluster rabbitmq-ha
+kubectl --context k3d-elastic-g5 -n marketplace get permissions.rabbitmq.com -o jsonpath='{range .items[*]}{.metadata.name} {.status.conditions[0].message}{"\n"}{end}'
+kubectl --context k3d-elastic-g5 -n rabbitmq-system logs deploy/messaging-topology-operator | grep -i permission
 ```
 `list_users` w brokerze pokazuje już obu użytkowników, a log operatora ma jedną nieudaną próbę `failed to declare permission`
 i brak kolejnych.
@@ -4723,13 +4723,13 @@ i brak kolejnych.
 **Naprawa**
 `deploy.sh` po ES czeka na `allready` (AllReplicasReady i 3 gotowe kontenery), a potem w pętli (max 5 min) sprawdza `Ready` wszystkich CR-ów
 topologii i **trąca** te niegotowe zmianą adnotacji `g5-nudge=<czas>` (aktualizacja obiektu wyzwala kolejną próbę). Ręcznie to samo:
-`kubectl annotate permissions.rabbitmq.com marketplace g5-nudge=$(date +%s) --overwrite`
+`kubectl --context k3d-elastic-g5 -n marketplace annotate permissions.rabbitmq.com marketplace g5-nudge=$(date +%s) --overwrite`
 (ręczne trącenie uleczyło jeden `Permission` na żywo). Trącenie to **obejście, którego konieczności nie udowodniłem**: przebieg od zera po
 poprawce przeszedł, ale nie wiadomo, czy trącenie było w nim potrzebne.
 
 **Czego się nauczyłem**
-„Wdrożenie skończone” musi znaczyć „gotowe do następnego kroku”, także dla zasobów, które tworzy operator, a nie manifest. Zależność
-User → Permission nie jest wymuszona kolejnością; przy takiej awarii (hipoteza: za wolne ponowienie) skrypt, który czeka na `Ready` i ma limit czasu, jest
+„Wdrożenie skończone” musi znaczyć „gotowe do następnego kroku”, także dla zasobów, które tworzy operator, a nie manifest. Hipoteza (niesprawdzona):
+zależność User → Permission nie jest wymuszona kolejnością; przy takiej awarii (hipoteza: za wolne ponowienie) skrypt, który czeka na `Ready` i ma limit czasu, jest
 lepszy niż założenie, że operator sam to szybko naprawi.
 
 ---

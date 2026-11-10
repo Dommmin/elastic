@@ -40,11 +40,28 @@ psql_q() {
 
 is_num() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 
-# rmq_sum <pod> <filtr awk na nazwę> — suma kolumny messages w kolejkach pasujących do filtra.
+# rmq_sum_parse <sufiks nazwy | "" = wszystkie> — stdin: wyjście `list_queues name messages`.
+# Fail closed: pasujący wiersz bez liczby (kolejka bez lidera / niedostępna) albo z
+# nienumeryczną liczbą = kod 1 i nic na stdout (nigdy „0 z braku danych”).
+# Dopasowanie po sufiksie przez substr, bez regexu (escape `\.` różni się w BSD awk i gawk).
+rmq_sum_parse() {
+  awk -v suf="$1" '
+    NF == 0 { next }
+    {
+      m = 1
+      if (suf != "") { n = length(suf); m = (length($1) >= n && substr($1, length($1) - n + 1) == suf) }
+      if (!m) next
+      if (NF != 2 || $2 !~ /^[0-9]+$/) { bad = 1; next }
+      s += $2
+    }
+    END { if (bad) exit 1; print s + 0 }'
+}
+
+# rmq_sum <pod> <sufiks nazwy | ""> — suma kolumny messages w kolejkach pasujących do sufiksu.
 rmq_sum() {
   local out
   out="$(kk exec "$1" -c rabbitmq -- rabbitmqctl list_queues -q --no-table-headers name messages 2>/dev/null)" || return 1
-  printf '%s\n' "$out" | awk -v re="$2" 'NF == 2 && $1 ~ re { s += $2 } END { print s + 0 }'
+  printf '%s\n' "$out" | rmq_sum_parse "$2"
 }
 
 # old_state — present | absent (StatefulSet rabbitmq); błąd API = kod 1 i nic na stdout
@@ -71,7 +88,7 @@ old_queues_total() {
   st="$(old_state)" || return 1
   case "$st" in
     absent) echo 0 ;;
-    present) rmq_sum rabbitmq-0 '.' ;;
+    present) rmq_sum rabbitmq-0 '' ;;
     *) return 1 ;;
   esac
 }
@@ -79,9 +96,9 @@ old_queues_total() {
 dlq_total() {
   local pod ha old=0 st
   pod="$(ha_pod)" || return 1
-  ha="$(rmq_sum "$pod" '\.dlq$')" || return 1
+  ha="$(rmq_sum "$pod" '.dlq')" || return 1
   st="$(old_state)" || return 1
-  if [ "$st" = present ]; then old="$(rmq_sum rabbitmq-0 '\.dlq$')" || return 1; fi
+  if [ "$st" = present ]; then old="$(rmq_sum rabbitmq-0 '.dlq')" || return 1; fi
   is_num "$ha" && is_num "$old" || return 1
   echo $((ha + old))
 }

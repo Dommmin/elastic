@@ -28,6 +28,9 @@ Kubernetesa, Streams i migracja bez utraty wiadomości, wszystko na zdarzeniach 
 4. Failover: zabicie poda lidera kolejki `search.product.sync` pod obciążeniem
    z potwierdzeniami wydawcy = **0 utraconych potwierdzonych wiadomości**; zmierzony
    czas do nowego lidera.
+
+   > **Zmiana w trakcie realizacji (ruling R3):** failover zmierzono na testowej kolejce
+   > quorum `g5.failover`, nie na `search.product.sync` (obciążenie nie może zalać kolejki sklepu).
 5. Stream `search.analytics.stream`: dwóch niezależnych czytelników dostaje te same
    zdarzenia, a czytelnik z `x-stream-offset` (`first` i znacznik czasu) odtwarza historię.
 6. Pomiary w POMIARACH: quorum vs classic (przepustowość, opóźnienie p50/p99),
@@ -83,6 +86,7 @@ Kubernetesa, Streams i migracja bez utraty wiadomości, wszystko na zdarzeniach 
   - `persistence` z PVC (local-path k3d), rozmiar w budżecie;
   - `rabbitmq.additionalConfig`: `default_queue_type = quorum` (jak dziś w `rabbitmq.conf`),
     `vm_memory_high_watermark` dopasowany do limitu;
+    (zmiana w trakcie realizacji: nie ustawiony jawnie, bierze domyślną wartość operatora wyliczaną z limitu pamięci);
   - wtyczki: `rabbitmq_prometheus`, `rabbitmq_shovel`, `rabbitmq_shovel_management`,
     `rabbitmq_stream`;
   - securityContext z profilu restricted (uid 999, drop ALL, seccomp).
@@ -181,7 +185,11 @@ ES ma limit 1.5 Gi przy heapie 512m: dziś lokalnie przy 1 Gi zabijał go cgroup
 
 kube-prometheus-stack z G1 nie mieści się lokalnie (~1.5 GB). G5 go nie instaluje.
 Metryki RabbitMQ czyta `verify` bezpośrednio z endpointu `rabbitmq_prometheus` (15692),
-a przewodnik pokazuje management UI. Plan G zakładał porównania „z pełną
+a przewodnik pokazuje management UI.
+
+> **Zmiana w trakcie realizacji:** `verify` nie czyta endpointu 15692; metryki to management UI albo `port-forward`.
+
+Plan G zakładał porównania „z pełną
 obserwowalnością”, więc przewodnik nazywa to odstępstwo wprost.
 
 ## 10. Weryfikacja i testy
@@ -194,6 +202,9 @@ obserwowalnością”, więc przewodnik nazywa to odstępstwo wprost.
   dzielący funkcje) w trybie lokalnym: kontekst `k3d-elastic-g5`, bez tunelu SSH
   i bez `remote`. Sprawdza kryteria 1–5 z sekcji 1. Pomiary (kryterium 6) to osobne
   cele `make g5-measure-*`, nie część szybkiej weryfikacji.
+
+  > **Zmiana w trakcie realizacji:** trasy NetworkPolicy są asertowane w `tools/k3d/g5-check.rb`
+  > (nie w tabeli ALLOWED `ckad-check.rb`), a pomiary to `make g5-measure m=queues|failover|prefetch`.
 - **Dokumenty**: RUNBOOK (każdy błąd po drodze), POMIARY, `docs/07-WERSJE.md`,
   przewodnik, wiersz G w README i stan w `docs/13-PLAN-ETAP-G-K8S.md`.
 

@@ -141,7 +141,7 @@ pomiary: sekcja „G5 — RabbitMQ” w [`POMIARY.md`](POMIARY.md); RUNBOOK #098
 
 **Odstępstwa od planu:**
 
-- **k3d na Macu zamiast VPS** — G5 rusza dane i zabija węzły, a VPS jest produkcją; wdrożenie
+- **k3d na Macu zamiast VPS** — VPS wygasł (G5 i tak rusza dane i zabija węzły); wdrożenie
   na k3s zostaje do zrobienia (te same manifesty, brak jeszcze overlayu `k3s`).
 - **Bez kube-prometheus-stack** — metryki przez `port-forward` na 15692, bo budżet pamięci
   lokalnego k3d (≤ 5,7 GB realnie) nie mieści monitoringu.

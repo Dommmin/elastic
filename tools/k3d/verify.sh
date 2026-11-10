@@ -12,7 +12,7 @@
 #    5  stream: stream-demo.sh (1000 zdarzeń user.searched, dwóch czytelników first, znacznik czasu, next)
 #    6  pamięć: suma pamięci kontenerów (working set) <= 5700 MiB (R7: budżet maszyny)
 #
-#  Czas: ok. 5 minut (failover czeka na powrót poda i AllReplicasReady). Sprząta po sobie
+#  Czas: 2–5 min (failover czeka na powrót poda i AllReplicasReady). Sprząta po sobie
 #  (Joby perf-test, kolejka g5.failover, exchange g5.test); stream zostaje (retencja 7 dni).
 #  Zgodność: bash 3.2.
 set -uo pipefail

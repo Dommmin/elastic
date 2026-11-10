@@ -5,7 +5,7 @@ sieciowymi i laboratorium awarii. RabbitMQ jest nadal pojedynczym StatefulSetem 
 padnie jego pod, a zdarzenia z outboxu stoją. Ten etap stawia klaster trzech węzłów z kolejkami
 quorum przez operator, przenosi na niego żywy ruch sklepu bez utraty ani jednej wiadomości (dowód
 liczbami na obu końcach), zabija lidera pod obciążeniem i pokazuje, czym stream różni się od kolejki.
-Wszystko na lokalnym k3d, bo ten etap rusza dane i zabija węzły, a VPS jest produkcją.*
+Wszystko na lokalnym k3d, bo VPS wygasł (a ten etap i tak rusza dane i zabija węzły).*
 
 > **Stan:** gałąź `g5-rabbitmq` (niewypchnięta).
 > **Na k3d (2026-11-10):** `make g5-verify` PASS=22 FAIL=0; migracja pod ruchem dała
@@ -14,6 +14,8 @@ Wszystko na lokalnym k3d, bo ten etap rusza dane i zabija węzły, a VPS jest pr
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-10-g5-rabbitmq-operator-design.md).
 > Pomiary: [`POMIARY.md`](../POMIARY.md) (sekcja „G5 — RabbitMQ”). Plan: [`13-PLAN-ETAP-G-K8S.md`](../13-PLAN-ETAP-G-K8S.md).
 > Błędy z drogi: RUNBOOK [#098–#109](../RUNBOOK.md#098).
+> **Kolejność scalania:** wpisy #096 i #097, do których odwołują się skrypty (`seed.sh`, `perf-test.sh`) i specyfikacja, pochodzą z PR #17 i #18;
+> scal je przed tą gałęzią (#097 istnieje tylko na gałęzi PR #18).
 
 ---
 
@@ -56,8 +58,8 @@ Dwie decyzje wstępne:
   (peer discovery), kolejność rolloutu (kolejka quorum nie przeżyje zabicia dwóch węzłów naraz), wtyczki,
   hasła i topologia (kolejki, bindingi, uprawnienia). Cluster Operator robi dwie pierwsze rzeczy, Messaging Topology
   Operator ostatnią, jako zasoby Kubernetesa. Własny StatefulSet to byłby własny operator, bez testów.
-- **Lokalne k3d, nie VPS.** Etap zabija pody i węzły (`docker stop`) i przenosi produkcyjnie wyglądające dane.
-  Zrobienie tego na działającym sklepie dałoby ryzyko bez korzyści: wszystko, czego uczy ten etap, widać na
+- **Lokalne k3d, nie VPS.** VPS wygasł, więc to jedyne środowisko. Etap zabija pody i węzły (`docker stop`) i przenosi produkcyjnie wyglądające dane;
+  nawet na żywym serwerze byłoby to ryzyko bez korzyści: wszystko, czego uczy ten etap, widać na
   trzech węzłach k3d. Manifesty są te same; wdrożenie na k3s zostaje na później.
 
 ## 2. Mapa plików
@@ -150,7 +152,7 @@ cluster_status: 3 Disk Nodes, 3 Running Nodes, RabbitMQ 4.3.4 / Erlang 27.3.4.16
 
 Budżet pamięci to osobny temat, bo maszyna jest ciasna. Overlay mierzy **sumę limitów** kontenerów w renderze
 (`g5-check.rb`: `g5-local` ≤ 6 Gi, bo w czasie migracji chodzą oba RabbitMQ; `g5-local-ha` ≤ 5 Gi), a realne zużycie
-sprawdza `verify.sh` (≤ 5,7 GB wg specyfikacji): pody 2 025 MiB, trzy węzły k3d 3 429 MiB (przebieg od zera). Limity to nie zużycie:
+sprawdza `verify.sh` (≤ 5,7 GB wg specyfikacji; **tylko w stanie końcowym**, nie w szczycie migracji, gdy chodzą oba RabbitMQ): pody 2 025 MiB, trzy węzły k3d 3 429 MiB (przebieg od zera). Limity to nie zużycie:
 dlatego asercja na limitach jest tania i działa bez klastra, a ta na zużyciu na klastrze.
 
 ## Krok 3 — topologia jako CR-y i test zgodności
@@ -211,6 +213,12 @@ make g5-counts                # sześć liczb, na żądanie
 make g5-deploy o=g5-local-ha  # stan końcowy jako kod: nic się nie zmienia
 ```
 
+**Zawsze migruj przed wdrożeniem `g5-local-ha`.** Strażnik w `deploy.sh` (nie kasuje starego RabbitMQ przy niepustych kolejkach) działa po `apply`,
+więc `g5-deploy o=g5-local-ha` na stanie sprzed migracji nałożyłby nowy overlay, zanim dane przejdą. Kolejność: `g5-local` → `g5-migrate` → `g5-local-ha`.
+
+**Stary PVC zostaje.** `g5-local-ha` nie usuwa PVC `data-rabbitmq-0` (dane starego brokera zostają celowo, jako ostatnia kopia). Gdy już ich nie
+potrzebujesz: `kubectl --context k3d-elastic-g5 -n marketplace delete pvc data-rabbitmq-0`.
+
 ### Dowód: jedna linia, sześć liczb
 
 `counts.sh` wypisuje po każdym kroku jedną linię (kontrakt, parsowany po pozycji):
@@ -255,7 +263,7 @@ porównywane ze stanem na żywo; ich zgodność z repo sprawdza tylko render (`g
 
 Plan zakładał seed w pętli. Się nie da: bez `--fresh` seed pada na unikalnym slugu kategorii, z `--fresh` robi TRUNCATE
 outboxu i kasuje dowód liczenia. Dlatego: `seed --n=1500 --fresh` przed krokiem 2 (1500 zaległych zdarzeń w kolejce) plus
-Job `marketplace-traffic` (`seed.sh --traffic`: ciągłe `product.updated` tą samą ścieżką co panel sprzedawcy, ok. 25 zdarzeń/s),
+Job `marketplace-traffic` (`seed.sh --traffic`: ciągłe `product.updated` tą samą ścieżką co panel sprzedawcy, do ok. 20 zdarzeń/s: tyle wynika z kodu, `usleep(50000)` w pętli; to górna granica, nie pomiar),
 który działa **do po kroku 4**. `migrate.sh` odmawia (die), jeśli ruch nie działał do końca kroku 4. Migracja bez ruchu
 niczego nie dowodzi.
 
@@ -452,7 +460,7 @@ przebiegu (ok. 10 minut), co jest dobrym argumentem za tym, żeby ten przebieg b
 
 | Plan | Co zrobiłem | Dlaczego |
 |---|---|---|
-| Wdrożenie na VPS | **k3d na Macu** | etap zabija węzły i przenosi dane; VPS to produkcja |
+| Wdrożenie na VPS | **k3d na Macu** | VPS wygasł (spec); etap i tak zabija węzły i przenosi dane |
 | kube-prometheus-stack do porównań | **bez niego**: metryki przez `port-forward` na 15692 | budżet pamięci (≤ 5,7 GB realnie) nie mieści monitoringu |
 | Shovel do `marketplace.events` | **Shovel per kolejka (`destQueue`)** (R9) | kopie po retry gubiły się jako unroutable (2 z 1500) |
 | `set env` + ConfigMapa | **JSON patche** tych samych plików co overlay + hasło HA (R10) | zmiana ConfigMapy restartuje Postgresa; repo ≡ stan na żywo |
@@ -463,8 +471,13 @@ przebiegu (ok. 10 minut), co jest dobrym argumentem za tym, żeby ten przebieg b
 | bez `catalog-app` | **`catalog-app` zostaje** (R5) | `search-consumer` czyta produkt z powrotem po HTTP |
 | budżet ≤ 4,5 Gi limitów | **6 / 5 Gi limitów + ≤ 5,7 GB realnie** (R7) | limity są nadmiarowe względem zużycia; spec mówi o realnej pamięci |
 | numeracja RUNBOOK od #096 | **od #098** (R14) | #096 i #097 zajęte na otwartych gałęziach |
+| kryterium 4: failover na `search.product.sync` | **na kolejce testowej quorum `g5.failover`** (R3) | pomiar pod obciążeniem nie może zalać kolejki produkcyjnej sklepu |
+| `vm_memory_high_watermark` dopasowany do limitu | **nie ustawiony jawnie**: domyślna wartość operatora wyliczana z limitu | operator sam wylicza ją z limitu pamięci |
+| trasy NetworkPolicy w tabeli ALLOWED `ckad-check.rb` | **asercje w `tools/k3d/g5-check.rb`** | `ckad-check.rb` dotyczy bazy produkcyjnej bez tych polityk |
+| `verify` czyta metryki z 15692 | **bez odczytu 15692**: management UI / `port-forward` | brak polityki monitoring → 15692, nie ma Prometheusa |
+| cele `make g5-measure-*` | **`make g5-measure m=queues\|failover\|prefetch`** | jeden cel z parametrem zamiast trzech
 
-Specyfikacja ma przy zmienionych miejscach krótkie „Zmiana w trakcie realizacji” (sekcje 3, 5, 7 i 8).
+Specyfikacja ma przy zmienionych miejscach krótkie „Zmiana w trakcie realizacji” (sekcje 1, 3, 5, 7, 8, 9 i 10).
 
 ## Co wybuchło po drodze
 
@@ -489,7 +502,7 @@ Trzy z nich ([#102](../RUNBOOK.md#102), [#108](../RUNBOOK.md#108), [#109](../RUN
 na świeżym klastrze: wszystko, co przez dni testowałem na jednym długo żyjącym klastrze, miało już obrazy, gotowe CR-y i
 punkt stały po kilku `apply`. Przebieg od zera jest więc nie formalnością, tylko jedynym testem ścieżki „nic jeszcze nie istnieje”.
 
-Wspólny wzór: **każdy z nich wyglądał na zdrowy** (`Ready=True`, brak błędów w logach, komunikat nieszkodliwy). Zielony
+Wspólny wzór: **większość wyglądała na zdrowe** (#102: kod wyjścia 0 mimo `ERRO`; #109: poprawne liczby; #108: `deploy.sh` kończył się sukcesem, a `Permission` miał `Ready=False` z czytelnym błędem, tyle że bez naprawy samoczynnej). Zielony
 status obiektu, brak błędów i kod wyjścia nic nie znaczą; znaczy skutek, sprawdzony liczbą albo połączeniem.
 
 ## Czego G5 nie robi

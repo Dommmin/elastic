@@ -570,9 +570,9 @@ prefetch pokazała 28 800 zamiast 30 000). W przebiegach 3 i 4 w kolejce było m
   **1 091 ms**, min–max 1 017–1 186 ms. Szybciej niż po skasowaniu poda; przyczyny nie badałem
   (hipoteza: `docker stop` zrywa połączenia od razu, a kasowany pod zamyka się łagodnie).
 - **Utracone potwierdzone: 0 we wszystkich 6 przebiegach**; żaden `nacked`; producent kończył się sukcesem
-  (kod 0). Wartości poniżej 9 000 (8 994–8 997) to koniec przebiegu: ostatnich kilka wiadomości nie zostało
-  policzonych jako potwierdzone przy ostatnim odczycie metryk (co 0,25 s). W przebiegach 3 i 4 nie ma ich
-  w kolejce (w kolejce tyle, ile potwierdzonych); w przebiegu 5 są w kolejce (9 000), tylko nie były jeszcze
+  (kod 0). Wartości poniżej 9 000 (8 994–8 997) to koniec przebiegu. W przebiegach 3 i 4 w kolejce jest tyle, ile potwierdzonych (< 9 000);
+  **hipoteza (nie zmierzone):** niepotwierdzone wiadomości nie zostały zapisane w kolejce albo statystyka `messages` się spóźniła. W przebiegu 5
+  w kolejce jest 9 000 przy 8 997 potwierdzonych: to przypadek spóźnionego odczytu metryk perf-test (co 0,25 s), wiadomości były w kolejce, tylko nie były jeszcze
   policzone jako potwierdzone. Niepotwierdzona wiadomość nie wchodzi do zobowiązania brokera, więc to nie jest utrata.
 - Węzeł `agent-1` po `docker start` wraca sam; kubelet i pod rabbitmq-ha-server-0 wstają w ciągu
   kilkudziesięciu sekund, `AllReplicasReady=True` po ~1–2 min (RUNBOOK: po `docker start` adresy IP

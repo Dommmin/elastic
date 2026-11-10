@@ -32,6 +32,8 @@ on:
       - .env.prod.example
       - tools/vps/**
       - infra/glitchtip/**
+      - infra/rabbitmq/**
+      - .env.example
       - deploy/k8s/**
       - deploy/overlays/**
       - tools/k3d/**
