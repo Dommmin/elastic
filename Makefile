@@ -578,7 +578,7 @@ g5-migrate: ## Migracja na rabbitmq-ha przez Shovel z dowodem liczbami (pod ruch
 g5-counts: ## Liczby migracji: outbox_total outbox_unpublished processed_events es_count old_queues_total dlq_total
 	@bash tools/k3d/counts.sh
 
-g5-verify: ## Weryfikacja G5 na k3d: klaster, topologia, liczby, failover lidera, stream, pamięć (ok. 5 min)
+g5-verify: ## Weryfikacja G5 na k3d: klaster, topologia, liczby, failover lidera, stream, pamięć (2-5 min)
 	@bash tools/k3d/verify.sh
 
 g5-measure: ## Pomiary G5 na k3d: make g5-measure m=queues|failover|prefetch (3 przebiegi, mediana; kilka–kilkanaście minut)

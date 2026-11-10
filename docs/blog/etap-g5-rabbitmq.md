@@ -128,8 +128,10 @@ make g5-deploy o=g5-local             # overlay z obecnym RabbitMQ (rabbitmq) i 
 
 `deploy.sh` czeka nie tylko na StatefulSety z renderu, ale też na `AllReplicasReady` klastra `rabbitmq-ha` (jego StatefulSet tworzy operator,
 więc `rollout status` go nie widzi) i na `Ready=True` wszystkich CR-ów topologii. Gdy `Permission` pojawi się w tej samej sekundzie co
-`User`, operator potrafi spróbować przed powstaniem użytkownika w brokerze i długo nie ponawia, więc skrypt niegotowe CR-y „trąca”
-zmianą adnotacji ([#108](../RUNBOOK.md#108)).
+`User`, zaobserwowałem `vhost_or_user_not_found` przy jednej próbie i brak ponowienia przez kilka minut, mimo że użytkownik był już w brokerze.
+Najpewniej (hipoteza, nie zbadałem kodu operatora) próba wyprzedziła użytkownika. Skrypt niegotowe CR-y „trąca” zmianą adnotacji, ale to
+**obejście, którego konieczności nie udowodniłem**: przebieg od zera po poprawce przeszedł i nie wiem, czy trącenie było w nim potrzebne
+([#108](../RUNBOOK.md#108)).
 
 Kolejność ma powód: ECK, bo sklep ma Elasticsearch jako CRD; cert-manager, bo webhook Topology Operatora potrzebuje
 certyfikatu; Cluster Operator, potem Topology Operator. Manifesty są **wendorowane** (`deploy/k8s/vendor/`, z adresem
@@ -246,7 +248,8 @@ Pierwsza wersja przy błędzie API zwracała 0 w miejsce „nie wiem”, czyli d
 6. **Stan końcowy jako kod.** `kc diff` overlayu `g5-local-ha` (bez Joba `migrate`) ma być **pusty**: przełączenie na żywo
    dało dokładnie to, co jest w repo. Porównanie obejmuje obiekty rdzenia (Deploymenty, Service, ConfigMapy, NetworkPolicy),
    a pomija CR-y operatorów: API dopisuje do nich wartości domyślne przy pierwszej aktualizacji, więc na świeżym klastrze
-   różniłyby się od repo bez żadnej zmiany merytorycznej ([#109](../RUNBOOK.md#109)); ich zgodność pilnuje `g5-check` i test zgodności topologii.
+   różniłyby się od repo bez żadnej zmiany merytorycznej ([#109](../RUNBOOK.md#109)). Luka: CR-y `RabbitmqCluster`, topologii i Elasticsearch **nie są** w kroku 6
+porównywane ze stanem na żywo; ich zgodność z repo sprawdza tylko render (`g5-check`, test zgodności topologii).
 
 ### Obciążenie
 
@@ -384,7 +387,7 @@ wnioski i ich uczciwa miara:
 - **Failover:** zob. wyżej; 0 utraconych we wszystkich 6 przebiegach.
 - **Prefetch:** transport AMQP Symfony Messengera **nie ma** prefetch (konsumuje przez `basic.get`, `list_consumers` jest puste przy
   działającym `search-consumer`). Zmierzyłem więc prefetch na konsumencie perf-test (`-q` 1/10/50: ok. 580 / 2 490 / 7 880 msg/s) i
-  baseline reindeksu `search-consumer` (42 s dla 1 500 zdarzeń). Dla `search-consumer` dźwignią jest równoległość konsumentów, nie opcja.
+  baseline reindeksu `search-consumer` (42 s dla 1 500 zdarzeń). Dla `search-consumer` dźwignią byłaby prawdopodobnie równoległość konsumentów, nie opcja (nie zweryfikowane).
 
 Maszyna jest współdzielona, load average w trakcie pomiarów wynosił 6–17 przy 10 CPU. Liczby mają rząd wielkości, nie dokładność.
 
@@ -416,7 +419,7 @@ Razem ok. 10,5 minuty. Linie `counts.sh` z migracji (kolejno: start, obciążeni
 ruch zatrzymany, końcowe):
 
 ```
-start                0 0 0 0 0 0
+start                0 0 0 0 0 0     (przed seedem, na pustym klastrze; w przebiegu 3 wyżej `start` to stan po wcześniejszych seedach)
 obciążenie trwa      1656 12 635 641 1039 0
 po kroku 2           1790 6 804 811 910 0
 przed Shovelami      1953 19 1065 1070 769 0     (Shovele: 769 -> 0)
@@ -461,7 +464,7 @@ przebiegu (ok. 10 minut), co jest dobrym argumentem za tym, żeby ten przebieg b
 | budżet ≤ 4,5 Gi limitów | **6 / 5 Gi limitów + ≤ 5,7 GB realnie** (R7) | limity są nadmiarowe względem zużycia; spec mówi o realnej pamięci |
 | numeracja RUNBOOK od #096 | **od #098** (R14) | #096 i #097 zajęte na otwartych gałęziach |
 
-Specyfikacja ma przy zmienionych miejscach krótkie „Zmiana w trakcie realizacji” (sekcje 3, 5 i 7).
+Specyfikacja ma przy zmienionych miejscach krótkie „Zmiana w trakcie realizacji” (sekcje 3, 5, 7 i 8).
 
 ## Co wybuchło po drodze
 
@@ -498,6 +501,7 @@ status obiektu, brak błędów i kod wyjścia nic nie znaczą; znaczy skutek, sp
 - **Konsumenta streamu w aplikacji.** Demo czyta stream perf-testem.
 - **Wiadomości `user.*`/`alert.*` w `counts.sh`.** Równość `processed_events = outbox_total` zakłada, że każde zdarzenie outboxu idzie do
   `search.product.sync`. Dziś seed robi tylko takie; przy innych typach trzeba filtrować outbox po typie.
+- **Porównania CR-ów ze stanem na żywo w kroku 6 migracji** (`RabbitmqCluster`, topologia, Elasticsearch): pokrywa je tylko render.
 - **Ścieżki „Shovele od nowa” w kroku 4.** Logika jest, ale w żadnym przebiegu nie wykonała się (stare kolejki były puste od razu po
   rolloucie), więc nie ma na nią dowodu na żywo.
 
@@ -509,7 +513,7 @@ bash tools/k3d/install-operators.sh               # ECK, cert-manager, operatory
 make g5-deploy o=g5-local                         # stan „przed”
 make g5-migrate load=1500                         # migracja pod ruchem, 6 kroków, linia liczb po każdym
 make g5-deploy o=g5-local-ha                      # stan końcowy (powinien nic nie zmienić)
-make g5-verify                                    # 22 asercje, ok. 5 min
+make g5-verify                                    # 22 asercje, 2–5 min (2 min 26 s w przebiegu od zera)
 make g5-counts                                    # outbox_total outbox_unpublished processed_events es_count old dlq
 make g5-measure m=queues|failover|prefetch        # pomiary (kilka–kilkanaście minut)
 make g5-check                                     # asercje renderu bez klastra (CI)

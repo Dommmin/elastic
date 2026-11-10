@@ -70,9 +70,9 @@ wait_for 900 es_settled || die "ES nie ustabilizował się w 15 min"
 # migrate.sh startuje na klastrze, który jeszcze się formuje (wyszło na przebiegu od zera).
 if grep -q '^kind: RabbitmqCluster' "$WORK/rendered.yaml"; then
   wait_for 600 allready || die "rabbitmq-ha nie ma AllReplicasReady w 10 min"
-  # Permission pojawia się razem z User; operator topologii potrafi spróbować przed powstaniem
-  # użytkownika w brokerze (`vhost_or_user_not_found`) i potem długo nie ponawia (RUNBOOK #108).
-  # Zmiana adnotacji to zdarzenie aktualizacji, które wyzwala kolejną próbę.
+  # Zaobserwowane (RUNBOOK #108): Permission z `vhost_or_user_not_found`, brak ponowienia przez minuty.
+  # Hipoteza: powstaje razem z User i próba wyprzedza użytkownika w brokerze. Zmiana adnotacji wyzwala
+  # kolejną próbę (obejście; jego konieczność nie jest udowodniona).
   TOPO="exchanges.rabbitmq.com,queues.rabbitmq.com,bindings.rabbitmq.com,users.rabbitmq.com,permissions.rabbitmq.com"
   topology_not_ready() {
     kk get "$TOPO" -o jsonpath='{range .items[*]}{.kind}.rabbitmq.com/{.metadata.name} {.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \

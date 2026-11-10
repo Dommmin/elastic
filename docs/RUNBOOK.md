@@ -4716,17 +4716,21 @@ i brak kolejnych.
 **Przyczyna**
 1. `deploy.sh` czekał tylko na StatefulSety z renderu. `RabbitmqCluster` nie ma StatefulSetu w renderze (tworzy go operator), więc
    wdrożenie kończyło się, zanim klaster się uformował. Na wcześniejszych przebiegach klaster stał od godzin i nikt tego nie widział.
-2. `Permission` powstaje w tej samej sekundzie co `User`. Operator topologii próbuje ustawić uprawnienia, zanim użytkownik jest w brokerze,
-   i potem długo (minuty) nie ponawia.
+2. **Zaobserwowane:** `Permission` powstaje w tej samej sekundzie co `User`; log operatora ma jedną nieudaną próbę
+   (`vhost_or_user_not_found`) i brak kolejnych przez kilka minut, a `list_users` pokazuje już użytkownika. **Hipoteza (nie odtworzona,
+   niezbadana w kodzie operatora):** najpewniej operator spróbował ustawić uprawnienia, zanim użytkownik był w brokerze, i ma długi backoff.
 
 **Naprawa**
 `deploy.sh` po ES czeka na `allready` (AllReplicasReady i 3 gotowe kontenery), a potem w pętli (max 5 min) sprawdza `Ready` wszystkich CR-ów
 topologii i **trąca** te niegotowe zmianą adnotacji `g5-nudge=<czas>` (aktualizacja obiektu wyzwala kolejną próbę). Ręcznie to samo:
-`kubectl annotate permissions.rabbitmq.com marketplace g5-nudge=$(date +%s) --overwrite`.
+`kubectl annotate permissions.rabbitmq.com marketplace g5-nudge=$(date +%s) --overwrite`
+(ręczne trącenie uleczyło jeden `Permission` na żywo). Trącenie to **obejście, którego konieczności nie udowodniłem**: przebieg od zera po
+poprawce przeszedł, ale nie wiadomo, czy trącenie było w nim potrzebne.
 
 **Czego się nauczyłem**
-„Wdrożenie skończone” musi znaczyć „gotowe do następnego kroku”, także dla zasobów, które tworzy operator, a nie manifest. Kolejność
-zależności między CR-ami (User → Permission) operator rozwiązuje retry, a nie kolejnością, więc skrypt musi umieć poczekać i trącić.
+„Wdrożenie skończone” musi znaczyć „gotowe do następnego kroku”, także dla zasobów, które tworzy operator, a nie manifest. Zależność
+User → Permission nie jest wymuszona kolejnością; przy takiej awarii (hipoteza: za wolne ponowienie) skrypt, który czeka na `Ready` i ma limit czasu, jest
+lepszy niż założenie, że operator sam to szybko naprawi.
 
 ---
 
