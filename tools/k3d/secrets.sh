@@ -103,6 +103,9 @@ apply_secret marketplace-es-elastic-user elastic="$ELASTIC_PASSWORD"
 apply_secret es-user-catalog --type=kubernetes.io/basic-auth username=catalog password="$ES_CATALOG_PASSWORD" roles=catalog_app
 apply_secret es-user-searchsvc --type=kubernetes.io/basic-auth username=searchsvc password="$ES_SEARCHSVC_PASSWORD" roles=search_service
 apply_secret rabbitmq-ha-marketplace-user username="$RABBITMQ_USER" password="$HA_PASSWORD"
+# Webhook Topology Operatora odrzuca Secret bez tej etykiety (User CR: importCredentialsSecret).
+kk label secret rabbitmq-ha-marketplace-user rabbitmq.com/topology-operator=true --overwrite >/dev/null \
+  || die "etykieta topology-operator na rabbitmq-ha-marketplace-user nie weszła"
 apply_secret rabbitmq-shovel-uris \
   srcUri="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   destUri="amqp://${RABBITMQ_USER}:${HA_PASSWORD}@rabbitmq-ha:5672/%2f"

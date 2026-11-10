@@ -123,7 +123,9 @@ when "g5-local"
   peers = rules.find do |r|
     (r["from"] || []).any? { |f| f.dig("podSelector", "matchLabels", "app.kubernetes.io/name") == "rabbitmq-ha" }
   end
-  ok.(peers && ports_of.(peers) == [4369, 5552, 5672, 25672], "rabbitmq-ha-ingress: pody rabbitmq-ha między sobą na 4369, 25672, 5672, 5552")
+  ok.(peers && ports_of.(peers) == [4369, 5552, 5672, 6000, 25672] &&
+      peers["ports"].any? { |x| x["port"] == 6000 && x["endPort"] == 6500 },
+      "rabbitmq-ha-ingress: pody rabbitmq-ha między sobą na 4369, 25672, 5672, 5552 i 6000-6500 (replikacja streamu)")
   ops = rules.find do |r|
     (r["from"] || []).any? { |f| f.dig("namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") == "rabbitmq-system" }
   end

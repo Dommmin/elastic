@@ -21,6 +21,11 @@ for ov in g5-local g5-local-ha; do
     echo "✗ render $ov nie przeszedł:"; head -5 "$TMP/$ov.err"; FAIL=1; continue
   fi
   ruby tools/k3d/g5-check.rb "$TMP/$ov.yaml" "$ov" || FAIL=1
+  # Zgodność topologii CR-ów z definitions.template.json (Task 4) — tylko overlaye z klastrem operatora.
+  if grep -q 'name: rabbitmq-ha$' "$TMP/$ov.yaml"; then
+    echo "Topologia RabbitMQ ($ov): zgodność z infra/rabbitmq/definitions.template.json"
+    ruby tools/k3d/topology-parity.rb "$TMP/$ov.yaml" infra/rabbitmq/definitions.template.json || FAIL=1
+  fi
 done
 
 # Przegląd: goły klient k8s tylko w lib.sh (wzorzec z nawiasem, żeby nie łapał samego siebie).

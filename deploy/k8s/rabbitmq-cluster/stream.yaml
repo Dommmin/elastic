@@ -1,0 +1,35 @@
+# ============================================================================
+#  Stream analityki (ETAP G5) — JEDYNA różnica względem definitions.template.json
+#  (parity test zna ją z nazwy). Stream = log tylko-do-dopisywania z retencją
+#  czasową (x-max-age 7D); wiele konsumentów czyta od dowolnego offsetu, nic nie
+#  jest kasowane po ack. Ten sam routing user.# co kolejka search.analytics.ingest.
+#  Wymaga pluginu rabbitmq_stream (rabbitmq-ha.yaml); klient AMQP 0-9-1 czyta go
+#  z basic.qos (prefetch) i x-stream-offset.
+# ============================================================================
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-analytics-stream
+spec:
+  name: search.analytics.stream
+  vhost: /
+  type: stream
+  durable: true
+  autoDelete: false
+  arguments:
+    x-max-age: 7D
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-analytics-stream-user
+spec:
+  source: marketplace.events
+  destination: search.analytics.stream
+  destinationType: queue
+  routingKey: 'user.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha

@@ -10,3 +10,5 @@ namespace: marketplace
 resources:
   - rabbitmq-ha.yaml
   - networkpolicies.yaml
+  - topology.yaml
+  - stream.yaml
