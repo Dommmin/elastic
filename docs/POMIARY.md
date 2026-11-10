@@ -506,10 +506,10 @@ generator obciążenia `pivotalrabbitmq/perf-test` 2.25.0 jako Job na k3d, każd
 2 konsumentów, publisher confirms (maks. 200 niepotwierdzonych), prefetch konsumenta 100,
 jedna kolejka, 60 s. Przebiegi na przemian (classic, quorum, classic, …), żeby szum
 maszyny nie obciążył jednego typu. Classic to jedna kopia na jednym węźle (w RabbitMQ 4
-nie ma już klasycznych kolejek zwierciadlanych); quorum to 3 repliki Raft z fsync przed
-potwierdzeniem. „Odbiór” to `receiving rate avg` (producenci i konsumenci szły w tym
-samym tempie, `sending rate avg` różnił się o < 2 %), a okno niepotwierdzonych (200) ogranicza
-kolejkę, więc opóźnienia nie tłumaczy rosnąca kolejka.
+nie ma już klasycznych kolejek zwierciadlanych); quorum to 3 repliki Raft (wg dokumentacji RabbitMQ
+wiadomość jest potwierdzana po zapisie na większości replik; tu tego nie mierzyłem). „Odbiór” to `receiving rate avg` (producenci i konsumenci szły w tym
+samym tempie, `sending rate avg` różnił się o < 2 %), więc kolejka nie rosła w sposób, który tłumaczyłby
+opóźnienia (opieram to wyłącznie na zgodności tempa wysyłania i odbioru).
 
 | Typ kolejki | Odbiór, msg/s (mediana, min–max) | Publikacja→odbiór p50 / p99, ms (mediany) | Publikacja→potwierdzenie p50 / p99, ms (mediany) | Load avg (1 min) |
 |---|---|---|---|---|
@@ -528,7 +528,7 @@ Wnioski (z zastrzeżeniem o szumie):
 
 - Quorum było tu **ok. 10–12 × wolniejsze** od classic w przepustowości (mediana 2,2 tys. vs 25,9 tys.
   msg/s). Wielosekundowe p99 (publikacja→odbiór ok. 6 s, do potwierdzenia p99 6–10 s) przy p50 do
-  potwierdzenia rzędu 20 ms wskazuje na **okresowe przestoje**, nie równomierną powolność.
+  potwierdzenia rzędu 20 ms może wskazywać na okresowe przestoje, a nie równomierną powolność (to **hipoteza**, nie wynik).
   **Przyczyny nie zmierzyłem.** Hipotezy: fsync/WAL na współdzielonym dysku VM Dockera (3 repliki
   piszą na ten sam dysk) albo alarmy pamięci/flow control na podach 512 Mi. Potwierdziłyby to:
   `rabbitmq-diagnostics alarms` i metryki per węzeł (dysk, fsync, `rabbitmq_prometheus` na 15692)
@@ -562,8 +562,8 @@ rozdzielczość ~0,5 s).
 
 Uwaga: „utracone” liczę jako max(0, potwierdzone − w kolejce), a „w kolejce” to statystyka
 `messages` z `rabbitmqctl list_queues`, która potrafi się spóźniać o kilka sekund (w pomiarze
-prefetch pokazała 28 800 zamiast 30 000). Odczyt był po ~5 s od powrotu klastra; w przebiegach 3 i 5
-liczby są nieco niższe od 9 000, więc „0” opiera się na statystyce z opóźnieniem i nie jest dowodem absolutnym.
+prefetch pokazała 28 800 zamiast 30 000). W przebiegach 3 i 4 w kolejce było mniej niż 9 000
+(8 997 i 8 994, równo z potwierdzonymi), w przebiegu 5 w kolejce 9 000 przy potwierdzonych 8 997, więc „0” opiera się na statystyce z opóźnieniem i nie jest dowodem absolutnym.
 
 - **Kasowanie poda lidera** (3 ×): mediana **2 872 ms**, min–max 2 797–2 981 ms.
 - **Zatrzymanie węzła** (3 ×; zadanie wymagało jednego, powtórzyłem dwa razy, bo tanie): mediana
@@ -601,16 +601,17 @@ generatorem perf-test: kolejka quorum `g5.prefetch` wstępnie napełniona 30 000
 Wartość faktycznie działa: przed pomiarem `rabbitmqctl list_consumers queue_name prefetch_count`
 pokazało dokładnie 1, 10 i 50.
 
-| Prefetch konsumenta | Odbiór, msg/s (`receiving rate avg` perf-test; mediana, min–max) | Czas opróżnienia 30 000 wiadomości, s (zawiera start Joba: scheduling, czekanie na trasę, JVM, ok. 7–10 s) | Load avg (1 min) |
+| Prefetch konsumenta | Odbiór, msg/s (`receiving rate avg` perf-test; mediana, min–max) | Czas opróżnienia 30 000 wiadomości, s (zawiera start Joba: scheduling, czekanie na trasę, JVM, narzut ok. 5–10 s, wyliczony: 30 000 / przepustowość vs czas) | Load avg (1 min) |
 |---|---|---|---|
 | 1 | 576 (509–581) | 61,8 (56,5–67,0) | 9,07 (8,83–9,28) |
 | 10 | 2 487 (2 260–2 696) | 20,9 (20,9–21,0) | 9,05 (8,48–11,19) |
 | 50 | 7 882 (6 404–10 653) | 10,7 (10,5–10,8) | 9,68 (7,42–9,76) |
 
-Przy prefetch 1 konsument czeka na ack i kolejne dostarczenie (zapis Raft + RTT) po każdej
+Przy prefetch 1 konsument czeka na ack i kolejne dostarczenie (przypuszczalnie zapis do większości replik plus RTT; nie mierzyłem) po każdej
 wiadomości, więc przepustowość to ok. 1 / (czas jednego cyklu) ≈ 580 msg/s. Wg przepustowości (mediany)
 okno 10 daje ~4,3 ×, a 50 ~13,7 ×; kolumna czasu pokazuje mniejsze ilorazy (2,9 × i 5,8 ×), bo
-każdy czas zawiera stałe ok. 7–10 s startu Joba. To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
+każdy czas zawiera stały narzut startu Joba, który **wyliczyłem, nie zmierzyłem** (30 000 / mediana
+przepustowości vs zmierzony czas: ok. 5–10 s). To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
 pojedynczo przez `basic.get`.
 
 **Stan wyjściowy `search-consumer`** (jedyne, co da się o nim zmierzyć): reindeks 1 500 zdarzeń

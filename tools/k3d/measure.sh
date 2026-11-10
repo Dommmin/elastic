@@ -66,7 +66,7 @@ restore_node() {
     STOPPED_NODE=""
   fi
 }
-trap 'restore_node; sweep_g5 g5.mq-classic g5.mq-quorum g5.failover g5.prefetch; kill $(jobs -p) 2>/dev/null' EXIT
+trap 'restore_node; kk delete job -l app=perf-test --ignore-not-found --wait=false >/dev/null 2>&1; sweep_g5 g5.mq-classic g5.mq-quorum g5.failover g5.prefetch; kill $(jobs -p) 2>/dev/null' EXIT
 
 # perf_field <log> <wzorzec sed z \(grupą\)> — pierwsza grupa z ostatniej pasującej linii.
 perf_rate() { printf '%s\n' "$1" | sed -n "s/.*$2 avg: \([0-9][0-9]*\) msg\/s.*/\1/p" | tail -n 1; }
