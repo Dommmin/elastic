@@ -21,7 +21,7 @@ NS="marketplace"
 # Podsieć sieci Dockera klastra — JEDNO źródło prawdy. up.sh tworzy sieć z tą podsiecią,
 # deploy.sh i g5-check.rb porównują z nią ipBlock polityki rabbitmq-ha-egress-api
 # (deploy/k8s/rabbitmq-cluster/networkpolicies.yaml). Zmiana = popraw też ten plik.
-G5_SUBNET="${G5_SUBNET:-172.22.0.0/16}"
+G5_SUBNET="172.22.0.0/16"   # stała, bez nadpisania z env (jedno źródło)
 G5_NET="k3d-elastic-g5"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" \
   || { printf '[g5] BŁĄD: nie da się ustalić katalogu repo\n' >&2; exit 1; }

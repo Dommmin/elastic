@@ -38,6 +38,13 @@ check_subnet() {
   [ "$got" = "$G5_SUBNET" ] || die "sieć $G5_NET ma podsieć '${got}', a polityka sieciowa zakłada $G5_SUBNET. Usuń klaster (make g5-down) i utwórz go od nowa albo zmień G5_SUBNET w tools/k3d/lib.sh i ipBlock w deploy/k8s/rabbitmq-cluster/networkpolicies.yaml"
 }
 
+# G5_SUBNET (lib.sh) musi być tym samym, co ipBlock polityki API — inaczej klaster
+# wstałby na podsieci, z którą peer discovery RabbitMQ nie działa.
+POLICY_FILE="${G5_POLICY_FILE:-$REPO_ROOT/deploy/k8s/rabbitmq-cluster/networkpolicies.yaml}"
+POLICY_CIDR="$(grep -E '^[[:space:]]*- to:|ipBlock' "$POLICY_FILE" 2>/dev/null | grep -Eo 'cidr: *[0-9./]+' | sed 's/cidr: *//' | tr '\n' ' ' | sed 's/ $//')"
+[ "$POLICY_CIDR" = "$G5_SUBNET" ] \
+  || die "G5_SUBNET ($G5_SUBNET, tools/k3d/lib.sh) != ipBlock w $POLICY_FILE ('${POLICY_CIDR}') — ustaw oba na tę samą podsieć"
+
 if cluster_exists; then
   check_subnet
   if nodes_ready; then

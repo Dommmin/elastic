@@ -19,8 +19,12 @@ preflight_subnet() {
   local live cidr
   live="$(net_subnet)"
   [ -n "$live" ] || die "brak sieci Dockera $G5_NET (make g5-up)"
-  cidr="$(render "$DIR" | ruby -ryaml -e 'YAML.load_stream($stdin.read).compact.each { |d| puts d.dig("spec","egress",0,"to",0,"ipBlock","cidr") if d["kind"]=="NetworkPolicy" && d.dig("metadata","name")=="rabbitmq-ha-egress-api" }')"
-  if [ -z "$cidr" ]; then log "overlay bez rabbitmq-ha-egress-api — preflight podsieci pominięty"; return 0; fi
+  # Fail closed: błąd renderu/rubiego albo brak polityki w overlayu = die (nie „pominięty”).
+  local rendered
+  rendered="$(render "$DIR")" || die "preflight podsieci: render $OVERLAY nie przeszedł"
+  cidr="$(printf '%s\n' "$rendered" | ruby -ryaml -e 'YAML.load_stream($stdin.read).compact.each { |d| puts d.dig("spec","egress",0,"to",0,"ipBlock","cidr") if d["kind"]=="NetworkPolicy" && d.dig("metadata","name")=="rabbitmq-ha-egress-api" }')" \
+    || die "preflight podsieci: nie udało się odczytać ipBlock z renderu"
+  [ -n "$cidr" ] || die "preflight podsieci: brak rabbitmq-ha-egress-api (albo ipBlock) w renderze overlayu $OVERLAY"
   [ "$cidr" = "$live" ] || die "ipBlock rabbitmq-ha-egress-api ($cidr) != podsieć sieci $G5_NET ($live) — popraw deploy/k8s/rabbitmq-cluster/networkpolicies.yaml albo odtwórz klaster (make g5-down g5-up)"
 }
 preflight_subnet

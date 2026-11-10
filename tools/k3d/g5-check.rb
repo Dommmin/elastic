@@ -134,7 +134,7 @@ when "g5-local"
       eg.dig("spec", "policyTypes") == ["Egress"], "rabbitmq-ha-egress-api: wybiera wyłącznie pody rabbitmq-ha, tylko Egress")
   eg_rules = eg ? (eg.dig("spec", "egress") || []) : []
   lib = File.read(File.expand_path("lib.sh", __dir__), encoding: "UTF-8")
-  g5_subnet = lib[/^G5_SUBNET="\$\{G5_SUBNET:-([^}]+)\}"/, 1]
+  g5_subnet = lib[/^G5_SUBNET="([^"]+)"/, 1]
   ok.(!g5_subnet.nil?, "lib.sh: G5_SUBNET zdefiniowane (#{g5_subnet})")
   ok.(eg_rules.size == 1 && (eg_rules[0]["to"] || []).map { |t| t["ipBlock"] } == [{ "cidr" => g5_subnet }] &&
       (eg_rules[0]["ports"] || []).map { |x| [x["port"], x["protocol"]] } == [[6443, "TCP"]],
