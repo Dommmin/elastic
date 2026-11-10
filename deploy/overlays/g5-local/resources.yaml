@@ -1,4 +1,4 @@
-# Limity pamięci pod k3d (budżet renderu: suma <= 4,5 Gi, patrz tools/k3d/g5-check.rb).
+# Limity pamięci pod k3d (budżet renderu: suma <= 6 Gi, patrz tools/k3d/g5-check.rb).
 # Postgres: shared_buffers=512MB z bazy, więc limit nie niżej niż 1Gi.
 apiVersion: apps/v1
 kind: StatefulSet

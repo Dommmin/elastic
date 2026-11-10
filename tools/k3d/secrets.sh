@@ -12,9 +12,26 @@ set -uo pipefail
 cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 kc apply -f "$REPO_ROOT/deploy/k8s/namespace.yaml" >/dev/null || die "namespace $NS nie powstał"
 
-# existing <secret> <klucz> — dotychczasowa wartość (pusta, gdy Secretu/klucza brak).
+# Stan Secretów pobieramy RAZ z góry do plików tymczasowych. NotFound = plik pusty
+# (Secret naprawdę nie istnieje); każdy inny błąd API (timeout, zły kontekst) = die,
+# żeby nie wygenerować nowego hasła nad już zainicjowanym (zablokowałoby Postgresa/ES).
+SNAP="$(mktemp -d)"; trap 'rm -rf "$SNAP"' EXIT
+snapshot() {
+  local name="$1" out
+  if out="$(kk get secret "$name" -o json 2>&1)"; then
+    printf '%s' "$out" > "$SNAP/$name.json"
+  elif printf '%s' "$out" | grep -q 'NotFound'; then
+    : > "$SNAP/$name.json"
+  else
+    die "nie udało się odczytać Secretu $name (API niedostępne?): $(printf '%s' "$out" | head -1)"
+  fi
+}
+for s in marketplace-secrets marketplace-es-elastic-user rabbitmq-ha-marketplace-user; do snapshot "$s"; done
+
+# existing <secret> <klucz> — dotychczasowa wartość (pusta tylko, gdy Secretu/klucza naprawdę brak).
 existing() {
-  kk get secret "$1" -o "jsonpath={.data.$2}" 2>/dev/null | base64 -d 2>/dev/null || true
+  [ -s "$SNAP/$1.json" ] || return 0
+  ruby -rjson -rbase64 -e 'v = JSON.parse(File.read(ARGV[0])).dig("data", ARGV[1]); print Base64.decode64(v) if v' "$SNAP/$1.json" "$2"
 }
 # keep <secret> <klucz> <nowa> — istniejąca wartość albo nowa.
 keep() {

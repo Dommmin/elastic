@@ -21,8 +21,10 @@ cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 IMAGE="$(kk get deploy catalog-app -o jsonpath='{.spec.template.spec.containers[?(@.name=="catalog")].image}')"
 [ -n "$IMAGE" ] || die "brak Deploymentu catalog-app (make g5-deploy o=g5-local)"
 
-CM="$(kk get cm -o name | sed -n 's#^configmap/##; /^marketplace-config-/p' | head -1)"
-[ -n "$CM" ] || die "brak ConfigMapy marketplace-config-* (make g5-deploy o=g5-local)"
+# ConfigMapa z Deploymentu catalog-app (nie z listy: deploy nie czyści starych wersji z hashem).
+CM="$(kk get deploy catalog-app -o jsonpath='{.spec.template.spec.containers[?(@.name=="catalog")].envFrom[*].configMapRef.name}')" \
+  || die "nie udało się odczytać catalog-app"
+[ -n "$CM" ] || die "catalog-app nie wskazuje ConfigMapy w envFrom"
 
 kk delete job marketplace-seed --ignore-not-found --wait=true >/dev/null
 # Spec jak w Jobie migrate: profil restricted, uid 33, etykieta app=migrate (NetworkPolicy
@@ -96,7 +98,7 @@ spec:
 YAML
 
 log "seed --n=$N ${FRESH} — czekam na Job (do 15 min)"
-if ! kk wait job/marketplace-seed --for=condition=complete --timeout=900s >/dev/null; then
+if ! wait_job marketplace-seed 900; then
   kk logs job/marketplace-seed --all-containers --tail=40 >&2 || true
   die "Job marketplace-seed nie zakończył się sukcesem"
 fi

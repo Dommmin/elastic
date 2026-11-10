@@ -37,6 +37,17 @@ wait_for() {
   return 0
 }
 
+# wait_job <nazwa> <limit_s> — czeka na Job: 0 = Complete, 1 = Failed albo limit (szybko przy Failed).
+wait_job() {
+  local name="$1" limit="$2" waited=0 st
+  while :; do
+    st="$(kk get job "$name" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null)"
+    case "$st" in *Complete=True*) return 0 ;; *Failed=True*) return 1 ;; esac
+    [ "$waited" -ge "$limit" ] && return 1
+    sleep 5; waited=$((waited + 5))
+  done
+}
+
 # cluster_exists — czy klaster k3d $CLUSTER istnieje (uruchomiony lub zatrzymany).
 cluster_exists() {
   k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$CLUSTER"

@@ -44,14 +44,16 @@ wait_for 900 es_settled || die "ES nie ustabilizował się w 15 min"
 log "2/3 Job migrate"
 kk delete job migrate --ignore-not-found --wait=true >/dev/null
 apply_sel 'app.kubernetes.io/component=migrate'
-if ! kk wait job/migrate --for=condition=complete --timeout=600s >/dev/null; then
+if ! wait_job migrate 600; then
   kk logs job/migrate --all-containers --tail=50 >&2 || true
   die "Job migrate nie zakończył się sukcesem"
 fi
 
 log "3/3 aplikacje"
 apply_sel 'app.kubernetes.io/component=app'
-for d in $(kk get deploy -l app.kubernetes.io/component=app -o name); do
+DEPLOYS="$(kk get deploy -l app.kubernetes.io/component=app -o name)" || die "nie udało się pobrać listy Deploymentów"
+[ -n "$DEPLOYS" ] || die "brak Deploymentów aplikacji po apply"
+for d in $DEPLOYS; do
   kk rollout status "$d" --timeout=300s || die "rollout $d nie skończył się"
 done
 log "wdrożono overlay $OVERLAY"

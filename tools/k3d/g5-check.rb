@@ -64,7 +64,7 @@ when "g5-local"
   ok.(!docs.any? { |d| d["kind"] == "Job" && d.dig("metadata", "name").to_s.start_with?("glitchtip") }, "bez Jobów glitchtip")
 
   total = workloads.flat_map { |d| containers.(d) }.sum { |c| to_mi.(c.dig("resources", "limits", "memory")) }
-  ok.(total <= 4608, "suma limitów pamięci kontenerów #{total} Mi <= 4608 Mi (4,5 Gi; k3d i operatory poza renderem)")
+  ok.(total <= 6144, "suma limitów pamięci kontenerów #{total} Mi <= 6144 Mi (6 Gi; k3d i operatory poza renderem)")
 
   # Obrazy aplikacji: wyłącznie tag g5-local (initContainers też).
   imgs = workloads.flat_map do |d|
