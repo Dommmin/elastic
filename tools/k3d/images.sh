@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#  tools/k3d/images.sh — buduje obrazy produkcyjne (catalog, search, postgres) lokalnie
+#  tools/k3d/images.sh — buduje obrazy produkcyjne (catalog, search, postgres, elasticsearch, rabbitmq) lokalnie
 #  i ładuje je do klastra `elastic-g5` przez `k3d image import` (ETAP G5).
 #  Bez pulla z GHCR i bez rejestru; tag g5-local nadpisuje się w overlayu.
 #  Hosta i węzły k3d są arm64 — budujemy natywnie.
@@ -25,6 +25,8 @@ FRANKENPHP_VERSION="$(ver FRANKENPHP_VERSION)" || exit 1
 PHP_VERSION="$(ver PHP_VERSION)" || exit 1
 NODE_VERSION="$(ver NODE_VERSION)" || exit 1
 POSTGRES_VERSION="$(ver POSTGRES_VERSION)" || exit 1
+ES_VERSION="$(ver ES_VERSION)" || exit 1
+RABBITMQ_VERSION="$(ver RABBITMQ_VERSION)" || exit 1
 
 cd "$REPO_ROOT" || die "brak katalogu repo"
 
@@ -46,9 +48,19 @@ log "build postgres"
 docker build --build-arg "POSTGRES_VERSION=${POSTGRES_VERSION}" \
   -t "${REGISTRY}/elastic-postgres:${TAG}" infra/postgres || die "build postgres nie powiódł się"
 
+log "build elasticsearch"
+docker build --build-arg "ES_VERSION=${ES_VERSION}" \
+  -t "${REGISTRY}/elastic-elasticsearch:${TAG}" infra/elasticsearch || die "build elasticsearch nie powiódł się"
+
+log "build rabbitmq"
+docker build --build-arg "RABBITMQ_VERSION=${RABBITMQ_VERSION}" \
+  -t "${REGISTRY}/elastic-rabbitmq:${TAG}" infra/rabbitmq || die "build rabbitmq nie powiódł się"
+
 log "import do $CLUSTER"
 k3d image import -c "$CLUSTER" \
   "${REGISTRY}/elastic-catalog:${TAG}" \
   "${REGISTRY}/elastic-search:${TAG}" \
-  "${REGISTRY}/elastic-postgres:${TAG}" || die "k3d image import nie powiódł się"
+  "${REGISTRY}/elastic-postgres:${TAG}" \
+  "${REGISTRY}/elastic-elasticsearch:${TAG}" \
+  "${REGISTRY}/elastic-rabbitmq:${TAG}" || die "k3d image import nie powiódł się"
 log "obrazy zaimportowane"

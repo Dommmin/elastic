@@ -33,6 +33,8 @@ on:
       - tools/vps/**
       - infra/glitchtip/**
       - deploy/k8s/**
+      - deploy/overlays/**
+      - tools/k3d/**
       - deploy/monitoring/**
       - infra/obs/prometheus/rules/**
       - infra/obs/grafana/dashboards/**
@@ -78,6 +80,9 @@ jobs:
 
       - name: Ingress k3s (chart Traefika, certyfikaty, Ingressy — ETAP G2)
         run: bash tools/k3s/ingress-check.sh
+
+      - name: Overlaye G5 (render k3d, asercje — ETAP G5, bez klastra)
+        run: bash tools/k3d/g5-check.sh
 
       - name: Chaos (scenariusze, karty, RBAC Joba — ETAP G4, bez klastra)
         run: bash tools/chaos/test.sh

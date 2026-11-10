@@ -556,7 +556,7 @@ k3s-ui: ## Otwórz UI z k3s na Macu: aplikacja :38080, Kibana :35601, RabbitMQ :
 	  wait
 
 # --- ETAP G5: RabbitMQ przez operator na lokalnym k3d (klaster elastic-g5, kontekst k3d-elastic-g5) ---
-.PHONY: g5-up g5-down g5-images
+.PHONY: g5-up g5-down g5-images g5-check g5-deploy
 g5-up: ## Klaster k3d elastic-g5 (1 server + 2 agenty); odmawia przy < 6000 MB wolnych w Docker VM (G5_MIN_FREE_MB)
 	@bash tools/k3d/up.sh
 
@@ -565,3 +565,9 @@ g5-down: ## Usuń klaster k3d elastic-g5
 
 g5-images: ## Zbuduj obrazy catalog/search/postgres (tag g5-local) i zaimportuj do elastic-g5
 	@bash tools/k3d/images.sh
+
+g5-check: ## Asercje renderu overlayów G5 (bez klastra)
+	@bash tools/k3d/g5-check.sh
+
+g5-deploy: ## Wdróż overlay na k3d: make g5-deploy o=g5-local
+	@bash tools/k3d/deploy.sh $(o)

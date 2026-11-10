@@ -19,6 +19,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" \
 kk() { kubectl --context "$CTX" -n "$NS" "$@"; }
 kc() { kubectl --context "$CTX" "$@"; }
 
+# render: renderuje overlay po stronie klienta (bez klastra — działa też w CI).
+render() { kubectl kustomize "$@"; }
+
 log() { printf '[g5] %s\n' "$*"; }
 die() { printf '[g5] BŁĄD: %s\n' "$*" >&2; exit 1; }
 
