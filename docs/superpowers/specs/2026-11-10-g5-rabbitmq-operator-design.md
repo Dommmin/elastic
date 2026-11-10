@@ -53,6 +53,8 @@ Kubernetesa, Streams i migracja bez utraty wiadomości, wszystko na zdarzeniach 
 
 ## 3. Manifesty
 
+> **Zmiana w trakcie realizacji (ruling R4, R5):** overlaye leżą w `deploy/overlays/{g5-base,g5-local,g5-local-ha}`, nie w `deploy/k8s/overlays/` (kustomize odrzuca overlay zagnieżdżony w katalogu bazy: `cycle detected`); `g5-base` to część wspólna. `rabbitmq-cluster/` zostaje w `deploy/k8s/`. W overlayu zostaje też `catalog-app` (search-consumer czyta produkt z powrotem po HTTP).
+
 - Overlay `deploy/k8s/overlays/g5-local` (kustomize): z bazy bierze tylko ścieżkę
   komunikatów: namespace, ServiceAccounts, NetworkPolicy, config, Postgres, Job `migrate`,
   `outbox-publisher`, `search-consumer` i ES przez ECK z **1 węzłem** (łatka `count: 1`,
@@ -106,6 +108,13 @@ Kolejność (każdy krok to osobna komenda w przewodniku i sprawdzenie w `verify
 3. **Shovel** (CR `Shovel`, tryb `on-confirm`, `src-delete-after: queue-length`) dla
    każdej kolejki starego węzła: przenosi zaległe wiadomości do `marketplace.events`
    na nowym klastrze z zachowaniem routing key.
+
+   > **Zmiana w trakcie realizacji (ruling R9):** cel Shovela to **ta sama kolejka**
+   > (`destQueue`), jeden Shovel na kolejkę, nie exchange `marketplace.events`. Pierwszy
+   > przebieg na k3d zgubił 2 z 1500 zdarzeń: kopie wracające z kolejek `delay_*` (retry
+   > Messengera) mają jako routing key **nazwę kolejki**, której żaden binding topic nie
+   > zna, więc publikacja przez exchange kończy się cichym `unroutable_dropped`.
+   > Kolejka do kolejki nie zależy od routing key ani bindingów.
 4. **Konsument na nowy klaster**: `search-consumer` dostaje nowy host, rollout.
    Idempotencja przez `ProcessedEvent` chroni przed duplikatami z okna przełączenia.
 5. Sprawdzenie: stare kolejki = 0, DLQ = 0 (stare i nowe), outbox opublikowany w całości,
@@ -143,10 +152,18 @@ Wyniki w `docs/POMIARY.md` (nowa sekcja G5) z konfiguracją i liczbą powtórze�
 - **Prefetch**: `search-consumer` z `prefetch_count` 1/10/50 (opcja transportu
   Messengera), czas przetworzenia 1500 zdarzeń reindeksu.
 
+  > **Zmiana w trakcie realizacji (ruling R13):** transport AMQP Symfony Messengera nie ma
+  > opcji prefetch (konsumuje przez `basic.get`, `list_consumers` pokazuje 0 konsumentów).
+  > Prefetch zmierzono więc na konsumencie perf-test (`-q` 1/10/50, potwierdzone w
+  > `list_consumers`), a dla `search-consumer` zapisano tylko bazowy czas reindeksu
+  > (ok. 42 s). Szczegóły: sekcja „G5 — RabbitMQ” w `docs/POMIARY.md`.
+
 Maszyna jest współdzielona z innymi projektami: wyniki są orientacyjne, raport podaje
 load average w czasie pomiaru.
 
 ## 8. Budżet pamięci
+
+> **Zmiana w trakcie realizacji (ruling R7):** asercja renderu dotyczy sumy **limitów** kontenerów (`g5-local` ≤ 6 Gi, bo w czasie migracji chodzą oba RabbitMQ; `g5-local-ha` ≤ 5 Gi), a budżet ze specyfikacji (≤ 5,7 GB) sprawdza `verify.sh` na **realnym** zużyciu (pody `top`, węzły `docker stats`): w przebiegu od zera 2 025 MiB i 3 429 MiB.
 
 | Składnik | Limit |
 |---|---|

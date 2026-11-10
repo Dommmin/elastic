@@ -65,6 +65,29 @@ es_settled() {
 }
 wait_for 900 es_settled || die "ES nie ustabilizował się w 15 min"
 
+# RabbitmqCluster nie ma StatefulSetu w renderze (tworzy go operator), więc rollout status go nie
+# widzi: czekamy jawnie na AllReplicasReady i na Ready=True wszystkich CR-ów topologii. Bez tego
+# migrate.sh startuje na klastrze, który jeszcze się formuje (wyszło na przebiegu od zera).
+if grep -q '^kind: RabbitmqCluster' "$WORK/rendered.yaml"; then
+  wait_for 600 allready || die "rabbitmq-ha nie ma AllReplicasReady w 10 min"
+  # Permission pojawia się razem z User; operator topologii potrafi spróbować przed powstaniem
+  # użytkownika w brokerze (`vhost_or_user_not_found`) i potem długo nie ponawia (RUNBOOK #108).
+  # Zmiana adnotacji to zdarzenie aktualizacji, które wyzwala kolejną próbę.
+  TOPO="exchanges.rabbitmq.com,queues.rabbitmq.com,bindings.rabbitmq.com,users.rabbitmq.com,permissions.rabbitmq.com"
+  topology_not_ready() {
+    kk get "$TOPO" -o jsonpath='{range .items[*]}{.kind}.rabbitmq.com/{.metadata.name} {.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+      | awk '$2 != "True" { print tolower($1) }'
+  }
+  topology_settled=
+  for _ in $(seq 1 20); do
+    nr="$(topology_not_ready)" || die "nie udało się odczytać CR-ów topologii"
+    if [ -z "$nr" ]; then topology_settled=1; break; fi
+    for obj in $nr; do kk annotate "$obj" "g5-nudge=$(date +%s)" --overwrite >/dev/null || die "annotate $obj nie powiodło się"; done
+    sleep 15
+  done
+  [ -n "$topology_settled" ] || die "CR-y topologii nie mają Ready=True w 5 min: $(topology_not_ready | tr '\n' ' ')"
+fi
+
 log "2/3 Job migrate"
 kk delete job migrate --ignore-not-found --wait=true >/dev/null
 apply_sel 'app.kubernetes.io/component=migrate'

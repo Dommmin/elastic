@@ -67,25 +67,33 @@ docker pull --platform linux/arm64 "$RMQ_OPERATOR_IMAGE" >/dev/null || die "pull
 log "pull $PERF_IMAGE"
 docker pull --platform linux/arm64 "$PERF_IMAGE" >/dev/null || die "pull $PERF_IMAGE nie powiódł się"
 
+# Import: jeden tarball, każdy obraz tylko dla linux/arm64. `k3d image import <nazwa>` dostaje od
+# dockera indeks wieloarchitekturowy bez blobów innych platform i `ctr import` pada
+# (`ctr: content digest ... not found`), przy czym k3d kończy z kodem 0, a na węzłach ląduje
+# tylko część obrazów (RUNBOOK #102). Dlatego na końcu sprawdzamy KAŻDY obraz na KAŻDYM węźle.
+IMAGES=(
+  "${REGISTRY}/elastic-catalog:${TAG}"
+  "${REGISTRY}/elastic-search:${TAG}"
+  "${REGISTRY}/elastic-postgres:${TAG}"
+  "${REGISTRY}/elastic-elasticsearch:${TAG}"
+  "${REGISTRY}/elastic-rabbitmq:${TAG}"
+  "$RMQ_OPERATOR_IMAGE"
+  "$PERF_IMAGE"
+)
 log "import do $CLUSTER"
-k3d image import -c "$CLUSTER" \
-  "${REGISTRY}/elastic-catalog:${TAG}" \
-  "${REGISTRY}/elastic-search:${TAG}" \
-  "${REGISTRY}/elastic-postgres:${TAG}" \
-  "${REGISTRY}/elastic-elasticsearch:${TAG}" \
-  "${REGISTRY}/elastic-rabbitmq:${TAG}" \
-  "$RMQ_OPERATOR_IMAGE" || die "k3d image import nie powiódł się"
-
-# perf-test osobno i przez tarball jednej platformy: obraz jest wieloarchitekturowy (indeks
-# amd64+arm64), a `k3d image import <nazwa>` dostaje od dockera indeks bez blobów amd64 i
-# na węzłach pada cicho (`ctr: content digest ... not found`) — obraz ląduje tylko na części
-# węzłów, a pody na pozostałych kończą w ImagePullBackOff (brak sieci do Docker Huba).
-PERF_TAR="$(mktemp -d)/perf-test.tar"
-trap 'rm -rf "$(dirname "$PERF_TAR")"' EXIT
-docker save --platform linux/arm64 -o "$PERF_TAR" "$PERF_IMAGE" || die "docker save $PERF_IMAGE nie powiódł się"
-k3d image import -c "$CLUSTER" "$PERF_TAR" || die "import perf-test nie powiódł się"
-for node in $(docker ps --format '{{.Names}}' --filter "name=k3d-${CLUSTER}-(server|agent)" | grep -E "^k3d-${CLUSTER}-(server|agent)-[0-9]+$"); do
-  docker exec "$node" crictl images 2>/dev/null | grep -q 'pivotalrabbitmq/perf-test' \
-    || die "obraz perf-test nie dotarł na węzeł $node"
+TAR_DIR="$(mktemp -d)"
+trap 'rm -rf "$TAR_DIR"' EXIT
+docker save --platform linux/arm64 -o "$TAR_DIR/images.tar" "${IMAGES[@]}" || die "docker save nie powiódł się"
+k3d image import -c "$CLUSTER" "$TAR_DIR/images.tar" || die "k3d image import nie powiódł się"
+NODES="$(docker ps --format '{{.Names}}' | grep -E "^k3d-${CLUSTER}-(server|agent)-[0-9]+$")"
+[ -n "$NODES" ] || die "brak węzłów klastra $CLUSTER"
+for node in $NODES; do
+  have="$(docker exec "$node" crictl images 2>/dev/null)" || die "crictl images nie działa na $node"
+  for img in "${IMAGES[@]}"; do
+    # crictl pokazuje repozytorium i tag osobno, bez docker.io/library/ dla obrazów oficjalnych
+    repo="${img%:*}"; tag="${img##*:}"
+    printf '%s\n' "$have" | awk -v r="$repo" -v t="$tag" '{ n=$1; sub(/^docker.io\/library\//,"",n); sub(/^docker.io\//,"",n); if (n==r && $2==t) f=1 } END { exit !f }' \
+      || die "obraz $img nie dotarł na węzeł $node"
+  done
 done
 log "obrazy zaimportowane"

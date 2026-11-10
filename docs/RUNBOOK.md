@@ -96,6 +96,18 @@
 | [093](#093) | chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1` (spoiler) | k3s / chaos | G4 |
 | [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler) | k3s / chaos | G4 |
 | [095](#095) | `chaos-undo` nie zadziałał — blokada `chaos-lock` zostaje, produkcja zepsuta | k3s / chaos | G4 |
+| [098](#098) | kustomize: `cycle detected` — overlay w katalogu bazy | k3d / kustomize | G5 |
+| [099](#099) | Operator topologii odrzuca `User`/`Shovel`: Secret bez etykiety `rabbitmq.com/topology-operator` | k3d / RabbitMQ | G5 |
+| [100](#100) | RabbitMQ za `default-deny`: egress do API, przypięta podsieć k3d | k3d / NetworkPolicy | G5 |
+| [101](#101) | Stream bez repliki, `list_queues` wisi, `/health` RabbitMQ: brakujące reguły ingress (6000-6500, 35672-35682, 5672) | k3d / NetworkPolicy | G5 |
+| [102](#102) | `k3d image import`: `content digest ... not found`, `ImagePullBackOff` | k3d | G5 |
+| [103](#103) | Shovel przez exchange gubi wiadomości po retry (`unroutable_dropped`) | RabbitMQ | G5 |
+| [104](#104) | Przełączenie na nowy RabbitMQ: `invalid credentials`, zmiana ConfigMapy restartuje Postgresa | k3d / aplikacja | G5 |
+| [105](#105) | perf-test `ACCESS_REFUSED`, `rabbitmqadmin` `Not_Authorized`, tinker `psysh` | RabbitMQ / narzędzia | G5 |
+| [106](#106) | Test failover: lider na `server-0`, zmiana IP węzła po `docker start` | k3d / RabbitMQ | G5 |
+| [107](#107) | ECK: kustomize nie podmienia obrazu w CRD, `nodeSets` ginie przy patchu | k3d / kustomize | G5 |
+| [108](#108) | Świeży klaster: `migrate.sh` odmawia (brak AllReplicasReady), `Permission` `vhost_or_user_not_found` | k3d / RabbitMQ | G5 |
+| [109](#109) | Migracja, krok 6: `kc diff` czerwony na świeżym klastrze (wartości domyślne dopisane do CR-ów) | k3d / kustomize | G5 |
 
 ---
 
@@ -4392,6 +4404,358 @@ kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
 **Czego się nauczyłem**
 Bezpiecznik musi żyć w klastrze: w teście z martwym tunelem Job sam przywrócił politykę
 i zdjął blokadę. Ręczne usunięcie blokady dopiero po ręcznej naprawie stanu, nigdy przed.
+
+---
+
+<a id="098"></a>
+## 098 — kustomize: `cycle detected: candidate root ... contains visited root`
+
+> ETAP G5, overlay na k3d, 2026-11-10.
+
+**Objaw**
+```
+error: accumulating resources: ... cycle detected: candidate root 'deploy/k8s' contains visited root 'deploy/k8s/overlays/g5-local'
+```
+
+**Diagnoza**
+`kubectl kustomize deploy/k8s/overlays/g5-local` z `resources: ../..`. Overlay leżał
+w katalogu bazy, więc katalog bazy zawierał korzeń, który właśnie przetwarzano.
+
+**Przyczyna**
+Kustomize traktuje każdy katalog z `kustomization.yaml` jako korzeń i zabrania, żeby
+baza była przodkiem overlayu w drzewie katalogów.
+
+**Naprawa**
+Overlaye obok bazy, nie w niej: `deploy/overlays/{g5-base,g5-local,g5-local-ha}` z
+`resources: ../../k8s`. Katalog bez własnego `kustomization.yaml` (`deploy/k8s/rabbitmq-cluster`
+ma go, ale nie jest przodkiem) jest w porządku. Pliki spoza korzenia overlayu są zabronione
+(`kustomizeconfig.yaml` trzeba skopiować do overlayu).
+
+**Czego się nauczyłem**
+Struktura katalogów jest częścią kontraktu kustomize. Nowy overlay planuj jako rodzeństwo bazy.
+
+---
+
+<a id="099"></a>
+## 099 — operator topologii odrzuca User i Shovel: webhook żąda etykiety na Secrecie
+
+> ETAP G5, 2026-11-10.
+
+**Objaw**
+`kubectl apply` CR `User` (potem także `Shovel`) kończy się błędem webhooka walidującego
+`messaging-topology-operator` o Secrecie z `importCredentialsSecret` / `uriSecret`.
+
+**Diagnoza**
+Komunikat webhooka wskazuje Secret; `kubectl get secret ... --show-labels` nie ma
+żadnej etykiety operatora.
+
+**Przyczyna**
+Operator reaguje na zmiany Secretu tylko wtedy, gdy ma on etykietę `rabbitmq.com/topology-operator=true`,
+i wymusza ją na referencjach z CR-ów.
+
+**Naprawa**
+`tools/k3d/secrets.sh` nakłada etykietę (idempotentnie) na `rabbitmq-ha-marketplace-user`,
+`rabbitmq-shovel-uris` i `rabbitmq-ha-perftest-user`. Uwaga: ten sam Secret musi istnieć
+**przed** `apply` CR-a.
+
+**Czego się nauczyłem**
+CR ze Ready=True nie dowodzi, że dostanie nowe hasło. Odwołanie do Secretu to odwołanie
+z kontraktem (etykieta), nie tylko nazwa.
+
+---
+
+<a id="100"></a>
+## 100 — RabbitMQ w klastrze za `default-deny`: peer discovery potrzebuje API, a podsieć węzłów musi być stała
+
+> ETAP G5, 2026-11-10.
+
+**Objaw**
+Węzły klastra RabbitMQ nie mają jak zapytać API Kubernetesa (peer discovery, endpointy), a polityka
+`default-deny` z egress to udaje „API nie istnieje”: natychmiastowe `Connection refused`.
+
+**Diagnoza**
+Z poda `rabbitmq-ha-server-0` (`bash /dev/tcp/<ip>/<port>`): bez polityki `172.22.0.3:6443` i
+`10.43.0.1:443` zamknięte, z polityką otwarte, a `172.22.0.4:10250` (kubelet) nadal zamknięty, więc reguła
+przepuszcza tylko API. Test rozruchowy (kasowanie PVC i poda, żeby wymusić discovery) **nie** odtworzył awarii:
+świeży pod bywa przez pierwsze sekundy poza egzekwowaniem kube-routera (odwrotność wyścigu z
+[#097-rodziny](#050)); polityki nie da się więc uzasadnić testem rozruchu, tylko deterministycznym testem połączenia.
+
+**Przyczyna**
+Egress do API przechodzi po DNAT na adres węzła `server-0` (`172.22.0.x:6443`), a nie na ClusterIP.
+Polityka musi więc znać **podsieć sieci Dockera**, a ta u k3d jest losowa (nowy klaster = inna).
+
+**Naprawa**
+`NetworkPolicy rabbitmq-ha-egress-api`: jedna reguła `ipBlock: 172.22.0.0/16`, port `6443/TCP`. Podsieć jest
+przypięta: `up.sh` tworzy sieć `docker network create --subnet 172.22.0.0/16` i podaje ją
+`k3d cluster create --network`, `down.sh` usuwa ją jawnie (k3d nie kasuje sieci, której nie stworzył),
+`deploy.sh` odmawia przy niezgodności ipBlock z żywą podsiecią, `g5-check` pilnuje stałej `G5_SUBNET`.
+Docker odmawia nakładającej się podsieci, więc kolizja z innym projektem kończy się jasnym błędem, nie
+cichą pomyłką.
+
+**Czego się nauczyłem**
+Przy `default-deny` egress dla API to osobna reguła, a ipBlock jest tak stały, jak sieć pod nim.
+Nie zakładaj, że brak awarii przy starcie dowodzi, że polityka jest zbędna.
+
+---
+
+<a id="101"></a>
+## 101 — stream bez repliki, `rabbitmqctl list_queues` wisi, `/health` sklepu: RabbitMQ „Connection refused”
+
+> ETAP G5, 2026-11-10. Trzy objawy jednej przyczyny: reguły ingress dopisane za późno.
+
+**Objaw**
+- CR `Queue` stream ma Ready=True, a w logu repliki `connection_refused` na portach 6000-6500;
+- `rabbitmqctl list_queues` z `exec` wisi na „Some queue(s) are unresponsive” i pokazuje tylko kolejki lokalnego węzła;
+- po migracji `catalog-app` `/health` zgłasza `rabbitmq: Connection refused`.
+
+**Diagnoza**
+`rabbitmq-diagnostics stream_status`, `cluster_status` i `quorum_status` są zdrowe, więc to nie awaria brokera.
+Wspólna cecha: połączenie, którego nikt nie otworzył do poda **z zewnątrz**, ale które broker otwiera **do** siebie.
+
+**Przyczyna**
+`default-deny` ingress blokuje:
+1. replikację streamu między węzłami (porty osiris, domyślnie 6000-6500);
+2. połączenie zwrotne do węzła CLI (`rabbitmqctl` to osobny węzeł Erlanga z portem dist z puli 35672-35682);
+3. `catalog-app` → 5672 (jego `/health` sprawdza RabbitMQ; bazowa `rabbitmq-ingress` go wpuszczała, nowa polityka nie).
+
+**Naprawa**
+Reguły w `rabbitmq-ha-ingress`: peery → peery `6000-6500/TCP` i `35672-35682/TCP`, `catalog-app` → `5672`.
+`g5-check.rb` asercją pilnuje zakresów. Kolejki zdrowe widać bez `--local`.
+
+**Czego się nauczyłem**
+Ready=True na CR oznacza „operator zaaplikował”, nie „działa”. Klaster RabbitMQ rozmawia ze sobą na portach,
+których nie ma w dokumentacji aplikacji, a polityka sieciowa dla stateful klastra to jego protokół, nie tylko
+dostęp klientów.
+
+---
+
+<a id="102"></a>
+## 102 — `k3d image import`: `ctr: content digest sha256:... not found`
+
+> ETAP G5, 2026-11-10.
+
+**Objaw**
+Na każdym węźle niefatalne `ctr: content digest sha256:cd4fd601... not found`, a po imporcie pod z nowym obrazem
+wisi w `ImagePullBackOff` (k3d nie ma sieci do Docker Huba).
+
+**Diagnoza**
+`docker exec k3d-elastic-g5-agent-0 crictl images | grep <obraz>` na **każdym** węźle. Obrazy małe (własne,
+jednoplatformowe) importują się czysto; `rabbitmq:4.3.4-management` pokazał komunikat, ale był na węźle;
+`pivotalrabbitmq/perf-test:2.25.0` był tylko na części węzłów.
+
+**Przyczyna**
+`docker save` obrazu z indeksem wieloarchitekturowym zapisuje indeks bez blobów innych platform, a `ctr import`
+kończy to ostrzeżeniem. Czasem obraz mimo to się rejestruje, czasem nie.
+
+**Naprawa**
+`tools/k3d/images.sh`: `docker pull --platform linux/arm64`, potem **jeden** tarball z `docker save --platform linux/arm64`
+dla wszystkich obrazów i jego import, a na końcu weryfikacja **każdego** obrazu na **każdym** węźle (`crictl images`, die przy brakach).
+Pierwsza wersja naprawiała tylko perf-test i sprawdzała tylko jego; dopiero przebieg od zera na świeżym klastrze
+(2026-11-10) pokazał, że zbiorczy `k3d image import` z kilkoma obrazami kończy z kodem 0 mimo `ERRO ... content digest not found`,
+a na węzłach nie ma wtedy obrazów `g5-local`: `sts/postgres` wisiał w `ImagePullBackOff` (`ghcr.io/dommmin/elastic-postgres:g5-local: not found`).
+Wcześniejsze przebiegi na klastrze, który miał już obrazy z ręcznych importów, tego nie widziały.
+
+**Czego się nauczyłem**
+Komunikat o błędzie przy imporcie nie mówi, czy obraz jest, a kod wyjścia k3d bywa 0 przy błędzie. Sprawdzaj rezultat
+(`crictl images` na każdym węźle). Skrypt „naprawiony” na klastrze, który już ma obrazy, nie jest sprawdzony: potrzebny jest przebieg od zera.
+
+---
+
+<a id="103"></a>
+## 103 — Shovel przez exchange gubi wiadomości po retry (2 z 1500)
+
+> ETAP G5, migracja, 2026-11-10. Najważniejszy błąd etapu.
+
+**Objaw**
+Pierwszy przebieg `migrate.sh --load=1500` zatrzymał się na `1500 0 1498 1498 0 0`: `processed_events` 1498
+zamiast 1500, stare kolejki puste, DLQ 0. Dwa produkty (702, 703) nie dotarły do ES, brak błędu w logach.
+
+**Diagnoza**
+- stary węzeł: `rabbitmq_global_messages_dead_lettered_expired_total{queue_type="classic"} = 2`
+  (kopie po retry Messengera wróciły z kolejki `delay_*`);
+- nowy węzeł (port-forward na 15692, każdy pod osobny port lokalny): `received 434, routed 432,
+  unroutable_dropped_total 2`.
+
+**Przyczyna**
+Shovel publikował do exchange `marketplace.events` bez flagi `mandatory`. Kopia po retry wraca do kolejki przez
+**default exchange**, więc jej routing key to **nazwa kolejki** (`search.product.sync`). Bindingi topic (`product.#`)
+tej nazwy nie znają, exchange niczego nie routuje i wiadomość znika bez śladu.
+
+**Naprawa**
+Shovel kolejka do kolejki: `destQueue` = ta sama kolejka, po jednym na każdą z 6 kolejek. Nie zależy od routing key
+ani bindingów (i nie dubluje przy nakładających się bindingach). DLQ do DLQ: martwe zostają martwe.
+Powtórka na zakomitowanym kodzie: `2963 0 2963 1500 0 0`, `unroutable_dropped_total` bez zmian.
+
+**Czego się nauczyłem**
+„Bez błędów w logach” nie jest dowodem braku utraty, dowodem jest liczenie na obu końcach. Wykrywaj:
+`unroutable_dropped_total` na celu i `dead_lettered_expired_total` na źródle. Przenosząc wiadomości z
+dead-letteringiem, zachowaj kolejkę, nie routing key.
+
+---
+
+<a id="104"></a>
+## 104 — przełączenie aplikacji na nowy RabbitMQ: `invalid credentials` i restart Postgresa
+
+> ETAP G5, migracja, 2026-11-10.
+
+**Objaw**
+Po zmianie `RABBITMQ_HOST` na `rabbitmq-ha` `outbox-publisher` w `CrashLoopBackOff`:
+`AMQPLAIN login refused ... invalid credentials`. Osobno: zmiana wartości w ConfigMapie
+`marketplace-config` restartowała **Postgresa**.
+
+**Diagnoza**
+Użytkownik `marketplace` na `rabbitmq-ha` ma własne hasło (Secret `rabbitmq-ha-marketplace-user`), a nie hasło starego węzła.
+Mutacja `g5-check` (zmiana ConfigMapy) pokazała różnicę w ConfigMapie, 3 Deploymentach i StatefulSetu postgres.
+
+**Przyczyna**
+ConfigMapa ma sufiks z hashem treści, więc zmiana wartości zmienia **nazwę**, a każdy czytelnik (także Postgres) dostaje
+nowy szablon poda. Dodatkowo `set env` nie zmieni klucza w istniejącym `valueFrom`, a strategic merge w kustomize
+wstawia nową zmienną na początek listy, więc stan na żywo i stan z overlayu miałyby różną kolejność env (rollout przy
+następnym `apply`).
+
+**Naprawa**
+Host i hasło jako jawne `env` (wygrywa z `envFrom`), przełączane `kubectl patch --type=json` **tymi samymi plikami**,
+które są w overlayu `g5-local-ha`, z operacjami `test`. Stan na żywo i repo są identyczne z konstrukcji; `kc diff`
+końcowego overlayu jest pusty, a `make g5-deploy o=g5-local-ha` nie robi żadnego rolloutu (UID-y podów bez zmian).
+
+**Czego się nauczyłem**
+Zmiana konfiguracji współdzielonej ConfigMapy to zmiana w każdym podzie, który ją czyta. Przełączenie „na żywo” ma być
+tym samym artefaktem co stan końcowy w repo, wtedy repo = prawda.
+
+---
+
+<a id="105"></a>
+## 105 — narzędzia w podzie: perf-test `ACCESS_REFUSED`, `rabbitmqadmin` `Not_Authorized`, tinker `psysh`
+
+> ETAP G5, 2026-11-10. Trzy drobne pułapki, każda z jednej linii naprawy.
+
+**Objaw**
+- `perf-test` ma `ACCESS_REFUSED` dla użytkownika `g5-perftest`, który ma uprawnienia tylko do `^g5\..*$`;
+- `rabbitmqadmin` w podzie RabbitMQ daje `Not_Authorized`;
+- `php artisan tinker` w podzie z read-only FS: `Writing to directory /config/psysh is not allowed`.
+
+**Diagnoza i przyczyna**
+- perf-test **zawsze** deklaruje exchange `direct` (nawet konsument), a z `-e marketplace.events -p` robi też `queue.bind`;
+- `rabbitmqadmin` 2.x z obrazu nie czyta pliku `.rabbitmqadmin.conf` operatora (format v1);
+- obraz ustawia `XDG_CONFIG_HOME=/config`, a rootfs jest tylko do odczytu.
+
+**Naprawa**
+- `-e g5.test -t direct` dla kolejek testowych; dla czytelników streamu `-e ""` (domyślny exchange, bez deklaracji i bindingu);
+- `-u/-p` z `/etc/rabbitmq/conf.d/11-default_user.conf`, czytane w podzie, nie wypisywane;
+- `HOME=/tmp XDG_CONFIG_HOME=/tmp XDG_DATA_HOME=/tmp`.
+
+**Czego się nauczyłem**
+Najmniejszy użytkownik testowy odsłania, co narzędzie robi „po cichu”. Czytaj, jakich operacji narzędzie używa, zanim
+zawężysz uprawnienia.
+
+---
+
+<a id="106"></a>
+## 106 — test failover: lider zawsze na `server-0`, a po `docker start` węzeł ma inne IP
+
+> ETAP G5, 2026-11-10.
+
+**Objaw**
+- Pierwsze „zatrzymanie węzła” zatrzymałoby płaszczyznę sterowania (lider kolejki quorum startuje na podzie z węzła `server-0`);
+- pod generatora obciążenia wylądował na zatrzymywanym węźle: Job bez logów, „czas do nowego lidera” 356 s;
+- po `docker start` agenta `kubectl exec` chwilę pada z `x509: certificate is valid for ..., not 172.22.0.5`.
+
+**Przyczyna**
+Lider tworzony jest tam, gdzie klient się łączy; scheduler nie zna celu testu; przy restarcie kontenera k3d adresy IP węzłów się tasują
+(agent-1 `.5` na `.2`), a certyfikaty klienta wciąż wskazują stare.
+
+**Naprawa**
+`rabbitmq-queues transfer_leadership` na pod z agenta przed `docker stop`; `PERF_AVOID_NODE` (affinity `NotIn`) dla Joba obciążenia;
+`measure.sh` czeka na `ha_pod` i `AllReplicasReady` (do 180 s) po starcie węzła. Samo przejdzie po kilkudziesięciu sekundach.
+
+**Czego się nauczyłem**
+Test awarii ma pewne założenia o położeniu (kto jest liderem, gdzie stoi generator). Ustaw je jawnie, inaczej mierzysz artefakt.
+
+---
+
+<a id="107"></a>
+## 107 — ECK: kustomize nie podmienia `spec.image` w CRD Elasticsearch, a lista `nodeSets` ginie przy patchu
+
+> ETAP G5, overlay, 2026-11-10.
+
+**Objaw**
+Render overlayu ma stary obraz ES, albo ma dokładnie jeden `nodeSet` bez heapa i limitu.
+
+**Przyczyna**
+`images:` w kustomize zna tylko pola znanych kindów, CRD Elasticsearch do nich nie należy. A strategic merge dla CRD nie zna kluczy
+scalania listy, więc listę `nodeSets` **podmienia w całości**.
+
+**Naprawa**
+`kustomizeconfig.yaml` (`images: path: spec/image`) skopiowany do `deploy/overlays/g5-base`, bo ścieżki spoza korzenia są zabronione;
+zmiana heapa i limitu przez JSON6902 (`op: replace`), nie strategic merge. `g5-check` sprawdza ES: count 1, heap, limit.
+
+**Czego się nauczyłem**
+Dla własnych zasobów (CRD) zakładaj, że kustomize ich nie rozumie. Patch JSON6902 jest wąski i przewidywalny.
+
+---
+
+<a id="108"></a>
+## 108 — świeży klaster: `migrate.sh` odmawia („nie ma AllReplicasReady”), a `Permission` ma `vhost_or_user_not_found`
+
+> ETAP G5, przebieg od zera, 2026-11-10.
+
+**Objaw**
+`make g5-deploy o=g5-local` kończy się sukcesem po ~1 min, a zaraz potem `make g5-migrate` odmawia:
+`rabbitmq-ha nie ma AllReplicasReady`. Po chwili klaster jest gotowy, ale dwa CR `Permission` (`marketplace`, `g5-perftest`)
+zostają `Ready=False` z `Error 400 (bad_request): vhost_or_user_not_found` i nie naprawiają się same przez kilka minut.
+
+**Diagnoza**
+```bash
+kubectl get rabbitmqcluster rabbitmq-ha
+kubectl get permissions.rabbitmq.com -o jsonpath='{range .items[*]}{.metadata.name} {.status.conditions[0].message}{"\n"}{end}'
+kubectl -n rabbitmq-system logs deploy/messaging-topology-operator | grep -i permission
+```
+`list_users` w brokerze pokazuje już obu użytkowników, a log operatora ma jedną nieudaną próbę `failed to declare permission`
+i brak kolejnych.
+
+**Przyczyna**
+1. `deploy.sh` czekał tylko na StatefulSety z renderu. `RabbitmqCluster` nie ma StatefulSetu w renderze (tworzy go operator), więc
+   wdrożenie kończyło się, zanim klaster się uformował. Na wcześniejszych przebiegach klaster stał od godzin i nikt tego nie widział.
+2. `Permission` powstaje w tej samej sekundzie co `User`. Operator topologii próbuje ustawić uprawnienia, zanim użytkownik jest w brokerze,
+   i potem długo (minuty) nie ponawia.
+
+**Naprawa**
+`deploy.sh` po ES czeka na `allready` (AllReplicasReady i 3 gotowe kontenery), a potem w pętli (max 5 min) sprawdza `Ready` wszystkich CR-ów
+topologii i **trąca** te niegotowe zmianą adnotacji `g5-nudge=<czas>` (aktualizacja obiektu wyzwala kolejną próbę). Ręcznie to samo:
+`kubectl annotate permissions.rabbitmq.com marketplace g5-nudge=$(date +%s) --overwrite`.
+
+**Czego się nauczyłem**
+„Wdrożenie skończone” musi znaczyć „gotowe do następnego kroku”, także dla zasobów, które tworzy operator, a nie manifest. Kolejność
+zależności między CR-ami (User → Permission) operator rozwiązuje retry, a nie kolejnością, więc skrypt musi umieć poczekać i trącić.
+
+---
+
+<a id="109"></a>
+## 109 — migracja: krok 6 (`kc diff`) czerwony na świeżym klastrze, choć nic się nie zmieniło
+
+> ETAP G5, przebieg od zera, 2026-11-10.
+
+**Objaw**
+`migrate.sh` kończy kroki 1-5 poprawnie (`2939 0 2939 1500 0 0`), po czym krok 6 umiera:
+`stan na żywo różni się od g5-local-ha`. Diff dotyczy 14 CR-ów: `generation: 2` → `3`, `+ autoDelete: false` (Exchange, Queue),
+`+ tags: []` (User), `- resources: {}`, `- metadata: {}` w `podTemplate` Elasticsearcha. Na klastrze, który miał kilka wdrożeń z rzędu, diff był pusty.
+
+**Diagnoza**
+Wypisz pełny diff (migrate.sh obcina go do 60 linii) i policz, których obiektów dotyczy:
+`grep '^diff' diff.out`. Wszystkie to CR-y operatorów (`rabbitmq.com`, `k8s.elastic.co`), żaden Deployment ani Service.
+
+**Przyczyna**
+Operatory i ich webhooki dopisują wartości domyślne do CR-a przy pierwszej aktualizacji (stąd `generation` 2), a dry-run
+`apply` pokazuje, co jeszcze trzeba by dopisać albo zdjąć. Po drugim `apply` wszystko jest punktem stałym, więc wcześniejsze
+przebiegi (wiele wdrożeń na tym samym klastrze) tego nie widziały. To szum, nie dryf: migracja tych obiektów nie zmienia.
+
+**Naprawa**
+Krok 6 porównuje tylko obiekty, które migracja faktycznie zmienia (Deploymenty i reszta rdzenia): `migrate.sh` odfiltrowuje z renderu
+dokumenty `rabbitmq.com/*` i `k8s.elastic.co/*` przed `kc diff`. Zgodność CR-ów z repo pilnują osobno `g5-check` (render) i `topology-parity.rb`.
+
+**Czego się nauczyłem**
+Diff „repo kontra klaster” jest wiarygodny tylko dla obiektów, których klaster nie dopisuje sam. Dla CR-ów operatorów przyjmij, że
+pierwszy `apply` nie jest punktem stałym.
 
 ---
 

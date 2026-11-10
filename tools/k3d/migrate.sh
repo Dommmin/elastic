@@ -190,7 +190,14 @@ diff -u -N "$1" "$2"
 SH
 chmod +x "$WORK/diff.sh"
 log "krok 6: kc diff overlayu g5-local-ha (bez Joba migrate)"
-KUBECTL_EXTERNAL_DIFF="$WORK/diff.sh" kc diff -f "$WORK/ha.yaml" -l 'app.kubernetes.io/component!=migrate' > "$WORK/diff.out" 2>&1
+# Poza porównaniem zostają CR-y operatorów (rabbitmq.com, k8s.elastic.co): migracja ich nie zmienia
+# (żywe przełączenie dotyka Deploymentów), a API/webhooki dopisują do nich wartości domyślne
+# (autoDelete, tags, resources, metadata, generation) przy pierwszej aktualizacji, więc na świeżym
+# klastrze każdy z nich różniłby się od repo bez żadnej zmiany merytorycznej (RUNBOOK #109).
+ruby -ryaml -e 'docs = YAML.load_stream(File.read(ARGV[0])).compact.reject { |d| d["apiVersion"].to_s =~ /(rabbitmq\.com|k8s\.elastic\.co)\// }
+  puts docs.map { |d| d.to_yaml }.join' "$WORK/ha.yaml" > "$WORK/ha-core.yaml" || die "nie udało się przefiltrować renderu"
+[ -s "$WORK/ha-core.yaml" ] || die "przefiltrowany render jest pusty"
+KUBECTL_EXTERNAL_DIFF="$WORK/diff.sh" kc diff -f "$WORK/ha-core.yaml" -l 'app.kubernetes.io/component!=migrate' > "$WORK/diff.out" 2>&1
 rc=$?
 case "$rc" in
   0) log "krok 6: OK — stan na żywo = g5-local-ha; make g5-deploy o=g5-local-ha usunie tylko stary RabbitMQ (prune.txt)" ;;
