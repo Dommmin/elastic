@@ -1,0 +1,19 @@
+# ============================================================================
+#  Migracja na rabbitmq-ha (ETAP G5, spec sekcja 5, krok 3): Shovel CR-y.
+#  Tylko overlay g5-local (stan wyjściowy) — g5-local-ha ich nie ma, a deploy.sh
+#  kasuje je z listy deploy/overlays/g5-local-ha/prune.txt.
+#  Etykieta component=migration: deploy.sh ich nie stosuje (shovel przed
+#  przełączeniem wydawcy łapałby kolejki w złym momencie), robi to
+#  tools/k3d/migrate.sh w kroku 3.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: marketplace
+
+labels:
+  - pairs:
+      app.kubernetes.io/component: migration
+    includeSelectors: false
+
+resources:
+  - shovels.yaml

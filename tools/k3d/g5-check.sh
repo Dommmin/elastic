@@ -10,17 +10,23 @@ cd "$REPO_ROOT" || die "brak katalogu repo"
 FAIL=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# Overlaye: g5-local obowiązkowy; g5-local-ha dochodzi w Task 3 (wtedy też obowiązkowy).
+# Overlaye: oba obowiązkowe. g5-local (stan wyjściowy migracji) idzie pierwszy, bo
+# g5-local-ha (stan końcowy) porównujemy z jego renderem.
 for ov in g5-local g5-local-ha; do
   dir="deploy/overlays/$ov"
-  if [ ! -d "$dir" ]; then
-    if [ "$ov" = "g5-local" ]; then echo "✗ brak overlayu $dir"; FAIL=1; else echo "- $ov: jeszcze nie istnieje, pominięty"; fi
-    continue
-  fi
+  if [ ! -d "$dir" ]; then echo "✗ brak overlayu $dir"; FAIL=1; continue; fi
   if ! render "$dir" > "$TMP/$ov.yaml" 2> "$TMP/$ov.err"; then
     echo "✗ render $ov nie przeszedł:"; head -5 "$TMP/$ov.err"; FAIL=1; continue
   fi
-  ruby tools/k3d/g5-check.rb "$TMP/$ov.yaml" "$ov" || FAIL=1
+  if [ "$ov" = "g5-local-ha" ]; then
+    if [ -s "$TMP/g5-local.yaml" ]; then
+      ruby tools/k3d/g5-check.rb "$TMP/$ov.yaml" "$ov" "$TMP/g5-local.yaml" || FAIL=1
+    else
+      echo "✗ brak renderu g5-local do porównania ze stanem końcowym"; FAIL=1
+    fi
+  else
+    ruby tools/k3d/g5-check.rb "$TMP/$ov.yaml" "$ov" || FAIL=1
+  fi
   # Zgodność topologii CR-ów z definitions.template.json (Task 4) — tylko overlaye z klastrem operatora.
   if grep -q 'name: rabbitmq-ha$' "$TMP/$ov.yaml"; then
     echo "Topologia RabbitMQ ($ov): zgodność z infra/rabbitmq/definitions.template.json"

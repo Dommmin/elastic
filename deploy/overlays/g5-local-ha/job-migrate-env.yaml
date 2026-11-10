@@ -1,0 +1,19 @@
+# Job migrate (Symfony bootuje z DSN, choć migracje AMQP nie dotykają): bez starego
+# hosta w stanie końcowym. Job i tak jest kasowany i tworzony od nowa przy każdym deploy.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: search-migrate
+          env:
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN_HA } }
+      containers:
+        - name: search-index
+          env:
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN_HA } }

@@ -1,39 +1,14 @@
 # ============================================================================
-#  Overlay g5-local (ETAP G5): ścieżka komunikatów sklepu na starym RabbitMQ,
-#  lokalny k3d `elastic-g5`. Baza bez zmian; obrazy z `make g5-images`.
-#  Zostają: postgres, rabbitmq (stary), catalog-app (read-back konsumenta),
-#  outbox-publisher, search-consumer, ES (1 węzeł), Job migrate,
-#  RabbitmqCluster rabbitmq-ha (deploy/k8s/rabbitmq-cluster, operator). Reszta kasowana w delete-unneeded.yaml.
+#  Overlay g5-local (ETAP G5): stan WYJŚCIOWY migracji — aplikacje na starym
+#  RabbitMQ (StatefulSet `rabbitmq`), obok klaster `rabbitmq-ha` z topologią.
+#  = g5-base + Shovel CR-y migracji (deploy/k8s/rabbitmq-cluster/migration).
+#  Shovele mają etykietę app.kubernetes.io/component=migration: deploy.sh ich
+#  NIE stosuje, robi to tools/k3d/migrate.sh w kroku 3 (spec G5, sekcja 5).
+#  Stan końcowy po migracji: overlay g5-local-ha.
 # ============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../k8s
-  - ../../k8s/rabbitmq-cluster
-
-configurations:
-  - kustomizeconfig.yaml
-
-patches:
-  - path: delete-unneeded.yaml
-  - path: resources.yaml
-  - path: es-patch.yaml
-    target:
-      group: elasticsearch.k8s.elastic.co
-      kind: Elasticsearch
-      name: marketplace
-
-images:
-  - name: ghcr.io/dommmin/elastic-elasticsearch
-    newTag: g5-local
-  - name: ghcr.io/dommmin/elastic-postgres
-    newTag: g5-local
-  - name: ghcr.io/dommmin/elastic-rabbitmq
-    newTag: g5-local
-  - name: ghcr.io/dommmin/elastic-catalog
-    newTag: g5-local
-  - name: ghcr.io/dommmin/elastic-search
-    newTag: g5-local
-  - name: ghcr.io/dommmin/elastic-glitchtip
-    newTag: g5-local
+  - ../g5-base
+  - ../../k8s/rabbitmq-cluster/migration

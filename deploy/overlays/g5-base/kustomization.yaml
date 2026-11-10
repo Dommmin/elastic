@@ -1,0 +1,42 @@
+# ============================================================================
+#  g5-base (ETAP G5): część wspólna overlayów g5-local i g5-local-ha — ścieżka
+#  komunikatów sklepu na lokalnym k3d `elastic-g5`. Sam nie jest wdrażany
+#  (deploy.sh bierze g5-local albo g5-local-ha). Baza deploy/k8s bez zmian;
+#  obrazy z `make g5-images`.
+#  Zostają: postgres, rabbitmq (stary — g5-local-ha go kasuje), catalog-app
+#  (read-back konsumenta), outbox-publisher, search-consumer, ES (1 węzeł),
+#  Job migrate, RabbitmqCluster rabbitmq-ha (deploy/k8s/rabbitmq-cluster,
+#  operator). Reszta kasowana w delete-unneeded.yaml.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../k8s
+  - ../../k8s/rabbitmq-cluster
+
+configurations:
+  - kustomizeconfig.yaml
+
+patches:
+  - path: delete-unneeded.yaml
+  - path: resources.yaml
+  - path: es-patch.yaml
+    target:
+      group: elasticsearch.k8s.elastic.co
+      kind: Elasticsearch
+      name: marketplace
+
+images:
+  - name: ghcr.io/dommmin/elastic-elasticsearch
+    newTag: g5-local
+  - name: ghcr.io/dommmin/elastic-postgres
+    newTag: g5-local
+  - name: ghcr.io/dommmin/elastic-rabbitmq
+    newTag: g5-local
+  - name: ghcr.io/dommmin/elastic-catalog
+    newTag: g5-local
+  - name: ghcr.io/dommmin/elastic-search
+    newTag: g5-local
+  - name: ghcr.io/dommmin/elastic-glitchtip
+    newTag: g5-local

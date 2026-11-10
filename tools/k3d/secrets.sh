@@ -109,5 +109,8 @@ kk label secret rabbitmq-ha-marketplace-user rabbitmq.com/topology-operator=true
 apply_secret rabbitmq-shovel-uris \
   srcUri="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   destUri="amqp://${RABBITMQ_USER}:${HA_PASSWORD}@rabbitmq-ha:5672/%2f"
+# To samo dla Shovel CR (uriSecret) — bez etykiety webhook odrzuca CR-y z shovels.yaml.
+kk label secret rabbitmq-shovel-uris rabbitmq.com/topology-operator=true --overwrite >/dev/null \
+  || die "etykieta topology-operator na rabbitmq-shovel-uris nie weszła"
 
 log "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc, rabbitmq-ha-marketplace-user, rabbitmq-shovel-uris)"
