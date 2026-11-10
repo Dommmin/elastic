@@ -10,3 +10,9 @@ if cluster_exists; then
 else
   log "klastra $CLUSTER nie ma — nic do usunięcia"
 fi
+# Sieć utworzona przez up.sh (--network) nie jest kasowana przez `k3d cluster delete`
+# (k3d usuwa tylko sieci, które sam stworzył). Zostawiona zajmowałaby podsieć.
+if docker network inspect "$G5_NET" >/dev/null 2>&1; then
+  docker network rm "$G5_NET" >/dev/null || die "nie udało się usunąć sieci $G5_NET (zostały w niej kontenery?)"
+  log "usunięto sieć $G5_NET"
+fi

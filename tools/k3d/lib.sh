@@ -18,6 +18,11 @@ case "$CTX" in
   *) [ "${G5_ALLOW_ANY_CTX:-}" = "1" ] || { printf '[g5] BŁĄD: G5_CTX=%s nie wygląda na klaster G5 (k3d-elastic-g5*); ustaw G5_ALLOW_ANY_CTX=1, jeśli to celowe\n' "$CTX" >&2; exit 1; } ;;
 esac
 NS="marketplace"
+# Podsieć sieci Dockera klastra — JEDNO źródło prawdy. up.sh tworzy sieć z tą podsiecią,
+# deploy.sh i g5-check.rb porównują z nią ipBlock polityki rabbitmq-ha-egress-api
+# (deploy/k8s/rabbitmq-cluster/networkpolicies.yaml). Zmiana = popraw też ten plik.
+G5_SUBNET="${G5_SUBNET:-172.22.0.0/16}"
+G5_NET="k3d-elastic-g5"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" \
   || { printf '[g5] BŁĄD: nie da się ustalić katalogu repo\n' >&2; exit 1; }
 
@@ -70,4 +75,9 @@ docker_free_mb() {
     /^Mem:/ && col { print $(col+1); exit }')"
   [ -n "$val" ] || return 1
   printf '%s\n' "$val"
+}
+
+# net_subnet — podsieć(e) sieci Dockera $G5_NET (puste, gdy sieci nie ma).
+net_subnet() {
+  docker network inspect "$G5_NET" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | tr -s ' ' | sed 's/ $//'
 }

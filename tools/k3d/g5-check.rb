@@ -133,9 +133,12 @@ when "g5-local"
   ok.(eg && eg.dig("spec", "podSelector", "matchLabels") == { "app.kubernetes.io/name" => "rabbitmq-ha" } &&
       eg.dig("spec", "policyTypes") == ["Egress"], "rabbitmq-ha-egress-api: wybiera wyłącznie pody rabbitmq-ha, tylko Egress")
   eg_rules = eg ? (eg.dig("spec", "egress") || []) : []
-  ok.(eg_rules.size == 1 && (eg_rules[0]["to"] || []).map { |t| t["ipBlock"] } == [{ "cidr" => "172.22.0.0/16" }] &&
+  lib = File.read(File.expand_path("lib.sh", __dir__), encoding: "UTF-8")
+  g5_subnet = lib[/^G5_SUBNET="\$\{G5_SUBNET:-([^}]+)\}"/, 1]
+  ok.(!g5_subnet.nil?, "lib.sh: G5_SUBNET zdefiniowane (#{g5_subnet})")
+  ok.(eg_rules.size == 1 && (eg_rules[0]["to"] || []).map { |t| t["ipBlock"] } == [{ "cidr" => g5_subnet }] &&
       (eg_rules[0]["ports"] || []).map { |x| [x["port"], x["protocol"]] } == [[6443, "TCP"]],
-      "rabbitmq-ha-egress-api: jedna reguła, tylko 172.22.0.0/16 (sieć k3d) na 6443/TCP")
+      "rabbitmq-ha-egress-api: jedna reguła, tylko G5_SUBNET z lib.sh (sieć k3d) na 6443/TCP")
   from_ha = netpols.find { |d| d.dig("metadata", "name") == "rabbitmq-from-ha" }
   ok.(from_ha && from_ha.dig("spec", "podSelector", "matchLabels", "app") == "rabbitmq" &&
       (from_ha.dig("spec", "ingress") || []).any? { |r| ports_of.(r) == [5672] &&

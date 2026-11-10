@@ -29,7 +29,17 @@ check_memory() {
   log "pamięć Docker VM: ${free} MB (próg ${MIN_FREE_MB} MB)"
 }
 
+# Sieć Dockera z przypiętą podsiecią: polityka rabbitmq-ha-egress-api zakłada $G5_SUBNET
+# (adres API = węzeł server na 6443). Bez przypięcia Docker wybiera kolejną wolną /16,
+# a na tej maszynie są sieci innych projektów — odtworzony klaster mógłby dostać inną.
+check_subnet() {
+  local got
+  got="$(net_subnet)"
+  [ "$got" = "$G5_SUBNET" ] || die "sieć $G5_NET ma podsieć '${got}', a polityka sieciowa zakłada $G5_SUBNET. Usuń klaster (make g5-down) i utwórz go od nowa albo zmień G5_SUBNET w tools/k3d/lib.sh i ipBlock w deploy/k8s/rabbitmq-cluster/networkpolicies.yaml"
+}
+
 if cluster_exists; then
+  check_subnet
   if nodes_ready; then
     log "klaster $CLUSTER już działa"
   else
@@ -39,8 +49,14 @@ if cluster_exists; then
   fi
 else
   check_memory
+  if [ -z "$(net_subnet)" ]; then
+    log "tworzę sieć $G5_NET ($G5_SUBNET)"
+    docker network create --subnet "$G5_SUBNET" "$G5_NET" >/dev/null \
+      || die "docker nie utworzył sieci $G5_NET z podsiecią $G5_SUBNET (koliduje z inną siecią? sprawdź: docker network ls; docker network inspect)"
+  fi
+  check_subnet
   log "tworzę klaster $CLUSTER"
-  k3d cluster create "$CLUSTER" --servers 1 --agents 2 \
+  k3d cluster create "$CLUSTER" --servers 1 --agents 2 --network "$G5_NET" \
     --image "$K3S_IMAGE" --no-lb \
     --k3s-arg "--disable=traefik@server:0" || die "k3d cluster create nie powiodło się"
 fi

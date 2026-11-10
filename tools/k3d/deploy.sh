@@ -13,6 +13,18 @@ DIR="$REPO_ROOT/deploy/overlays/$OVERLAY"
 [ -d "$DIR" ] || die "brak overlayu $DIR"
 cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 
+# Preflight: ipBlock polityki rabbitmq-ha-egress-api musi pokrywać żywą podsieć sieci k3d,
+# inaczej peer discovery RabbitMQ traci dostęp do API (objaw mylący: węzły nie dołączają).
+preflight_subnet() {
+  local live cidr
+  live="$(net_subnet)"
+  [ -n "$live" ] || die "brak sieci Dockera $G5_NET (make g5-up)"
+  cidr="$(render "$DIR" | ruby -ryaml -e 'YAML.load_stream($stdin.read).compact.each { |d| puts d.dig("spec","egress",0,"to",0,"ipBlock","cidr") if d["kind"]=="NetworkPolicy" && d.dig("metadata","name")=="rabbitmq-ha-egress-api" }')"
+  if [ -z "$cidr" ]; then log "overlay bez rabbitmq-ha-egress-api — preflight podsieci pominięty"; return 0; fi
+  [ "$cidr" = "$live" ] || die "ipBlock rabbitmq-ha-egress-api ($cidr) != podsieć sieci $G5_NET ($live) — popraw deploy/k8s/rabbitmq-cluster/networkpolicies.yaml albo odtwórz klaster (make g5-down g5-up)"
+}
+preflight_subnet
+
 # Operatory (ECK dla obiektu Elasticsearch) — idempotentnie.
 bash "$REPO_ROOT/tools/k3d/install-operators.sh" || die "instalacja operatorów nie powiodła się"
 bash "$REPO_ROOT/tools/k3d/secrets.sh" || die "secrets.sh nie powiódł się"

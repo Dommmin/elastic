@@ -48,8 +48,9 @@ spec:
 # na porcie 6443 (k3d: 172.22.0.3:6443). Reguła: tylko 6443 i tylko sieć Dockera
 # k3d-elastic-g5 (172.22.0.0/16, tam są wyłącznie węzły). /32 odrzucone: adres
 # server-0 zmienia się po odtworzeniu klastra, podsieć sieci k3d nie.
-# Podsieć sprawdź: `docker network inspect k3d-elastic-g5 -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'`;
-# inna niż 172.22.0.0/16 = popraw tu i w tools/k3d/g5-check.rb. Na VPS (k3s,
+# Źródło prawdy: G5_SUBNET w tools/k3d/lib.sh (up.sh tworzy sieć z tą podsiecią,
+# deploy.sh sprawdza ją przed wdrożeniem, g5-check.rb pilnuje zgodności z tym plikiem).
+# Zmiana podsieci = ten ipBlock i G5_SUBNET razem. Na VPS (k3s,
 # API na IP hosta:6443) ta polityka nie jest używana — to dodatek overlayu G5.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
