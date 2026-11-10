@@ -10,7 +10,13 @@
 set -uo pipefail
 
 CLUSTER="elastic-g5"
-CTX="${CTX:-k3d-elastic-g5}"
+# Nadpisanie kontekstu tylko przez G5_CTX (nie przez ogólne CTX z powłoki — na tej maszynie
+# są inne klastry). Wartość spoza k3d-elastic-g5* wymaga G5_ALLOW_ANY_CTX=1 (testy).
+CTX="${G5_CTX:-k3d-elastic-g5}"
+case "$CTX" in
+  k3d-elastic-g5*) ;;
+  *) [ "${G5_ALLOW_ANY_CTX:-}" = "1" ] || { printf '[g5] BŁĄD: G5_CTX=%s nie wygląda na klaster G5 (k3d-elastic-g5*); ustaw G5_ALLOW_ANY_CTX=1, jeśli to celowe\n' "$CTX" >&2; exit 1; } ;;
+esac
 NS="marketplace"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" \
   || { printf '[g5] BŁĄD: nie da się ustalić katalogu repo\n' >&2; exit 1; }

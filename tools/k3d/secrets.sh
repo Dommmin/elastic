@@ -15,15 +15,19 @@ cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 # osobno: stderr służy tylko do rozpoznania NotFound, więc ostrzeżenie klienta k8s nie psuje JSON-a.
 # NotFound = Secret naprawdę nie istnieje; inny błąd API albo JSON, którego nie da się
 # zdekodować = die (nigdy „brak”), żeby nie wygenerować nowego hasła nad zainicjowanym.
-# SECRETS_FETCH_CMD: podmiana pobierania w testach (domyślnie przez kk).
+# SECRETS_FETCH_CMD: podmiana pobierania w testach, TYLKO z G5_TEST=1 (inaczej ignorowana).
 fetch_secret() { kk get secret "$1" -o json 2>"$2"; }
+if [ -n "${SECRETS_FETCH_CMD:-}" ] && [ "${G5_TEST:-}" != "1" ]; then
+  log "UWAGA: SECRETS_FETCH_CMD zignorowane (wymaga G5_TEST=1)"
+  SECRETS_FETCH_CMD=""
+fi
 SECRETS_FETCH_CMD="${SECRETS_FETCH_CMD:-fetch_secret}"
 ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
 snapshot() {   # snapshot <secret> — ustawia SNAP_<nazwa> na linie "klucz base64(wartość)"
   local name="$1" out lines var
   var="SNAP_${name//-/_}"
   if out="$($SECRETS_FETCH_CMD "$name" "$ERRF")"; then
-    lines="$(printf '%s' "$out" | ruby -rjson -e 'd = JSON.parse(STDIN.read); abort("brak obiektu data/metadata") unless d.is_a?(Hash) && d["kind"] == "Secret"; (d["data"] || {}).each { |k, v| puts "#{k} #{v}" }' 2>/dev/null)" \
+    lines="$(printf '%s' "$out" | ruby -rjson -rbase64 -e 'd = JSON.parse(STDIN.read); abort("brak obiektu data/metadata") unless d.is_a?(Hash) && d["kind"] == "Secret"; (d["data"] || {}).each { |k, v| Base64.strict_decode64(v); puts "#{k} #{v}" }' 2>/dev/null)" \
       || die "Secret $name: odpowiedź API nie daje się zdekodować (nie traktuję jako brak)"
     printf -v "$var" '%s' "$lines"
   elif grep -q 'NotFound' "$ERRF"; then
@@ -40,8 +44,8 @@ kc apply -f "$REPO_ROOT/deploy/k8s/namespace.yaml" >/dev/null || die "namespace 
 existing() {
   local var="SNAP_${1//-/_}" b64
   b64="$(printf '%s\n' "${!var}" | awk -v k="$2" '$1 == k { print $2 }')"
-  [ -n "$b64" ] && printf '%s' "$b64" | base64 -d
-  return 0
+  [ -n "$b64" ] || return 0
+  printf '%s' "$b64" | base64 -d || return 1
 }
 # keep <secret> <klucz> <nowa> — istniejąca wartość albo nowa.
 keep() {
