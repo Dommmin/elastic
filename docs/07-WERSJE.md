@@ -45,6 +45,16 @@ stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nigh
 | Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
 | Port GlitchTipa | 18000 | `GLITCHTIP_PORT` | tylko `127.0.0.1` |
 
+### Lokalny klaster k3d (ETAP G5)
+
+Sprawdzone 2026-11-10 (`brew install k3d`, `k3d version`).
+
+| Komponent | Wersja | Tag / miejsce | Uwagi |
+|---|---|---|---|
+| **k3d** | **v5.9.0** | Homebrew (`brew install k3d`) | domyślny k3s tej wersji to v1.36.4, więc obraz węzłów podajemy jawnie |
+| **k3s (węzły k3d)** | **v1.36.5-k3s1** | `rancher/k3s:v1.36.5-k3s1` w `tools/k3d/up.sh` | ta sama linia co produkcja (`tools/k3s/install-k3s.sh`) |
+| Obrazy lokalne | `g5-local` | `ghcr.io/dommmin/elastic-{catalog,search,postgres}:g5-local` | budowane przez `tools/k3d/images.sh`, import `k3d image import` |
+
 ### PHP — zależności
 
 | Paczka | Wersja | Wymaga PHP | Uwaga |
