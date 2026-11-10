@@ -81,3 +81,25 @@ docker_free_mb() {
 net_subnet() {
   docker network inspect "$G5_NET" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | tr -s ' ' | sed 's/ $//'
 }
+
+# --- Pomocnicze do rabbitmq-ha (verify.sh, measure.sh) ---
+G5_HA_SEL="app.kubernetes.io/name=rabbitmq-ha"
+
+now_ms() { ruby -e 'print((Time.now.to_f * 1000).to_i)'; }
+
+# allready — RabbitmqCluster AllReplicasReady=True i 3 kontenery rabbitmq Ready.
+allready() {
+  [ "$(kk get rabbitmqcluster rabbitmq-ha -o jsonpath='{.status.conditions[?(@.type=="AllReplicasReady")].status}' 2>/dev/null)" = True ] \
+    && [ "$(kk get pods -l "$G5_HA_SEL" -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c '^true$')" = 3 ]
+}
+
+# rmq <pod> <polecenie…> — rabbitmqctl/rabbitmq-queues w kontenerze rabbitmq.
+rmq() { local pod="$1"; shift; kk exec "$pod" -c rabbitmq -- "$@" 2>/dev/null; }
+
+# fo_leader <pod do odczytu> [kolejka] — nazwa poda lidera kolejki (domyślnie g5.failover; puste, gdy brak).
+fo_leader() {
+  rmq "$1" rabbitmqctl list_queues -q --no-table-headers name leader \
+    | awk -v q="${2:-g5.failover}" '$1 == q { print $2 }' | sed -E 's/^rabbit@(rabbitmq-ha-server-[0-9]+)\..*/\1/'
+}
+# fo_depth <pod do odczytu> [kolejka] — liczba wiadomości w kolejce (ready + unacked).
+fo_depth() { rmq "$1" rabbitmqctl list_queues -q --no-table-headers name messages | awk -v q="${2:-g5.failover}" '$1 == q { print $2 }'; }

@@ -11,6 +11,8 @@
 #                  rabbitmq-ha-marketplace-user — publikuje przez marketplace.events)
 #    PERF_TIMEOUT  limit czasu Joba w sekundach (domyślnie 300)
 #    PERF_COUNTERS=1  na końcu logu linia `PERF-COUNTERS confirmed=M consumed=K` (patrz niżej)
+#    PERF_AVOID_NODE=<węzeł>  nie planuj poda perf-test na tym węźle (pomiar failoveru zatrzymuje węzeł
+#                  k3d: generator obciążenia nie może zginąć razem z nim)
 #    PERF_NOLOGS=1 nie wypisuj logów (wywołujący sam je czyta: kk logs job/perf-test-<nazwa>)
 #
 #  Przykład: perf-test.sh smoke -x 1 -y 0 -C 100 -qq -u g5.smoke -p
@@ -32,6 +34,10 @@ shift
 case "$NAME" in *[!a-z0-9-]*) die "nazwa Joba: tylko małe litery, cyfry i myślniki" ;; esac
 SECRET="${PERF_SECRET:-rabbitmq-ha-perftest-user}"
 LIMIT="${PERF_TIMEOUT:-300}"
+AFFINITY=""
+if [ -n "${PERF_AVOID_NODE:-}" ]; then
+  AFFINITY="affinity: { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [ { matchExpressions: [ { key: kubernetes.io/hostname, operator: NotIn, values: [\"$PERF_AVOID_NODE\"] } ] } ] } } }"
+fi
 JOB="perf-test-$NAME"
 cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 
@@ -91,6 +97,7 @@ spec:
       labels: { app: perf-test }
     spec:
       restartPolicy: Never
+      $AFFINITY
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true

@@ -480,3 +480,142 @@ Zdarzenie (smoke: HTTP, kolejka, search, przeglądarka) jest issue we właściwy
 projekcie w mniej niż kilkanaście sekund; mail o nowym issue dochodzi do
 mailpita w ramach okna pollingu smoke (60 prób co 3 s). Dokładnych czasów
 przejścia nie mierzyłem.
+
+---
+
+## 14. G5 — RabbitMQ (operator, 3 węzły, lokalny k3d, 2026-11-10)
+
+Wszystko przez `tools/k3d/measure.sh` (`make g5-measure m=queues|failover|prefetch`),
+generator obciążenia `pivotalrabbitmq/perf-test` 2.25.0 jako Job na k3d, każdy pomiar
+**3 razy**, podana mediana i rozrzut (min–max), load average z `uptime` po przebiegu.
+
+**Konfiguracja:** k3d `elastic-g5` (server + 2 agenty, kontenery Dockera w jednej VM:
+10 CPU, 15,6 GiB), RabbitMQ 4.3.4 (`rabbitmq:4.3.4-management`), 3 pody
+`rabbitmq-ha-server-0..2` (po jednym na węźle, 512 Mi), perf-test z użytkownikiem
+`g5-perftest` (tylko `g5.*`), wiadomości trwałe (`-f persistent`), 1 KB.
+
+> **Uwaga o wiarygodności.** Maszyna jest współdzielona z innymi projektami, a w czasie
+> pomiarów load average hosta wynosił 6–17 (1 min; 10 CPU). Liczby są **orientacyjne**
+> i mają rząd wielkości, nie dokładność. Rozrzut między powtórzeniami jest duży
+> (najgorszy: classic, przebieg 3, patrz niżej) i pokazuje właśnie tę niepewność.
+> Jeden przebieg każdego pomiaru to 60 s (kolejki) albo kilkadziesiąt sekund (reszta).
+
+### Quorum vs classic
+
+`perf-test -x 2 -y 2 -s 1024 -c 200 -q 100 -z 60 -f persistent`: 2 producentów,
+2 konsumentów, publisher confirms (maks. 200 niepotwierdzonych), prefetch konsumenta 100,
+jedna kolejka, 60 s. Przebiegi na przemian (classic, quorum, classic, …), żeby szum
+maszyny nie obciążył jednego typu. Classic to jedna kopia na jednym węźle (w RabbitMQ 4
+nie ma już klasycznych kolejek zwierciadlanych); quorum to 3 repliki Raft z fsync przed
+potwierdzeniem. „Odbiór” to `receiving rate avg` (producenci i konsumenci szły w tym
+samym tempie, `sending rate avg` różnił się o < 2 %). Opóźnienie publikacja→odbiór
+zawiera czas w kolejce, bo producent jest szybszy niż konsument.
+
+| Typ kolejki | Odbiór, msg/s (mediana, min–max) | Publikacja→odbiór p50 / p99, ms (mediany) | Publikacja→potwierdzenie p50 / p99, ms (mediany) | Load avg (1 min) |
+|---|---|---|---|---|
+| classic | 25 893 (1 675–27 713) | 6,5 / 26,3 | 11,4 / 39,6 | 8,71 (8,66–9,22) |
+| quorum | 2 205 (2 033–2 807) | 357 / 6 018 | 21,3 / 7 030 | 8,47 (6,09–16,67) |
+
+Surowe przebiegi (odbiór msg/s; p50/p99 publikacja→odbiór w ms; p50/p99 do potwierdzenia w ms; load 1 min):
+
+| Przebieg | classic | quorum |
+|---|---|---|
+| 1 | 25 893; 6,5 / 26,3; 11,1 / 32,5; 9,22 | 2 807; 374,5 / 6 017; 16,7 / 7 030; 8,47 |
+| 2 | 27 713; 6,2 / 23,5; 11,4 / 39,6; 8,71 | 2 205; 357,4 / 6 018; 23,2 / 10 011; 16,67 |
+| 3 | **1 675**; 7,1 / **11 011**; 16,7 / **14 021**; 8,66 | 2 033; 265,7 / 7 039; 21,3 / 6 065; 6,09 |
+
+Wnioski (z zastrzeżeniem o szumie):
+
+- Quorum było tu **ok. 10–12 × wolniejsze** od classic w przepustowości (mediana 2,2 tys. vs 25,9 tys.
+  msg/s) i miało opóźnienie ogona rzędu sekund. Powód to koszt replikacji Raft: każdy zapis
+  jest fsync-owany na 2 z 3 węzłów, a wszystkie trzy węzły pisają na ten sam dysk VM
+  Dockera, przy obciążeniu hosta ~9. Na prawdziwym sprzęcie (osobne dyski, SSD) różnica byłaby
+  mniejsza; tej tezy tu nie zmierzyłem.
+- Classic jest szybkie, ale ma jedną kopię: utrata węzła = utrata dostępu do kolejki (do powrotu
+  węzła) i, przy awarii dysku, wiadomości. To cena za przepustowość; kolejki sklepu
+  (`search.product.sync` itd.) są quorum właśnie dlatego, że zdarzenia nie mogą zniknąć.
+- Przebieg 3 classic (1 675 msg/s, p99 11 s) to **szum maszyny**, nie cecha classic: ta sama konfiguracja
+  w przebiegach 1–2 dała ~26–28 tys. Mediana go odsiewa, rozrzut go pokazuje.
+- Opóźnienie do potwierdzenia p50 jest zbliżone (11 vs 21 ms), rozjeżdża się dopiero na ogonie.
+
+### Failover pod obciążeniem
+
+Producent z confirmami (`-c 100`, 300 msg/s, 9 000 wiadomości, kolejka quorum `g5.failover`,
+bez konsumentów), w trakcie zabijamy lidera. **Potwierdzone** to dolne ograniczenie z metryk
+perf-test (`PERF-COUNTERS`), więc „w kolejce ≥ potwierdzone” jest uczciwym dowodem
+braku utraty: gdyby potwierdzona wiadomość zniknęła, w kolejce byłoby mniej niż potwierdzonych.
+Czas do nowego lidera to czas od `kubectl delete pod` / `docker stop` do pierwszego odczytu
+`rabbitmqctl list_queues leader` z innego poda, który pokazuje innego lidera (odczyt co ok. 0,3 s plus exec,
+rozdzielczość ~0,5 s).
+
+| Przebieg | Zdarzenie | Lider → nowy | Czas do nowego lidera, ms | Potwierdzone (dolne ogr.) | W kolejce po teście | Utracone potwierdzone |
+|---|---|---|---|---|---|---|
+| 1 | kasowanie poda lidera | server-1 → server-0 | 2 981 | 9 000 | 9 000 | 0 |
+| 2 | kasowanie poda lidera | server-2 → server-0 | 2 797 | 9 000 | 9 000 | 0 |
+| 3 | kasowanie poda lidera | server-2 → server-1 | 2 872 | 8 997 | 8 997 | 0 |
+| 4 | `docker stop k3d-elastic-g5-agent-1` (lider na jego podzie) | server-0 → server-2 | 1 091 | 8 994 | 8 994 | 0 |
+| 5 | to samo | server-0 → server-2 | 1 186 | 8 997 | 9 000 | 0 |
+| 6 | to samo | server-0 → server-1 | 1 017 | 9 000 | 9 000 | 0 |
+
+- **Kasowanie poda lidera** (3 ×): mediana **2 872 ms**, min–max 2 797–2 981 ms.
+- **Zatrzymanie węzła** (3 ×; zadanie wymagało jednego, powtórzyłem dwa razy, bo tanie): mediana
+  **1 091 ms**, min–max 1 017–1 186 ms. Szybciej niż po skasowaniu poda; przyczyny nie badałem
+  (hipoteza: `docker stop` zrywa połączenia od razu, a kasowany pod zamyka się łagodnie).
+- **Utracone potwierdzone: 0 we wszystkich 6 przebiegach**; żaden `nacked`; producent kończył się sukcesem
+  (kod 0). Wartości poniżej 9 000 (8 994–8 997) to koniec przebiegu: ostatnich kilka wiadomości nie zdążyło
+  być potwierdzonych przy ostatnim odczycie metryk (co 0,25 s) i nie ma ich w kolejce; niepotwierdzona
+  wiadomość nie wchodzi do zobowiązania brokera, więc to nie jest utrata.
+- Węzeł `agent-1` po `docker start` wraca sam; kubelet i pod rabbitmq-ha-server-0 wstają w ciągu
+  kilkudziesięciu sekund, `AllReplicasReady=True` po ~1–2 min (RUNBOOK: po `docker start` adresy IP
+  węzłów k3d potrafią się przetasować i `kubectl exec` chwilę pada na certyfikacie).
+- Pierwsza próba zatrzymania węzła była nieudana, ale pouczająca: generator obciążenia wylądował
+  na tym samym węźle i zginął razem z nim (Job bez logów, bez liczników). Teraz `PERF_AVOID_NODE`
+  pinuje Job poza zatrzymywanym węzłem.
+
+### Prefetch
+
+**Messenger nie ma opcji prefetch dla AMQP, więc `search-consumer` nie da się tak ustawić.**
+Sprawdzone trzema niezależnymi drogami przed pomiarem:
+
+1. `symfony/amqp-messenger` (wersja z `apps/search/vendor`): `Connection::AVAILABLE_OPTIONS` nie zawiera
+   `prefetch_count`, a nieznana opcja (w DSN albo w `options:`) kończy się `LogicException: Invalid option(s)`.
+   `CHANGELOG.md` pakietu: parametr `prefetch_count` oznaczono jako przestarzały („bez efektu”), a potem **usunięto**
+   (wpis „Remove option `prefetch_count`” w wydaniu 6.0).
+2. Transport odbiera przez `basic.get` (`Connection::get()` → `$this->queue($name)->get()`, w pętli
+   `messenger:consume`), nie przez `basic.consume`. `basic.get` nie ma pojęcia prefetch.
+3. Na żywym klastrze przy działającym `search-consumer`: `rabbitmqctl list_consumers` jest **puste**,
+   a `list_queues name consumers` pokazuje `consumers = 0` na każdej kolejce (też `search.product.sync`).
+
+Zgodnie z poleceniem (potwierdzić kolumną `prefetch_count`) nie ma więc czego potwierdzać
+dla `search-consumer`. Zamiast tego zmierzyłem **wpływ prefetch na konsumenta AMQP w ogóle**
+generatorem perf-test: kolejka quorum `g5.prefetch` wstępnie napełniona 30 000 wiadomości
+(1 KB, trwałe), potem jeden konsument z ack po każdej wiadomości, `-q` 1/10/50 (`-D 30000`).
+Wartość faktycznie działa: przed pomiarem `rabbitmqctl list_consumers queue_name prefetch_count`
+pokazało dokładnie 1, 10 i 50.
+
+| Prefetch konsumenta | Czas opróżnienia 30 000 wiadomości, s (mediana, min–max) | Odbiór, msg/s (mediana, min–max) | Load avg (1 min) |
+|---|---|---|---|
+| 1 | 61,8 (56,5–67,0) | 576 (509–581) | 9,07 (8,83–9,28) |
+| 10 | 20,9 (20,9–21,0) | 2 487 (2 260–2 696) | 9,05 (8,48–11,19) |
+| 50 | 10,7 (10,5–10,8) | 7 882 (6 404–10 653) | 9,68 (7,42–9,76) |
+
+Przy prefetch 1 konsument czeka na ack i kolejne dostarczenie (zapis Raft + RTT) po każdej
+wiadomości, więc przepustowość to ok. 1 / (czas jednego cyklu) ≈ 580 msg/s; podniesienie okna do 10
+daje ~4 ×, do 50 ~14 ×. To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
+pojedynczo przez `basic.get`.
+
+**Stan wyjściowy `search-consumer`** (jedyne, co da się o nim zmierzyć): reindeks 1 500 zdarzeń
+(`seed.sh --n=1500 --fresh`: 1 500 zdarzeń w outboxie → `outbox-publisher` → kolejka quorum
+`search.product.sync` → Messenger → ES), czas od końca seed do pustej kolejki; po każdym przebiegu
+`counts.sh` zbieżne (`1500 0 1500 1500 0 0`).
+
+| Pomiar | Czas, s (mediana, min–max) | Load avg (1 min) |
+|---|---|---|
+| reindeks 1 500 zdarzeń (3 ×: 40,7 / 42,0 / 45,5) | 42,0 (40,7–45,5) | 9,18 (7,55–10,53) |
+
+Wcześniejsza seria tego samego pomiaru (40,9 / 41,6 / 42,0 s) potwierdza wynik.
+≈ 36 zdarzeń/s: wąskim gardłem nie jest broker, tylko pętla `basic.get` +
+pobranie projekcji z katalogu (HTTP) + zapis do ES w transakcji, po jednej wiadomości naraz
+Gdyby ten czas trzeba było skrócić, dźwignią jest równoległość konsumentów
+(`replicas` search-consumer) lub przejście na `basic.consume` z prefetch (inny transport),
+nie opcja Messengera.

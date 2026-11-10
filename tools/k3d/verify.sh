@@ -37,13 +37,7 @@ cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"
 PERF="$REPO_ROOT/tools/k3d/perf-test.sh"
 SEL="app.kubernetes.io/name=rabbitmq-ha"
 
-now_ms() { ruby -e 'print((Time.now.to_f * 1000).to_i)'; }
-allready() {
-  [ "$(kk get rabbitmqcluster rabbitmq-ha -o jsonpath='{.status.conditions[?(@.type=="AllReplicasReady")].status}' 2>/dev/null)" = True ] \
-    && [ "$(kk get pods -l "$SEL" -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c '^true$')" = 3 ]
-}
-# rmq <pod> <polecenie…> — rabbitmqctl/rabbitmq-queues w kontenerze rabbitmq.
-rmq() { local pod="$1"; shift; kk exec "$pod" -c rabbitmq -- "$@" 2>/dev/null; }
+# now_ms, allready, rmq: lib.sh
 
 # Sprzątanie testu failoveru (też przy przerwaniu): Joby, kolejka i exchange użytkownika g5-perftest.
 cleanup_failover() {
@@ -96,11 +90,7 @@ note "counts: $COUNTS (outbox_total outbox_unpublished processed_events es_count
 section "4. Failover: kasujemy pod lidera kolejki quorum pod obciążeniem (zero utraconych potwierdzonych)"
 cleanup_failover
 SENT=9000
-fo_leader() { # pod do odczytu → nazwa poda lidera g5.failover (puste, gdy brak)
-  rmq "$1" rabbitmqctl list_queues -q --no-table-headers name leader \
-    | awk '$1 == "g5.failover" { print $2 }' | sed -E 's/^rabbit@(rabbitmq-ha-server-[0-9]+)\..*/\1/'
-}
-fo_depth() { rmq "$1" rabbitmqctl list_queues -q --no-table-headers name messages | awk '$1 == "g5.failover" { print $2 }'; }
+# fo_leader, fo_depth: lib.sh (parametr: nazwa kolejki, domyślnie g5.failover)
 # Producent z potwierdzeniami (-c 100 = max 100 niepotwierdzonych), bez konsumentów (-y 0, R3).
 PERF_COUNTERS=1 PERF_NOLOGS=1 PERF_TIMEOUT=300 bash "$PERF" failover \
   -x 1 -y 0 -C "$SENT" -r 300 -c 100 -ct 60 -qq -u g5.failover -e g5.test -t direct -k g5.failover -ad false &
