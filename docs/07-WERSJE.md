@@ -58,6 +58,7 @@ Sprawdzone 2026-11-10 (`brew install k3d`, `k3d version`).
 | **RabbitMQ cluster-operator** | **2.23.2** | `deploy/k8s/vendor/rabbitmq-cluster-operator-2.23.2/cluster-operator.yml` | sprawdzone 2026-11-10 (GitHub Releases `rabbitmq/cluster-operator`); sha256 w nagłówku pliku |
 | **messaging-topology-operator** | **1.20.5** | `deploy/k8s/vendor/messaging-topology-operator-1.20.5/messaging-topology-operator-with-certmanager.yaml` | sprawdzone 2026-11-10 (`rabbitmq/messaging-topology-operator`); sha256 w nagłówku pliku |
 | Obraz RabbitmqCluster | **4.3.4** | `rabbitmq:4.3.4-management` (debianowy, uid 999) w `deploy/k8s/rabbitmq-cluster/rabbitmq-ha.yaml` | ta sama wersja co `RABBITMQ_VERSION`; alpine ma uid 100, więc nie pasuje do operatora; import przez `tools/k3d/images.sh` |
+| **perf-test** (RabbitMQ PerfTest) | **2.25.0** | `pivotalrabbitmq/perf-test:2.25.0` (arm64, Java 21), stała `PERF_TEST_VERSION` w `tools/k3d/perf-test.sh` | najnowsza stabilna z Docker Huba 2026-11-10 (tagi `dev-*` to snapshoty 2.26.0); import przez `tools/k3d/images.sh` jako tarball jednej platformy (`docker save --platform`), bo indeks wieloarch. pada przy `k3d image import` |
 
 ### PHP — zależności
 

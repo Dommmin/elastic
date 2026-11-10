@@ -36,7 +36,7 @@ snapshot() {   # snapshot <secret> — ustawia SNAP_<nazwa> na linie "klucz base
     die "nie udało się odczytać Secretu $name (API niedostępne?): $(head -1 "$ERRF")"
   fi
 }
-for s in marketplace-secrets marketplace-es-elastic-user rabbitmq-ha-marketplace-user; do snapshot "$s"; done
+for s in marketplace-secrets marketplace-es-elastic-user rabbitmq-ha-marketplace-user rabbitmq-ha-perftest-user; do snapshot "$s"; done
 # Namespace dopiero po odczycie stanu (błąd API ma zginąć na snapshocie, nie na apply).
 kc apply -f "$REPO_ROOT/deploy/k8s/namespace.yaml" >/dev/null || die "namespace $NS nie powstał"
 
@@ -106,6 +106,11 @@ apply_secret rabbitmq-ha-marketplace-user username="$RABBITMQ_USER" password="$H
 # Webhook Topology Operatora odrzuca Secret bez tej etykiety (User CR: importCredentialsSecret).
 kk label secret rabbitmq-ha-marketplace-user rabbitmq.com/topology-operator=true --overwrite >/dev/null \
   || die "etykieta topology-operator na rabbitmq-ha-marketplace-user nie weszła"
+# Użytkownik testowy perf-test (deploy/k8s/rabbitmq-cluster/perftest.yaml): osobne hasło, osobny Secret.
+PERF_PASSWORD="$(keep rabbitmq-ha-perftest-user password "$(rand)")"
+apply_secret rabbitmq-ha-perftest-user username=g5-perftest password="$PERF_PASSWORD"
+kk label secret rabbitmq-ha-perftest-user rabbitmq.com/topology-operator=true --overwrite >/dev/null \
+  || die "etykieta topology-operator na rabbitmq-ha-perftest-user nie weszła"
 apply_secret rabbitmq-shovel-uris \
   srcUri="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   destUri="amqp://${RABBITMQ_USER}:${HA_PASSWORD}@rabbitmq-ha:5672/%2f"
@@ -113,4 +118,4 @@ apply_secret rabbitmq-shovel-uris \
 kk label secret rabbitmq-shovel-uris rabbitmq.com/topology-operator=true --overwrite >/dev/null \
   || die "etykieta topology-operator na rabbitmq-shovel-uris nie weszła"
 
-log "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc, rabbitmq-ha-marketplace-user, rabbitmq-shovel-uris)"
+log "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc, rabbitmq-ha-marketplace-user, rabbitmq-ha-perftest-user, rabbitmq-shovel-uris)"

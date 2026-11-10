@@ -12,3 +12,4 @@ resources:
   - networkpolicies.yaml
   - topology.yaml
   - stream.yaml
+  - perftest.yaml

@@ -556,7 +556,7 @@ k3s-ui: ## Otwórz UI z k3s na Macu: aplikacja :38080, Kibana :35601, RabbitMQ :
 	  wait
 
 # --- ETAP G5: RabbitMQ przez operator na lokalnym k3d (klaster elastic-g5, kontekst k3d-elastic-g5) ---
-.PHONY: g5-up g5-down g5-images g5-check g5-deploy g5-migrate g5-counts
+.PHONY: g5-up g5-down g5-images g5-check g5-deploy g5-migrate g5-counts g5-verify
 g5-up: ## Klaster k3d elastic-g5 (1 server + 2 agenty); odmawia przy < 6000 MB wolnych w Docker VM (G5_MIN_FREE_MB)
 	@bash tools/k3d/up.sh
 
@@ -577,3 +577,6 @@ g5-migrate: ## Migracja na rabbitmq-ha przez Shovel z dowodem liczbami (pod ruch
 
 g5-counts: ## Liczby migracji: outbox_total outbox_unpublished processed_events es_count old_queues_total dlq_total
 	@bash tools/k3d/counts.sh
+
+g5-verify: ## Weryfikacja G5 na k3d: klaster, topologia, liczby, failover lidera, stream, pamięć (ok. 5 min)
+	@bash tools/k3d/verify.sh

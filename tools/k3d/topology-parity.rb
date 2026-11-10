@@ -61,8 +61,19 @@ user = by_kind.("User").find { |d| d.dig("metadata", "name") == "marketplace" }
 ok.(user && user.dig("spec", "importCredentialsSecret", "name") == "rabbitmq-ha-marketplace-user",
     "User marketplace: importCredentialsSecret = rabbitmq-ha-marketplace-user")
 ok.(user && (user.dig("spec", "tags") || []) == [], "User marketplace: bez tagów (nie administrator)")
-ok.(by_kind.("Permission").size == 1, "Permission: dokładnie jeden CR")
-perm = by_kind.("Permission").first
+# Jedyny dozwolony dodatek: użytkownik testowy perf-test (perftest.yaml) z uprawnieniami wyłącznie do g5.*.
+perms = by_kind.("Permission")
+ok.(perms.size == 2 && perms.map { |d| d.dig("spec", "userReference", "name") }.sort == %w[g5-perftest marketplace],
+    "Permission: dokładnie dwa CR-y (marketplace + g5-perftest)")
+pt_user = by_kind.("User").find { |d| d.dig("metadata", "name") == "g5-perftest" }
+ok.(by_kind.("User").size == 2 && pt_user && pt_user.dig("spec", "importCredentialsSecret", "name") == "rabbitmq-ha-perftest-user" &&
+    (pt_user.dig("spec", "tags") || []) == [], "User: dokładnie marketplace + g5-perftest (bez tagów)")
+pt_perm = perms.find { |d| d.dig("spec", "userReference", "name") == "g5-perftest" }
+pp = pt_perm && pt_perm.dig("spec", "permissions")
+ok.(pp && pt_perm.dig("spec", "vhost") == "/" && %w[configure write read].all? { |k| pp[k].to_s.match?(/\A\^\(?g5/) } &&
+    !Regexp.new(pp["configure"]).match?("search.product.sync") && !Regexp.new(pp["write"]).match?("marketplace.events") && !Regexp.new(pp["read"]).match?("search.product.sync"),
+    "Permission g5-perftest: tylko g5.*, bez kolejek ani exchange'y sklepu")
+perm = perms.find { |d| d.dig("spec", "userReference", "name") == "marketplace" }
 p = perm && perm.dig("spec", "permissions")
 ok.(perm && perm.dig("spec", "userReference", "name") == "marketplace" && perm.dig("spec", "vhost") == "/",
     "Permission: userReference=marketplace, vhost /")

@@ -128,6 +128,18 @@ counts_line() {
   echo "$ot $ou $pe $es $oq $dq"
 }
 
+# counts_converged — kryterium „bez utraty” (spec sekcja 1, pkt 3), jedno źródło dla migrate.sh
+# i verify.sh: outbox_unpublished = 0, processed_events = outbox_total, es_count = produkty
+# w bazie katalogu, stare kolejki = 0, DLQ = 0. Ustawia COUNTS (linia counts_line) i PRODUCTS
+# (do komunikatu). Kod 1 także, gdy którejś liczby nie da się ustalić.
+COUNTS=""; PRODUCTS=""
+counts_converged() {
+  COUNTS="$(counts_line)" || return 1
+  PRODUCTS="$(catalog_products)" || return 1
+  set -- $COUNTS
+  [ "$2" -eq 0 ] && [ "$3" -eq "$1" ] && [ "$4" -eq "$PRODUCTS" ] && [ "$5" -eq 0 ] && [ "$6" -eq 0 ]
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -uo pipefail
   cluster_exists || die "klaster $CLUSTER nie istnieje (make g5-up)"

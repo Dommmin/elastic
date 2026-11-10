@@ -62,6 +62,11 @@ RMQ_OPERATOR_IMAGE="rabbitmq:${RABBITMQ_VERSION}-management"
 log "pull $RMQ_OPERATOR_IMAGE"
 docker pull --platform linux/arm64 "$RMQ_OPERATOR_IMAGE" >/dev/null || die "pull $RMQ_OPERATOR_IMAGE nie powiódł się"
 
+# perf-test (G5, Task 6): wersja przypięta w perf-test.sh (PERF_IMAGE), pull na hoście + import.
+. "$(dirname "${BASH_SOURCE[0]}")/perf-test.sh"
+log "pull $PERF_IMAGE"
+docker pull --platform linux/arm64 "$PERF_IMAGE" >/dev/null || die "pull $PERF_IMAGE nie powiódł się"
+
 log "import do $CLUSTER"
 k3d image import -c "$CLUSTER" \
   "${REGISTRY}/elastic-catalog:${TAG}" \
@@ -70,4 +75,17 @@ k3d image import -c "$CLUSTER" \
   "${REGISTRY}/elastic-elasticsearch:${TAG}" \
   "${REGISTRY}/elastic-rabbitmq:${TAG}" \
   "$RMQ_OPERATOR_IMAGE" || die "k3d image import nie powiódł się"
+
+# perf-test osobno i przez tarball jednej platformy: obraz jest wieloarchitekturowy (indeks
+# amd64+arm64), a `k3d image import <nazwa>` dostaje od dockera indeks bez blobów amd64 i
+# na węzłach pada cicho (`ctr: content digest ... not found`) — obraz ląduje tylko na części
+# węzłów, a pody na pozostałych kończą w ImagePullBackOff (brak sieci do Docker Huba).
+PERF_TAR="$(mktemp -d)/perf-test.tar"
+trap 'rm -rf "$(dirname "$PERF_TAR")"' EXIT
+docker save --platform linux/arm64 -o "$PERF_TAR" "$PERF_IMAGE" || die "docker save $PERF_IMAGE nie powiódł się"
+k3d image import -c "$CLUSTER" "$PERF_TAR" || die "import perf-test nie powiódł się"
+for node in $(docker ps --format '{{.Names}}' --filter "name=k3d-${CLUSTER}-(server|agent)" | grep -E "^k3d-${CLUSTER}-(server|agent)-[0-9]+$"); do
+  docker exec "$node" crictl images 2>/dev/null | grep -q 'pivotalrabbitmq/perf-test' \
+    || die "obraz perf-test nie dotarł na węzeł $node"
+done
 log "obrazy zaimportowane"

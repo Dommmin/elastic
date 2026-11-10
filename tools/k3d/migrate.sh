@@ -166,12 +166,7 @@ step_pause
 # --- krok 5: dowód liczbami ---
 log "krok 5: czekam na zbieżność liczb (do 10 min)"
 PRODUCTS=""
-converged() {
-  COUNTS="$(counts_line)" || return 1
-  PRODUCTS="$(catalog_products)" || return 1
-  set -- $COUNTS
-  [ "$2" -eq 0 ] && [ "$3" -eq "$1" ] && [ "$4" -eq "$PRODUCTS" ] && [ "$5" -eq 0 ] && [ "$6" -eq 0 ]
-}
+converged() { counts_converged; }   # wspólna z verify.sh (counts.sh)
 waited=0
 until converged; do
   if [ "$waited" -ge 600 ]; then
