@@ -508,8 +508,8 @@ jedna kolejka, 60 s. Przebiegi na przemian (classic, quorum, classic, …), żeb
 maszyny nie obciążył jednego typu. Classic to jedna kopia na jednym węźle (w RabbitMQ 4
 nie ma już klasycznych kolejek zwierciadlanych); quorum to 3 repliki Raft z fsync przed
 potwierdzeniem. „Odbiór” to `receiving rate avg` (producenci i konsumenci szły w tym
-samym tempie, `sending rate avg` różnił się o < 2 %). Opóźnienie publikacja→odbiór
-zawiera czas w kolejce, bo producent jest szybszy niż konsument.
+samym tempie, `sending rate avg` różnił się o < 2 %), a okno niepotwierdzonych (200) ogranicza
+kolejkę, więc opóźnienia nie tłumaczy rosnąca kolejka.
 
 | Typ kolejki | Odbiór, msg/s (mediana, min–max) | Publikacja→odbiór p50 / p99, ms (mediany) | Publikacja→potwierdzenie p50 / p99, ms (mediany) | Load avg (1 min) |
 |---|---|---|---|---|
@@ -527,15 +527,18 @@ Surowe przebiegi (odbiór msg/s; p50/p99 publikacja→odbiór w ms; p50/p99 do p
 Wnioski (z zastrzeżeniem o szumie):
 
 - Quorum było tu **ok. 10–12 × wolniejsze** od classic w przepustowości (mediana 2,2 tys. vs 25,9 tys.
-  msg/s) i miało opóźnienie ogona rzędu sekund. Powód to koszt replikacji Raft: każdy zapis
-  jest fsync-owany na 2 z 3 węzłów, a wszystkie trzy węzły pisają na ten sam dysk VM
-  Dockera, przy obciążeniu hosta ~9. Na prawdziwym sprzęcie (osobne dyski, SSD) różnica byłaby
-  mniejsza; tej tezy tu nie zmierzyłem.
+  msg/s). Wielosekundowe p99 (publikacja→odbiór ok. 6 s, do potwierdzenia p99 6–10 s) przy p50 do
+  potwierdzenia rzędu 20 ms wskazuje na **okresowe przestoje**, nie równomierną powolność.
+  **Przyczyny nie zmierzyłem.** Hipotezy: fsync/WAL na współdzielonym dysku VM Dockera (3 repliki
+  piszą na ten sam dysk) albo alarmy pamięci/flow control na podach 512 Mi. Potwierdziłyby to:
+  `rabbitmq-diagnostics alarms` i metryki per węzeł (dysk, fsync, `rabbitmq_prometheus` na 15692)
+  zbierane w trakcie przebiegu. Czy na osobnych dyskach różnica byłaby mniejsza, też nie wiem.
 - Classic jest szybkie, ale ma jedną kopię: utrata węzła = utrata dostępu do kolejki (do powrotu
   węzła) i, przy awarii dysku, wiadomości. To cena za przepustowość; kolejki sklepu
   (`search.product.sync` itd.) są quorum właśnie dlatego, że zdarzenia nie mogą zniknąć.
-- Przebieg 3 classic (1 675 msg/s, p99 11 s) to **szum maszyny**, nie cecha classic: ta sama konfiguracja
-  w przebiegach 1–2 dała ~26–28 tys. Mediana go odsiewa, rozrzut go pokazuje.
+- Przebieg 3 classic (1 675 msg/s, p99 11 s) odbiega od przebiegów 1–2 (~26–28 tys.) **z niezbadanej
+  przyczyny**; load hosta (8,66) był podobny jak w tamtych (9,22 i 8,71). Mediana go odsiewa,
+  rozrzut go pokazuje, ale nie wiem, czy to szum maszyny, czy cecha classic.
 - Opóźnienie do potwierdzenia p50 jest zbliżone (11 vs 21 ms), rozjeżdża się dopiero na ogonie.
 
 ### Failover pod obciążeniem
@@ -548,14 +551,19 @@ Czas do nowego lidera to czas od `kubectl delete pod` / `docker stop` do pierwsz
 `rabbitmqctl list_queues leader` z innego poda, który pokazuje innego lidera (odczyt co ok. 0,3 s plus exec,
 rozdzielczość ~0,5 s).
 
-| Przebieg | Zdarzenie | Lider → nowy | Czas do nowego lidera, ms | Potwierdzone (dolne ogr.) | W kolejce po teście | Utracone potwierdzone |
-|---|---|---|---|---|---|---|
-| 1 | kasowanie poda lidera | server-1 → server-0 | 2 981 | 9 000 | 9 000 | 0 |
-| 2 | kasowanie poda lidera | server-2 → server-0 | 2 797 | 9 000 | 9 000 | 0 |
-| 3 | kasowanie poda lidera | server-2 → server-1 | 2 872 | 8 997 | 8 997 | 0 |
-| 4 | `docker stop k3d-elastic-g5-agent-1` (lider na jego podzie) | server-0 → server-2 | 1 091 | 8 994 | 8 994 | 0 |
-| 5 | to samo | server-0 → server-2 | 1 186 | 8 997 | 9 000 | 0 |
-| 6 | to samo | server-0 → server-1 | 1 017 | 9 000 | 9 000 | 0 |
+| Przebieg | Zdarzenie | Lider → nowy | Czas do nowego lidera, ms | Potwierdzone (dolne ogr.) | W kolejce po teście | Utracone potwierdzone | Load avg (1 min) |
+|---|---|---|---|---|---|---|---|
+| 1 | kasowanie poda lidera | server-1 → server-0 | 2 981 | 9 000 | 9 000 | 0 | 7,91 |
+| 2 | kasowanie poda lidera | server-2 → server-0 | 2 797 | 9 000 | 9 000 | 0 | 5,09 |
+| 3 | kasowanie poda lidera | server-2 → server-1 | 2 872 | 8 997 | 8 997 | 0 | 7,33 |
+| 4 | `docker stop k3d-elastic-g5-agent-1` (lider na jego podzie) | server-0 → server-2 | 1 091 | 8 994 | 8 994 | 0 | 5,92 |
+| 5 | to samo | server-0 → server-2 | 1 186 | 8 997 | 9 000 | 0 | 7,33 |
+| 6 | to samo | server-0 → server-1 | 1 017 | 9 000 | 9 000 | 0 | 7,6 |
+
+Uwaga: „utracone” liczę jako max(0, potwierdzone − w kolejce), a „w kolejce” to statystyka
+`messages` z `rabbitmqctl list_queues`, która potrafi się spóźniać o kilka sekund (w pomiarze
+prefetch pokazała 28 800 zamiast 30 000). Odczyt był po ~5 s od powrotu klastra; w przebiegach 3 i 5
+liczby są nieco niższe od 9 000, więc „0” opiera się na statystyce z opóźnieniem i nie jest dowodem absolutnym.
 
 - **Kasowanie poda lidera** (3 ×): mediana **2 872 ms**, min–max 2 797–2 981 ms.
 - **Zatrzymanie węzła** (3 ×; zadanie wymagało jednego, powtórzyłem dwa razy, bo tanie): mediana
@@ -593,15 +601,16 @@ generatorem perf-test: kolejka quorum `g5.prefetch` wstępnie napełniona 30 000
 Wartość faktycznie działa: przed pomiarem `rabbitmqctl list_consumers queue_name prefetch_count`
 pokazało dokładnie 1, 10 i 50.
 
-| Prefetch konsumenta | Czas opróżnienia 30 000 wiadomości, s (mediana, min–max) | Odbiór, msg/s (mediana, min–max) | Load avg (1 min) |
+| Prefetch konsumenta | Odbiór, msg/s (`receiving rate avg` perf-test; mediana, min–max) | Czas opróżnienia 30 000 wiadomości, s (zawiera start Joba: scheduling, czekanie na trasę, JVM, ok. 7–10 s) | Load avg (1 min) |
 |---|---|---|---|
-| 1 | 61,8 (56,5–67,0) | 576 (509–581) | 9,07 (8,83–9,28) |
-| 10 | 20,9 (20,9–21,0) | 2 487 (2 260–2 696) | 9,05 (8,48–11,19) |
-| 50 | 10,7 (10,5–10,8) | 7 882 (6 404–10 653) | 9,68 (7,42–9,76) |
+| 1 | 576 (509–581) | 61,8 (56,5–67,0) | 9,07 (8,83–9,28) |
+| 10 | 2 487 (2 260–2 696) | 20,9 (20,9–21,0) | 9,05 (8,48–11,19) |
+| 50 | 7 882 (6 404–10 653) | 10,7 (10,5–10,8) | 9,68 (7,42–9,76) |
 
 Przy prefetch 1 konsument czeka na ack i kolejne dostarczenie (zapis Raft + RTT) po każdej
-wiadomości, więc przepustowość to ok. 1 / (czas jednego cyklu) ≈ 580 msg/s; podniesienie okna do 10
-daje ~4 ×, do 50 ~14 ×. To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
+wiadomości, więc przepustowość to ok. 1 / (czas jednego cyklu) ≈ 580 msg/s. Wg przepustowości (mediany)
+okno 10 daje ~4,3 ×, a 50 ~13,7 ×; kolumna czasu pokazuje mniejsze ilorazy (2,9 × i 5,8 ×), bo
+każdy czas zawiera stałe ok. 7–10 s startu Joba. To zgodne z teorią, ale **nie dotyczy `search-consumer`**: ten pobiera
 pojedynczo przez `basic.get`.
 
 **Stan wyjściowy `search-consumer`** (jedyne, co da się o nim zmierzyć): reindeks 1 500 zdarzeń
@@ -614,8 +623,8 @@ pojedynczo przez `basic.get`.
 | reindeks 1 500 zdarzeń (3 ×: 40,7 / 42,0 / 45,5) | 42,0 (40,7–45,5) | 9,18 (7,55–10,53) |
 
 Wcześniejsza seria tego samego pomiaru (40,9 / 41,6 / 42,0 s) potwierdza wynik.
-≈ 36 zdarzeń/s: wąskim gardłem nie jest broker, tylko pętla `basic.get` +
-pobranie projekcji z katalogu (HTTP) + zapis do ES w transakcji, po jednej wiadomości naraz
-Gdyby ten czas trzeba było skrócić, dźwignią jest równoległość konsumentów
+≈ 36 zdarzeń/s. Czas obejmuje też cykl odpytywania outboxu przez `outbox-publisher`. Wąskim gardłem
+prawdopodobnie nie jest broker, tylko pętla `basic.get` + pobranie projekcji z katalogu (HTTP) +
+zapis do ES w transakcji, po jednej wiadomości naraz (nie sprawdzałem tego osobno). Gdyby ten czas trzeba było skrócić, dźwignią jest równoległość konsumentów
 (`replicas` search-consumer) lub przejście na `basic.consume` z prefetch (inny transport),
 nie opcja Messengera.

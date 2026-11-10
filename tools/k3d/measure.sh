@@ -16,7 +16,7 @@
 #              po teście, czas do nowego lidera. Zatrzymywany jest agent-1: generator obciążenia jest pinowany
 #              poza nim, a lider kolejki przenoszony na pod z tego węzła (transfer_leadership).
 #    prefetch  (a) kolejka quorum wstępnie napełniona 30000 wiadomości, perf-test jako jeden
-#              konsument z prefetch 1/10/50: czas i przepustowość opróżnienia, kolumna
+#              konsument z prefetch 1/10/50: przepustowość odbioru (główna miara) i czas opróżnienia (zawiera start Joba), kolumna
 #              prefetch_count z `rabbitmqctl list_consumers` jako dowód, że wartość działa;
 #              (b) stan wyjściowy search-consumer: reindeks 1500 zdarzeń (seed.sh --n=1500 --fresh)
 #              do pustej kolejki, 3 ×. Messenger AMQP nie ma opcji prefetch (patrz POMIARY).
@@ -66,7 +66,7 @@ restore_node() {
     STOPPED_NODE=""
   fi
 }
-trap 'restore_node; kk delete job -l app=perf-test --ignore-not-found --wait=false >/dev/null 2>&1; kill $(jobs -p) 2>/dev/null' EXIT
+trap 'restore_node; sweep_g5 g5.mq-classic g5.mq-quorum g5.failover g5.prefetch; kill $(jobs -p) 2>/dev/null' EXIT
 
 # perf_field <log> <wzorzec sed z \(grupą\)> — pierwsza grupa z ostatniej pasującej linii.
 perf_rate() { printf '%s\n' "$1" | sed -n "s/.*$2 avg: \([0-9][0-9]*\) msg\/s.*/\1/p" | tail -n 1; }
