@@ -10,7 +10,7 @@
 set -uo pipefail
 
 CLUSTER="elastic-g5"
-CTX="k3d-elastic-g5"
+CTX="${CTX:-k3d-elastic-g5}"
 NS="marketplace"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" \
   || { printf '[g5] BŁĄD: nie da się ustalić katalogu repo\n' >&2; exit 1; }
