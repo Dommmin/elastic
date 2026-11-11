@@ -1,0 +1,98 @@
+# ============================================================================
+#  Polityki sieciowe rabbitmq-ha (ETAP G5). Baza ma default-deny Ingress+Egress,
+#  allow-dns i allow-egress-in-namespace (ruch między podami namespace).
+#  Tu: kto wchodzi do rabbitmq-ha, dokąd wychodzi rabbitmq-ha i kto może do
+#  starego rabbitmq (źródło Shovela).
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ha-ingress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+  policyTypes: [Ingress]
+  ingress:
+    # Klienci AMQP (5672) i stream (5552). perf-test = obciążenie z późniejszych zadań.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [outbox-publisher, search-consumer, perf-test]
+      ports:
+        - port: 5672
+        - port: 5552
+    # catalog-app: /health sprawdza RabbitMQ po TCP na RABBITMQ_HOST (HealthController) —
+    # jak w bazowej rabbitmq-ingress. Bez tego po migracji /health zgłaszał rabbitmq „down”.
+    - from:
+        - podSelector:
+            matchLabels: { app: catalog-app }
+      ports:
+        - port: 5672
+    # Węzły klastra: epmd (4369), dystrybucja Erlanga (25672), AMQP i stream
+    # (klienci stream i kolejki kworum rozmawiają też między replikami).
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+      ports:
+        - port: 4369
+        - port: 25672
+        - port: 5672
+        - port: 5552
+        # Replikacja streamu (osiris) między węzłami: domyślny zakres 6000-6500.
+        # Bez tego stream search.analytics.stream wisi (connection_refused na replice)
+        # i wstrzymuje list_queues, mimo że CR ma Ready=True.
+        - { port: 6000, endPort: 6500, protocol: TCP }
+        # CLI RabbitMQ (rabbitmqctl, rabbitmq-queues) to osobny węzeł Erlanga na 35672-35682;
+        # polecenia klastrowe (list_queues, quorum_status) łączą się zwrotnie z węzła peera.
+        - { port: 35672, endPort: 35682, protocol: TCP }
+    # Operatory (rabbitmq-system) wołają API zarządzania — tak działa m.in.
+    # messaging-topology-operator.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: rabbitmq-system }
+      ports:
+        - port: 15672
+---
+# Peer discovery (rabbit_peer_discovery_k8s) pyta API Kubernetes o endpointy.
+# default-deny Egress to blokuje; allow-egress-in-namespace obejmuje tylko pody.
+# kube-router ocenia egress PO DNAT-cie Service'u, więc realnym celem nie jest
+# kubernetes.default (10.43.0.1:443), tylko Endpoints `kubernetes`: węzeł server-0
+# na porcie 6443 (k3d: 172.22.0.3:6443). Reguła: tylko 6443 i tylko sieć Dockera
+# k3d-elastic-g5 (172.22.0.0/16, tam są wyłącznie węzły). /32 odrzucone: adres
+# server-0 zmienia się po odtworzeniu klastra, podsieć sieci k3d nie.
+# Źródło prawdy: G5_SUBNET w tools/k3d/lib.sh (up.sh tworzy sieć z tą podsiecią,
+# deploy.sh sprawdza ją przed wdrożeniem, g5-check.rb pilnuje zgodności z tym plikiem).
+# Zmiana podsieci = ten ipBlock i G5_SUBNET razem. Na VPS (k3s,
+# API na IP hosta:6443) ta polityka nie jest używana — to dodatek overlayu G5.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ha-egress-api
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 172.22.0.0/16 }
+      ports:
+        - { port: 6443, protocol: TCP }
+---
+# Shovel: rabbitmq-ha (cel) czyta ze starego rabbitmq:5672. Egress rabbitmq-ha
+# do podów namespace przepuszcza allow-egress-in-namespace; brakuje ingressu.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-from-ha
+spec:
+  podSelector:
+    matchLabels: { app: rabbitmq }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: rabbitmq-ha }
+      ports:
+        - port: 5672

@@ -1,0 +1,354 @@
+# ============================================================================
+#  Topologia RabbitMQ jako CR-y Messaging Topology Operator (ETAP G5).
+#  Źródło prawdy: infra/rabbitmq/definitions.template.json (Compose) — zgodność
+#  pilnuje tools/k3d/topology-parity.rb (woła je g5-check.sh). Zmiana jednego
+#  pliku bez drugiego = czerwony test. Stream analityki: stream.yaml.
+#  metadata.name = nazwa RabbitMQ z kropkami zamienionymi na myślniki
+#  (DNS-1123); prawdziwa nazwa jest w spec.name. Typ kolejki: spec.type.
+# ============================================================================
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: User
+metadata:
+  name: marketplace
+spec:
+  # Login i hasło z Secretu rabbitmq-ha-marketplace-user (tools/k3d/secrets.sh).
+  importCredentialsSecret:
+    name: rabbitmq-ha-marketplace-user
+  tags: []   # zwykły użytkownik aplikacji, bez administratora
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+# Uprawnienia aplikacji (jeden użytkownik dla katalogu i konsumenta search). Regexy
+# kotwiczone, minimalne względem tego, co kod robi w runtime:
+#  - configure: kolejki sklepu (konsument je tylko czyta, ale passive declare/ack
+#    ich dotyka) i delay_* — Symfony Messenger przy retry DEKLARUJE dynamiczne
+#    kolejki delay_*_retry (classic, x-expires). Exchange'y tworzy operator, nie aplikacja.
+#  - write: marketplace.events (publikator outboxu w catalogu), marketplace.delays
+#    (publikacja kopii do retry), delay_* i amq.default = default exchange (DLX kolejek
+#    delay_* oddaje wiadomość do kolejki źródłowej; broker sprawdza write na DLX).
+#    Brak marketplace.dlx: dead-lettering robi broker, nie klient.
+#  - read: kolejki konsumowane (search.*, notifications.alerts), delay_* i
+#    marketplace.delays (bindowanie delay_* do exchange'a wymaga read na źródle).
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: marketplace
+spec:
+  vhost: /
+  userReference:
+    name: marketplace
+  permissions:
+    configure: '^(search\..*|notifications\..*|delay_.*)$'
+    write: '^(marketplace\.(events|delays)|delay_.*|amq\.default|)$'
+    read: '^(search\..*|notifications\..*|delay_.*|marketplace\.delays)$'
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Exchange
+metadata:
+  name: marketplace-events
+spec:
+  name: marketplace.events
+  vhost: /
+  type: topic
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Exchange
+metadata:
+  name: marketplace-dlx
+spec:
+  name: marketplace.dlx
+  vhost: /
+  type: topic
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Exchange
+metadata:
+  name: marketplace-delays
+spec:
+  name: marketplace.delays
+  vhost: /
+  type: direct
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-product-sync
+spec:
+  name: search.product.sync
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  arguments:
+    x-dead-letter-exchange: marketplace.dlx
+    x-delivery-limit: 5
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-analytics-ingest
+spec:
+  name: search.analytics.ingest
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  arguments:
+    x-dead-letter-exchange: marketplace.dlx
+    x-delivery-limit: 5
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: notifications-alerts
+spec:
+  name: notifications.alerts
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  arguments:
+    x-dead-letter-exchange: marketplace.dlx
+    x-delivery-limit: 5
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-product-sync-dlq
+spec:
+  name: search.product.sync.dlq
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-analytics-ingest-dlq
+spec:
+  name: search.analytics.ingest.dlq
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: notifications-alerts-dlq
+spec:
+  name: notifications.alerts.dlq
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-product-sync-product
+spec:
+  source: marketplace.events
+  destination: search.product.sync
+  destinationType: queue
+  routingKey: 'product.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-product-sync-offer
+spec:
+  source: marketplace.events
+  destination: search.product.sync
+  destinationType: queue
+  routingKey: 'offer.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-product-sync-seller
+spec:
+  source: marketplace.events
+  destination: search.product.sync
+  destinationType: queue
+  routingKey: 'seller.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-product-sync-category
+spec:
+  source: marketplace.events
+  destination: search.product.sync
+  destinationType: queue
+  routingKey: 'category.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-product-sync-review
+spec:
+  source: marketplace.events
+  destination: search.product.sync
+  destinationType: queue
+  routingKey: 'review.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-analytics-ingest-user
+spec:
+  source: marketplace.events
+  destination: search.analytics.ingest
+  destinationType: queue
+  routingKey: 'user.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-notifications-alerts-alert
+spec:
+  source: marketplace.events
+  destination: notifications.alerts
+  destinationType: queue
+  routingKey: 'alert.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-search-product-sync-dlq-product
+spec:
+  source: marketplace.dlx
+  destination: search.product.sync.dlq
+  destinationType: queue
+  routingKey: 'product.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-search-product-sync-dlq-offer
+spec:
+  source: marketplace.dlx
+  destination: search.product.sync.dlq
+  destinationType: queue
+  routingKey: 'offer.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-search-product-sync-dlq-seller
+spec:
+  source: marketplace.dlx
+  destination: search.product.sync.dlq
+  destinationType: queue
+  routingKey: 'seller.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-search-product-sync-dlq-category
+spec:
+  source: marketplace.dlx
+  destination: search.product.sync.dlq
+  destinationType: queue
+  routingKey: 'category.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-search-product-sync-dlq-review
+spec:
+  source: marketplace.dlx
+  destination: search.product.sync.dlq
+  destinationType: queue
+  routingKey: 'review.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-search-analytics-ingest-dlq-user
+spec:
+  source: marketplace.dlx
+  destination: search.analytics.ingest.dlq
+  destinationType: queue
+  routingKey: 'user.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: dlx-notifications-alerts-dlq-alert
+spec:
+  source: marketplace.dlx
+  destination: notifications.alerts.dlq
+  destinationType: queue
+  routingKey: 'alert.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha

@@ -1,0 +1,16 @@
+# outbox-publisher -> rabbitmq-ha (krok 2 migracji: migrate.sh stosuje TEN plik przez
+# `kk patch --type=json`, więc stan na żywo i stan z repo są z definicji te same).
+- op: test
+  path: /spec/template/spec/containers/0/name
+  value: publisher
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value: { name: RABBITMQ_HOST, value: rabbitmq-ha }
+# Użytkownik marketplace na rabbitmq-ha ma WŁASNE hasło (tools/k3d/secrets.sh) —
+# bez tego wydawca dostaje „invalid credentials” (zmierzone: CrashLoopBackOff po kroku 2).
+- op: test
+  path: /spec/template/spec/containers/0/env/7/name
+  value: RABBITMQ_PASSWORD
+- op: replace
+  path: /spec/template/spec/containers/0/env/7/valueFrom/secretKeyRef
+  value: { name: rabbitmq-ha-marketplace-user, key: password }

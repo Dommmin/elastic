@@ -1,0 +1,104 @@
+# ============================================================================
+#  Łatki overlayu g5-local (ETAP G5): kasują wszystko, co nie leży na ścieżce
+#  komunikatów sklepu (outbox-publisher -> RabbitMQ -> search-consumer -> ES).
+#  Baza (deploy/k8s) zostaje nietknięta. `$patch: delete` działa na obiektach
+#  z bazy. catalog-app ZOSTAJE: search-consumer po każdym evencie dopytuje go o
+#  projekcję (CATALOG_INTERNAL_BASE_URL), bez niego nic nie trafi do ES.
+#  NetworkPolicy zostają (selektory bez podów nic nie robią).
+# ============================================================================
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-worker
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-scheduler
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-metrics
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glitchtip
+---
+$patch: delete
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: glitchtip
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-metrics
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+---
+$patch: delete
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: glitchtip-uploads
+---
+$patch: delete
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glitchtip
+---
+$patch: delete
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis
+---
+$patch: delete
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: catalog-app
+---
+$patch: delete
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glitchtip-db-setup
+---
+$patch: delete
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glitchtip-setup
+---
+$patch: delete
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+---
+$patch: delete
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: marketplace

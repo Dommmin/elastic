@@ -1,0 +1,57 @@
+# ============================================================================
+#  RabbitmqCluster `rabbitmq-ha` (ETAP G5): 3 repliki, quorum queues, po jednej
+#  na węzeł. Operator sam tworzy StatefulSet, Service `rabbitmq-ha`
+#  (5672, 15672, 15692, 5552), Secret `rabbitmq-ha-default-user` i ServiceAccount.
+#
+#  Obraz: oficjalny debianowy `rabbitmq:X.Y.Z-management` (uid 999). Wariant
+#  alpine ma użytkownika rabbitmq o uid 100, a operator ustawia fsGroup/runAsUser
+#  999 — dlatego NIE używamy obrazu z infra/rabbitmq. Wersja = RABBITMQ_VERSION
+#  z .env.example (docs/07-WERSJE.md); obraz importuje tools/k3d/images.sh.
+# ============================================================================
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: rabbitmq-ha
+spec:
+  replicas: 3
+  image: rabbitmq:4.3.4-management
+  persistence:
+    storageClassName: local-path
+    storage: 1Gi
+  resources:
+    requests: { memory: 512Mi, cpu: 100m }
+    limits: { memory: 512Mi }
+  rabbitmq:
+    additionalPlugins:
+      - rabbitmq_prometheus
+      - rabbitmq_shovel
+      - rabbitmq_shovel_management
+      - rabbitmq_stream
+    additionalConfig: |
+      default_queue_type = quorum
+  # Twarda anty-afinity: trzy repliki na trzech różnych węzłach (utrata węzła =
+  # utrata jednej repliki, kworum 2/3 zostaje). Pod -> 3 węzły k3d: server + 2 agenty.
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rabbitmq-ha
+  override:
+    statefulSet:
+      spec:
+        template:
+          spec:
+            containers:
+              - name: rabbitmq
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities: { drop: [ALL] }
+                  seccompProfile: { type: RuntimeDefault }
+            initContainers:
+              - name: setup-container
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities: { drop: [ALL] }
+                  seccompProfile: { type: RuntimeDefault }

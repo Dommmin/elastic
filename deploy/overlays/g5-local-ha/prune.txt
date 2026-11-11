@@ -1,0 +1,15 @@
+# Obiekty, które tools/k3d/deploy.sh KASUJE po wdrożeniu tego overlayu (kubectl apply
+# sam niczego nie usuwa). Format: <rodzaj>/<nazwa> jak w `kubectl delete`.
+# g5-check.rb pilnuje, że nic z tej listy nie wraca w renderze.
+# deploy.sh odmawia skasowania statefulset/rabbitmq, póki jego kolejki nie są puste.
+shovel.rabbitmq.com/migrate-search-product-sync
+shovel.rabbitmq.com/migrate-search-analytics-ingest
+shovel.rabbitmq.com/migrate-notifications-alerts
+shovel.rabbitmq.com/migrate-search-product-sync-dlq
+shovel.rabbitmq.com/migrate-search-analytics-ingest-dlq
+shovel.rabbitmq.com/migrate-notifications-alerts-dlq
+networkpolicy/rabbitmq-from-ha
+networkpolicy/rabbitmq-ingress
+service/rabbitmq
+statefulset/rabbitmq
+serviceaccount/rabbitmq

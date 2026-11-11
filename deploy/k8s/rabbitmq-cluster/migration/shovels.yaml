@@ -1,0 +1,110 @@
+# ============================================================================
+#  Shovele migracji: stary rabbitmq (StatefulSet, 1 węzeł) -> rabbitmq-ha.
+#  Jeden na każdą kolejkę starego węzła (infra/rabbitmq/definitions.template.json,
+#  pilnuje tools/k3d/g5-check.rb). Działają NA rabbitmq-ha (wtyczka rabbitmq_shovel);
+#  źródło i cel z Secretu rabbitmq-shovel-uris (srcUri / destUri, tools/k3d/secrets.sh).
+#
+#  ackMode on-confirm: wiadomość znika ze starej kolejki dopiero, gdy nowy klaster
+#    potwierdzi zapis (publisher confirm) — przy awarii w połowie najwyżej duplikat,
+#    który zjada idempotencja konsumenta (ProcessedEvent), nigdy strata.
+#  srcDeleteAfter queue-length: shovel przenosi tyle wiadomości, ile było w kolejce
+#    w chwili startu, i sam się kasuje. Działa, bo w kroku 2 wydawca jest już na
+#    rabbitmq-ha — do starych kolejek nic nowego nie wpada. Resztki (wiadomości,
+#    które stary konsument oddał przy rolloucie w kroku 4, kopie wracające z delay_*)
+#    migrate.sh dosuwa, zakładając shovele od nowa.
+#  Cel: TA SAMA kolejka na rabbitmq-ha (destQueue = publikacja przez default exchange),
+#    NIE exchange marketplace.events z zachowaniem routing key. Pierwsza wersja szła
+#    przez exchange i zgubiła 2 z 1500 wiadomości (k3d, pod ruchem): kopia po retry
+#    Messengera wraca do kolejki z delay_* przez default exchange, więc jej routing key
+#    to NAZWA KOLEJKI (search.product.sync), a bindingi topic (product.# …) jej nie
+#    znają -> unroutable, po cichu wyrzucona (rabbitmq_global_messages_unroutable_dropped_total).
+#    Kolejka -> ta sama kolejka nie zależy od routing key ani od bindingów; przy okazji
+#    nie ma ryzyka podwójnego rozkładu, gdyby wiadomość pasowała do kilku bindingów.
+#    DLQ -> ta sama DLQ: martwe zostają martwe (replay to osobna decyzja człowieka).
+#  Użytkownik marketplace na rabbitmq-ha ma write na default exchange i configure na
+#  kolejkach sklepu (Permission w topology.yaml) — więcej shovel nie potrzebuje.
+# ============================================================================
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-product-sync
+spec:
+  name: migrate-search-product-sync
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.product.sync
+  destQueue: search.product.sync
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-analytics-ingest
+spec:
+  name: migrate-search-analytics-ingest
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.analytics.ingest
+  destQueue: search.analytics.ingest
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-notifications-alerts
+spec:
+  name: migrate-notifications-alerts
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: notifications.alerts
+  destQueue: notifications.alerts
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-product-sync-dlq
+spec:
+  name: migrate-search-product-sync-dlq
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.product.sync.dlq
+  destQueue: search.product.sync.dlq
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-analytics-ingest-dlq
+spec:
+  name: migrate-search-analytics-ingest-dlq
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.analytics.ingest.dlq
+  destQueue: search.analytics.ingest.dlq
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-notifications-alerts-dlq
+spec:
+  name: migrate-notifications-alerts-dlq
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: notifications.alerts.dlq
+  destQueue: notifications.alerts.dlq
+  rabbitmqClusterReference: { name: rabbitmq-ha }

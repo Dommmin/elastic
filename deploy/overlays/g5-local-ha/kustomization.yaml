@@ -1,0 +1,40 @@
+# ============================================================================
+#  Overlay g5-local-ha (ETAP G5): stan KOŃCOWY po migracji (spec sekcja 5, krok 6).
+#  = g5-base bez starego RabbitMQ: aplikacje na rabbitmq-ha, bez StatefulSetu
+#  `rabbitmq`, jego Service, ServiceAccount i polityk sieciowych, bez Shoveli.
+#
+#  Repo = prawda: migrate.sh robi kroki 2 i 4 na żywo (`kk patch --type=json`)
+#  TYMI SAMYMI plikami *-env.yaml, które stosuje ten overlay, więc po migracji
+#  `make g5-deploy o=g5-local-ha` nie zmienia już niczego poza skasowaniem
+#  starego RabbitMQ (prune.txt — kubectl apply sam niczego nie usuwa).
+#
+#  Dlaczego RABBITMQ_HOST przez env, a nie w ConfigMapie: marketplace-config
+#  ma hash w nazwie i czyta go też postgres. Nowa wartość = nowa nazwa = rollout
+#  postgresa, catalog-app, konsumenta i Joba — w środku migracji pod ruchem, a po
+#  niej „zmiana” przy wdrożeniu stanu końcowego. Jawne env wygrywa z envFrom.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../g5-base
+
+# Przełączenie aplikacji (host rabbitmq-ha + hasło użytkownika z rabbitmq-ha-marketplace-user,
+# DSN konsumenta z klucza _HA): JSON6902, nie strategic merge — kustomize przy strategic
+# merge wstawia nową zmienną na POCZĄTEK listy env i przesuwa scaloną na początek, a patch
+# na żywo zostawia kolejność. Inna kolejność env = inny szablon poda = rollout przy wdrożeniu
+# stanu końcowego. Dlaczego nie `kk set env`: nie zmieni klucza/Secretu w istniejącym
+# valueFrom (DSN, hasło), a jeden plik dla obu dróg wyklucza rozjazd. Operacje `test`
+# pilnują indeksów (zmiana bazy = błąd renderu i błąd patcha, nie cicha pomyłka).
+# catalog-app też: jego /health sprawdza RabbitMQ po RABBITMQ_HOST.
+patches:
+  - path: delete-old-rabbitmq.yaml
+  - path: catalog-app-env.yaml
+    target: { kind: Deployment, name: catalog-app }
+  - path: outbox-publisher-env.yaml
+    target: { kind: Deployment, name: outbox-publisher }
+  # migrate.sh stosuje te same pliki na żywo (krok 2: catalog-app, outbox-publisher; krok 4: konsument).
+  - path: search-consumer-env.yaml
+    target: { kind: Deployment, name: search-consumer }
+  # Job migrate: kolejność bez znaczenia (Job jest odtwarzany przy każdym deploy.sh).
+  - path: job-migrate-env.yaml
