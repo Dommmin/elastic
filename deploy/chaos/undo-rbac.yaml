@@ -91,26 +91,6 @@ subjects:
   - kind: ServiceAccount
     name: chaos-undo
     namespace: marketplace
----
-# default-deny w marketplace (G2) blokuje wyjście poza namespace, także do API.
-# k3s: API na węźle (Endpoints `kubernetes` = 185.238.74.58:6443); NetworkPolicy działa
-# po DNAT ClusterIP -> endpoint, więc reguła na IP węzła:6443, a ClusterIP:443 na zapas.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: chaos-undo-egress
-  namespace: marketplace
-  labels: { app.kubernetes.io/part-of: chaos-rbac }
-spec:
-  podSelector:
-    matchLabels: { app: chaos-undo }
-  policyTypes: ["Egress"]
-  egress:
-    - to:
-        - ipBlock: { cidr: 185.238.74.58/32 }
-      ports:
-        - { protocol: TCP, port: 6443 }
-    - to:
-        - ipBlock: { cidr: 10.43.0.1/32 }
-      ports:
-        - { protocol: TCP, port: 443 }
+# NetworkPolicy `chaos-undo-egress` (wyjście Joba do API servera) NIE jest tutaj: jej
+# adresy zależą od klastra (endpointy usługi `kubernetes`, w k3s IP węzła:6443), więc
+# składa ją `undo_netpol_apply` w tools/chaos/lib.sh z EndpointSlice przy każdym break.

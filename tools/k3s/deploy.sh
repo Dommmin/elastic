@@ -29,13 +29,20 @@ NS=(-n marketplace)
 
 # ETAP G4: w trakcie scenariusza chaosu Job chaos-undo przywróciłby po chwili migawkę
 # sprzed awarii, czyli ze STARYM obrazem — wdrożenie zostałoby po cichu cofnięte.
+# Sprawdzamy na starcie I przed każdym apply: między krokami mija do kilkunastu minut
+# (czekanie na ES), a break w innej powłoce mógł w tym czasie założyć blokadę.
 nc -z 127.0.0.1 26443 2>/dev/null || ssh -fN elastic-vps-k8s
-chaos_lock="$(kk "${NS[@]}" get cm chaos-lock --ignore-not-found -o name)"   # błąd API = stop (set -e)
-if [[ -n "${chaos_lock}" ]]; then
-  chaos_s="$(kk "${NS[@]}" get cm chaos-lock -o jsonpath='{.data.scenario}' 2>/dev/null || true)"
-  echo "Trwa scenariusz chaosu ${chaos_s:-?} — make chaos-reset albo make chaos-check s=${chaos_s:-<s>}, potem wdrażaj." >&2
-  exit 1
-fi
+chaos_guard() {
+  local chaos_lock chaos_s
+  chaos_lock="$(kk "${NS[@]}" get cm chaos-lock --ignore-not-found -o name)" \
+    || { echo "[k3s-deploy] błąd API przy sprawdzaniu chaos-lock — przerywam" >&2; exit 1; }
+  if [[ -n "${chaos_lock}" ]]; then
+    chaos_s="$(kk "${NS[@]}" get cm chaos-lock -o jsonpath='{.data.scenario}' 2>/dev/null || true)"
+    echo "Trwa scenariusz chaosu ${chaos_s:-?} — make chaos-reset albo make chaos-check s=${chaos_s:-<s>}, potem wdrażaj." >&2
+    exit 1
+  fi
+}
+chaos_guard
 
 # `kk apply | grep -v unchanged || true` połykało błąd samego apply (tunel,
 # timeout 60 s): `|| true` jest tam potrzebne, bo grep ma exit 1, gdy wszystko
@@ -43,6 +50,7 @@ fi
 # $1 = selektor etykiet, $2 = funkcja wołana przy błędzie (z opisem błędu).
 apply_sel() {
   local out
+  chaos_guard
   out="$(kk apply -f "${WORK}/rendered.yaml" -l "$1" 2>&1)" \
     || { echo "${out}" >&2; "$2" "kubectl apply -l '$1' nie przeszedł"; }
   grep -v unchanged <<<"${out}" || true
@@ -76,6 +84,7 @@ for _ in $(seq 1 90); do es_settled && break; sleep 10; done
 es_settled || { echo "[k3s-deploy] ES nie ustabilizował się w 15 min" >&2; exit 1; }
 
 echo "[k3s-deploy] 2/3 Job migrate"
+chaos_guard
 kk "${NS[@]}" delete job migrate --ignore-not-found --wait=true
 kk apply -f "${WORK}/rendered.yaml" -l 'app.kubernetes.io/component=migrate'
 if ! kk "${NS[@]}" wait job/migrate --for=condition=complete --timeout=600s; then
@@ -143,6 +152,7 @@ step3_fail() {
 
 if kk "${NS[@]}" get deploy/search-consumer >/dev/null 2>&1; then
   echo "    search-consumer -> 0 replik (zdarzenia czekają w RabbitMQ)"
+  chaos_guard
   kk "${NS[@]}" scale deploy/search-consumer --replicas=0
   for _ in $(seq 1 60); do
     [ -z "$(kk "${NS[@]}" get pods -l app=search-consumer -o name)" ] && break

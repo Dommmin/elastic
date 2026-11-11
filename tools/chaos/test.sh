@@ -51,7 +51,8 @@ for f in tools/chaos/scenarios/*.sh; do
     source "${f}"
     [[ -n "${SUMMARY:-}" ]] || echo "puste SUMMARY"
     [[ "${LIMIT_MIN:-}" =~ ^[0-9]+$ ]] || echo "LIMIT_MIN nie jest liczbą: '${LIMIT_MIN:-}'"
-    [[ "${FUSE_TTL:-1}" =~ ^[1-9][0-9]*$ ]] || echo "FUSE_TTL nie jest liczbą ≥ 1: '${FUSE_TTL:-}'"
+    [[ -z "${FUSE_TTL+x}" ]] || echo "FUSE_TTL nie istnieje od G4-poprawek (ttl liczy się od wejścia awarii) — usuń"
+    [[ "${BREAK_BUDGET_S:-600}" =~ ^[1-9][0-9]*$ ]] || echo "BREAK_BUDGET_S nie jest liczbą ≥ 1: '${BREAK_BUDGET_S:-}'"
     [[ "${FUSE_LIMIT_S:-180}" =~ ^[1-9][0-9]*$ ]] || echo "FUSE_LIMIT_S nie jest liczbą ≥ 1: '${FUSE_LIMIT_S:-}'"
     declare -p ALERT >/dev/null 2>&1 || echo "brak zmiennej ALERT"
     for fn in targets break check undo; do declare -F "${fn}" >/dev/null || echo "brak funkcji ${fn}"; done
@@ -88,6 +89,12 @@ else
   else bad "${rbac}: render: ${out}"; fi
   rm -rf "${tmpk}"
 fi
+# Adres węzła nie może być wpisany na sztywno: NetworkPolicy składa lib.sh z EndpointSlice.
+if grep -qE '([0-9]{1,3}\.){3}[0-9]{1,3}' "${rbac}"; then bad "${rbac}: adres IP na sztywno (NetworkPolicy składa undo_netpol_apply)"; else ok "${rbac}: bez adresów IP na sztywno"; fi
+# Obraz Joba (token z PUT na Deploymenty) przypięty po digeście, nie po samym tagu.
+img="$(set +u; source tools/chaos/lib.sh; echo "${CHAOS_IMAGE}")"
+[[ "${img}" =~ @sha256:[0-9a-f]{64}$ ]] && ok "obraz Joba przypięty po digeście" || bad "CHAOS_IMAGE bez @sha256: (${img})"
+
 grep -q 'part-of: chaos-rbac' "${rbac}" && ! grep -qE 'part-of: chaos *[},]?$|part-of: chaos }' "${rbac}" \
   && ok "${rbac}: etykiety part-of=chaos-rbac" || bad "${rbac}: obiekty statyczne mają mieć part-of=chaos-rbac"
 

@@ -8,7 +8,7 @@
 #      (undo drugi raz z tej samej migawki + zdjęcie blokady i Joba): drugi undo nie może
 #      zmienić metadata.generation obiektów z targets() (idempotentne undo = brak nowego
 #      rolloutu); scenariusz bez targets musi tylko zakończyć drugi reset kodem 0,
-#   4. check MUSI dać PASS.
+#   4. check MUSI dać PASS dwa razy z rzędu (20 s odstępu): stabilnie, nie przypadkiem.
 #  Przed każdym break: wait_quiet (lib.sh) — czeka ≤ 10 min na wygaśnięcie alertów.
 #  Wynik: OK <s> / BAD <s> (<etap>), kod 1 przy którymkolwiek BAD.
 #
@@ -62,6 +62,22 @@ settle() {
   return 1
 }
 
+# green_stable <s> <limit_s> — check zielony DWA razy z rzędu, 20 s odstępu, w limicie
+# (liczonym do rozpoczęcia ostatniej pary). Pojedynczy zielony mógł trafić w okno między
+# restartami poda w backoffie (CrashLoopBackOff wygląda chwilę na gotowy).
+green_stable() {
+  local deadline=$((SECONDS + $2)) ok=1
+  while (( ok != 0 && SECONDS < deadline )); do
+    if bash "${CHAOS}" check "$1" >/dev/null 2>&1; then
+      sleep 20
+      bash "${CHAOS}" check "$1" >/dev/null 2>&1 && ok=0
+    else
+      sleep 2
+    fi
+  done
+  return "${ok}"
+}
+
 # selftest_one <s> — ustawia globalne `stage` (puste = OK). Funkcja z return zamiast
 # łańcucha elif: słowo kluczowe break jest tu zakazane (scenariusz je przesłania).
 selftest_one() {
@@ -90,8 +106,8 @@ selftest_one() {
   [[ "${g1}" == "${g2}" ]] || { stage="reset 2 zmienił generation"; return; }
   # Po undo workload dochodzi do siebie z opóźnieniem (np. outbox-publisher po
   # crashloopie wstaje z backoffem i drenuje zaległe wpisy), więc zielony check
-  # ma do 2,5 min — jak uczeń odpytujący make chaos-check.
-  if ! wait_for 150 bash "${CHAOS}" check "${s}"; then
+  # ma do 2,5 min — jak uczeń odpytujący make chaos-check — i musi się utrzymać.
+  if ! green_stable "${s}" 150; then
     bash "${CHAOS}" check "${s}" || true
     stage="check czerwony po reset"
   fi
