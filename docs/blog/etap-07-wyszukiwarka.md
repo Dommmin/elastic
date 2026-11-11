@@ -2,7 +2,8 @@
 
 *ETAP 7 projektu Marketplace Search Platform. Od pustego indeksu do klikalnej
 wyszukiwarki z facetami, autocomplete, nieskończonym przewijaniem i zmierzoną
-trafnością (nDCG@10 = 0.967) — razem z każdym błędem, który po drodze
+trafnością (nDCG@10 = 1.000 na deterministycznym harnessie; pierwotne 0.967
+okazało się nieodtwarzalne — patrz krok 13) — razem z każdym błędem, który po drodze
 wybuchł, i z tym, jak go znaleźć.*
 
 ---
@@ -1199,6 +1200,73 @@ marce" było realnym przypadkiem użycia, właściwą odpowiedzią byłby filtr
 
 To jest **punkt odniesienia** ([POMIARY 5a](../POMIARY.md)). Każda przyszła
 zmiana boostów, analizatorów czy synonimów: `make eval` przed i po.
+
+### Aktualizacja (2026-10-10): 0.967 nie był odtwarzalny
+
+Przy wdrożeniu na VPS (ETAP D) ten sam `queries.yaml` na świeżym seedzie 1500
+dał kolejno 0.822, 0.842, 0.851, 0.856, 0.889. Dane w Postgresie identyczne,
+indeks zbudowany od zera za każdym razem. Wyjaśnienie z `Orn PLC` wyżej
+dotyczyło w rzeczywistości **prawie wszystkich** zapytań.
+
+**Krok 1 — zobacz remisy.** Pogrupuj wyniki po `_score`:
+
+```text
+smartfon                 8.8425 x53   ← 53 smartfony z identycznym wynikiem
+Orn PLC                 20.7787 x54
+słuchawki bezprzewodowe  7.4728 x64   ← nauszne RAZEM z bezprzewodowymi
+```
+
+Ręczna lista oceniała 10 z 53 remisujących smartfonów. Które 10 trafi do
+top-10, rozstrzyga wewnętrzny doc id Lucene — inny przy każdym świeżym
+indeksie. Metryka mierzyła kolejność remisów, nie trafność.
+
+**Krok 2 — oceniaj całe grupy, nie przykłady.** `relevant` to teraz
+**reguły**, które `search:eval` rozwija z bazy katalogu
+(`App\Services\Search\RelevanceJudgments`):
+
+```yaml
+- query: 'smartfon'
+  relevant:
+      - { category: 'Smartfony', grade: 1 }      # wszystkie smartfony, nie 10 z 53
+
+- query: 'rower górski'
+  relevant:
+      - { name_contains: 'Rower górski', grade: 2 }
+      - { category: 'Rowery', grade: 1 }         # szosowe i elektryczne niżej
+
+- query: 'Wyman-Howell Laptop Ultra 14"'
+  relevant:
+      - { name: 'Wyman-Howell Laptop Ultra 14"', grade: 3 }
+```
+
+Warunek determinizmu: **każda grupa remisu, która styka się z top-10, ma
+jedną ocenę**. Dlatego `słuchawki bezprzewodowe` ma tylko regułę kategorii —
+synonim `słuchawki bezprzewodowe => słuchawki` celowo zrównuje je
+z nausznymi, a ocena 2 dla „bezprzewodowych” rozbiłaby grupę remisu.
+
+**Krok 3 — niech komenda pilnuje tego sama.** `search:eval` pobiera k-ty
+wynik, potem wszystko z `min_score` równym jego `_score` (cała graniczna
+grupa, także dokumenty za pozycją 10) i sprawdza, czy w każdej grupie jest
+jedna ocena. Stary plik:
+
+```
+| smartfon          | 0.931 | 1 | TAK |
+| Orn PLC           | 0.428 | 6 | TAK |
+...
+Wynik NIEDETERMINISTYCZNY: w top-k jest remis `_score` między dokumentami o różnych ocenach
+```
+
+Nowy plik, trzy razy od zera (`search:index:create --force` →
+`marketplace:seed --n=1500 --fresh` → pusta kolejka → `make eval`):
+**1.000 / 1.000 / 1.000**, żadnego `TAK`. Nowy baseline i jego ograniczenie
+(harness jest nasycony — wyłapie regresję, nie poprawę):
+[POMIARY 5a](../POMIARY.md), [RUNBOOK #096](../RUNBOOK.md#096).
+
+Powtórzone 2026-11-10, po Portalu sprzedawcy (projekcja tylko z ofert `listed()`),
+tą samą procedurą: znowu 1.000 / 1.000 / 1.000. Jeden przebieg trzeba było
+powtórzyć: ES dostał OOM w maszynie wirtualnej Dockera, w indeksie zostało
+999/1500 dokumentów. Warunek „`products-search/_count` = 1500” w procedurze nie
+jest więc ozdobą. Bez niego wynik z niepełnego indeksu wyglądałby na pomiar.
 
 ### `_explain`: dlaczego #1 jest pierwszy
 

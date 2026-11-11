@@ -96,6 +96,8 @@
 | [093](#093) | chaos: bad-probe — rollout `search-metrics` nie kończy się, nowy pod `0/1` (spoiler) | k3s / chaos | G4 |
 | [094](#094) | chaos: es-node-down — ES widzi 2 węzły zamiast 3 (spoiler) | k3s / chaos | G4 |
 | [095](#095) | `chaos-undo` nie zadziałał — blokada `chaos-lock` zostaje, produkcja zepsuta | k3s / chaos | G4 |
+| [096](#096) | `search:eval` deterministyczny: reguły zamiast ręcznych ID-ków (dług z #032) | Elasticsearch | 7 |
+| [097](#097) | `pg-backup` na k3s pada co noc: `postgres:5432 Connection refused` | k3s / NetworkPolicy | G2 |
 | [098](#098) | kustomize: `cycle detected` — overlay w katalogu bazy | k3d / kustomize | G5 |
 | [099](#099) | Operator topologii odrzuca `User`/`Shovel`: Secret bez etykiety `rabbitmq.com/topology-operator` | k3d / RabbitMQ | G5 |
 | [100](#100) | RabbitMQ za `default-deny`: egress do API, przypięta podsieć k3d | k3d / NetworkPolicy | G5 |
@@ -1525,7 +1527,7 @@ seed bez `--fresh`), czyli na stanie, którego nie da się odtworzyć.
 **Naprawa**
 ETAP D używa kryterium „eval OK" (≥ 0.80 + zapytania o konkretny produkt = 1.000),
 a po restarcie i snapshocie sprawdza wynik identyczny jak przed. Deterministyczny
-harness (ocena całych grup remisów) to osobne zadanie.
+harness (ocena całych grup remisów) — zrobiony w [#096](#096).
 
 **Czego się nauczyłem**
 Zanim liczba stanie się kryterium przyjęcia, zmierz ją 3 razy od zera. Metryka
@@ -4404,6 +4406,113 @@ kubectl -n marketplace delete secret chaos-rotated-secrets --ignore-not-found
 **Czego się nauczyłem**
 Bezpiecznik musi żyć w klastrze: w teście z martwym tunelem Job sam przywrócił politykę
 i zdjął blokadę. Ręczne usunięcie blokady dopiero po ręcznej naprawie stanu, nigdy przed.
+
+---
+
+<a id="096"></a>
+## 096 — `search:eval` deterministyczny: reguły zamiast ręcznych ID-ków
+
+> ETAP 7 (dług z #032). Naprawa z 2026-10-10, scalona i zmierzona ponownie 2026-11-10.
+
+**Objaw**
+Ciąg dalszy [#032](#032). Po świeżym `marketplace:seed --n=1500 --fresh`
+i `search:index:create --force` ten sam `queries.yaml` dawał 0.822, 0.842,
+0.851, 0.856, 0.889 — przy identycznych danych w Postgresie.
+
+**Diagnoza**
+Grupy remisu `_score` dla każdego zapytania (`size: 200`, grupowanie po
+`_score`):
+```text
+smartfon / telefon / komórka   8.8425 x53   (wszystkie „Smartfon … 128GB/Pro”)
+Orn PLC                       20.7787 x54   (wszystkie produkty marki)
+słuchawki bezprzewodowe        7.4728 x64   (nauszne RAZEM z bezprzewodowymi)
+```
+Ręczna lista oceniała 10–15 dokumentów z każdej takiej grupy. Który z 53
+remisujących smartfonów trafi do top-10, zależy od wewnętrznego doc id
+Lucene (kolejność przyjścia wiadomości z kolejki, refreshe, merge'e) — inny
+przy każdym świeżym indeksie. `słuchawki bezprzewodowe` remisuje z nausznymi
+celowo: `synonyms.txt` ma `słuchawki bezprzewodowe => słuchawki`.
+
+**Przyczyna**
+nDCG@k jest deterministyczne tylko wtedy, gdy każda grupa remisu `_score`,
+która styka się z top-k, ma JEDNĄ ocenę dla wszystkich członków — także tych
+tuż za pozycją k, bo mogą zamienić się miejscami z tymi przed nią. Ręcznie
+wybrane ID-ki łamią to z definicji.
+
+**Naprawa**
+1. `queries.yaml`: `relevant` to reguły (`category`, `brand`, `name`,
+   `name_contains`, `id`), nie ID-ki. `search:eval` rozwija je z bazy katalogu
+   (`App\Services\Search\RelevanceJudgments` — prawda z Postgresa, nie z ES,
+   który oceniamy). Reguła bez trafień przerywa ewaluację.
+2. Strażnik w `search:eval`: dla każdego zapytania pobiera k-ty wynik, potem
+   wszystko z `min_score` = jego `_score` (cała graniczna grupa remisu, także
+   za pozycją k) i sprawdza, czy w każdej grupie ocena jest jedna. Jeśli nie —
+   kolumna „Remis z różnymi ocenami” = `TAK`, komunikat i `exit 1`. Na starym
+   `queries.yaml` zgłasza 11 z 13 zapytań.
+3. `ProductSearchService` bez zmian — nie dokładamy tie-breakera pod test.
+
+Weryfikacja (3 × od zera: `search:index:create --force` → `marketplace:seed
+--n=1500 --fresh` → czekanie na pustą kolejkę `search.product.sync` →
+`search:eval`): 1.000 / 1.000 / 1.000, żadnego `TAK`.
+
+**Czego się nauczyłem**
+Etykiety trafności muszą być funkcją dokumentu (kategoria, marka, nazwa), nie
+listą wybranych przykładów — inaczej metryka mierzy kolejność remisów, nie
+trafność. I warunek determinizmu da się SPRAWDZIĆ automatycznie (grupy remisu
+z różnymi ocenami), zamiast liczyć na to, że ktoś zauważy rozrzut.
+
+---
+
+<a id="097"></a>
+## 097 — `pg-backup` na k3s pada co noc: `postgres:5432 Connection refused`
+
+> ETAP G2/G4, wykryte 2026-11-07 (alert `KubeJobFailed`), naprawione 2026-11-10.
+
+**Objaw**
+Od 2026-11-06 każdy nocny Job `pg-backup-*` kończy się `Failed` (oba pody,
+`backoffLimit: 1`):
+```text
+pg_dump: error: connection to server at "postgres" (10.43.x.x), port 5432 failed: Connection refused
+```
+Alertmanager pokazuje dwa `KubeJobFailed` w `marketplace`. Ostatni udany Job
+był sprzed wejścia NetworkPolicy z G2. Reszta sklepu działa normalnie.
+
+**Diagnoza**
+1. `postgres-ingress` wymienia `pg-backup` wśród klientów na 5432, egress
+   `allow-egress-in-namespace` obejmuje każdy pod, a ewaluator polityk
+   (`kubectl kustomize deploy/k8s | ruby tools/k3s/ckad-check.rb`) daje trasie
+   `pg-backup → postgres:5432` status dozwolonej. Statycznie wszystko się zgadza.
+2. „Refused”, a nie timeout: kube-router (kontroler polityk w k3s) nie upuszcza
+   zablokowanego pakietu po cichu, tylko odrzuca go z `icmp-port-unreachable`.
+   Więc to jednak blokada polityką, tylko chwilowa.
+3. Polityki z `podSelector` kube-router realizuje jako ipsety adresów IP podów.
+   IP nowego poda trafia do nich dopiero po obsłużeniu zdarzenia o podzie. Do
+   tego momentu jego ruch nie pasuje do żadnej reguły „allow” i wpada w
+   `default-deny`. Deployment przeżywa to restartem (nikt nie zauważył), a
+   `pg-backup` woła `pg_dump` w pierwszej sekundzie życia, bez ponowienia.
+
+**Przyczyna**
+Wyścig: krótki Job łączy się z bazą, zanim kontroler polityk dopisze jego IP
+do ipsetów. W G2 nikt tego nie złapał, bo `verify.sh netpol` sprawdza
+długo żyjące pody, a `faza=backup` nie była uruchamiana po G2.
+
+**Naprawa**
+`deploy/k8s/backup.yaml`: przed `pg_dump` pętla `pg_isready -h postgres -t 2`
+co 2 s, najwyżej 30 prób (60 s). `pg_isready` nie potrzebuje hasła. Po
+limicie Job nadal kończy się błędem, więc prawdziwa awaria bazy dalej odpala
+`KubeJobFailed`. Test lokalny w naszym obrazie Postgresa z
+`--read-only --cap-drop ALL` (jak w manifeście): baza pojawia się 10 s po
+starcie Joba → „trasa do postgres po 6 próbach” i oba dumpy; bazy brak →
+po 60 s „nieosiągalny po 60 s — przerywam”. Na klastrze do potwierdzenia
+(`kubectl create job pg-backup-test --from=cronjob/pg-backup -n marketplace`,
+potem `make k3s-verify faza=backup`), gdy znów będzie k3s.
+
+**Czego się nauczyłem**
+NetworkPolicy nie zaczyna działać w chwili startu poda: kontroler polityk ma
+swoje opóźnienie, a w tym czasie obowiązuje `default-deny`. Każdy kontener,
+który łączy się z czymś zaraz po starcie (Joby, init kontenery, skrypty
+jednorazowe), potrzebuje pętli „czekaj na zależność” z limitem. „Zielony”
+ewaluator polityk sprawdza reguły, nie kolejność zdarzeń w kontrolerze.
 
 ---
 

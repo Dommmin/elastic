@@ -18,7 +18,16 @@ NS="marketplace"
 KUBECTL_BIN="${KUBECTL:-/opt/homebrew/bin/kubectl}"
 KUBECONFIG_VPS="${KUBECONFIG_VPS:-${HOME}/.kube/elastic-vps.yaml}"
 SCORES_FILE="${CHAOS_SCORES_FILE:-${HOME}/.chaos-scores.tsv}"
-CHAOS_IMAGE="alpine/k8s:1.36.6"
+# Przypięty po digeście (indeks multi-arch): tag można przepchnąć na inny obraz, a ten
+# obraz dostaje token z prawem PUT na Deploymenty sklepu. Nowa wersja = nowy digest:
+#   docker buildx imagetools inspect alpine/k8s:<wersja>
+CHAOS_IMAGE="alpine/k8s:1.36.6@sha256:d9cb78be55e6e47c54e8a77bbf35ef87e98e5a03fbe5db7654d28bb78cc7d57e"
+# Budżet przygotowania i wprowadzenia awarii (s): od założenia blokady do końca `break`
+# scenariusza (migawka, Job, start poda ≤ 120 s, sama awaria). Do tego czasu deadline
+# blokady = teraz + ttl + budżet; po udanym break deadline = koniec break + ttl, więc
+# czekanie na pod Joba i długi break (es-node-down) nie zjadają ttl. Scenariusz może
+# nadpisać BREAK_BUDGET_S (dłuższy break).
+BREAK_BUDGET_S_DEFAULT=600
 LOCK_CM="chaos-lock"
 SCRIPTS_CM="chaos-scripts"
 UNDO_JOB="chaos-undo"
@@ -90,6 +99,18 @@ expect_match() {
   fi
 }
 
+# expect_hidden <objaw> <przyczyna> <oczekiwane> <otrzymane> — wymaganie, którego opis
+# zdradza przyczynę awarii. Niespełnione: tylko opis objawu, bez wartości (check
+# odpalony zaraz po break nie może podpowiadać rozwiązania; zasada kart). Spełnione:
+# pełny opis z przyczyną (uczeń już ją znalazł).
+expect_hidden() {
+  if [[ "$3" == "$4" ]]; then
+    PASS=$((PASS + 1)); printf '  %s✓%s %s\n' "${GREEN}" "${RESET}" "$2"
+  else
+    FAIL=$((FAIL + 1)); printf '  %s✗%s %s  %s(szczegóły po naprawie albo w karcie, sekcja Rozwiązanie)%s\n' "${RED}" "${RESET}" "$1" "${DIM}" "${RESET}"
+  fi
+}
+
 # wait_for <sekundy> <polecenie...> — ponawia polecenie co 2 s, aż zwróci 0.
 wait_for() {
   local deadline=$((SECONDS + $1)); shift
@@ -155,17 +176,36 @@ alert_state_marketplace() {
   [[ "${n}" -ge 1 ]] && echo tak || echo nie
 }
 
-# alert_for_seconds <alertname> -> `for:` reguły w sekundach (pusto, gdy API nie odpowiada
-# albo reguły nie ma).
+# alert_for_seconds <alertname> -> `for:` reguły w sekundach. Kody: 0 = jest, 1 = Prometheus
+# odpowiada poprawnie, a reguły o tej nazwie NIE MA (literówka w ALERT, reguła się nie
+# załadowała), 2 = API nie odpowiada (5 prób co 5 s). Brak reguły to błąd, nie „zgadnij for”.
 alert_for_seconds() {
-  local i v
+  local i raw v
   for i in 1 2 3 4 5; do
-    v="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null \
-      | jq -r --arg n "$1" '[.data.groups[].rules[] | select(.name == $n) | .duration] | first // empty' 2>/dev/null)"
-    [[ "${v}" =~ ^[0-9]+$ ]] && { echo "${v}"; return 0; }
+    raw="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null)"
+    if jq -e '.status == "success" and (.data.groups | type == "array")' <<<"${raw}" >/dev/null 2>&1; then
+      v="$(jq -r --arg n "$1" '[.data.groups[].rules[] | select(.name == $n) | .duration] | first // empty' <<<"${raw}" 2>/dev/null)"
+      [[ "${v}" =~ ^[0-9]+$ ]] && { echo "${v}"; return 0; }
+      return 1
+    fi
     sleep 5
   done
-  return 1
+  return 2
+}
+
+# alert_fired_at <alertname> <for_s> -> epoch (s) chwili, w której alert przeszedł w firing
+# (activeAt najstarszego płonącego alertu sklepu + for). Pusto + kod 1 = nie płonie albo
+# brak odczytu. Dowód alertu mierzy czas tym, a nie chwilą, w której skrypt go zobaczył:
+# przerwa w tunelu wydłuża obserwację, ale nie przesuwa momentu zapłonu.
+alert_fired_at() {
+  local raw v
+  raw="$(k get --raw '/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/rules?type=alert' 2>/dev/null)" || return 1
+  v="$(jq -r --arg a "$1" '[.data.groups[] | .name as $g | .rules[] | .alerts[]?
+        | select(.state == "firing" and .labels.alertname == $a)
+        | select($g == "marketplace" or .labels.namespace == "marketplace")
+        | .activeAt | sub("\\.[0-9]+"; "") | fromdateiso8601] | min // empty' <<<"${raw}" 2>/dev/null)"
+  [[ "${v}" =~ ^[0-9]+$ ]] || return 1
+  echo $(( v + $2 ))
 }
 
 # wait_quiet [limit_s=600] — czeka, aż sklep będzie „zdrowy do awarii”: brak płonących
@@ -244,15 +284,19 @@ sts_ready() {
 }
 
 # recent_restarts <app> <sekundy> -> liczba kontenerów podów app=<app>, które
-# zakończyły się (lastState.terminated.finishedAt) w ostatnich N sekundach.
-# Liczone z czasu, nie z licznika restartCount: licznik nie maleje po naprawie.
+# zakończyły się BŁĘDEM (lastState.terminated, exitCode ≠ 0: OOMKilled 137, Error)
+# w ostatnich N sekundach. Planowe wyjście z kodem 0 się nie liczy: catalog-worker
+# kończy `queue:work --max-time=3600` co godzinę (Completed), co dawało fałszywy FAIL
+# w ~3% checków. Liczone z czasu, nie z restartCount: licznik nie maleje po naprawie.
 # Błąd API albo jq -> „?” (nigdy „0”, które wyglądałoby jak zdrowie).
 recent_restarts() {
   local raw n
   raw="$(k -n "${NS}" get pods -l "app=$1" -o json 2>/dev/null)" || { echo "?"; return 0; }
   n="$(jq --argjson s "$2" '
     [ .items[].status.containerStatuses[]?
-      | .lastState.terminated.finishedAt // empty
+      | .lastState.terminated // empty
+      | select((.exitCode // 0) != 0)
+      | .finishedAt // empty
       | select((now - fromdateiso8601) < $s) ] | length
   ' <<<"${raw}" 2>/dev/null)"
   [[ "${n}" =~ ^[0-9]+$ ]] && echo "${n}" || echo "?"
@@ -290,6 +334,10 @@ snapshot_get() {
 #  - Adnotacje zarządzane przez kontrolery (deployment.kubernetes.io/revision) bierzemy
 #    z obiektu na żywo: dla Deploymentu KAŻDA zmiana adnotacji podbija generation.
 #  - Obiekt, którego nie ma (scenariusz go usunął), jest tworzony (surowy POST).
+#  - PUT niesie resourceVersion obiektu na żywo (świeży odczyt tuż przed zapisem): to
+#    zapis warunkowy, więc nie nadpisze po cichu zmiany, która weszła między odczytem
+#    a zapisem (409 Conflict -> ponowny odczyt, do 3 prób). CRD (np. Elasticsearch) PUT
+#    bez resourceVersion w ogóle odrzucają, więc z nim snapshot_restore działa też dla nich.
 SERVER_ANNOTATIONS='["deployment.kubernetes.io/revision"]'
 
 # api_path <apiVersion> <kind> [nazwa] -> ścieżka REST w NS (liczba mnoga jak w API).
@@ -305,7 +353,7 @@ api_path() {
 }
 
 snapshot_restore() {
-  local snap n refs live merged i item tmp rc=0
+  local snap n refs live merged i item tmp tmp2 rc=0
   local lrc
   snap="$(lock_get snapshot.yaml)"; lrc=$?
   case "${lrc}" in
@@ -330,6 +378,7 @@ snapshot_restore() {
                  then .metadata.annotations[$a] = $cur.metadata.annotations[$a] else . end))}
           end)' <<<"${snap}")" || return 1
   tmp="$(mktemp "${TMPDIR:-/tmp}/chaos-obj.XXXXXX")" || return 1
+  tmp2="$(mktemp "${TMPDIR:-/tmp}/chaos-obj.XXXXXX")" || { rm -f "${tmp}"; return 1; }
   for ((i = 0; i < n; i++)); do
     item="$(jq -c ".[${i}]" <<<"${merged}")"
     jq '.obj' <<<"${item}" > "${tmp}"
@@ -338,23 +387,36 @@ snapshot_restore() {
     if [[ "$(jq -r '.missing' <<<"${item}")" == true ]]; then
       k create --raw "$(api_path "${av}" "${kd}")" -f "${tmp}" >/dev/null || rc=1
     else
-      k replace --raw "$(api_path "${av}" "${kd}" "${nm}")" -f "${tmp}" >/dev/null || rc=1
+      local cur put_ok=0 t=0
+      while (( put_ok == 0 && t < 3 )); do
+        t=$((t + 1))
+        cur="$(k get --raw "$(api_path "${av}" "${kd}" "${nm}")" 2>/dev/null)" || { sleep 2; continue; }
+        jq --argjson cur "${cur}" --argjson keep "${SERVER_ANNOTATIONS}" '
+          .obj | .metadata.resourceVersion = $cur.metadata.resourceVersion
+          | reduce $keep[] as $a (.;
+              if ($cur.metadata.annotations // {})[$a] != null
+              then .metadata.annotations[$a] = $cur.metadata.annotations[$a] else . end)' <<<"${item}" > "${tmp2}" \
+          || { sleep 2; continue; }
+        if k replace --raw "$(api_path "${av}" "${kd}" "${nm}")" -f "${tmp2}" >/dev/null; then put_ok=1; else sleep 2; fi
+      done
+      [[ ${put_ok} -eq 1 ]] || rc=1
     fi
   done
-  rm -f "${tmp}"
+  rm -f "${tmp}" "${tmp2}"
   return "${rc}"
 }
 
 # ------------------------------------------------------------- blokada -------
-# lock_create <s> <ttl_min> <owner> — atomowe `kubectl create`: AlreadyExists = trwa inny
-# scenariusz. `owner` (nonce procesu break) i `phase` (breaking -> broken | aborted) chronią
+# lock_create <s> <ttl_min> <owner> <budżet_s> — atomowe `kubectl create`: AlreadyExists =
+# trwa inny scenariusz. Wstępny deadline = teraz + ttl + budżet (break jeszcze trwa);
+# cmd_break po wprowadzeniu awarii przesuwa go na koniec break + ttl. `owner` (nonce procesu break) i `phase` (breaking -> broken | aborted) chronią
 # przed drugą powłoką: check/reset odmawiają w fazie breaking, a break przed awarią i po
 # niej sprawdza, że blokada nadal jest jego.
 lock_create() {
   local now; now="$(date +%s)"
   k -n "${NS}" create configmap "${LOCK_CM}" \
     --from-literal=scenario="$1" --from-literal=started="${now}" \
-    --from-literal=deadline="$((now + $2 * 60))" --from-literal=ttl="$2" \
+    --from-literal=deadline="$((now + $2 * 60 + ${4:-${BREAK_BUDGET_S_DEFAULT}}))" --from-literal=ttl="$2" \
     --from-literal=owner="$3" --from-literal=phase=breaking \
     --dry-run=client -o json \
     | jq '.metadata.labels = {"app.kubernetes.io/part-of": "chaos", "chaos.lab/lock": "true"}' \
@@ -402,6 +464,15 @@ lock_set() {
   k -n "${NS}" patch configmap "${LOCK_CM}" --type merge -p "${patch}" >/dev/null
 }
 lock_delete() { k -n "${NS}" delete configmap "${LOCK_CM}" --ignore-not-found --wait=false >/dev/null; }
+# lock_set_if_owner <owner> <klucz> <wartość> — zapis WARUNKOWY: JSON patch z operacją
+# `test` na data.owner, więc atomowo (po stronie API) nie dotknie cudzej blokady. Dla
+# ścieżek, które nie zdołały odczytać właściciela (błąd API), a muszą coś zapisać.
+lock_set_if_owner() {
+  local patch
+  patch="$(jq -cn --arg o "$1" --arg k "$2" --arg v "$3" \
+    '[{op: "test", path: "/data/owner", value: $o}, {op: "add", path: ("/data/" + $k), value: $v}]')"
+  k -n "${NS}" patch configmap "${LOCK_CM}" --type json -p "${patch}" >/dev/null 2>&1
+}
 
 # -------------------------------------------------------- Job wycofania ------
 # CHAOS_SCENARIOS_DIR: katalog scenariuszy (testy wstrzykują tu scenariusz-atrapę).
@@ -424,15 +495,44 @@ rearm_undo() {
   undo_job_create "$1" 1
 }
 
-# undo_job_create <s> <ttl_min> — RBAC z repo, ConfigMap `chaos-scripts`, Job `chaos-undo`,
+# undo_netpol_apply — NetworkPolicy `chaos-undo-egress`: default-deny z G2 blokuje wyjście
+# z marketplace, także do API. NetworkPolicy działa po DNAT ClusterIP -> endpoint, więc
+# reguła musi wskazywać ENDPOINTY usługi `kubernetes` (w k3s: IP węzła:6443), a nie
+# tylko ClusterIP:443. Adresy czytamy z EndpointSlice przy każdym break (zmiana IP węzła
+# albo drugi węzeł nie wymaga edycji repo). Etykieta chaos-rbac: obiekt statyczny, zostaje.
+undo_netpol_apply() {
+  local eps cip
+  eps="$(k -n default get endpointslice -l kubernetes.io/service-name=kubernetes -o json 2>/dev/null)" || { echo "  nie odczytałem EndpointSlice usługi kubernetes" >&2; return 1; }
+  cip="$(k -n default get service kubernetes -o jsonpath='{.spec.clusterIP}' 2>/dev/null)" || cip=""
+  jq -e --arg cip "${cip}" '
+    ([.items[] | select(.addressType == "IPv4") | . as $sl
+      | ($sl.ports // [] | map(select(.name == "https" or .name == null)) | map(.port)) as $p
+      | $sl.endpoints[]? | select(.conditions.ready != false) | .addresses[]
+      | {ip: ., ports: $p}]) as $e
+    | if ($e | length) == 0 or any($e[]; (.ports | length) == 0) then error("brak endpointów") else . end
+    | {apiVersion: "networking.k8s.io/v1", kind: "NetworkPolicy",
+       metadata: {name: "chaos-undo-egress", namespace: "marketplace",
+                  labels: {"app.kubernetes.io/part-of": "chaos-rbac"}},
+       spec: {podSelector: {matchLabels: {app: "chaos-undo"}}, policyTypes: ["Egress"],
+              egress: ([$e[] | {to: [{ipBlock: {cidr: (.ip + "/32")}}],
+                                ports: [.ports[] | {protocol: "TCP", port: .}]}]
+                       + (if $cip == "" then [] else
+                          [{to: [{ipBlock: {cidr: ($cip + "/32")}}], ports: [{protocol: "TCP", port: 443}]}] end))}}
+  ' <<<"${eps}" 2>/dev/null | k apply -f - >/dev/null \
+    || { echo "  NetworkPolicy chaos-undo-egress nie powstała (brak endpointów API?)" >&2; return 1; }
+}
+
+# undo_job_create <s> <ttl_min> [budżet_s] — RBAC z repo, ConfigMap `chaos-scripts`, Job `chaos-undo`,
 # na końcu ownerReference skryptów na Job (TTL Joba sprząta też skrypty). Skrypty przed
 # Jobem: pod nie czeka na brakujący wolumen (FailedMount w zdarzeniach).
 undo_job_create() {
-  local s="$1" ttl="$2" tmp uid deadline_s
-  deadline_s=$((ttl * 60 + 600))
+  local s="$1" ttl="$2" budget="${3:-${BREAK_BUDGET_S_DEFAULT}}" tmp uid deadline_s
+  # Pod żyje: budżet break (przed awarią) + ttl + do 600 s na samo undo.
+  deadline_s=$((ttl * 60 + budget + 600))
   k apply -f "${CHAOS_ROOT}/deploy/chaos/undo-rbac.yaml" >/dev/null || return 1
+  undo_netpol_apply || return 1
   # Pozostałość po poprzednim przebiegu (zakończony Job czeka na TTL) — Job jest niezmienny.
-  undo_job_delete
+  undo_job_delete || { echo "  nie usunąłem pozostałości Joba chaos-undo" >&2; return 1; }
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/chaos.XXXXXX")" || return 1
   # Punkt wejścia Joba: śpi do `deadline` z blokady (restart poda nie wydłuża ttl),
   # wycofuje, zdejmuje blokadę. Brak blokady albo inny scenariusz = nic do zrobienia.
@@ -489,7 +589,9 @@ metadata:
   name: ${UNDO_JOB}
   labels: { app: chaos-undo, app.kubernetes.io/part-of: chaos, chaos.lab/scenario: ${s} }
 spec:
-  backoffLimit: 2
+  # Pod sam ponawia odczyty (6 × 10 s); backoffLimit pokrywa dłuższą niedostępność API
+  # (backoff 10 s, 20 s, … do 6 min). Górną granicę i tak trzyma activeDeadlineSeconds.
+  backoffLimit: 6
   ttlSecondsAfterFinished: 3600
   activeDeadlineSeconds: ${deadline_s}
   template:
@@ -570,10 +672,24 @@ undo_pod_info() {
          | if . then " (" + . + ")" else "" end)' <<<"${pod}" 2>/dev/null || echo err
 }
 
-# undo_job_delete — Job (z podami) i ConfigMap skryptów; brak = sukces.
+# undo_job_delete — Job (z podami) i ConfigMap skryptów; brak = sukces. Kod 1, gdy
+# któreś usunięcie nie przeszło (błąd API, timeout): wołający musi to zgłosić, a nie
+# ogłaszać „Job zdjęty”.
 undo_job_delete() {
-  k -n "${NS}" delete job "${UNDO_JOB}" --ignore-not-found --cascade=background --wait=true --timeout=60s >/dev/null 2>&1
-  k -n "${NS}" delete configmap "${SCRIPTS_CM}" --ignore-not-found --wait=true --timeout=30s >/dev/null 2>&1
+  local rc=0
+  k -n "${NS}" delete job "${UNDO_JOB}" --ignore-not-found --cascade=background --wait=true --timeout=60s >/dev/null 2>&1 || rc=1
+  k -n "${NS}" delete configmap "${SCRIPTS_CM}" --ignore-not-found --wait=true --timeout=30s >/dev/null 2>&1 || rc=1
+  return "${rc}"
+}
+
+# finish_lock — po UDANYM undo (albo zielonym check): najpierw blokada, potem Job.
+# Kolejność ma znaczenie: Job bez blokady sam kończy się w ≤ 15 s („blokada zniknęła”),
+# a blokada bez Joba to zablokowane wdrożenia bez auto-wycofania. Gdy blokada nie
+# zejdzie, Job ZOSTAJE (zdejmie ją sam w terminie). Kod 0 = obie rzeczy zdjęte;
+# 1 = blokada została; 2 = blokada zdjęta, Job/skrypty nie (zakończą się same, TTL).
+finish_lock() {
+  lock_delete || { echo "${RED}!${RESET} nie zdjąłem blokady chaos-lock (błąd API) — Job chaos-undo zostaje i zdejmie ją w terminie; albo powtórz: make chaos-reset" >&2; return 1; }
+  undo_job_delete || { echo "${RED}!${RESET} blokada zdjęta, ale Job/skrypty chaos-undo nie zeszły (błąd API) — Job sam się zakończy; resztki: make chaos-reset" >&2; return 2; }
   return 0
 }
 

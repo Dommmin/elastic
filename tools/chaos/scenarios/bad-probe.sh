@@ -61,10 +61,10 @@ check() {
   wait_for 60 bp_ready || true
   expect "Deployment ${BP_DEPLOY}: rollout skończony, wszystkie repliki gotowe" "tak" "$(deploy_ready "${BP_DEPLOY}")"
   path="$(bp_readiness_path)"
-  expect "readiness nie wskazuje ${BP_BAD_PATH}" "inna niż ${BP_BAD_PATH}" \
+  expect_hidden "konfiguracja sondy jak przed awarią" "readiness nie wskazuje ${BP_BAD_PATH}" "inna niż ${BP_BAD_PATH}" \
     "$([[ "${path}" == "${BP_BAD_PATH}" || -z "${path}" ]] && echo "${path}" || echo "inna niż ${BP_BAD_PATH}")"
   code="$(k -n "${NS}" exec "deploy/${BP_DEPLOY}" -- curl -s -o /dev/null -m 5 -w '%{http_code}' "http://localhost:80${path:-/}" 2>/dev/null)"
-  expect "ścieżka readiness ${path:-?} odpowiada 200 z wnętrza poda" "200" "${code}"
+  expect_hidden "sonda gotowości dostaje odpowiedź 200" "ścieżka readiness ${path:-?} odpowiada 200 z wnętrza poda" "200" "${code}"
   ready_eps="$(k -n "${NS}" get endpointslice -l "kubernetes.io/service-name=${BP_DEPLOY}" -o json 2>/dev/null \
     | jq '[.items[].endpoints[]? | select(.conditions.ready == true)] | length' 2>/dev/null)"
   expect_match "EndpointSlice usługi ${BP_DEPLOY} ma gotowy endpoint" '^[1-9]' "${ready_eps:-0}"

@@ -95,12 +95,21 @@ Hipoteza z planu do zweryfikowania: **im lżejsze żądanie, tym większy zysk**
 ETAP 12) — fundament na ~1500-produktowym syntetycznym seedzie
 (`php artisan marketplace:seed`, `tests/relevance/queries.yaml`), nie
 docelowy zestaw na prawdziwym wolumenie. Patrz `docs/RUNBOOK.md` #020
-(pułapka: `_rank_eval` `ratings` po aliasie zamiast fizycznego indeksu).
+(pułapka: `_rank_eval` `ratings` po aliasie zamiast fizycznego indeksu),
+#032 (rozrzut wyniku) i #096 (naprawa).
 
 | Data | Konfiguracja | nDCG@10 (średnia, 13 zapytań) | Uwagi |
 |---|---|---|---|
-| 2026-08-17 | `multi_match best_fields` (`name^3`, `name.ac`, `brand^2`, `description`), bez fuzziness, + 2 zapytania testujące `synonyms.txt` | **0.967** | Jedno zapytanie (`Orn PLC`, samo dopasowanie marki jako wolny tekst) ma nDCG 0.571 — oczekiwane: równe `_score` dla wszystkich trafień daje arbitralną kolejność remisów, `ratings` obejmuje tylko część z >15 pasujących dokumentów. Nie jest to regresja do pilnowania, tylko właściwość zapytania tego typu (do rozważenia: filtr `term` na `brand`, nie `multi_match`, gdyby to był realny przypadek użycia, nie test synonimów/kategorii). |
-| 2026-10-15 | j.w., po Portalu sprzedawcy: w projekcji tylko oferty `listed()` (`published` i stan > 0); po `make reproject` | **0.786** | Porównywalny punkt odniesienia to **0.779** zmierzone tego samego dnia na tym samym stacku przed migracjami portalu. Starsze 0.967 pochodzi z 2026-08-17 z innych danych — nie porównywać. Szczegóły: sekcja poniżej. |
+| 2026-08-17 | `multi_match best_fields` (`name^3`, `name.ac`, `brand^2`, `description`), bez fuzziness, + 2 zapytania testujące `synonyms.txt`; oceny = ręczne listy ID-ków | ~~0.967~~ **nieodtwarzalne** | Zmierzone na lokalnej bazie po wielokrotnym seedzie bez `--fresh`. Na świeżym seedzie 1500 ten sam plik dawał 0.822–0.889 (RUNBOOK #032): remisy `_score` (np. 53 smartfony po 8.8425) rozstrzyga doc id Lucene, a lista oceniała tylko część grupy remisu. Nie używać jako punktu odniesienia. |
+| 2026-10-15 | j.w., po Portalu sprzedawcy: w projekcji tylko oferty `listed()` (`published` i stan > 0); po `make reproject` | **0.786** | Porównywalny punkt odniesienia to **0.779** zmierzone tego samego dnia na tym samym stacku przed migracjami portalu. Starsze 0.967 pochodzi z 2026-08-17 z innych danych — nie porównywać. Szczegóły: sekcja poniżej. Oceny nadal ręcznymi ID-kami, więc wynik obarczony rozrzutem z #032. |
+| 2026-11-10 | Ten sam query template (`ProductSearchService` bez zmian), projekcja z Portalu sprzedawcy (tylko oferty `listed()`); oceny = **reguły** (`category`/`brand`/`name`/`name_contains`) rozwijane z bazy katalogu, strażnik remisów w `search:eval` (RUNBOOK #096) | **1.000** (3 × od zera: 1.000 / 1.000 / 1.000) | **Baseline.** Deterministyczny: każda grupa remisu w top-10 ma jedną ocenę, co `search:eval` sprawdza sam (kolumna „Remis z różnymi ocenami”, `exit 1` przy naruszeniu). Ta sama naprawa dała 1.000 / 1.000 / 1.000 już 2026-10-10, przed Portalem; scalona i zmierzona ponownie po nim. Jeden przebieg odrzucony i powtórzony: ES dostał OOM w maszynie wirtualnej Dockera (inne projekty na tej samej maszynie), w indeksie 999/1500 dokumentów, 501 zdarzeń w transporcie `failed`. Harness jest NASYCONY: nie odróżni „lepiej” od „tak samo dobrze”, wyłapie tylko regresję. Trudniejsze zapytania (literówki, wieloznaczność) to ETAP 12 (sekcja 6). |
+
+**Procedura pomiaru (odtwarzalna, od #096):**
+1. `docker compose exec search-consumer php bin/console search:index:create --force`
+2. `docker compose exec catalog-app php artisan marketplace:seed --n=1500 --fresh`
+3. poczekaj, aż kolejka `search.product.sync` będzie pusta, a `products-search/_count` = 1500
+   (uwaga: `_cat/indices` pokazuje ~6000 `docs.count` — liczy też zagnieżdżone dokumenty ofert, `nested`)
+4. `make eval`
 
 **Uruchomienie:** `make eval` (albo `docker compose exec catalog-app php artisan search:eval`).
 

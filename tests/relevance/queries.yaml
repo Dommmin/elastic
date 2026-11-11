@@ -7,187 +7,99 @@
 # wyników i dla oceny, żeby nie ocenić czegoś innego, niż faktycznie widzi
 # użytkownik) i liczy nDCG@10 przez `_rank_eval`.
 #
-# `grade` to relevance rating 0-3 (0 pomijamy — po prostu nie wypisujemy
-# dokumentu jako relevant): 3 = dokładnie ten produkt, o który pytano;
-# 1 = trafny wynik szerszej kategorii/marki/synonimu.
+# `relevant` to REGUŁY, nie ręczna lista ID-ków (docs/RUNBOOK.md #096).
+# `search:eval` rozwija je na ID-ki z bazy katalogu (App\Services\Search\
+# RelevanceJudgments). Selektory — dokładnie jeden na regułę:
+#   id            — konkretny produkt po ID,
+#   name          — dokładna nazwa produktu,
+#   name_contains — fragment nazwy (bez rozróżniania wielkości liter),
+#   brand         — nazwa marki,
+#   category      — nazwa kategorii liścia (marketplace:seed, TAXONOMY).
+# Dokument pasujący do kilku reguł dostaje najwyższą ocenę. Reguła, która
+# nie łapie żadnego produktu, przerywa ewaluację (literówka / zły seed).
 #
-# ŚWIADOME OGRANICZENIE (docs/RUNBOOK.md, dopisek ETAP 7 przy #017): 13 par
-# zamiast docelowych ~50 z dokumentu planu — to fundament harnessu na
-# ~1500-produktowym seedzie (Faza 1), nie ETAP 8 (skala). ID-ki dokumentów
-# są przywiązane do `php artisan marketplace:seed` ze stałym seedem Fakera
-# (42) — świeży `marketplace:seed --fresh` odtwarza te same dane.
+# `grade` 0-3: 3 = dokładnie ten produkt, o który pytano; 2 = dokładnie
+# ten typ produktu; 1 = trafny wynik szerszej kategorii/marki/synonimu.
 #
-# Dwa zapytania (`notebook`, `komórka`) testują SYNONIMY z
-# infra/elasticsearch/analysis/synonyms.txt, nie samo dopasowanie tekstu —
-# zweryfikowane ręcznie na żywym indeksie: `notebook` zwraca DOKŁADNIE ten
-# sam zestaw dokumentów co `Laptop`, `komórka` — co `Smartfon`.
+# DLACZEGO REGUŁY: zapytania kategorii i synonimów dają dziesiątkom
+# dokumentów IDENTYCZNY `_score` (np. 53 smartfony po 8.8425 na seedzie
+# 1500), a remis rozstrzyga wewnętrzny doc id Lucene — inny po każdym
+# świeżym indeksie. Ręczna lista 10 z 53 remisujących dawała 0.84–0.89 na
+# tych samych danych. Reguła ocenia CAŁĄ grupę remisu tak samo, więc jej
+# wewnętrzna kolejność przestaje mieć znaczenie.
+#
+# ZASADA przy dopisywaniu zapytań: każda grupa remisu `_score` w top-10
+# musi mieć JEDNĄ ocenę. Przykład: `słuchawki bezprzewodowe` ma tylko
+# regułę kategorii, bo synonim `słuchawki bezprzewodowe => słuchawki`
+# (infra/elasticsearch/analysis/synonyms.txt) celowo zrównuje nauszne
+# i bezprzewodowe — `name_contains` z oceną 2 rozbiłby grupę remisu.
+# Pilnuje tego `search:eval` (kolumna „Remis z różnymi ocenami”, exit 1).
+#
+# Dane: `php artisan marketplace:seed --n=1500 --fresh` (stały seed Fakera
+# 42). Reguły nie zależą od ID-ków, więc działają także na innej liczbie
+# produktów — ale baseline w docs/POMIARY.md (sekcja 5a) dotyczy tego seeda.
 
 queries:
     - query: 'Wyman-Howell Laptop Ultra 14"'
       relevant:
-          - { id: '74', grade: 3 }
+          - { name: 'Wyman-Howell Laptop Ultra 14"', grade: 3 }
 
     - query: 'Bailey Ltd Smartfon Nova 128GB'
       relevant:
-          - { id: '158', grade: 3 }
+          - { name: 'Bailey Ltd Smartfon Nova 128GB', grade: 3 }
 
+    # Sama marka jako wolny tekst — trafia też inne marki z „PLC” w nazwie,
+    # ale niżej niż każdy produkt Orn PLC.
     - query: 'Orn PLC'
       relevant:
-          - { id: '45', grade: 1 }
-          - { id: '64', grade: 1 }
-          - { id: '135', grade: 1 }
-          - { id: '144', grade: 1 }
-          - { id: '160', grade: 1 }
-          - { id: '167', grade: 1 }
-          - { id: '173', grade: 1 }
-          - { id: '73', grade: 1 }
-          - { id: '75', grade: 1 }
-          - { id: '93', grade: 1 }
-          - { id: '14', grade: 1 }
-          - { id: '24', grade: 1 }
-          - { id: '29', grade: 1 }
-          - { id: '5', grade: 1 }
-          - { id: '30', grade: 1 }
+          - { brand: 'Orn PLC', grade: 1 }
 
     - query: 'smartfon'
       relevant:
-          - { id: '158', grade: 1 }
-          - { id: '183', grade: 1 }
-          - { id: '86', grade: 1 }
-          - { id: '117', grade: 1 }
-          - { id: '16', grade: 1 }
-          - { id: '7', grade: 1 }
-          - { id: '32', grade: 1 }
-          - { id: '369', grade: 1 }
-          - { id: '380', grade: 1 }
-          - { id: '195', grade: 1 }
-          - { id: '210', grade: 1 }
-          - { id: '448', grade: 1 }
-          - { id: '329', grade: 1 }
-          - { id: '308', grade: 1 }
-          - { id: '264', grade: 1 }
+          - { category: 'Smartfony', grade: 1 }
 
     - query: 'buty do biegania'
       relevant:
-          - { id: '167', grade: 1 }
-          - { id: '181', grade: 1 }
-          - { id: '184', grade: 1 }
-          - { id: '101', grade: 1 }
-          - { id: '25', grade: 1 }
-          - { id: '361', grade: 1 }
-          - { id: '386', grade: 1 }
-          - { id: '243', grade: 1 }
-          - { id: '325', grade: 1 }
-          - { id: '306', grade: 1 }
-          - { id: '486', grade: 1 }
-          - { id: '513', grade: 1 }
-          - { id: '577', grade: 1 }
-          - { id: '606', grade: 1 }
-          - { id: '739', grade: 1 }
+          - { category: 'Buty do biegania', grade: 1 }
 
+    # „Kurtka zimowa” > inne kurtki: nazwy z obu słowami mają wyższy `_score`
+    # niż sama „kurtka”, więc grupy remisu nie mieszają ocen 2 i 1.
     - query: 'kurtka zimowa'
       relevant:
-          - { id: '52', grade: 1 }
-          - { id: '148', grade: 1 }
-          - { id: '189', grade: 1 }
-          - { id: '75', grade: 1 }
-          - { id: '83', grade: 1 }
-          - { id: '121', grade: 1 }
-          - { id: '366', grade: 1 }
-          - { id: '212', grade: 1 }
-          - { id: '333', grade: 1 }
-          - { id: '519', grade: 1 }
+          - { name_contains: 'Kurtka zimowa', grade: 2 }
+          - { category: 'Kurtki', grade: 1 }
 
     - query: 'meble ogrodowe'
       relevant:
-          - { id: '50', grade: 1 }
-          - { id: '159', grade: 1 }
-          - { id: '69', grade: 1 }
-          - { id: '96', grade: 1 }
-          - { id: '104', grade: 1 }
-          - { id: '107', grade: 1 }
-          - { id: '122', grade: 1 }
-          - { id: '13', grade: 1 }
-          - { id: '4', grade: 1 }
-          - { id: '30', grade: 1 }
+          - { category: 'Meble ogrodowe', grade: 1 }
 
+    # Kategoria „Narzędzia” to też szlifierki i zestawy — nie są trafne.
     - query: 'wiertarka'
       relevant:
-          - { id: '63', grade: 1 }
-          - { id: '65', grade: 1 }
-          - { id: '162', grade: 1 }
-          - { id: '100', grade: 1 }
-          - { id: '20', grade: 1 }
-          - { id: '213', grade: 1 }
-          - { id: '348', grade: 1 }
-          - { id: '356', grade: 1 }
-          - { id: '302', grade: 1 }
-          - { id: '317', grade: 1 }
+          - { name_contains: 'Wiertarka', grade: 1 }
 
     - query: 'rower górski'
       relevant:
-          - { id: '173', grade: 1 }
-          - { id: '177', grade: 1 }
-          - { id: '187', grade: 1 }
-          - { id: '111', grade: 1 }
-          - { id: '360', grade: 1 }
-          - { id: '439', grade: 1 }
-          - { id: '346', grade: 1 }
-          - { id: '320', grade: 1 }
-          - { id: '269', grade: 1 }
-          - { id: '413', grade: 1 }
+          - { name_contains: 'Rower górski', grade: 2 }
+          - { category: 'Rowery', grade: 1 }
 
     # Synonim (infra/elasticsearch/analysis/synonyms.txt: "laptop, notebook,
-    # komputer przenośny") — te same ID-ki co zapytanie o "Laptop".
+    # komputer przenośny") — cała kategoria laptopów.
     - query: 'notebook'
       relevant:
-          - { id: '74', grade: 1 }
-          - { id: '80', grade: 1 }
-          - { id: '105', grade: 1 }
-          - { id: '447', grade: 1 }
-          - { id: '294', grade: 1 }
-          - { id: '297', grade: 1 }
-          - { id: '535', grade: 1 }
-          - { id: '551', grade: 1 }
-          - { id: '624', grade: 1 }
-          - { id: '630', grade: 1 }
+          - { category: 'Laptopy', grade: 1 }
 
-    # Synonim ("telefon, smartfon, komórka") — te same ID-ki co "smartfon".
+    # Synonim ("telefon, smartfon, komórka") — to samo co "smartfon".
     - query: 'komórka'
       relevant:
-          - { id: '158', grade: 1 }
-          - { id: '183', grade: 1 }
-          - { id: '86', grade: 1 }
-          - { id: '117', grade: 1 }
-          - { id: '16', grade: 1 }
-          - { id: '7', grade: 1 }
-          - { id: '32', grade: 1 }
-          - { id: '369', grade: 1 }
-          - { id: '380', grade: 1 }
-          - { id: '195', grade: 1 }
+          - { category: 'Smartfony', grade: 1 }
 
     - query: 'telefon'
       relevant:
-          - { id: '158', grade: 1 }
-          - { id: '183', grade: 1 }
-          - { id: '86', grade: 1 }
-          - { id: '117', grade: 1 }
-          - { id: '16', grade: 1 }
-          - { id: '7', grade: 1 }
-          - { id: '32', grade: 1 }
-          - { id: '369', grade: 1 }
-          - { id: '380', grade: 1 }
-          - { id: '195', grade: 1 }
+          - { category: 'Smartfony', grade: 1 }
 
+    # Synonim redukujący ("słuchawki bezprzewodowe => słuchawki") — patrz
+    # ZASADA w nagłówku: tylko kategoria, bez rozróżnienia typu słuchawek.
     - query: 'słuchawki bezprzewodowe'
       relevant:
-          - { id: '57', grade: 1 }
-          - { id: '156', grade: 1 }
-          - { id: '176', grade: 1 }
-          - { id: '194', grade: 1 }
-          - { id: '88', grade: 1 }
-          - { id: '92', grade: 1 }
-          - { id: '98', grade: 1 }
-          - { id: '359', grade: 1 }
-          - { id: '370', grade: 1 }
-          - { id: '378', grade: 1 }
+          - { category: 'Słuchawki', grade: 1 }
