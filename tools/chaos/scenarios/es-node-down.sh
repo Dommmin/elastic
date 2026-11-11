@@ -11,8 +11,9 @@
 #  kopii shardu (products-v1 ma 0 replik) — break to sprawdza i wtedy odmawia.
 #  Nigdy nie kasujemy podów ani PVC i nie dotykamy indeksów.
 #
-#  Bez targets(): snapshot_restore robi PUT bez resourceVersion, a CR Elasticsearcha
-#  (i STS, który ECK na bieżąco zmienia) go nie przyjmą. Stan odtwarzamy jawnie w undo.
+#  Bez targets(): migawka całego CR/STS przywracana PUT-em cofnęłaby też zmiany, które
+#  ECK wprowadza na bieżąco (STS) albo które przyszły w trakcie scenariusza (CR). Zmieniamy
+#  tylko dwie rzeczy (adnotacja pauzy, replicas), więc undo odwraca dokładnie je.
 
 SUMMARY="Elasticsearch widzi 2 węzły zamiast 3 i nie kończy ApplyingChanges, a wyszukiwarka działa"
 # Pusty: KubeStatefulSetReplicasMismatch porównuje gotowe repliki STS z jego spec.replicas
@@ -20,11 +21,12 @@ SUMMARY="Elasticsearch widzi 2 węzły zamiast 3 i nie kończy ApplyingChanges, 
 # wyrażenie reguły bez wyniku przez cały czas awarii.
 ALERT=""
 LIMIT_MIN=10
-# Dowód bezpiecznika: break (pauza ECK + czekanie na yellow) trwa ponad minutę, więc ttl 1
-# kończył się w trakcie breaku (Job przywracał węzeł, break się wycofywał). 4 min ttl +
-# undo z czekaniem na green (ES_JOB_WAIT) mieszczą się w 12 min.
-FUSE_TTL=4
-FUSE_LIMIT_S=720
+# break trwa długo: pauza ECK (≤ 60 s) + czekanie na yellow (≤ 300 s), a przed nim start
+# poda Joba (≤ 120 s). Budżet break 15 min (deadline blokady do końca break; potem ttl
+# liczy się od wejścia awarii). Dowód bezpiecznika: ttl 1 + odczyt ≤ 15 s + undo w Jobie
+# z czekaniem na green (ES_JOB_WAIT 300 s) — limit 9 min.
+BREAK_BUDGET_S=900
+FUSE_LIMIT_S=540
 
 ES_CR="marketplace"
 ES_STS="marketplace-es-default"
@@ -140,7 +142,8 @@ check() {
   expect "Elasticsearch ${ES_CR}: health green" "green" "$(es_health)"
   local p m
   p="$(es_ann "${ES_PAUSE}")"; m="$(es_ann "${ES_MANAGED}")"
-  expect "ECK zarządza klastrem (${ES_PAUSE}: ${p:-brak}, ${ES_MANAGED}: ${m:-brak})" "tak" \
+  expect_hidden "konfiguracja zasobu Elasticsearch jak przed awarią" \
+    "ECK zarządza klastrem (${ES_PAUSE}: ${p:-brak}, ${ES_MANAGED}: ${m:-brak})" "tak" \
     "$([[ ( -z "${p}" || "${p}" == false ) && ( -z "${m}" || "${m}" == true ) ]] && echo tak || echo nie)"
 }
 

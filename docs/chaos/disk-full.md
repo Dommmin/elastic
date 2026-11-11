@@ -8,7 +8,7 @@ Redaktor zmienia nazwę produktu w panelu, a wyszukiwarka dalej pokazuje starą 
 Zmiana jest zapisana w Postgresie, ale zdarzenie nie dociera do indeksu. W Grafanie
 metryka `catalog_outbox_oldest_pending_age_seconds` rośnie o 15 s co scrape, bez końca,
 a po 2–3 minutach płonie `OutboxStale`. Pod `outbox-publisher` jest `Running`,
-`1/1`, z zerem restartów, a `rabbitmq-0` także. Wczoraj nikt nie wdrażał niczego
+`1/1`, a jego licznik restartów stoi w miejscu; `rabbitmq-0` także. Wczoraj nikt nie wdrażał niczego
 do tych dwóch komponentów.
 
 ## Zacznij od

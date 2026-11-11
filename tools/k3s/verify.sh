@@ -411,7 +411,7 @@ phase_reboot() {
 #   CHAOS_SKIP="selftest fuse"  pomiń podfazy (np. powtórka samych alertów)
 phase_chaos() {
   echo -e "\n${BLD}  chaos — PSUJE produkcję (namespace marketplace), potem naprawia${NC}"
-  local list="" s t0 rc ran=0 bad="" fuse_set="bad-probe bad-secret disk-full es-node-down"
+  local list="" s t0 rc ran=0 askip=0 bad="" fuse_set="bad-probe bad-secret disk-full es-node-down"
   # Walidacja PRZED jakąkolwiek awarią: literówka w s=/skip= nie może dać cichego PASS.
   for s in ${CHAOS_S:-}; do
     [ -f "${ROOT}/tools/chaos/scenarios/${s}.sh" ] || bad="${bad} ${s}"
@@ -456,16 +456,19 @@ phase_chaos() {
   if [ "${ALERTS:-0}" = "1" ]; then
     for s in ${list}; do
       t0=$(date +%s)
-      case "${s}" in bad-probe) [ "${CHAOS_SLOW:-0}" = "1" ] || { echo -e "  ${DIM}- alert ${s}: pomijam (for 15 min; CHAOS_SLOW=1 włącza)${NC}"; continue; } ;; esac
+      case "${s}" in bad-probe) [ "${CHAOS_SLOW:-0}" = "1" ] || { askip=$((askip + 1)); echo -e "  ${DIM}- alert ${s}: pomijam (for 15 min; CHAOS_SLOW=1 włącza)${NC}"; continue; } ;; esac
       bash "${ROOT}/tools/chaos/proof.sh" alert "${s}"; rc=$?
-      [ "${rc}" = "3" ] && continue
+      [ "${rc}" = "3" ] && { askip=$((askip + 1)); continue; }
       ran=$((ran + 1))
       check "alert ${s}: płonie w limicie for+3 min ($(( $(date +%s) - t0 )) s)" "0" "${rc}"
     done
   fi
   # Na koniec: nic z part-of=chaos nie zostaje (Job i skrypty po bezpieczniku).
   # Faza musi coś uruchomić: samo sprzątanie na zdrowym sklepie nie jest dowodem.
-  check "faza uruchomiła co najmniej jeden dowód (selftest/bezpiecznik/alert)" "tak" "$([ "${ran}" -gt 0 ] && echo tak || echo "nie (0; po s=/skip=/alerts= nic nie zostało do uruchomienia)")"
+  local why0="po s=/skip=/alerts= nic nie zostało do uruchomienia"
+  [ "${ALERTS:-0}" = "1" ] && [ "${askip}" -gt 0 ] \
+    && why0="${why0}; alerty pominięte: ${askip} (brak ALERT w scenariuszu, alert zależny od ruchu albo bad-probe bez slow=1)"
+  check "faza uruchomiła co najmniej jeden dowód (selftest/bezpiecznik/alert)" "tak" "$([ "${ran}" -gt 0 ] && echo tak || echo "nie (0; ${why0})")"
   bash "${ROOT}/tools/chaos/chaos.sh" reset >/dev/null 2>&1; rc=$?
   [ "${rc}" = "0" ] || echo -e "  ${RED}!${NC} końcowy chaos.sh reset zwrócił ${rc} (sprawdź: make chaos-status)"
   # Po ostatnim scenariuszu pody w backoffie (do 5 min) dochodzą do siebie; faza nie
@@ -782,6 +785,18 @@ phase_canary() {
     "$(k -n marketplace get endpointslices -l kubernetes.io/service-name=catalog-app -o json | jq --arg ip "${canary_ip}" '[.items[].endpoints[]? | select(.conditions.ready == true) | select(.addresses[] == $ip)] | length')"
   k delete namespace loadtest --wait=false >/dev/null
 }
+
+# Trwający scenariusz chaosu (G4) psuje produkcję CELOWO: FAIL-e faz apps/stack/es itd.
+# w tym oknie to objawy awarii, nie regresja (np. queue-blocked: zdarzenia nie wychodzą
+# z outboxa, więc test „zmiana produktu dociera do wyszukiwarki” musi paść). Ostrzegamy
+# na starcie; faza chaos sama odmawia przy trwającym scenariuszu.
+if [ "${1:-}" != chaos ] && [ -n "${1:-}" ]; then
+  tunnel_up >/dev/null 2>&1 || true
+  _chaos_s="$(k -n marketplace get configmap chaos-lock --ignore-not-found -o jsonpath='{.data.scenario}' 2>/dev/null)" || _chaos_s=""
+  if [ -n "${_chaos_s}" ]; then
+    echo -e "  ${RED}!${NC} trwa scenariusz chaosu ${BLD}${_chaos_s}${NC}: FAIL-e poniżej mogą być jego objawami. Najpierw make chaos-check s=${_chaos_s} albo make chaos-reset."
+  fi
+fi
 
 case "${1:-}" in
   cluster)  phase_cluster ;;

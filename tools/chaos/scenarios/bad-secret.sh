@@ -26,9 +26,14 @@ BS_RULE_EXPR='(sum(rate(rabbitmq_detailed_queue_get_empty_total{queue="search.pr
 targets() { echo "deployment/${BS_DEPLOY}"; }
 
 # bs_make_secret — Secret ze złym hasłem. Nic nie wypisuje na stdout/stderr.
-bs_make_secret() {
-  local dir file rc=0
-  dir="$(mktemp -d "${TMPDIR:-/tmp}/chaos-secret.XXXXXX")" || return 1
+# Ciało w podpowłoce z pułapką EXIT/INT/TERM: plik z DSN (prawdziwy login, hasło różne
+# o jeden znak) znika także przy Ctrl-C w środku break, nie tylko na końcu funkcji.
+bs_make_secret() (
+  dir=""
+  trap 'rm -rf "${dir}"' EXIT
+  trap 'exit 130' INT TERM HUP
+  rc=0
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/chaos-secret.XXXXXX")" || exit 1
   chmod 700 "${dir}"
   file="${dir}/${BS_KEY}"
   # Zamiana OSTATNIEGO znaku hasła (amqp://user:HASŁO@host/vhost); kod 3, gdy DSN nie pasuje.
@@ -47,9 +52,8 @@ bs_make_secret() {
       | jq '.metadata.labels = {"app.kubernetes.io/part-of": "chaos"}' \
       | k -n "${NS}" create -f - >/dev/null 2>&1 || rc=1
   fi
-  rm -rf "${dir}"
-  return "${rc}"
-}
+  exit "${rc}"
+)
 
 # bs_where -> „indeks_kontenera indeks_env” dla DSN w kontenerze consumer (z Deploymentu).
 bs_where() {
@@ -97,16 +101,22 @@ check() {
   wait_for 90 bs_ready || true
   expect "Deployment ${BS_DEPLOY}: rollout skończony, pod gotowy" "tak" "$(deploy_ready "${BS_DEPLOY}")"
   local refs; refs="$(bs_refs)"
-  expect "żaden kontener ${BS_DEPLOY} nie czyta Secretu ${BS_SECRET}" "0" "${refs}"
-  # Nieużywany Secret jest bezużyteczny, a chaos.sh nie ma haka sprzątania przy zielonym
-  # check: zdejmujemy go tu, żeby po scenariuszu nie zostały obiekty part-of=chaos.
-  [[ "${refs}" == 0 ]] && k -n "${NS}" delete secret "${BS_SECRET}" --ignore-not-found --wait=false >/dev/null 2>&1
+  expect_hidden "search-consumer używa danych dostępowych jak przed awarią" \
+    "żaden kontener ${BS_DEPLOY} nie czyta Secretu ${BS_SECRET}" "0" "${refs}"
   # Konsument odpytuje kolejkę dopiero po starcie, a rate() z 1 min i scrape Prometheusa
   # opóźniają sygnał o ok. 1-2 min: dajemy mu czas. Najpierw sanity: bez `up` RabbitMQ
   # „brak wyniku” byłby fałszywą zielenią.
   expect "Prometheus scrapuje RabbitMQ (up{job=\"rabbitmq-queues\"} = 1)" "1" "$(prom_val 'up{job="rabbitmq-queues"}')"
   wait_for 180 bs_polled || true
   expect "kolejka search.product.sync jest odpytywana (wyrażenie SearchConsumerDown bez wyniku)" "brak" "$(prom_val "${BS_RULE_EXPR}")"
+}
+
+# on_green — hak chaos.sh po zielonym check (blokada nasza): nieużywany Secret ze złym
+# hasłem zdejmujemy, żeby po scenariuszu nie zostały obiekty part-of=chaos. Tylko gdy
+# szablon go już nie czyta (inaczej skasowanie wywróciłoby pod na CreateContainerConfigError).
+on_green() {
+  [[ "$(bs_refs)" == 0 ]] || return 0
+  k -n "${NS}" delete secret "${BS_SECRET}" --ignore-not-found --wait=false >/dev/null
 }
 
 # Przywrócenie szablonu z migawki, potem usunięcie Secretu (po przywróceniu nic go nie czyta).
