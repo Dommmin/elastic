@@ -295,7 +295,13 @@ Trzy rzeczy, które łatwo przeoczyć:
   (CoreDNS w kube-system). W dwóch osobnych elementach = OR (każdy pod
   w kube-system ORAZ każdy pod kube-dns gdziekolwiek);
 - `port-forward` i sondy kubeleta polityk nie podlegają: kubelet łączy się
-  z wnętrza przestrzeni sieciowej poda, a kube-router przepuszcza ruch z adresu węzła.
+  z wnętrza przestrzeni sieciowej poda, a kube-router przepuszcza ruch z adresu węzła;
+- **polityka nie działa od pierwszej sekundy poda.** kube-router dopisuje IP nowego
+  poda do ipsetów dopiero po zdarzeniu o podzie, a do tego czasu obowiązuje
+  `default-deny` (REJECT, czyli `Connection refused`). Deploymenty przeżywają to
+  restartem. Nocny `pg-backup` łączył się od razu i po G2 padał co noc, aż do
+  poprawki z pętlą `pg_isready` (RUNBOOK [#097](../RUNBOOK.md#097)). Każdy Job
+  i init kontener, który od razu łączy się z zależnością, potrzebuje czekania z limitem.
 
 **Test bez klastra.** `tools/k3s/ckad-check.rb` ma mały ewaluator semantyki
 NetworkPolicy. Ruch przechodzi, gdy pozwala Egress nadawcy i Ingress odbiorcy.

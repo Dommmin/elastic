@@ -45,11 +45,28 @@ spec:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
                 capabilities: { drop: [ALL] }
+              # Czekanie na trasę do bazy PRZED pg_dump (RUNBOOK #097). kube-router
+              # dopisuje IP nowego poda do ipsetów NetworkPolicy dopiero po
+              # zdarzeniu o podzie — przez pierwsze sekundy życia pod Joba jest
+              # odrzucany (REJECT = „Connection refused”, nie timeout). Deploymenty
+              # przeżywają to restartem, a ten Job łączył się w pierwszej sekundzie
+              # i padał dwa razy (backoffLimit 1). pg_isready nie potrzebuje hasła;
+              # limit 60 s, żeby prawdziwa awaria bazy nadal kończyła Job błędem.
               command:
                 - sh
                 - -c
                 - |
                   set -e
+                  i=0
+                  until pg_isready -h postgres -t 2 -q; do
+                    i=$((i + 1))
+                    if [ "$i" -ge 30 ]; then
+                      echo "postgres:5432 nieosiągalny po 60 s — przerywam" >&2
+                      exit 1
+                    fi
+                    sleep 2
+                  done
+                  [ "$i" -gt 0 ] && echo "trasa do postgres po ${i} próbach"
                   STAMP=$(date +%F-%H%M)
                   for db in "$CATALOG_DB" "$SEARCHSVC_DB"; do
                     pg_dump -h postgres -U "$POSTGRES_USER" -Fc "$db" > "/backups/$db-$STAMP.dump.tmp"
