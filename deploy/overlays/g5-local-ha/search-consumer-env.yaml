@@ -1,0 +1,11 @@
+# search-consumer -> rabbitmq-ha (krok 4 migracji; migrate.sh stosuje TEN plik przez
+# `kk patch --type=json`, więc stan na żywo i stan z repo są z definicji te same).
+- op: test
+  path: /spec/template/spec/containers/0/name
+  value: consumer
+- op: test
+  path: /spec/template/spec/containers/0/env/5/name
+  value: MESSENGER_TRANSPORT_DSN
+- op: replace
+  path: /spec/template/spec/containers/0/env/5/valueFrom/secretKeyRef/key
+  value: MESSENGER_TRANSPORT_DSN_HA

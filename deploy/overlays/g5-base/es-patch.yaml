@@ -1,0 +1,14 @@
+# Elasticsearch na k3d: jeden węzeł, heap 512m, limit 1,5 Gi (JSON6902, bo lista
+# nodeSets w CRD jest podmieniana w całości przez strategic merge).
+- op: replace
+  path: /spec/nodeSets/0/count
+  value: 1
+- op: replace
+  path: /spec/nodeSets/0/podTemplate/spec/containers/0/env/0/value
+  value: "-Xms512m -Xmx512m"
+- op: replace
+  path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/requests/memory
+  value: 1536Mi
+- op: replace
+  path: /spec/nodeSets/0/podTemplate/spec/containers/0/resources/limits/memory
+  value: 1536Mi

@@ -1,0 +1,33 @@
+# Stary RabbitMQ (baza deploy/k8s) znika z renderu. Z klastra usuwa go deploy.sh
+# według prune.txt — dopiero gdy jego kolejki są puste (inaczej odmawia).
+# PVC data-rabbitmq-0 zostaje (kopia awaryjna danych starego węzła, kasuje się ręcznie).
+---
+$patch: delete
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+---
+$patch: delete
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ingress
+---
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-from-ha

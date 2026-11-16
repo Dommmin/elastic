@@ -1,0 +1,6 @@
+# Kustomize zna pola `image` w Podach, Deploymentach itd., ale nie w CRD
+# Elastica (`spec.image` w Elasticsearch). Bez tego `images:` w
+# kustomization.yaml po cichu NIE podmieniłby tagu obrazu ES.
+images:
+  - path: spec/image
+    kind: Elasticsearch

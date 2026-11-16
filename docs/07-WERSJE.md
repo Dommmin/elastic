@@ -45,6 +45,22 @@ stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nigh
 | Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
 | Port GlitchTipa | 18000 | `GLITCHTIP_PORT` | tylko `127.0.0.1` |
 
+### Lokalny klaster k3d (ETAP G5)
+
+Sprawdzone 2026-11-10 (`brew install k3d`, `k3d version`). Podsieć Dockera klastra jest przypięta (`G5_SUBNET=172.22.0.0/16` w `tools/k3d/lib.sh`), bo NetworkPolicy `rabbitmq-ha-egress-api` opiera się na niej. Narzędzia pomocnicze skryptów: bash 3.2 i Ruby 2.6 z macOS (bez dodatkowych gemów).
+
+| Komponent | Wersja | Tag / miejsce | Uwagi |
+|---|---|---|---|
+| **k3d** | **v5.9.0** | Homebrew (`brew install k3d`) | domyślny k3s tej wersji to v1.36.4, więc obraz węzłów podajemy jawnie |
+| **k3s (węzły k3d)** | **v1.36.5-k3s1** | `rancher/k3s:v1.36.5-k3s1` w `tools/k3d/up.sh` | ta sama linia co produkcja (`tools/k3s/install-k3s.sh`) |
+| Obrazy lokalne | `g5-local` | `ghcr.io/dommmin/elastic-{catalog,search,postgres}:g5-local` | budowane przez `tools/k3d/images.sh`, import `k3d image import` |
+| **ECK (operator Elasticsearcha)** | **3.5.0** | `deploy/k8s/vendor/eck-3.5.0/{crds,operator}.yaml`, instalowany przez `tools/k3d/install-operators.sh` | ten sam wendor co na VPS (`tools/k3s/install-eck.sh`); CRD przez `--server-side` (808 KB nie mieści się w adnotacji last-applied) |
+| **cert-manager** | **v1.21.2** | helm `jetstack/cert-manager`, `tools/k3d/install-operators.sh` | ta sama wersja co na VPS; na k3d bez ServiceMonitor |
+| **RabbitMQ cluster-operator** | **2.23.2** | `deploy/k8s/vendor/rabbitmq-cluster-operator-2.23.2/cluster-operator.yml` | sprawdzone 2026-11-10 (GitHub Releases `rabbitmq/cluster-operator`); sha256 w nagłówku pliku |
+| **messaging-topology-operator** | **1.20.5** | `deploy/k8s/vendor/messaging-topology-operator-1.20.5/messaging-topology-operator-with-certmanager.yaml` | sprawdzone 2026-11-10 (`rabbitmq/messaging-topology-operator`); sha256 w nagłówku pliku |
+| Obraz RabbitmqCluster | **4.3.4** | `rabbitmq:4.3.4-management` (debianowy, uid 999) w `deploy/k8s/rabbitmq-cluster/rabbitmq-ha.yaml` | ta sama wersja co `RABBITMQ_VERSION`; alpine ma uid 100, więc nie pasuje do operatora; import przez `tools/k3d/images.sh` |
+| **perf-test** (RabbitMQ PerfTest) | **2.25.0** | `pivotalrabbitmq/perf-test:2.25.0` (arm64, Java 21), stała `PERF_TEST_VERSION` w `tools/k3d/perf-test.sh` | najnowsza stabilna z Docker Huba 2026-11-10 (tagi `dev-*` to snapshoty 2.26.0); import przez `tools/k3d/images.sh` jako tarball jednej platformy (`docker save --platform`), bo indeks wieloarch. pada przy `k3d image import` |
+
 ### PHP — zależności
 
 | Paczka | Wersja | Wymaga PHP | Uwaga |

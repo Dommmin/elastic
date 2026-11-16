@@ -1,0 +1,14 @@
+# ============================================================================
+#  Overlay g5-local (ETAP G5): stan WYJŚCIOWY migracji — aplikacje na starym
+#  RabbitMQ (StatefulSet `rabbitmq`), obok klaster `rabbitmq-ha` z topologią.
+#  = g5-base + Shovel CR-y migracji (deploy/k8s/rabbitmq-cluster/migration).
+#  Shovele mają etykietę app.kubernetes.io/component=migration: deploy.sh ich
+#  NIE stosuje, robi to tools/k3d/migrate.sh w kroku 3 (spec G5, sekcja 5).
+#  Stan końcowy po migracji: overlay g5-local-ha.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../g5-base
+  - ../../k8s/rabbitmq-cluster/migration

@@ -1,0 +1,70 @@
+# Limity pamięci pod k3d (budżet renderu: g5-local <= 6 Gi, g5-local-ha <= 5 Gi, patrz tools/k3d/g5-check.rb).
+# Postgres: shared_buffers=512MB z bazy, więc limit nie niżej niż 1Gi.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres
+          resources:
+            requests: { memory: 512Mi, cpu: 100m }
+            limits: { memory: 1Gi }
+---
+# Stary RabbitMQ (źródło shovela w G5) — wystarczy 512Mi.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+spec:
+  template:
+    spec:
+      containers:
+        - name: rabbitmq
+          resources:
+            requests: { memory: 256Mi, cpu: 100m }
+            limits: { memory: 512Mi }
+---
+# Aplikacje: limity zbite tak, żeby g5-local-ha zmieścił się w 5 Gi (ruling R7).
+# Zmierzone RSS na k3d (kubectl top, po seedzie 200 produktów): catalog-app ~70Mi,
+# outbox-publisher ~50Mi, search-consumer ~35Mi — limity zostawiają kilkukrotny zapas.
+# Konsument i tak kończy pracę przy --memory-limit=256M (CMD obrazu) i wstaje od nowa.
+# Wspólne dla obu overlayów: inny limit w g5-local-ha = rollout przy wdrożeniu
+# stanu końcowego, a ten ma niczego poza starym RabbitMQ nie zmieniać.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: catalog
+          resources:
+            limits: { memory: 384Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox-publisher
+spec:
+  template:
+    spec:
+      containers:
+        - name: publisher
+          resources:
+            limits: { memory: 128Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-consumer
+spec:
+  template:
+    spec:
+      containers:
+        - name: consumer
+          resources:
+            limits: { memory: 384Mi }

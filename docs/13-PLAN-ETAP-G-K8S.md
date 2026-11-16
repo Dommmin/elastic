@@ -1,6 +1,6 @@
 # 13 — ETAP G: Kubernetes na poziomie CKAD + produkcyjna obserwowalność
 
-> **Stan (2026-11-09):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). G4 zrobione: wszystkie 7 scenariuszy przeszło selftest na klastrze, `faza=chaos` PASS=17 FAIL=0 (2026-11-09), `es-node-down` zamknięty, przewodnik [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md). Następny: G5.
+> **Stan (2026-11-10):** G1 wdrożony na k3s i zweryfikowany (`faza=monitoring` 16/16, `faza=exposure` 17/17), przewodnik [`blog/etap-g1-monitoring-k3s.md`](blog/etap-g1-monitoring-k3s.md). G2 wdrożony (obraz `2e5990c` po merge #12: `faza=g2` 68/69 tuż po rolloucie, powtórka `faza=ingress` 13/13), przewodnik [`blog/etap-g2-ckad-manifesty.md`](blog/etap-g2-ckad-manifesty.md). G3 zrobiony: 30 zadań CKAD z sprawdzarką, selftest 30/30 na klastrze, przewodnik [`blog/etap-g3-ckad-lab.md`](blog/etap-g3-ckad-lab.md). G4 zrobione: wszystkie 7 scenariuszy przeszło selftest na klastrze, `faza=chaos` PASS=17 FAIL=0 (2026-11-09), `es-node-down` zamknięty, przewodnik [`blog/etap-g4-chaos.md`](blog/etap-g4-chaos.md). G5 zrobione na lokalnym k3d (2026-11-10, nie na VPS), przewodnik [`blog/etap-g5-rabbitmq.md`](blog/etap-g5-rabbitmq.md).
 
 **Cel:** po ETAPIE D2 sklep działa na k3s, ale manifesty pokrywają mniej więcej połowę
 zakresu CKAD, a Prometheus/Grafana/Alertmanager działają tylko lokalnie w Compose.
@@ -131,3 +131,24 @@ Operator RabbitMQ (Cluster Operator + Messaging Topology Operator), klaster 3 w�
 z kolejkami quorum (failover pod obciążeniem), Stream dla zdarzeń analitycznych,
 porównanie quorum vs classic, strojenie prefetch. Migracja z obecnego StatefulSetu
 przez Shovel, bez utraty wiadomości.
+
+**Stan (2026-11-10): zrobione na lokalnym k3d.** `make g5-verify` PASS=22 FAIL=0 (też w przebiegu od zera, ok. 10,5 min), migracja pod
+ruchem bez utraty (liczby z `counts.sh` w przewodniku), failover lidera bez utraty
+potwierdzonych wiadomości, stream z odczytem od początku i od znacznika czasu.
+Przewodnik: [`blog/etap-g5-rabbitmq.md`](blog/etap-g5-rabbitmq.md); projekt:
+[`superpowers/specs/2026-11-10-g5-rabbitmq-operator-design.md`](superpowers/specs/2026-11-10-g5-rabbitmq-operator-design.md);
+pomiary: sekcja „G5 — RabbitMQ” w [`POMIARY.md`](POMIARY.md); RUNBOOK #098–#109.
+
+**Odstępstwa od planu:**
+
+- **k3d na Macu zamiast VPS** — VPS wygasł (G5 i tak rusza dane i zabija węzły); wdrożenie
+  na k3s zostaje do zrobienia (te same manifesty, brak jeszcze overlayu `k3s`).
+- **Bez kube-prometheus-stack** — metryki przez `port-forward` na 15692, bo budżet pamięci
+  lokalnego k3d (≤ 5,7 GB realnie) nie mieści monitoringu.
+- **Shovel per kolejka (`destQueue`)**, nie przez exchange — kopie po retry gubiły się jako
+  unroutable (2 z 1500).
+- **Przełączenie na żywo przez JSON patche** tych samych plików, co overlay końcowy
+  (zmiana ConfigMapy restartuje Postgresa), razem z hasłem użytkownika HA.
+- **Prefetch na perf-test**, nie na `search-consumer` (Messenger AMQP nie ma prefetch).
+- Overlaye w `deploy/overlays/`, nie w `deploy/k8s/overlays/`; `catalog-app` zostaje w overlayu.
+- Etap nie zdejmuje Compose ani nie dotyka danych na VPS; wersje: [`07-WERSJE.md`](07-WERSJE.md).

@@ -1,0 +1,34 @@
+# ============================================================================
+#  Użytkownik testowy perf-test (ETAP G5, Task 6): osobny od `marketplace`, żeby
+#  testy failoveru i obciążenia nie poszerzały uprawnień aplikacji. Wolno mu
+#  WYŁĄCZNIE zasoby g5.* (kolejki i exchange: deklaracja, publikacja, odczyt)
+#  (perf-test sam deklaruje exchange g5.test) — nie dotyka zasobów sklepu.
+#  Hasło: Secret rabbitmq-ha-perftest-user (tools/k3d/secrets.sh), z etykietą
+#  rabbitmq.com/topology-operator=true, jak Secret użytkownika marketplace.
+#  Parity test (topology-parity.rb) zna ten jeden dodatkowy User i Permission z nazwy.
+# ============================================================================
+apiVersion: rabbitmq.com/v1beta1
+kind: User
+metadata:
+  name: g5-perftest
+spec:
+  importCredentialsSecret:
+    name: rabbitmq-ha-perftest-user
+  tags: []
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Permission
+metadata:
+  name: g5-perftest
+spec:
+  vhost: /
+  userReference:
+    name: g5-perftest
+  permissions:
+    configure: '^g5\..*$'
+    write: '^g5\..*$'
+    read: '^g5\..*$'
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
