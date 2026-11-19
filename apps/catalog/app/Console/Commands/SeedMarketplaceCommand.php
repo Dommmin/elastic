@@ -52,6 +52,7 @@ class SeedMarketplaceCommand extends Command
 {
     protected $signature = 'marketplace:seed
         {--n=1500 : Ile produktów wygenerować}
+        {--big-seller=0 : Sprzedawca „Megasklep” ma ofertę w tylu pierwszych produktach (M ≤ N); 0 = bez dużego sprzedawcy}
         {--fresh : Wyczyść istniejące dane katalogu przed seedowaniem}
         {--no-publish : Nie wołaj outbox:publish na końcu (zostaw zdarzenia w kolejce)}';
 
@@ -88,9 +89,19 @@ class SeedMarketplaceCommand extends Command
 
     private const MODELS = ['Alpha', 'Nova', 'Pro X', 'Vento', 'Zenit', 'Kompakt', 'Extreme', 'Neo', 'Prime', 'Ultra'];
 
+    /** Stała nazwa dużego sprzedawcy: po niej reszta ETAPU 10 go rozpoznaje. */
+    public const string BIG_SELLER_NAME = 'Megasklep';
+
     public function handle(): int
     {
         $target = (int) $this->option('n');
+        $bigSellerProducts = (int) $this->option('big-seller');
+
+        if ($bigSellerProducts < 0 || $bigSellerProducts > $target) {
+            $this->error("--big-seller ({$bigSellerProducts}) musi mieścić się w 0..--n ({$target}).");
+
+            return self::FAILURE;
+        }
 
         if ($this->option('fresh')) {
             $this->warn('Czyszczę istniejące dane katalogu (--fresh)...');
@@ -110,12 +121,15 @@ class SeedMarketplaceCommand extends Command
         $categories = $this->seedCategories();
         $brands = $this->seedBrands();
         $sellers = $this->seedSellers();
+        $bigSeller = $bigSellerProducts > 0 ? $this->seedBigSeller() : null;
 
         $this->info("Tworzę {$target} produktów...");
         $bar = $this->output->createProgressBar($target);
 
         for ($i = 0; $i < $target; $i++) {
-            $this->seedProduct($categories, $brands, $sellers);
+            // Duży sprzedawca dostaje ofertę w pierwszych M produktach (zamiast losowania);
+            // w pozostałych go nie ma, więc ma ich dokładnie M.
+            $this->seedProduct($categories, $brands, $sellers, $i < $bigSellerProducts ? $bigSeller : null);
             $bar->advance();
         }
 
@@ -187,12 +201,17 @@ class SeedMarketplaceCommand extends Command
         return Seller::factory()->count(60)->create()->all();
     }
 
+    private function seedBigSeller(): Seller
+    {
+        return Seller::factory()->create(['name' => self::BIG_SELLER_NAME, 'slug' => Str::slug(self::BIG_SELLER_NAME)]);
+    }
+
     /**
      * @param  array<int, array{id: int, path: string, root: string, name: string}>  $categories
      * @param  array<int, Brand>  $brands
      * @param  array<int, Seller>  $sellers
      */
-    private function seedProduct(array $categories, array $brands, array $sellers): void
+    private function seedProduct(array $categories, array $brands, array $sellers, ?Seller $bigSeller = null): void
     {
         $category = $categories[array_rand($categories)];
         $brand = $brands[array_rand($brands)];
@@ -200,7 +219,7 @@ class SeedMarketplaceCommand extends Command
         $model = self::MODELS[array_rand(self::MODELS)];
         $name = trim($brand->name.' '.str_replace('{model}', $model, $template));
 
-        DB::transaction(function () use ($category, $brand, $sellers, $name, $model) {
+        DB::transaction(function () use ($category, $brand, $sellers, $name, $model, $bigSeller) {
             $product = Product::create([
                 'version' => 1,
                 'brand_id' => $brand->id,
@@ -212,7 +231,9 @@ class SeedMarketplaceCommand extends Command
             ]);
 
             $offerCount = fake()->numberBetween(2, 4);
-            $offerSellers = fake()->randomElements($sellers, min($offerCount, count($sellers)));
+            $offerSellers = $bigSeller === null
+                ? fake()->randomElements($sellers, min($offerCount, count($sellers)))
+                : [$bigSeller, ...fake()->randomElements($sellers, min($offerCount - 1, count($sellers)))];
 
             foreach ($offerSellers as $seller) {
                 Offer::create([

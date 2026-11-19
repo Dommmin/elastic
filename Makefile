@@ -201,8 +201,12 @@ mq-get: ## Podejrzyj wiadomość bez usuwania (make mq-get q=search.product.sync
 
 ## Dane
 .PHONY: seed
-seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500), realnym pipeline'em outboxu
-	$(DC) exec catalog-app php artisan marketplace:seed --n=$(or $(n),1500)
+seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500 [big=M: Megasklep w M produktach]), realnym pipeline'em outboxu
+	$(DC) exec catalog-app php artisan marketplace:seed --n=$(or $(n),1500) --big-seller=$(or $(big),0)
+
+.PHONY: churn
+churn: ## Ruch na katalogu pod reindeks: zmiany ofert i usunięcia przez outbox (make churn rate=20 duration=60)
+	$(DC) exec catalog-app php artisan marketplace:churn --rate=$(or $(rate),20) --duration=$(or $(duration),60)
 
 .PHONY: admin
 admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); hasło wypisane raz
