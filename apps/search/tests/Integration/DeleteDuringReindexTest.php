@@ -89,7 +89,10 @@ final class DeleteDuringReindexTest extends TestCase
         $writer = new ElasticsearchIndexer($this->client, $this->writeAlias);
         self::assertSame(IndexOutcome::NotFound, $writer->deleteProduct(self::ID, self::VERSION + 1_000));
 
-        $this->reindex();
+        $result = $this->reindex();
+        self::assertSame(1, $result['total'], 'Dokument źródłowy musi być widoczny dla _reindex.');
+        self::assertSame(1, $result['version_conflicts'], 'Tombstone powinien dać konflikt wersji.');
+        self::assertSame(0, $result['created']);
 
         self::assertFalse(
             $this->client->exists(['index' => $this->new, 'id' => self::ID])->asBool(),
@@ -119,7 +122,9 @@ final class DeleteDuringReindexTest extends TestCase
         sleep(2);
         $this->client->indices()->refresh(['index' => $this->new]);
 
-        $this->reindex();
+        $result = $this->reindex();
+        self::assertSame(1, $result['total']);
+        self::assertSame(1, $result['created']);
 
         $resurrected = $this->client->exists(['index' => $this->new, 'id' => self::ID])->asBool();
         self::assertTrue($resurrected, 'Przy gc_deletes=0s ES nie pamięta usunięcia i dokument wraca (zombie).');
@@ -131,12 +136,13 @@ final class DeleteDuringReindexTest extends TestCase
         $this->aliases->attach($this->writeAlias, $this->old);
 
         $catalog = new CatalogProjectionClient('http://catalog.invalid', new TraceContext, new MockHttpClient([
-            new MockResponse(json_encode($this->projection() + ['projected_at_us' => 1_790_000_000_000_000]), ['http_code' => 200]),
+            new MockResponse(json_encode(array_replace($this->projection(), ['projected_at_us' => 1_790_000_000_000_000])), ['http_code' => 200]),
             new MockResponse(json_encode(['projected_at_us' => 1_790_000_000_500_000]), ['http_code' => 404]),
         ]));
         $sync = new ProductSynchronizer($catalog, new ElasticsearchIndexer($this->client, $this->writeAlias));
 
         $first = $sync->sync(self::ID);
+        self::assertTrue($this->client->exists(['index' => $this->old, 'id' => self::ID])->asBool());
         $second = $sync->sync(self::ID);
 
         self::assertSame(IndexOutcome::Indexed, $first->outcome);
@@ -156,9 +162,14 @@ final class DeleteDuringReindexTest extends TestCase
         $this->client->indices()->create(['index' => $index, 'body' => $body]);
     }
 
-    private function reindex(): void
+    /** @return array<string, mixed> */
+    private function reindex(): array
     {
-        $this->client->reindex([
+        // _reindex czyta źródło przez search — bez refreshu świeży dokument
+        // (refresh_interval 1s) nie byłby skopiowany i test nic by nie dowodził.
+        $this->client->indices()->refresh(['index' => $this->old]);
+
+        $response = $this->client->reindex([
             'refresh' => true,
             'body' => [
                 'conflicts' => 'proceed',
@@ -167,6 +178,8 @@ final class DeleteDuringReindexTest extends TestCase
             ],
         ]);
         $this->client->indices()->refresh(['index' => $this->new]);
+
+        return $response->asArray();
     }
 
     /** @return array<string, mixed> */
