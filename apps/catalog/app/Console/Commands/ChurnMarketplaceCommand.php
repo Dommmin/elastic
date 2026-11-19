@@ -22,8 +22,11 @@ use Throwable;
  * wstawiamy ręcznie. Zmiana ceny podlega strażnikowi (limit 5/dobę), więc gdy
  * agregat ją odrzuci, zmieniamy stan magazynowy.
  *
- * Ostatnia linia: `updated=… deleted=… since=<ISO 8601>`; `since` to moment
- * startu — od niego wolno szukać zdarzeń tego przebiegu.
+ * Ostatnia linia: `updated=… deleted=… failed=… since=<ISO 8601>`; `since` to
+ * moment startu — od niego wolno szukać zdarzeń tego przebiegu. `failed` liczy
+ * próby zakończone wyjątkiem (np. baza niedostępna): powyżej 10 % prób
+ * wypisujemy ostrzeżenie z ostatnim błędem, a gdy nie udała się ŻADNA próba,
+ * komenda kończy się kodem błędu — inaczej awaria wyglądałaby jak „zero zmian”.
  */
 class ChurnMarketplaceCommand extends Command
 {
@@ -33,6 +36,8 @@ class ChurnMarketplaceCommand extends Command
         {--delete-ratio=0.05 : Jaka część zmian to usunięcie produktu (0..1)}';
 
     protected $description = 'Zmienia ceny/stany ofert i usuwa produkty przez ścieżki domenowe z outboxem (ruch pod reindeks)';
+
+    private string $lastError = '';
 
     public function handle(OfferRepository $offers): int
     {
@@ -52,12 +57,21 @@ class ChurnMarketplaceCommand extends Command
         $next = microtime(true);
         $updated = 0;
         $deleted = 0;
+        $failed = 0;
+        $attempts = 0;
 
         while (microtime(true) < $deadline) {
-            if (mt_rand() / mt_getrandmax() < $deleteRatio) {
-                $deleted += $this->deleteRandomProduct() ? 1 : 0;
-            } else {
-                $updated += $this->changeRandomOffer($offers) ? 1 : 0;
+            $attempts++;
+
+            try {
+                if (mt_rand() / mt_getrandmax() < $deleteRatio) {
+                    $deleted += $this->deleteRandomProduct() ? 1 : 0;
+                } else {
+                    $updated += $this->changeRandomOffer($offers) ? 1 : 0;
+                }
+            } catch (Throwable $e) {
+                $failed++;
+                $this->lastError = $e::class.': '.$e->getMessage();
             }
 
             // Równe tempo bez dryfu: czekamy do zaplanowanej chwili, a gdy
@@ -70,9 +84,13 @@ class ChurnMarketplaceCommand extends Command
             }
         }
 
-        $this->info("updated={$updated} deleted={$deleted} since={$since}");
+        if ($attempts > 0 && $failed * 10 > $attempts) {
+            $this->warn("Uwaga: {$failed} z {$attempts} prób zakończyło się błędem. Ostatni: {$this->lastError}");
+        }
 
-        return self::SUCCESS;
+        $this->info("updated={$updated} deleted={$deleted} failed={$failed} since={$since}");
+
+        return $attempts > 0 && $failed === $attempts ? self::FAILURE : self::SUCCESS;
     }
 
     private function changeRandomOffer(OfferRepository $offers): bool
@@ -83,27 +101,24 @@ class ChurnMarketplaceCommand extends Command
             return false;
         }
 
+        // Wyjątek z odczytu/zapisu (oferta zniknęła razem z produktem, zderzenie
+        // zapisów, awaria bazy) leci wyżej i jest liczony jako `failed`.
+        $offer = $offers->get(OfferId::fromInt($id));
+        $now = now()->toDateTimeImmutable();
+
         try {
-            $offer = $offers->get(OfferId::fromInt($id));
-            $now = now()->toDateTimeImmutable();
-
-            try {
-                // Zmiana ≤ 10% — poniżej progu moderacji, więc stosuje się od razu.
-                $factor = mt_rand(90, 110) / 100;
-                $offer->changePrice(Money::fromCents(max(100, (int) round($offer->price()->cents() * $factor)), $offer->price()->currency()), $now);
-            } catch (Throwable) {
-                // Limit dobowy/status oferty: zamiast ceny ruszamy stan magazynowy.
-                $offer = $offers->get(OfferId::fromInt($id));
-                $offer->changeStock(Stock::fromInt(mt_rand(1, 60)), $now);
-            }
-
-            $offers->save($offer);
-
-            return true;
+            // Zmiana ≤ 10% — poniżej progu moderacji, więc stosuje się od razu.
+            $factor = mt_rand(90, 110) / 100;
+            $offer->changePrice(Money::fromCents(max(100, (int) round($offer->price()->cents() * $factor)), $offer->price()->currency()), $now);
         } catch (Throwable) {
-            // Oferta zniknęła razem z produktem albo zapis zderzył się z innym: pomijamy.
-            return false;
+            // Limit dobowy/status oferty to reguła domeny, nie awaria: zamiast ceny ruszamy stan.
+            $offer = $offers->get(OfferId::fromInt($id));
+            $offer->changeStock(Stock::fromInt(mt_rand(1, 60)), $now);
         }
+
+        $offers->save($offer);
+
+        return true;
     }
 
     private function deleteRandomProduct(): bool
@@ -115,14 +130,10 @@ class ChurnMarketplaceCommand extends Command
             return false;
         }
 
-        try {
-            $product->deleteWithOutbox('product.deleted');
+        // Wyjątek (np. produkt z zamówieniami — FK bez kaskady) leci wyżej jako `failed`.
+        $product->deleteWithOutbox('product.deleted');
 
-            return true;
-        } catch (Throwable) {
-            // Np. produkt z zamówieniami (FK bez kaskady): zostaje na miejscu.
-            return false;
-        }
+        return true;
     }
 
     /**
