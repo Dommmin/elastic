@@ -258,6 +258,26 @@ reindex-cleanup: ## Usuń indeksy bez aliasu (podgląd + pytanie w terminalu)
 reindex-break: ## Dowód bramki: niepełny indeks (30 %) MUSI jej nie przejść; nie rusza aliasów
 	@bash tools/es/reindex.sh break
 
+## Snapshoty, restore, SLM (ETAP 10)
+.PHONY: es-snapshots-setup
+es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (po odtworzeniu kontenerów ES uruchom ponownie)
+	$(DC) --profile snapshots up -d minio
+	$(DC) --profile snapshots up --no-deps minio-init
+	$(DC) --profile cluster up -d es01 es02 es03
+	@bash infra/elasticsearch/setup-snapshots.sh
+
+.PHONY: es-restore-drill
+es-restore-drill: ## Drill restore bez przestoju (make es-restore-drill repo=local-fs|minio-s3)
+	@bash tools/es/restore-drill.sh normal --repo=$(or $(repo),local-fs)
+
+.PHONY: es-restore-drill-destructive
+es-restore-drill-destructive: ## Drill „skasowałem indeks" na własnej kopii (make es-restore-drill-destructive repo=local-fs|minio-s3)
+	@bash tools/es/restore-drill.sh destructive --repo=$(or $(repo),local-fs)
+
+.PHONY: es-slm-run
+es-slm-run: ## Uruchom politykę SLM local-nightly teraz i poczekaj na wynik
+	@bash tools/es/restore-drill.sh slm-run
+
 ## Bazy danych
 .PHONY: psql
 psql: ## Konsola Postgresa (make psql db=catalog)

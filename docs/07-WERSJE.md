@@ -45,6 +45,17 @@ stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nigh
 | Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
 | Port GlitchTipa | 18000 | `GLITCHTIP_PORT` | tylko `127.0.0.1` |
 
+### Snapshoty na S3 (ETAP 10, profil `snapshots`)
+
+Sprawdzone 2026-11-20. Własny MinIO tego stosu (osobny kontener i wolumen `minio-data`), niezależny od MinIO z innych projektów na tej samej maszynie.
+
+| Komponent | Wersja | Tag / zmienna | Uwagi |
+|---|---|---|---|
+| **MinIO** | **RELEASE.2025-09-07T16-13-09Z** | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` (`MINIO_VERSION`) | ostatnie wydanie opublikowane przez MinIO jako obraz (projekt community jest w trybie utrzymaniowym), więc przypinamy je, nie `:latest`; z rejestru anonimowo nie da się go już sprawdzić, tag powstał lokalnie z obrazu tej wersji (`docker tag`) |
+| **MinIO Client (mc)** | **RELEASE.2025-08-13T08-35-41Z** | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` (`MINIO_MC_VERSION`) | jednorazowy `minio-init`: bucket + użytkownik `readwrite` dla ES |
+| Porty hosta | 19000 / 19001 | `MINIO_API_PORT` / `MINIO_CONSOLE_PORT` | tylko `127.0.0.1` |
+| Repozytorium S3 w ES | moduł `repository-s3` w ES 9.5.1 | `s3.client.default.endpoint`, `path_style_access` (węzeł); `protocol` przestarzałe w 9.5 | klucze w keystore każdego węzła (`make es-snapshots-setup`) |
+
 ### Lokalny klaster k3d (ETAP G5)
 
 Sprawdzone 2026-11-10 (`brew install k3d`, `k3d version`). Podsieć Dockera klastra jest przypięta (`G5_SUBNET=172.22.0.0/16` w `tools/k3d/lib.sh`), bo NetworkPolicy `rabbitmq-ha-egress-api` opiera się na niej. Narzędzia pomocnicze skryptów: bash 3.2 i Ruby 2.6 z macOS (bez dodatkowych gemów).

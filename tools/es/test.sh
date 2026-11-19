@@ -92,8 +92,50 @@ src='{"nodes":{"n1":{"tasks":{"n1:20":{"description":"reindex from [products-v2]
 eq "cel jako źródło nie pasuje" "$(running_reindex_ids products-v2 <<<"${src}")" ""
 eq "cel jako cel pasuje" "$(running_reindex_ids products-v3 <<<"${src}")" "n1:20"
 
+# --- snapshoty / drille restore (ETAP 10, Task 11) ---------------------------
+# shellcheck source=tools/es/restore-drill.sh
+. tools/es/restore-drill.sh
+# nazwa kopii: tylko products-drill-<cyfry> / products-restored-<cyfry> wolno kasować
+drill_name_ok products-drill-1763600000 && ok "nazwa kopii drilla products-drill-<ts> dozwolona" || bad "poprawna nazwa kopii odrzucona"
+drill_name_ok products-restored-1763600000 && ok "nazwa products-restored-<ts> dozwolona" || bad "poprawna nazwa restore odrzucona"
+for n in products-v1 products-search products-write 'products-*' products-drill- products-drill-12x '' products-drill-1,products-v1; do
+  drill_name_ok "${n}" 2>/dev/null && bad "drill_name_ok przepuścił '${n}'" || ok "drill_name_ok odrzuca '${n}'"
+done
+# drill niszczący odmawia indeksu pod aliasem (stub aliasów) i błędu odczytu aliasów
+alias_targets() { printf 'products-drill-1\nproducts-v1\n'; }
+drill_destroy_guard products-drill-1 2>/dev/null && bad "drill: indeks pod aliasem przeszedł" || ok "drill odmawia indeksu pod aliasem"
+drill_destroy_guard products-drill-2 2>/dev/null && ok "drill: wolna kopia przechodzi" || bad "drill: wolna kopia odrzucona"
+drill_destroy_guard products-v1 2>/dev/null && bad "drill: products-v1 przeszedł (zła nazwa + alias)" || ok "drill odmawia nazwy spoza wzorca"
+alias_targets() { return 1; }
+drill_destroy_guard products-drill-2 2>/dev/null && bad "drill: przeszedł mimo błędu aliasów" || ok "drill odmawia przy błędzie odczytu aliasów (fail-closed)"
+. tools/es/lib.sh
+# bezpośrednio: skrypt bez argumentów / ze złym repo odmawia, zanim dotknie klastra
+bash tools/es/restore-drill.sh 2>/dev/null && bad "restore-drill bez argumentów przeszedł" || ok "restore-drill bez argumentów odmawia"
+bash tools/es/restore-drill.sh normal --repo='zle repo' 2>/dev/null && bad "restore-drill: złe repo przeszło" || ok "restore-drill odrzuca złą nazwę repo"
+# SLM: nazwa snapshotu z odpowiedzi _execute
+eq "slm_snapshot_name" "$(slm_snapshot_name <<<'{"snapshot_name":"local-nightly-2026.11.20-abc"}')" "local-nightly-2026.11.20-abc"
+slm_snapshot_name <<<'{"error":{}}' >/dev/null 2>&1 && bad "slm_snapshot_name przepuścił błąd" || ok "slm_snapshot_name odrzuca błąd"
+# stan snapshotu z odpowiedzi GET _snapshot
+eq "snapshot_state SUCCESS" "$(snapshot_state <<<'{"snapshots":[{"snapshot":"a","state":"SUCCESS"}]}')" "SUCCESS"
+eq "snapshot_state brak" "$(snapshot_state <<<'{"snapshots":[]}')" ""
+
+# --- compose: profil snapshots, bez kolizji portów --------------------------
+cfg="$(docker compose --env-file .env.example --profile snapshots config 2>&1)"
+if command -v docker >/dev/null 2>&1 && [[ -n "${cfg}" ]] && ! grep -q 'no configuration file' <<<"${cfg}"; then
+  grep -qE '^  minio:' <<<"${cfg}" && grep -qE '^  minio-init:' <<<"${cfg}" && ok "compose: profil snapshots ma minio i minio-init" || bad "compose: brak minio/minio-init w profilu snapshots"
+  grep -q 'image: quay.io/minio/minio:RELEASE\.' <<<"${cfg}" && ok "compose: obraz MinIO przypięty do wydania" || bad "compose: obraz MinIO bez tagu RELEASE"
+  grep -q 'minio/minio:latest' <<<"${cfg}" && bad "compose: MinIO na :latest" || ok "compose: brak :latest"
+  grep -E 'published: "?(19000|19001)' <<<"${cfg}" >/dev/null && ok "compose: porty MinIO 19000/19001" || bad "compose: porty MinIO inne niż 19000/19001"
+  docker compose --env-file .env.example config --services 2>/dev/null | grep -q '^minio$' && bad "compose: minio działa bez profilu" || ok "compose: minio tylko w profilu snapshots"
+else
+  echo "  - pomijam testy compose (brak dockera)"
+fi
+# klucze: w .env.example tylko zastępcze, nigdy zapisane na sztywno w compose
+grep -nE '^(MINIO_ROOT_PASSWORD|ES_S3_SECRET_KEY)=' .env.example | grep -qE '=zmien-mnie' && ok ".env.example: hasła MinIO zastępcze" || bad ".env.example: hasła MinIO nie wyglądają na zastępcze"
+grep -nE 'ES_S3_(ACCESS|SECRET)_KEY: *[^$ ]' compose.yaml && bad "compose: klucz S3 zapisany na sztywno" || ok "compose: klucze S3 tylko ze zmiennych"
+
 # --- cele Make ---------------------------------------------------------------
-for t in reindex reindex-abort reindex-cleanup reindex-break; do
+for t in reindex reindex-abort reindex-cleanup reindex-break es-snapshots-setup es-restore-drill es-restore-drill-destructive es-slm-run; do
   grep -qE "^${t}:" Makefile && ok "Makefile: cel ${t}" || bad "Makefile: brak celu ${t}"
 done
 # Skrypt nie może wypisywać danych dostępowych.

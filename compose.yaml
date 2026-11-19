@@ -72,6 +72,11 @@ x-es-common: &es-common
     # --- pozostałe ---
     bootstrap.memory_lock: "true"
     path.repo: /snapshots
+    # Repozytorium S3 (ETAP 10, profil `snapshots`): w ES 9 endpoint i path_style_access
+    # to ustawienia NODA, nie repozytorium; `protocol` jest w 9.5 przestarzałe (schemat niesie endpoint). Klucze dostępu trafiają do keystore'a
+    # (infra/elasticsearch/setup-snapshots.sh), nigdy do środowiska.
+    s3.client.default.endpoint: http://minio:9000
+    s3.client.default.path_style_access: "true"
     # ILM sprawdza polityki co 10 min; w dev chcemy widzieć przejścia od razu (ETAP 10)
     indices.lifecycle.poll_interval: 10s
   ulimits:
@@ -986,6 +991,64 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # ==========================================================================
+  #  ETAP 10 — snapshoty na S3. Profil `snapshots`
+  # ==========================================================================
+
+  # Własny MinIO tego stosu (osobny kontener i wolumen, nie ten z innych projektów
+  # na tej maszynie). Obraz przypięty do wydania (docs/07-WERSJE.md).
+  minio:
+    profiles: [snapshots]
+    image: quay.io/minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-19000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-19001}:9001"
+    healthcheck:
+      # Obraz nie ma curl ani mc: zapytanie HTTP przez /dev/tcp w bashu.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/9000 && printf "GET /minio/health/ready HTTP/1.0\r\n\r\n" >&3 && read -r l <&3 && [[ $$l == *200* ]]'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Jednorazowo: bucket + osobny użytkownik MinIO dla Elasticsearcha (readwrite
+  # tylko na ten bucket — nie konto root). Idempotentny.
+  minio-init:
+    profiles: [snapshots]
+    image: quay.io/minio/mc:${MINIO_MC_VERSION:-RELEASE.2025-08-13T08-35-41Z}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
+        mc mb --ignore-existing "local/$$MINIO_BUCKET" >/dev/null
+        mc admin user add local "$$ES_S3_ACCESS_KEY" "$$ES_S3_SECRET_KEY" >/dev/null 2>&1 || true
+        mc admin policy attach local readwrite --user "$$ES_S3_ACCESS_KEY" >/dev/null 2>&1 || true
+        echo "[minio-init] bucket $$MINIO_BUCKET gotowy"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-es-snapshots}
+      ES_S3_ACCESS_KEY: ${ES_S3_ACCESS_KEY}
+      ES_S3_SECRET_KEY: ${ES_S3_SECRET_KEY}
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [marketplace]
+    restart: "no"
+
 networks:
   marketplace:
     driver: bridge
@@ -998,6 +1061,7 @@ volumes:
   es03-data:
   es-certs:
   es-snapshots:
+  minio-data:
   kibana-data:
   rabbitmq-data:
   caddy-data:
