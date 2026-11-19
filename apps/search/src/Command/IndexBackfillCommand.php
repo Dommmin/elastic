@@ -27,9 +27,11 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * decyzja i ten sam external versioning (`projected_at_us`), co consumer.
  * Nowszy dokument ze strumienia wygrywa (409 = `stale`), nie błąd.
  *
- * Cel: cel migracji (vN+1) albo alias zapisu (`--index=products-write`,
- * dogonienie starego indeksu po reindex-abort). NIGDY bieżący cel aliasu
- * odczytu — to indeks, z którego czyta catalog.
+ * Cel: cel migracji (vN+1), alias zapisu (`--index=products-write`) albo
+ * stary vN po reindex-abort (oba aliasy na nim, czyli też cel odczytu).
+ * Zapis z external versioningiem do żywego indeksu jest tak bezpieczny jak
+ * `search:reproject`: wygrywają tylko nowsze wersje. Pieczęć dostaje wyłącznie
+ * cel migracji (`_meta.migration`).
  *
  * Pieczęć w `_meta.migration` (decyzja kontrolera D): przy starcie
  * kasowana, przy sukcesie z 0 błędów zapisywana (`fill_method: backfill`,
@@ -54,9 +56,8 @@ final class IndexBackfillCommand extends Command
     protected function configure(): void
     {
         $this
-            ->addOption('index', null, InputOption::VALUE_REQUIRED, 'Indeks docelowy (cel migracji) albo alias zapisu; nie cel aliasu odczytu')
+            ->addOption('index', null, InputOption::VALUE_REQUIRED, 'Indeks docelowy (cel migracji, stary vN po abort) albo alias zapisu')
             ->addOption('batch', null, InputOption::VALUE_REQUIRED, 'Ile ID na stronę z catalogu', '1000')
-            ->addOption('read-alias', null, InputOption::VALUE_REQUIRED, 'Alias odczytu (tylko testy)', IndexAliases::READ)
             ->addOption('write-alias', null, InputOption::VALUE_REQUIRED, 'Alias zapisu (tylko testy)', IndexAliases::WRITE);
     }
 
@@ -71,19 +72,13 @@ final class IndexBackfillCommand extends Command
             return Command::FAILURE;
         }
 
-        $aliases = new IndexAliases($this->client, (string) $input->getOption('read-alias'), (string) $input->getOption('write-alias'));
+        $aliases = new IndexAliases($this->client, write: (string) $input->getOption('write-alias'));
         $index = $this->resolve($name, $aliases);
         if ($index === null) {
             $io->error("Nie ma indeksu ani aliasu zapisu {$name}.");
 
             return Command::FAILURE;
         }
-        if ($name === $aliases->read || $index === $aliases->readTarget()) {
-            $io->error("{$name} ({$index}) to bieżący cel aliasu odczytu {$aliases->read} — backfill nie wypełnia indeksu, z którego czyta catalog.");
-
-            return Command::FAILURE;
-        }
-
         $isMigrationTarget = $this->migration->beginBackfill($index);
         $synchronizer = new ProductSynchronizer($this->catalogClient, new ElasticsearchIndexer($this->client, $index));
         $counts = ['indexed' => 0, 'stale' => 0, 'notfound' => 0, 'deleted' => 0, 'errors' => 0];

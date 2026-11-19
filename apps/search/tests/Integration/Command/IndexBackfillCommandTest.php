@@ -42,6 +42,8 @@ final class IndexBackfillCommandTest extends TestCase
     private array $catalogIds = [];
     /** @var list<int> ID, których projekcja kończy się 500 (błąd przejściowy) */
     private array $failingIds = [];
+    /** @var list<int>|null ID z działającą projekcją (null = wszystkie z katalogu) */
+    private ?array $catalogProjectable = null;
 
     protected function setUp(): void
     {
@@ -125,22 +127,25 @@ final class IndexBackfillCommandTest extends TestCase
         self::assertFalse($this->client->exists(['index' => $this->prefix.'2', 'id' => '2'])->asBool());
     }
 
-    public function test_odmawia_celu_ktory_jest_biezacym_celem_aliasu_odczytu(): void
+    public function test_backfill_do_biezacego_celu_odczytu_dziala_nie_pieczetuje_i_nie_nadpisuje_nowszych(): void
     {
-        $this->catalogIds = [1];
+        $this->catalogIds = [1, 2];
+        (new ElasticsearchIndexer($this->client, $this->prefix.'1'))->indexProduct(
+            ['id' => 2] + $this->product(2, 'Nowsza'),
+            self::PROJECTED_AT + 5_000,
+        );
 
-        $byIndex = $this->backfill($this->prefix.'1');
-        $byWrite = $this->backfill($this->write);
-        $byRead = $this->backfill($this->read);
+        // Przed switch-write oba aliasy (także odczytu) wskazują v1 — scenariusz po reindex-abort.
+        $tester = $this->backfill($this->write);
 
-        foreach ([$byIndex, $byRead] as $tester) {
-            self::assertSame(Command::FAILURE, $tester->getStatusCode());
-            self::assertStringContainsString('odczytu', $this->flat($tester));
-        }
-        // Przed switch-write alias zapisu też wskazuje cel odczytu.
-        self::assertSame(Command::FAILURE, $byWrite->getStatusCode());
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertStringContainsString('indexed: 1, stale(409): 1', $tester->getDisplay());
+        self::assertSame($this->prefix.'1', $this->aliases->readTarget());
         $this->client->indices()->refresh(['index' => $this->prefix.'1']);
-        self::assertSame(0, $this->countDocs($this->client, $this->prefix.'1'));
+        self::assertSame(2, $this->countDocs($this->client, $this->prefix.'1'));
+        self::assertSame('Nowsza', $this->client->get(['index' => $this->prefix.'1', 'id' => '2'])->asArray()['_source']['name']);
+        self::assertSame([], $this->meta($this->prefix.'1'), 'Indeks bez _meta.migration nie dostaje pieczęci.');
+        self::assertStringContainsString('nie jest celem migracji', $this->flat($tester));
     }
 
     public function test_dziala_na_aliasie_zapisu_po_switch_write(): void
@@ -195,6 +200,38 @@ final class IndexBackfillCommandTest extends TestCase
         self::assertSame($this->prefix.'1', $this->aliases->readTarget());
     }
 
+    public function test_finalize_odmawia_gdy_pieczec_backfillu_bez_daty_ukonczenia(): void
+    {
+        $this->prepareTarget();
+        $this->putMigrationMeta(['fill_method' => 'backfill', 'backfill_errors' => 0]);
+
+        $finalize = $this->migrate('finalize');
+
+        self::assertSame(Command::FAILURE, $finalize->getStatusCode());
+        self::assertStringContainsString('Backfill do', $this->flat($finalize));
+        self::assertStringContainsString('nie zakończył się pomyślnie', $this->flat($finalize));
+    }
+
+    public function test_finalize_odmawia_gdy_pieczec_backfillu_ma_bledy(): void
+    {
+        $this->prepareTarget();
+        $this->putMigrationMeta(['fill_method' => 'backfill', 'backfill_completed_at' => '2026-11-19T12:00:00+00:00', 'backfill_errors' => 1]);
+
+        $finalize = $this->migrate('finalize');
+
+        self::assertSame(Command::FAILURE, $finalize->getStatusCode());
+        self::assertStringContainsString('nie zakończył się pomyślnie', $this->flat($finalize));
+    }
+
+    /** @param array<string, mixed> $fields */
+    private function putMigrationMeta(array $fields): void
+    {
+        $index = $this->prefix.'2';
+        $meta = $this->client->indices()->getMapping(['index' => $index])->asArray()[$index]['mappings']['_meta'];
+        $meta['migration'] = $fields + $meta['migration'];
+        $this->client->indices()->putMapping(['index' => $index, 'body' => ['_meta' => $meta]]);
+    }
+
     public function test_bledny_przebieg_kasuje_pieczec_poprzedniego_udanego(): void
     {
         $this->prepareTarget();
@@ -223,9 +260,6 @@ final class IndexBackfillCommandTest extends TestCase
         self::assertArrayHasKey('reindex_task', $meta);
     }
 
-    /** @var list<int>|null ID z działającą projekcją (null = wszystkie z katalogu) */
-    private ?array $catalogProjectable = null;
-
     private function prepareTarget(): void
     {
         $this->assertMigrate('prepare');
@@ -233,9 +267,9 @@ final class IndexBackfillCommandTest extends TestCase
     }
 
     /** @return array<string, mixed> */
-    private function meta(): array
+    private function meta(string $index = ''): array
     {
-        $index = $this->prefix.'2';
+        $index = $index !== '' ? $index : $this->prefix.'2';
 
         return $this->client->indices()->getMapping(['index' => $index])->asArray()[$index]['mappings']['_meta']['migration'] ?? [];
     }
@@ -245,7 +279,7 @@ final class IndexBackfillCommandTest extends TestCase
     {
         $migration = new IndexMigration($this->client, new IndexMapping($this->mappingsDir), new IndexGate($this->client, $this->catalog()), pollSeconds: 0.2);
         $tester = new CommandTester(new IndexBackfillCommand($this->client, $this->catalog(), $migration));
-        $tester->execute(['--index' => $index, '--read-alias' => $this->read, '--write-alias' => $this->write] + $options);
+        $tester->execute(['--index' => $index, '--write-alias' => $this->write] + $options);
 
         return $tester;
     }
