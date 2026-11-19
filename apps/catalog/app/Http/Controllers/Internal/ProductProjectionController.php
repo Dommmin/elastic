@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Internal;
 
 use App\Http\Controllers\Controller;
-use App\Models\Product;
+use App\Services\Search\ProductProjectionBuilder;
 use App\Support\DatabaseClock;
 use Illuminate\Http\JsonResponse;
 
@@ -24,7 +24,7 @@ use Illuminate\Http\JsonResponse;
  */
 class ProductProjectionController extends Controller
 {
-    public function show(int $id, DatabaseClock $clock): JsonResponse
+    public function show(int $id, DatabaseClock $clock, ProductProjectionBuilder $builder): JsonResponse
     {
         // Czas MUSI być zmierzony przed odczytem danych produktu. Postgres
         // działa w READ COMMITTED: zapis, który zatwierdzi się po tym pomiarze,
@@ -33,57 +33,19 @@ class ProductProjectionController extends Controller
         // starsze dane nowszą wersją i zablokować aktualizację.
         $projectedAtUs = $clock->nowMicros();
 
-        $product = Product::with(['brand', 'category', 'listedOffers' => fn ($query) => $query->withAvailable(), 'listedOffers.seller'])
-            ->withCount('reviews')
-            ->withAvg('reviews', 'rating')
-            ->find($id);
+        $projection = $builder->build($id, $projectedAtUs);
 
         // Ciało 404 też niesie czas: search-service używa go jako wersji
         // przy usuwaniu dokumentu z ES, więc spóźnione usunięcie nie skasuje
         // nowszego dokumentu.
-        if ($product === null) {
+        if ($projection === null) {
             return response()->json(['projected_at_us' => $projectedAtUs], 404);
         }
-
-        $offers = $product->listedOffers;
 
         // JSON_PRESERVE_ZERO_FRACTION: bez tej flagi PHP koduje float 4.0
         // jako "4", nie "4.0". Po drugiej stronie (search-service, Symfony)
         // json_decode("4") daje int, nie float — cicha utrata typu w kontrakcie
-        // między serwisami. Drobne, ale dokładnie ten rodzaj błędu, który nie
-        // wybuchnie od razu, tylko któregoś dnia da dziwny wynik w agregacji.
-        return response()->json([
-            'id' => $product->id,
-            'projected_at_us' => $projectedAtUs,
-            'version' => $product->version,
-            'name' => $product->name,
-            'description' => $product->description,
-            'brand' => $product->brand?->name,
-            'category' => $product->category ? [
-                'id' => (string) $product->category->id,
-                'path' => $product->category->path,
-            ] : null,
-            'attributes' => $product->attributes ?? [],
-            'price_min' => $offers->isNotEmpty() ? $offers->min('price_cents') : null,
-            'price_max' => $offers->isNotEmpty() ? $offers->max('price_cents') : null,
-            'in_stock' => $offers->contains(fn ($offer) => $offer->available > 0),
-            'rating_avg' => $product->reviews_avg_rating !== null
-                ? round((float) $product->reviews_avg_rating, 2)
-                : null,
-            'rating_count' => $product->reviews_count,
-            'offers' => $offers->map(fn ($offer) => [
-                'offer_id' => (string) $offer->id,
-                'seller_id' => (string) $offer->seller_id,
-                'seller' => $offer->seller->name,
-                'price' => $offer->price_cents,
-                // DLACZEGO `available`: wyszukiwarka pokazuje to, co da się kupić, nie deklarację sprzedawcy.
-                'stock' => (int) $offer->available,
-                'location' => $offer->seller->lat !== null && $offer->seller->lon !== null
-                    ? ['lat' => (float) $offer->seller->lat, 'lon' => (float) $offer->seller->lon]
-                    : null,
-            ])->values(),
-            'created_at' => $product->created_at?->toIso8601String(),
-            'indexed_at' => now()->toIso8601String(),
-        ], options: JSON_PRESERVE_ZERO_FRACTION);
+        // między serwisami.
+        return response()->json($projection, options: JSON_PRESERVE_ZERO_FRACTION);
     }
 }
