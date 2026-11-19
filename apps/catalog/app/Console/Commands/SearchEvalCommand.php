@@ -36,7 +36,7 @@ class SearchEvalCommand extends Command
      */
     private const QUERIES_PATH = '/tests/relevance/queries.yaml';
 
-    protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k}';
+    protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k} {--index= : Indeks fizyczny zamiast aliasu (np. products-v2)}';
 
     protected $description = 'Liczy nDCG@k na zestawie zapytań kontrolnych (_rank_eval) tym samym query template co ProductSearchService';
 
@@ -63,7 +63,10 @@ class SearchEvalCommand extends Command
 
         $data = Yaml::parseFile(self::QUERIES_PATH);
         $k = (int) $this->option('k');
-        $physicalIndex = $this->resolveAliasTarget();
+        // Z `--index` oceniamy wskazany indeks fizyczny (np. nowy, jeszcze bez aliasu);
+        // bez niego — cel aliasu `products-search`, jak dotąd.
+        $target = $this->option('index') ?: self::ALIAS;
+        $physicalIndex = $this->option('index') ?: $this->resolveAliasTarget();
 
         $queries = $data['queries'] ?? [];
         $requests = array_map(
@@ -73,7 +76,7 @@ class SearchEvalCommand extends Command
         );
 
         $response = $this->client->rankEval([
-            'index' => self::ALIAS,
+            'index' => $target,
             'body' => [
                 'requests' => $requests,
                 'metric' => ['dcg' => ['k' => $k, 'normalize' => true]],
@@ -82,7 +85,7 @@ class SearchEvalCommand extends Command
 
         $unstable = array_map(
             fn (array $request) => $this->tieGuard->hasMixedGradeTie(
-                self::ALIAS,
+                $target,
                 $request['request']['query'],
                 array_column($request['ratings'], 'rating', '_id'),
                 $k,
@@ -179,6 +182,8 @@ class SearchEvalCommand extends Command
             (float) $response['metric_score'],
             count($queries),
         ));
+        // Linia maszynowa dla skryptów (bramka reindeksu); kropka dziesiętna niezależna od locale.
+        $this->line(sprintf('NDCG=%s', (float) $response['metric_score']));
 
         if (in_array(true, $unstable, true)) {
             $this->error('Wynik NIEDETERMINISTYCZNY: w top-k jest remis `_score` między dokumentami o różnych ocenach — '
