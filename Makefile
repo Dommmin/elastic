@@ -208,6 +208,10 @@ seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500 [big=M: Megasklep w
 churn: ## Ruch na katalogu pod reindeks: zmiany ofert i usunięcia przez outbox (make churn rate=20 duration=60)
 	$(DC) exec catalog-app php artisan marketplace:churn --rate=$(or $(rate),20) --duration=$(or $(duration),60)
 
+.PHONY: seed-reviews
+seed-reviews: ## Opinie dla części produktów, żeby rating_avg w ES miał wartości (make seed-reviews products=50000)
+	$(DC) exec catalog-app php artisan marketplace:seed-reviews --products=$(or $(products),50000)
+
 .PHONY: admin
 admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); hasło wypisane raz
 	@test -n "$(email)" || { echo "Podaj email: make admin email=ty@example.com"; exit 1; }
