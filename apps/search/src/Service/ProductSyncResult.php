@@ -5,7 +5,7 @@ namespace App\Service;
 /**
  * Wynik ProductSynchronizer::sync(): co zrobiono z dokumentem (zapis albo
  * usunięcie) i z jaką wersją. `outcome` Stale = ES miał już nowszą wersję
- * (409) albo usuwanego dokumentu nie było (404) — w obu przypadkach sukces.
+ * (409), NotFound = usuwanego dokumentu nie było (404) — oba to sukces.
  */
 final readonly class ProductSyncResult
 {

@@ -28,16 +28,17 @@ use Elastic\Elasticsearch\Exception\ClientResponseException;
 class ElasticsearchIndexer
 {
     /**
-     * @param  string  $alias  alias, NIE nazwa fizycznego indeksu
-     *                         (docs/06-PLAN-WDROZENIA.md, D-11 — aliasy od dnia 1).
-     *                         Reindeks w ETAPIE 10 przełączy ten alias na nowy
-     *                         indeks atomowo; ten kod nigdy nie dowie się, że to
-     *                         się stało. Parametr tylko dla testu integracyjnego,
-     *                         który pisze do jednorazowego indeksu.
+     * @param  string  $alias  alias ZAPISU (`products-write`), NIE nazwa fizycznego
+     *                         indeksu (docs/06-PLAN-WDROZENIA.md, D-11). Odczyt
+     *                         idzie osobnym `products-search`, więc reindeks
+     *                         w ETAPIE 10 może przepiąć zapis na nowy indeks,
+     *                         zanim odczyt dostanie go w całości; ten kod nigdy
+     *                         nie dowie się, że to się stało. Parametr także dla
+     *                         testów, które piszą do jednorazowego indeksu.
      */
     public function __construct(
         private readonly Client $client,
-        private readonly string $alias = 'products-search',
+        private readonly string $alias = IndexAliases::WRITE,
     ) {
     }
 
@@ -94,12 +95,13 @@ class ElasticsearchIndexer
             return IndexOutcome::Indexed;
         } catch (ClientResponseException $e) {
             // 404 = już nie istnieje (poprzednie delete albo nigdy nie
-            // zaindeksowany) — to również nie jest błąd.
-            if (in_array($e->getCode(), [404, 409], true)) {
-                return IndexOutcome::Stale;
-            }
-
-            throw $e;
+            // zaindeksowany), 409 = jest nowsza wersja — oba to NIE błąd,
+            // ale to różne fakty, więc liczymy je osobno.
+            return match ($e->getCode()) {
+                404 => IndexOutcome::NotFound,
+                409 => IndexOutcome::Stale,
+                default => throw $e,
+            };
         }
     }
 

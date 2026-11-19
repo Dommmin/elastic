@@ -28,6 +28,7 @@ final class ReprojectCommandTest extends TestCase
 {
     private Client $client;
     private string $index;
+    private string $target;
 
     protected function setUp(): void
     {
@@ -50,12 +51,16 @@ final class ReprojectCommandTest extends TestCase
 
         $this->index = 'products-reproject-test-'.uniqid();
         $this->client->indices()->create(['index' => $this->index, 'body' => $this->mapping()]);
+        // Osobny indeks docelowy: dowód, że ID idą z jednego miejsca, a zapis do drugiego.
+        $this->target = $this->index.'-target';
+        $this->client->indices()->create(['index' => $this->target, 'body' => $this->mapping()]);
     }
 
     protected function tearDown(): void
     {
         if (isset($this->index)) {
             $this->client->indices()->delete(['index' => $this->index, 'ignore_unavailable' => true]);
+            $this->client->indices()->delete(['index' => $this->target, 'ignore_unavailable' => true]);
         }
     }
 
@@ -73,7 +78,7 @@ final class ReprojectCommandTest extends TestCase
         $tester = $this->reproject($catalog);
 
         self::assertSame(Command::SUCCESS, $tester->getStatusCode());
-        self::assertStringContainsString('Zaindeksowano: 1, nieaktualne (409): 0, usunięte: 1, błędy: 0', $tester->getDisplay());
+        self::assertStringContainsString('Zaindeksowano: 1, nieaktualne (409): 0, nieobecne (404): 0, usunięte: 1, błędy: 0', $this->flat($tester));
         self::assertSame(1790000000000500, $this->client->get(['index' => $this->index, 'id' => '500'])->asArray()['_version']);
         self::assertFalse($this->client->exists(['index' => $this->index, 'id' => '501'])->asBool());
     }
@@ -92,16 +97,38 @@ final class ReprojectCommandTest extends TestCase
         $tester = $this->reproject($catalog);
 
         self::assertSame(Command::FAILURE, $tester->getStatusCode());
-        self::assertStringContainsString('Zaindeksowano: 1, nieaktualne (409): 0, usunięte: 0, błędy: 1', $tester->getDisplay());
+        self::assertStringContainsString('Zaindeksowano: 1, nieaktualne (409): 0, nieobecne (404): 0, usunięte: 0, błędy: 1', $this->flat($tester));
         self::assertSame(1790000000000500, $this->client->get(['index' => $this->index, 'id' => '500'])->asArray()['_version']);
         self::assertSame(1, $this->client->get(['index' => $this->index, 'id' => '502'])->asArray()['_version']);
+    }
+
+    public function test_id_z_ids_from_a_zapis_do_write_to(): void
+    {
+        $this->indexLegacy('500');
+
+        $catalog = $this->createStub(CatalogProjectionClient::class);
+        $catalog->method('fetchProductProjection')->willReturn(new ProductProjection($this->projection(500), 1790000000000500));
+
+        $tester = new CommandTester(new ReprojectCommand($this->client, $catalog));
+        $tester->execute(['--ids-from' => $this->index, '--write-to' => $this->target, '--batch' => '1']);
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode());
+        self::assertSame(1790000000000500, $this->client->get(['index' => $this->target, 'id' => '500'])->asArray()['_version']);
+        // Źródło ID nietknięte (zostaje z wersją 1).
+        self::assertSame(1, $this->client->get(['index' => $this->index, 'id' => '500'])->asArray()['_version']);
+    }
+
+    /** Symfony zawija długie komunikaty w ramce — porównujemy po spłaszczeniu białych znaków. */
+    private function flat(CommandTester $tester): string
+    {
+        return trim(preg_replace('/\s+/', ' ', $tester->getDisplay()));
     }
 
     private function reproject(CatalogProjectionClient $catalog): CommandTester
     {
         $tester = new CommandTester(new ReprojectCommand($this->client, $catalog));
         // Paczka 1, żeby przejść przez kilka stron scrolla, a nie jedną.
-        $tester->execute(['--alias' => $this->index, '--batch' => '1']);
+        $tester->execute(['--ids-from' => $this->index, '--write-to' => $this->index, '--batch' => '1']);
 
         return $tester;
     }

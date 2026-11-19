@@ -4,6 +4,7 @@ namespace App\Command;
 
 use App\Service\CatalogProjectionClient;
 use App\Service\ElasticsearchIndexer;
+use App\Service\IndexAliases;
 use App\Service\IndexOutcome;
 use App\Service\ProductSynchronizer;
 use App\Service\ProjectionUnavailableException;
@@ -18,7 +19,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
- * `php bin/console search:reproject` — przelicza KAŻDY dokument w aliasie
+ * `php bin/console search:reproject` — przelicza KAŻDY dokument z `--ids-from`
  * od nowa z projekcji catalogu (`make reproject`, na k3s `make k3s-reproject`).
  *
  * DLACZEGO istnieje: Panel [2/8] zmienił wersję dokumentu z `sequence`
@@ -33,10 +34,13 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * Tę samą decyzję (zapis albo usunięcie po 404) podejmuje ProductSynchronizer
  * co handler kolejki — dlatego komenda nie ma własnej logiki indeksowania.
  *
+ * Domyślnie ID z `products-search`, zapis przez `products-write`; `409`
+ * liczone jako "nieaktualne", `404` przy usunięciu jako "nieobecne".
+ *
  * Działa równolegle z consumerem: wyścig rozstrzyga ES (starszy odczyt
  * dostaje 409 i jest liczony jako "nieaktualne", nie błąd).
  */
-#[AsCommand(name: 'search:reproject', description: 'Przelicza wszystkie dokumenty w aliasie z projekcji catalogu (wersja = projected_at_us)')]
+#[AsCommand(name: 'search:reproject', description: 'Przelicza wszystkie dokumenty (_id z --ids-from, zapis przez --write-to) z projekcji catalogu (wersja = projected_at_us)')]
 final class ReprojectCommand extends Command
 {
     /** Ile błędów wypisać z identyfikatorem — reszta tylko w liczniku. */
@@ -52,23 +56,26 @@ final class ReprojectCommand extends Command
     protected function configure(): void
     {
         $this
-            ->addOption('alias', null, InputOption::VALUE_REQUIRED, 'Alias (albo indeks) do przeliczenia', 'products-search')
+            ->addOption('ids-from', null, InputOption::VALUE_REQUIRED, 'Alias (albo indeks), z którego czytamy _id do przeliczenia', IndexAliases::READ)
+            ->addOption('write-to', null, InputOption::VALUE_REQUIRED, 'Alias (albo indeks), do którego piszemy przeliczone dokumenty', IndexAliases::WRITE)
             ->addOption('batch', null, InputOption::VALUE_REQUIRED, 'Ile _id na stronę scrolla', '500');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
-        $alias = (string) $input->getOption('alias');
+        $idsFrom = (string) $input->getOption('ids-from');
+        $writeTo = (string) $input->getOption('write-to');
         $batch = max(1, (int) $input->getOption('batch'));
 
-        // Indexer dla wskazanego aliasu — test pisze do jednorazowego indeksu,
-        // produkcja zawsze do products-search.
-        $synchronizer = new ProductSynchronizer($this->catalogClient, new ElasticsearchIndexer($this->client, $alias));
+        // Źródło ID i cel zapisu to dwie różne rzeczy: podczas reindeksu
+        // (ETAP 10) odczyt wskazuje stary indeks, a zapis — nowy, więc ID
+        // bierzemy z `products-search`, a piszemy przez `products-write`.
+        $synchronizer = new ProductSynchronizer($this->catalogClient, new ElasticsearchIndexer($this->client, $writeTo));
 
-        $counts = ['indexed' => 0, 'stale' => 0, 'deleted' => 0, 'errors' => 0];
+        $counts = ['indexed' => 0, 'stale' => 0, 'notfound' => 0, 'deleted' => 0, 'errors' => 0];
 
-        foreach ($this->allIds($alias, $batch) as $productId) {
+        foreach ($this->allIds($idsFrom, $batch) as $productId) {
             try {
                 $result = $synchronizer->sync($productId);
             } catch (ProjectionUnavailableException|ClientResponseException|ServerResponseException $e) {
@@ -84,6 +91,7 @@ final class ReprojectCommand extends Command
 
             $key = match (true) {
                 $result->outcome === IndexOutcome::Stale => 'stale',
+                $result->outcome === IndexOutcome::NotFound => 'notfound',
                 $result->deleted => 'deleted',
                 default => 'indexed',
             };
@@ -91,9 +99,10 @@ final class ReprojectCommand extends Command
         }
 
         $summary = sprintf(
-            'Zaindeksowano: %d, nieaktualne (409): %d, usunięte: %d, błędy: %d',
+            'Zaindeksowano: %d, nieaktualne (409): %d, nieobecne (404): %d, usunięte: %d, błędy: %d',
             $counts['indexed'],
             $counts['stale'],
+            $counts['notfound'],
             $counts['deleted'],
             $counts['errors'],
         );
