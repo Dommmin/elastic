@@ -21,12 +21,26 @@ use Elastic\Elasticsearch\Exception\ClientResponseException;
  * Metadane migracji żyją w `mappings._meta.migration` indeksu vN+1:
  *   source            — vN, z którego migrujemy (tylko taki vN+1 jest "nasz")
  *   replicas, refresh_interval — wartości z pliku mapowania, przywracane w finalize
+ *   fill_method       — `reindex` albo `backfill`: ostatnia droga wypełnienia (wygrywa ostatnia)
  *   reindex_task      — id ostatniego zadania `_reindex` (jego wynik sprawdzają finalize/switch-read)
+ *   backfill_completed_at, backfill_indexed/stale/not_found/deleted/errors — pieczęć udanego
+ *                       `search:index:backfill` (droga B); finalize/switch-read przyjmują ją
+ *                       zamiast zadania `_reindex`, ale tylko przy 0 błędów
  *   prepared_at, switch_write_at, switch_read_started_at, switched_read_at — ISO 8601 (UTC)
  */
 final class IndexMigration
 {
     public const DEFAULT_GC_DELETES = '1h';
+
+    /** Pola pieczęci backfillu wyzerowane (putMeta usuwa wartości null). */
+    private const BACKFILL_CLEARED = [
+        'backfill_completed_at' => null,
+        'backfill_indexed' => null,
+        'backfill_stale' => null,
+        'backfill_not_found' => null,
+        'backfill_deleted' => null,
+        'backfill_errors' => null,
+    ];
 
     public function __construct(
         private readonly Client $client,
@@ -155,7 +169,9 @@ final class IndexMigration
 
         // finalize i switch-read sprawdzają WYNIK tego zadania (Tasks API trzyma
         // go w `.tasks`, bo wait_for_completion=false) — nie tylko to, że nie trwa.
-        $this->putMeta($target, ['reindex_task' => $taskId]);
+        // Ostatnia droga wygrywa: pieczęć wcześniejszego backfillu nie może
+        // uwiarygodnić reindeksu, który właśnie wystartował.
+        $this->putMeta($target, ['reindex_task' => $taskId, 'fill_method' => 'reindex'] + self::BACKFILL_CLEARED);
 
         return $taskId;
     }
@@ -213,7 +229,7 @@ final class IndexMigration
     public function finalize(IndexAliases $aliases): string
     {
         [, $target] = $this->inProgress($aliases);
-        $this->refuseUnlessReindexSucceeded($target);
+        $this->refuseUnlessFilled($target);
         $meta = $this->meta($target);
 
         $this->client->indices()->putSettings(['index' => $target, 'body' => ['index' => [
@@ -256,7 +272,7 @@ final class IndexMigration
         }
 
         [$source, $target] = $this->inProgress($aliases);
-        $this->refuseUnlessReindexSucceeded($target);
+        $this->refuseUnlessFilled($target);
         $this->refuseUnlessFinalized($target);
 
         $result = $this->gate->check($target, $tolerance);
@@ -390,12 +406,70 @@ final class IndexMigration
         return [$read, $write];
     }
 
+    /**
+     * Początek `search:index:backfill`: cel migracji traci stare pieczęcie
+     * wypełnienia (zadanie `_reindex` i poprzedni backfill), więc częściowy
+     * albo nieudany backfill nigdy nie przejdzie na cudzym wyniku.
+     * Indeks bez migracji w `_meta` (np. stary vN przy abort) zostaje nietknięty.
+     *
+     * @return bool czy indeks jest celem migracji (ma `_meta.migration`)
+     */
+    public function beginBackfill(string $index): bool
+    {
+        if ($this->meta($index) === []) {
+            return false;
+        }
+        $this->putMeta($index, ['reindex_task' => null, 'fill_method' => null] + self::BACKFILL_CLEARED);
+
+        return true;
+    }
+
+    /**
+     * Pieczęć udanego backfillu (tylko przy 0 błędów — wołający pilnuje).
+     * Nie dotyka indeksów bez `_meta.migration`.
+     *
+     * @param array{indexed: int, stale: int, notfound: int, deleted: int, errors: int} $counts
+     */
+    public function completeBackfill(string $index, array $counts): void
+    {
+        if ($this->meta($index) === []) {
+            return;
+        }
+        $this->putMeta($index, [
+            'fill_method' => 'backfill',
+            'backfill_completed_at' => self::now(),
+            'backfill_indexed' => $counts['indexed'],
+            'backfill_stale' => $counts['stale'],
+            'backfill_not_found' => $counts['notfound'],
+            'backfill_deleted' => $counts['deleted'],
+            'backfill_errors' => $counts['errors'],
+        ]);
+    }
+
+    /**
+     * Cel jest wypełniony: udany backfill z `_meta` (0 błędów) ALBO udany
+     * `_reindex`. Decyduje `fill_method` — ostatnia droga wygrywa.
+     */
+    private function refuseUnlessFilled(string $target): void
+    {
+        $meta = $this->meta($target);
+        if (($meta['fill_method'] ?? null) === 'backfill') {
+            if (! isset($meta['backfill_completed_at']) || (int) ($meta['backfill_errors'] ?? 1) !== 0) {
+                throw new MigrationRefused("Backfill do {$target} nie zakończył się pomyślnie (brak pieczęci albo błędy) — uruchom `search:index:backfill` ponownie.");
+            }
+
+            return;
+        }
+
+        $this->refuseUnlessReindexSucceeded($target);
+    }
+
     /** Zadanie z `_meta.reindex_task` skończone, bez błędu, bez `failures`, nieanulowane. */
     private function refuseUnlessReindexSucceeded(string $target): void
     {
         $taskId = $this->meta($target)['reindex_task'] ?? null;
         if ($taskId === null) {
-            throw new MigrationRefused("Do {$target} nie uruchomiono jeszcze `reindex`.");
+            throw new MigrationRefused("Do {$target} nie uruchomiono jeszcze `reindex` (ani `search:index:backfill`).");
         }
 
         try {
@@ -481,7 +555,8 @@ final class IndexMigration
     {
         $mapping = $this->client->indices()->getMapping(['index' => $index])->asArray();
         $meta = $mapping[$index]['mappings']['_meta'] ?? [];
-        $meta['migration'] = $fields + ($meta['migration'] ?? []);
+        // null w $fields = usuń pole (put mapping zastępuje całe `_meta`).
+        $meta['migration'] = array_filter($fields + ($meta['migration'] ?? []), static fn ($v) => $v !== null);
 
         $this->client->indices()->putMapping(['index' => $index, 'body' => ['_meta' => $meta]]);
     }
