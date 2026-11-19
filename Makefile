@@ -225,6 +225,23 @@ eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
 reproject: ## Przelicz wszystkie dokumenty products-search z projekcji (jednorazowo po Panel [2/8])
 	$(DC) exec search-consumer php bin/console search:reproject
 
+## Reindeks indeksu produktów bez przestoju (ETAP 10)
+.PHONY: reindex
+reindex: ## Migracja vN → vN+1 (make reindex [source=es|pg] [slices=auto] [rps=-1])
+	@bash tools/es/reindex.sh run --source=$(or $(source),es) --slices=$(or $(slices),auto) --rps=$(or $(rps),-1)
+
+.PHONY: reindex-abort
+reindex-abort: ## Wycofaj migrację po switch-write i nadrób okno (backfill + reproject)
+	@bash tools/es/reindex.sh abort
+
+.PHONY: reindex-cleanup
+reindex-cleanup: ## Usuń indeksy bez aliasu (podgląd + pytanie w terminalu)
+	@bash tools/es/reindex.sh cleanup
+
+.PHONY: reindex-break
+reindex-break: ## Dowód bramki: niepełny indeks (30 %) MUSI jej nie przejść; nie rusza aliasów
+	@bash tools/es/reindex.sh break
+
 ## Bazy danych
 .PHONY: psql
 psql: ## Konsola Postgresa (make psql db=catalog)

@@ -42,6 +42,7 @@ on:
       - infra/obs/grafana/dashboards/**
       - tools/k3s/**
       - tools/chaos/**
+      - tools/es/**
       - docs/chaos/**
       - deploy/chaos/**
       - .github/workflows/prod-compose.yml
@@ -88,3 +89,6 @@ jobs:
 
       - name: Chaos (scenariusze, karty, RBAC Joba — ETAP G4, bez klastra)
         run: bash tools/chaos/test.sh
+
+      - name: Skrypty reindeksu (tools/es)
+        run: bash tools/es/test.sh
