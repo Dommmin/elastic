@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Product;
 use App\Models\Review;
 use App\Models\User;
 use Illuminate\Console\Command;
@@ -64,7 +63,13 @@ class SeedReviewsCommand extends Command
         $random = new Randomizer(new Xoshiro256StarStar(hash('sha256', 'seed-reviews:'.$this->option('seed'), true)));
         $reviewerIds = $this->reviewerIds();
 
-        $candidates = Product::query()->whereDoesntHave('reviews')->orderBy('id')->pluck('id')->all();
+        // Kursor zamiast `pluck()`: przy 300 tys. produktów `pluck()` materializuje
+        // wszystkie wiersze naraz (≈ 195 MB, więcej niż limit 128 MB w kontenerze).
+        $candidates = [];
+        foreach (DB::table('products')->whereNotExists(fn ($q) => $q->selectRaw('1')->from('reviews')->whereColumn('reviews.product_id', 'products.id'))->orderBy('id')->select('id')->cursor() as $row) {
+            $candidates[] = (int) $row->id;
+        }
+
         $chosen = array_slice($random->shuffleArray($candidates), 0, $count);
         sort($chosen);
 

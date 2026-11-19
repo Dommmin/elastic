@@ -717,6 +717,36 @@ Ten sam test na 5 985 dokumentach dał tę samą klasę różnic (`gte 4.7`: 455
 **Zastrzeżenie:** wartości ratingu są syntetyczne (seed bez opinii) — pokazują własność typu,
 nie rzeczywisty rozkład ocen. `term` i `distinct` (401) nie różnią się: błąd dotyczy granic zakresu.
 
+### Opinie na prawdziwych danych (`marketplace:seed-reviews`, 2026-11-19)
+
+`make seed-reviews products=50000`: 50 000 produktów (z 300 000) dostało 364 351 opinii;
+średnie dokładnie 4,70 ma 10 004 produktów, dokładnie 3,30 — 10 187 (co piąty wybrany
+produkt dostaje 10 opinii o sumie 47, co piąty o sumie 33; reszta 1–10 losowych). Dla każdego
+produktu **jedno** zdarzenie `review.created` (ostatnia opinia przez `Review::createWithOutbox`),
+50 000 zdarzeń. Generowanie w Postgresie: 2 min 20 s. Kolejka `search.product.sync` opróżniona
+ok. 6 min po końcu seeda (22:11:31 UTC), przy 4 konsumentach ≈ 130 dok./s średnio
+(orientacyjnie, maszyna współdzielona). Po przebiegu liczba dokumentów w ES nadal 300 000;
+transport `failed` bez nowych wpisów (501 starych z 2026-11-10, sprzed tego pomiaru).
+
+Pomiar na `products-v1` (`rating_avg: half_float`) przez alias `products-search`, ten sam zbiór
+w Postgresie (`round(avg(rating), 2)` na grupie `product_id`):
+
+| Zapytanie | ES (`half_float`) | Postgres (prawda) |
+|---|---|---|
+| dokumenty z `rating_avg` (`exists`) | 50 000 | 50 000 |
+| `rating_avg >= 4.7` | **1 742** | **11 746** |
+| `rating_avg > 4.7` | 1 742 | 1 742 |
+| `4.7 <= rating_avg < 4.71` | **0** | 10 004 |
+| `4.69 <= rating_avg < 4.7` | 10 004 | 0 |
+| `3.3 <= rating_avg <= 3.3` | **0** | 10 187 |
+| `term rating_avg: 4.7` | 10 004 | 10 004 |
+
+**Fakt:** już na v1 filtr „od 4,7” gubi **10 004 produkty** (85 % wyniku), bo 4,70 w `half_float`
+to ≈ 4,6992 i ląduje poniżej progu (stąd wynik w przedziale 4,69–4,7), a zakres „dokładnie 3,3”
+nie zwraca nic. `term 4.7` zgadza się z Postgresem, bo wartość zapytania też jest zaokrąglana do
+`half_float`, więc błąd widać dopiero na granicach przedziałów. **Hipoteza (do sprawdzenia po
+reindeksie na `v2`):** `scaled_float` (`scaling_factor: 100`) zwróci 11 746 i 10 187.
+
 ### `make eval` na 300 tys.
 
 - Przed poprawką: **pada** `Allowed memory size of 134217728 bytes exhausted` — reguły
