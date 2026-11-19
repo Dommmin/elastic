@@ -66,6 +66,8 @@ log "  OK"
 # --- 3. rola dla search-service (Symfony) — ZAPIS I ZARZĄDZANIE -------------
 # Jedyny serwis, który pisze do ES. Potrzebuje też zarządzać szablonami
 # i politykami ILM, bo mapowania są kodem (zasada z 01-INFRASTRUKTURA.md).
+# cancel_task (ETAP 10): Ctrl-C w `search:index:migrate reindex --wait` woła
+# `_tasks/<id>/_cancel` — bez tego przywileju ES odpowiada 403.
 log "Tworzę rolę search_service (write + manage)..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
   -H 'Content-Type: application/json' -d '{
@@ -73,7 +75,8 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
     "monitor",
     "manage_index_templates",
     "manage_ilm",
-    "manage_pipeline"
+    "manage_pipeline",
+    "cancel_task"
   ],
   "indices": [
     {

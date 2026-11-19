@@ -97,6 +97,62 @@ class CatalogProjectionClient
     }
 
     /**
+     * Liczba wierszy `products` w catalogu — źródło prawdy dla bramki
+     * jakości przed przełączeniem odczytu (ETAP 10, spec 5.5).
+     *
+     * @throws ProjectionUnavailableException gdy catalog nie odpowiada albo
+     *                                        odpowiada bez całkowitego `count`
+     */
+    public function countProducts(): int
+    {
+        $data = $this->getJson('/api/internal/products/count', 'licznika produktów');
+        if (! \is_int($data['count'] ?? null)) {
+            throw new ProjectionUnavailableException('Licznik produktów z catalogu bez całkowitego count.');
+        }
+
+        return $data['count'];
+    }
+
+    /**
+     * Strona ID produktów po kursorze (`id > after`, rosnąco) — droga B
+     * reindeksu (backfill z catalogu) i przegląd zbieżności.
+     *
+     * @return array{ids: list<int>, next_after: ?int} `next_after` null = koniec listy
+     *
+     * @throws ProjectionUnavailableException gdy catalog nie odpowiada albo
+     *                                        odpowiada w innym kształcie
+     */
+    public function productIds(?int $after, int $limit): array
+    {
+        $query = http_build_query(array_filter(['after' => $after, 'limit' => $limit], static fn ($v) => $v !== null));
+        $data = $this->getJson('/api/internal/products/ids?'.$query, 'listy ID produktów');
+
+        $ids = $data['ids'] ?? null;
+        $next = $data['next_after'] ?? null;
+        if (! \is_array($ids) || ! array_is_list($ids) || array_filter($ids, static fn ($id) => ! \is_int($id)) !== []
+            || ! ($next === null || \is_int($next))) {
+            throw new ProjectionUnavailableException('Lista ID produktów z catalogu w nieoczekiwanym kształcie.');
+        }
+
+        return ['ids' => $ids, 'next_after' => $next];
+    }
+
+    /**
+     * GET z odpowiedzią JSON; każdy błąd (4xx, 5xx, sieć, nie-JSON) to
+     * ProjectionUnavailableException — operator ma ponowić, nie zgadywać.
+     *
+     * @return array<string, mixed>
+     */
+    private function getJson(string $path, string $what): array
+    {
+        try {
+            return $this->client->request('GET', rtrim($this->baseUrl, '/').$path)->toArray();
+        } catch (HttpExceptionInterface|TransportExceptionInterface|DecodingExceptionInterface $e) {
+            throw new ProjectionUnavailableException("Nie udało się pobrać {$what} z catalogu: {$e->getMessage()}", previous: $e);
+        }
+    }
+
+    /**
      * @param  array<string, mixed>  $body
      */
     private function projectedAtUs(array $body, string $productId): int

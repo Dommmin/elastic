@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Service\IndexAliases;
+use App\Service\IndexMapping;
 use Elastic\Elasticsearch\Client;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -37,17 +38,6 @@ final class CreateSearchIndexCommand extends Command
     public const CURRENT_VERSION = 1;
 
     /**
-     * ŚCIEŻKA ABSOLUTNA, nie wędrówka `../../` od `%kernel.project_dir%`.
-     * Kontener search-consumer widzi WYŁĄCZNIE `./apps/search` jako `/app` —
-     * katalog `infra/` z korzenia repo w ogóle nie istnieje w jego systemie
-     * plików. compose.yaml montuje `infra/elasticsearch/mappings` osobno,
-     * dokładnie pod tę ścieżkę (patrz komentarz przy `search-consumer.volumes`).
-     * Odkryte dopiero przy realnym uruchomieniu — na hosta `../../` "działało"
-     * tylko dlatego, że lokalny filesystem ma tam repo, czego kontener nie ma.
-     */
-    private const MAPPINGS_DIR = '/infra/elasticsearch/mappings';
-
-    /**
      * @param  string  $indexPrefix  prefiks nazwy indeksu (`products-v` → `products-v1`);
      *                               parametr dla testów na jednorazowych indeksach
      */
@@ -55,7 +45,7 @@ final class CreateSearchIndexCommand extends Command
         private readonly Client $client,
         private readonly IndexAliases $aliases,
         private readonly string $indexPrefix = 'products-v',
-        private readonly string $mappingsDir = self::MAPPINGS_DIR,
+        private readonly IndexMapping $mappings = new IndexMapping(),
     ) {
         parent::__construct();
     }
@@ -79,18 +69,14 @@ final class CreateSearchIndexCommand extends Command
         }
 
         $indexName = $this->indexPrefix.$version;
-        $mappingPath = $this->mappingsDir.'/products-v'.$version.'.json';
 
-        if (! is_file($mappingPath)) {
-            $io->error("Brak pliku mapowania: {$mappingPath}");
+        if (! $this->mappings->exists($version)) {
+            $io->error('Brak pliku mapowania: '.$this->mappings->path($version));
 
             return Command::FAILURE;
         }
 
-        $body = json_decode(file_get_contents($mappingPath), associative: true, flags: JSON_THROW_ON_ERROR);
-        // "_meta" to dokumentacja dla ludzi (patrz sam plik) — ES przyjąłby ją
-        // jako część mappings, ale nie ma tu po co jej wysyłać.
-        unset($body['_meta']);
+        $body = $this->mappings->load($version);
 
         $exists = $this->client->indices()->exists(['index' => $indexName])->asBool();
 
