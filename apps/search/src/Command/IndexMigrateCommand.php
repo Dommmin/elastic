@@ -27,10 +27,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 #[AsCommand(name: 'search:index:migrate', description: 'Krok migracji indeksu: prepare|switch-write|reindex|finalize|switch-read|abort|cleanup')]
 final class IndexMigrateCommand extends Command
 {
+    use CancelsOnSigint;
+
     private const STEPS = ['prepare', 'switch-write', 'reindex', 'finalize', 'switch-read', 'abort', 'cleanup'];
     private const EXIT_INTERRUPTED = 130;
-
-    private bool $interrupted = false;
 
     public function __construct(
         private readonly Client $client,
@@ -208,35 +208,6 @@ final class IndexMigrateCommand extends Command
         }
 
         return Command::SUCCESS;
-    }
-
-    /**
-     * Ctrl-C w trakcie `--wait` nie zabija procesu, tylko ustawia flagę —
-     * pętla odpytywania woła wtedy `_cancel` i czeka na zatrzymanie zadania.
-     * Własny handler zamiast SignalableCommandInterface, bo ten działa tylko
-     * pod Application (CommandTester go pomija); poprzedni handler wraca.
-     *
-     * @template T
-     *
-     * @param callable(): T $body
-     *
-     * @return T
-     */
-    private function withSigint(callable $body): mixed
-    {
-        $this->interrupted = false;
-        $previousAsync = pcntl_async_signals(true);
-        $previous = pcntl_signal_get_handler(\SIGINT);
-        pcntl_signal(\SIGINT, function (): void {
-            $this->interrupted = true;
-        });
-
-        try {
-            return $body();
-        } finally {
-            pcntl_signal(\SIGINT, $previous);
-            pcntl_async_signals($previousAsync);
-        }
     }
 
     /** @param array<string, mixed> $status */
