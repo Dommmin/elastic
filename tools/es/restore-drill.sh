@@ -176,13 +176,16 @@ run_normal() {
   drill_destroy_guard "${restored}" || die "bramka odrzuciła ${restored}"
   info "Drill (nieniszczący): repo=${repo} źródło=${src} → ${restored}"
 
+  # liczba ze źródła PRZED snapshotem: snapshot to stan z chwili startu, a strumień
+  # może dopisywać dokumenty w trakcie drilla
+  local c_src c_res
+  c_src="$(count_of "${src}")"
   t0="$(now)"; snap_create "${repo}" "${snap}" "${src}"; t1="$(now)"
   info "  snapshot ${snap}: $(elapsed "${t0}" "${t1}"), $(snap_size "${repo}" "${snap}")"
   restore_as "${repo}" "${snap}" "${src}" "${restored}"; t2="$(now)"
   info "  restore → ${restored}: $(elapsed "${t1}" "${t2}")"
 
-  local c_src c_res
-  c_src="$(count_of "${src}")"; c_res="$(count_of "${restored}")"
+  c_res="$(count_of "${restored}")"
   info "  liczba dokumentów: źródło=${c_src} kopia=${c_res}"
   [[ "${c_src}" == "${c_res}" ]] || { info "COUNT=FAIL"; ok=0; }
   sample_of "${src}" "${tmp}/a.json"

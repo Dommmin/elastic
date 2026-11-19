@@ -999,11 +999,13 @@ services:
   # na tej maszynie). Obraz przypięty do wydania (docs/07-WERSJE.md).
   minio:
     profiles: [snapshots]
-    image: quay.io/minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    # Wydanie RELEASE.2025-09-07T16-13-09Z. MinIO przestał serwować te tagi, więc pinem jest
+    # digest (docs/07-WERSJE.md).
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
     volumes:
       - minio-data:/data
     ports:
@@ -1023,26 +1025,41 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
-  # Jednorazowo: bucket + osobny użytkownik MinIO dla Elasticsearcha (readwrite
-  # tylko na ten bucket — nie konto root). Idempotentny.
+  # Jednorazowo: bucket + osobny użytkownik MinIO dla Elasticsearcha z polityką
+  # ograniczoną do tego bucketa (nie konto root). Idempotentny.
   minio-init:
     profiles: [snapshots]
-    image: quay.io/minio/mc:${MINIO_MC_VERSION:-RELEASE.2025-08-13T08-35-41Z}
+    # mc w wersji faktycznie testowanej (etykieta obrazu release=1754467928, ok. 2025-08-06); pin digestem.
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -e
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
         mc mb --ignore-existing "local/$$MINIO_BUCKET" >/dev/null
-        mc admin user add local "$$ES_S3_ACCESS_KEY" "$$ES_S3_SECRET_KEY" >/dev/null 2>&1 || true
-        mc admin policy attach local readwrite --user "$$ES_S3_ACCESS_KEY" >/dev/null 2>&1 || true
+        # Polityka ograniczona do jednego bucketa (wbudowana `readwrite` obejmuje wszystkie).
+        cat > /tmp/es-s3-policy.json <<POLICY
+        {"Version":"2012-10-17","Statement":[
+          {"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::$$MINIO_BUCKET"]},
+          {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::$$MINIO_BUCKET/*"]}]}
+        POLICY
+        mc admin policy create local es-snapshots-rw /tmp/es-s3-policy.json >/dev/null
+        # `user add` jest idempotentne (nadpisuje sekret); `attach` zgłasza już przypisaną politykę:
+        # tylko to tolerujemy, każdy inny błąd przerywa (set -e).
+        mc admin user add local "$$ES_S3_ACCESS_KEY" "$$ES_S3_SECRET_KEY" >/dev/null
+        if ! out="$$(mc admin policy attach local es-snapshots-rw --user "$$ES_S3_ACCESS_KEY" 2>&1)"; then
+          case "$$out" in
+            *"already"*) ;;
+            *) echo "$$out" >&2; exit 1 ;;
+          esac
+        fi
         echo "[minio-init] bucket $$MINIO_BUCKET gotowy"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
       MINIO_BUCKET: ${MINIO_BUCKET:-es-snapshots}
-      ES_S3_ACCESS_KEY: ${ES_S3_ACCESS_KEY}
-      ES_S3_SECRET_KEY: ${ES_S3_SECRET_KEY}
+      ES_S3_ACCESS_KEY: ${ES_S3_ACCESS_KEY:-}
+      ES_S3_SECRET_KEY: ${ES_S3_SECRET_KEY:-}
     depends_on:
       minio:
         condition: service_healthy

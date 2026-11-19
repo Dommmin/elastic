@@ -82,7 +82,7 @@ esa PUT /_slm/policy/local-nightly '{
   "schedule": "0 0 1 * * ?",
   "name": "<local-nightly-{now/d}>",
   "repository": "local-fs",
-  "config": { "indices": ["products-*"], "include_global_state": false },
+  "config": { "indices": ["products-*", "-products-drill-*", "-products-restored-*"], "include_global_state": false },
   "retention": { "expire_after": "7d", "min_count": 1, "max_count": 7 }
 }' >/dev/null
 log "  OK"

@@ -51,8 +51,8 @@ Sprawdzone 2026-11-20. Własny MinIO tego stosu (osobny kontener i wolumen `mini
 
 | Komponent | Wersja | Tag / zmienna | Uwagi |
 |---|---|---|---|
-| **MinIO** | **RELEASE.2025-09-07T16-13-09Z** | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` (`MINIO_VERSION`) | ostatnie wydanie opublikowane przez MinIO jako obraz (projekt community jest w trybie utrzymaniowym), więc przypinamy je, nie `:latest`; z rejestru anonimowo nie da się go już sprawdzić, tag powstał lokalnie z obrazu tej wersji (`docker tag`) |
-| **MinIO Client (mc)** | **RELEASE.2025-08-13T08-35-41Z** | `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z` (`MINIO_MC_VERSION`) | jednorazowy `minio-init`: bucket + użytkownik `readwrite` dla ES |
+| **MinIO** | **RELEASE.2025-09-07T16-13-09Z** (etykieta obrazu) | `minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e` | MinIO przestał serwować obrazy z tagami RELEASE (projekt community jest w trybie utrzymaniowym), więc pinem jest **digest**, nie tag; zero `:latest` |
+| **MinIO Client (mc)** | etykieta obrazu `release=1754467928` (epoch, ok. 2025-08-06) | `minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727` | wersja faktycznie testowana; jednorazowy `minio-init` (bucket + użytkownik z polityką tylko na ten bucket); pin digestem |
 | Porty hosta | 19000 / 19001 | `MINIO_API_PORT` / `MINIO_CONSOLE_PORT` | tylko `127.0.0.1` |
 | Repozytorium S3 w ES | moduł `repository-s3` w ES 9.5.1 | `s3.client.default.endpoint`, `path_style_access` (węzeł); `protocol` przestarzałe w 9.5 | klucze w keystore każdego węzła (`make es-snapshots-setup`) |
 

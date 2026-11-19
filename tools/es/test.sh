@@ -123,16 +123,19 @@ eq "snapshot_state brak" "$(snapshot_state <<<'{"snapshots":[]}')" ""
 cfg="$(docker compose --env-file .env.example --profile snapshots config 2>&1)"
 if command -v docker >/dev/null 2>&1 && [[ -n "${cfg}" ]] && ! grep -q 'no configuration file' <<<"${cfg}"; then
   grep -qE '^  minio:' <<<"${cfg}" && grep -qE '^  minio-init:' <<<"${cfg}" && ok "compose: profil snapshots ma minio i minio-init" || bad "compose: brak minio/minio-init w profilu snapshots"
-  grep -q 'image: quay.io/minio/minio:RELEASE\.' <<<"${cfg}" && ok "compose: obraz MinIO przypięty do wydania" || bad "compose: obraz MinIO bez tagu RELEASE"
   grep -q 'minio/minio:latest' <<<"${cfg}" && bad "compose: MinIO na :latest" || ok "compose: brak :latest"
   grep -E 'published: "?(19000|19001)' <<<"${cfg}" >/dev/null && ok "compose: porty MinIO 19000/19001" || bad "compose: porty MinIO inne niż 19000/19001"
   docker compose --env-file .env.example config --services 2>/dev/null | grep -q '^minio$' && bad "compose: minio działa bez profilu" || ok "compose: minio tylko w profilu snapshots"
 else
   echo "  - pomijam testy compose (brak dockera)"
 fi
+# obrazy MinIO/mc przypięte digestem (tagi RELEASE nie są już serwowane przez rejestr)
+bad_img="$(grep -E '^\s+image:.*minio/(minio|mc)' compose.yaml | grep -v '@sha256:' || true)"
+[[ -z "${bad_img}" ]] && ok "compose: obrazy MinIO/mc przypięte @sha256" || bad "compose: obraz MinIO/mc bez @sha256: ${bad_img}"
+grep -q -- '"-products-drill-\*"' infra/elasticsearch/setup-snapshots.sh && ok "SLM wyklucza kopie drilli" || bad "SLM nie wyklucza products-drill-*/products-restored-*"
 # klucze: w .env.example tylko zastępcze, nigdy zapisane na sztywno w compose
 grep -nE '^(MINIO_ROOT_PASSWORD|ES_S3_SECRET_KEY)=' .env.example | grep -qE '=zmien-mnie' && ok ".env.example: hasła MinIO zastępcze" || bad ".env.example: hasła MinIO nie wyglądają na zastępcze"
-grep -nE 'ES_S3_(ACCESS|SECRET)_KEY: *[^$ ]' compose.yaml && bad "compose: klucz S3 zapisany na sztywno" || ok "compose: klucze S3 tylko ze zmiennych"
+grep -nE '^ +ES_S3_(ACCESS|SECRET)_KEY: *[^$ ]' compose.yaml && bad "compose: klucz S3 zapisany na sztywno" || ok "compose: klucze S3 tylko ze zmiennych"
 
 # --- cele Make ---------------------------------------------------------------
 for t in reindex reindex-abort reindex-cleanup reindex-break es-snapshots-setup es-restore-drill es-restore-drill-destructive es-slm-run; do
