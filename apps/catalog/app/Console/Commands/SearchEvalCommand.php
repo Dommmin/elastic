@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\ProductSearchService;
 use App\Services\Search\RelevanceJudgments;
 use App\Services\Search\SearchCriteria;
+use App\Services\Search\TieGroupGuard;
 use Elastic\Elasticsearch\Client;
 use Illuminate\Console\Command;
 use Illuminate\Http\Request;
@@ -35,12 +36,6 @@ class SearchEvalCommand extends Command
      */
     private const QUERIES_PATH = '/tests/relevance/queries.yaml';
 
-    /**
-     * Górna granica grupy remisu sprawdzanej przez `hasMixedGradeTie()` —
-     * na seedzie 1500 największa grupa ma kilkadziesiąt dokumentów.
-     */
-    private const TIE_CHECK_MAX_HITS = 1_000;
-
     protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k}';
 
     protected $description = 'Liczy nDCG@k na zestawie zapytań kontrolnych (_rank_eval) tym samym query template co ProductSearchService';
@@ -49,6 +44,7 @@ class SearchEvalCommand extends Command
         private readonly Client $client,
         private readonly ProductSearchService $searchService,
         private readonly RelevanceJudgments $judgments,
+        private readonly TieGroupGuard $tieGuard,
     ) {
         parent::__construct();
     }
@@ -85,7 +81,12 @@ class SearchEvalCommand extends Command
         ])->asArray();
 
         $unstable = array_map(
-            fn (array $request) => $this->hasMixedGradeTie($request, $k),
+            fn (array $request) => $this->tieGuard->hasMixedGradeTie(
+                self::ALIAS,
+                $request['request']['query'],
+                array_column($request['ratings'], 'rating', '_id'),
+                $k,
+            ),
             $requests,
         );
 
@@ -94,61 +95,6 @@ class SearchEvalCommand extends Command
         return $response['failures'] === [] && ! in_array(true, $unstable, true)
             ? self::SUCCESS
             : self::FAILURE;
-    }
-
-    /**
-     * Strażnik determinizmu (docs/RUNBOOK.md #096): czy w top-k jest grupa
-     * remisu `_score`, w której dokumenty mają RÓŻNE oceny? Kolejność
-     * remisów rozstrzyga wewnętrzny doc id Lucene (zależny od refreshy
-     * i merge'ów), więc taka grupa daje nDCG zmieniające się między
-     * świeżymi indeksami na tych samych danych.
-     *
-     * Wszystkie grupy o `_score` WYŻSZYM niż k-ty wynik mieszczą się
-     * w top-k w całości; jedyna grupa, która może wystawać poza k, to ta
-     * z wynikiem RÓWNYM k-temu — stąd drugie zapytanie z `min_score`, które
-     * zwraca ją całą (także członków spoza top-k, mogących się zamienić
-     * miejscami z tymi w środku).
-     *
-     * @param  array{request: array{query: array<string, mixed>}, ratings: array<int, array{_id: string, rating: int}>}  $request
-     */
-    private function hasMixedGradeTie(array $request, int $k): bool
-    {
-        $query = $request['request']['query'];
-        $grades = array_column($request['ratings'], 'rating', '_id');
-
-        $top = $this->client->search([
-            'index' => self::ALIAS,
-            'body' => ['query' => $query, 'size' => $k, '_source' => false],
-        ])->asArray()['hits']['hits'];
-
-        if ($top === []) {
-            return false;
-        }
-
-        $tied = $this->client->search([
-            'index' => self::ALIAS,
-            'body' => [
-                'query' => $query,
-                'min_score' => end($top)['_score'],
-                'size' => self::TIE_CHECK_MAX_HITS,
-                '_source' => false,
-            ],
-        ])->asArray()['hits']['hits'];
-
-        $gradesByScore = [];
-
-        foreach ($tied as $hit) {
-            // Klucz jako string: identyczny float32 z ES serializuje się identycznie.
-            $gradesByScore[(string) $hit['_score']][$grades[$hit['_id']] ?? 0] = true;
-        }
-
-        foreach ($gradesByScore as $distinctGrades) {
-            if (count($distinctGrades) > 1) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

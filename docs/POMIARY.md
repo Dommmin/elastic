@@ -722,15 +722,29 @@ nie rzeczywisty rozkład ocen. `term` i `distinct` (401) nie różnią się: bł
 - Przed poprawką: **pada** `Allowed memory size of 134217728 bytes exhausted` — reguły
   `category`/`brand` rozwijają się do ≈ 12–27 tys. `ratings` na zapytanie (kategoria ≈ 27 tys.
   produktów, marka `Orn PLC` 12 486). Poprawka: `ini_set('memory_limit', '1G')` w `SearchEvalCommand`.
-- Po poprawce: 3 przebiegi, **wynik identyczny** (diff bez różnic), 13 zapytań, nDCG@10 = 1,000
-  dla wszystkich, 0 nieocenionych, 0 remisów z różnymi ocenami; czas 3,7–3,9 s (zimny: 4,5 s).
-- **Zastrzeżenie (nie naprawione, do rulingu):** strażnik remisów `hasMixedGradeTie` czyta
-  najwyżej `TIE_CHECK_MAX_HITS = 1000` trafień, a grupy remisu `_score` mają przy 300 tys.
-  ≈ 27 tys. dokumentów (kategorie) — strażnik widzi więc tylko ułamek grupy, a okno wyników
-  ES (10 000) też jest za małe. „Brak remisów z różnymi ocenami” jest tu zatem **niepotwierdzone**
-  dla największych grup; determinizm wyniku został potwierdzony empirycznie (3 równe przebiegi),
-  nie dowiedziony strażnikiem. Poprawka wymaga zmiany projektu strażnika (np. agregacja po ocenie
-  zamiast pobierania trafień) — poza zakresem tego taska.
+- Po poprawce pamięci: 3 przebiegi dały **identyczny wynik** (diff bez różnic), 13 zapytań,
+  nDCG@10 = 1,000 dla wszystkich, 0 nieocenionych; 3,7–3,9 s (zimny: 4,5 s).
+- **Strażnik remisów był ślepy (znalezione, naprawione).** Stary `hasMixedGradeTie` czytał najwyżej
+  `TIE_CHECK_MAX_HITS = 1000` trafień. Zmierzona liczba trafień o `_score` ≥ k-tego (`min_score`,
+  `track_total_hits`) na 300 tys.: `smartfon`/`komórka`/`telefon` 11 566, `meble ogrodowe` 11 583,
+  `słuchawki bezprzewodowe` 11 417, `buty do biegania` 5 812, `kurtka zimowa` 5 732, `rower górski` 5 851,
+  `wiertarka` 5 679, `notebook` 5 695, `Orn PLC` 686, dwa zapytania po nazwie 26 i 40. Czyli 9 z 13 grup
+  przekraczało limit 1000, a 4 także okno wyników ES (10 000). Wynik „brak remisów z różnymi ocenami”
+  ze starego strażnika był więc **niepotwierdzony** dla większości zapytań.
+- **Nowy strażnik** (`App\Services\Search\TieGroupGuard`): top-k czytany normalnie, a grupę o `_score`
+  równym k-temu — jedyną, która może wystawać poza k — czyta w całości przez PIT + `search_after`
+  (strony po 5 000, `min_score`), bez stałego limitu i bez okna 10 000. Testy
+  (`tests/Feature/TieGroupGuardTest.php`, sztuczny transport HTTP, bo użytkownik `catalog` nie ma
+  uprawnień do tworzenia indeksów): jednolite oceny w grupie 12 000 → stabilnie; inna ocena jednego
+  dokumentu na pozycji 11 500 (za limitem 1000 i oknem 10 000) → wykryta; inna ocena w ogonie
+  grupy 2 000 poza top-10 → wykryta.
+- **Wynik nowego strażnika na żywym indeksie 300 000** (3 przebiegi, `exit 0`, wyniki identyczne,
+  4,6–6,0 s razem z pełnym czytaniem grup do 11,6 tys. dokumentów): kolumna „Remis z różnymi ocenami”
+  = `-` dla wszystkich 13 zapytań, czyli **fakt: w żadnej grupie remisu dotykającej top-10 oceny nie
+  są mieszane**; nDCG@10 = 1,000 jest tu więc dowiedzione, a nie tylko zaobserwowane.
+  Hipoteza (niesprawdzona): reguły `category`/`brand` oceniają całe grupy tak samo, dlatego strażnik
+  nie ma czego łapać; jego skuteczność na danych z mieszanymi ocenami potwierdzają tylko testy z sztucznym ES,
+  nie żywy klaster.
 
 ### Rozmiar i miejsce
 
