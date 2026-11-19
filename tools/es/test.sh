@@ -67,6 +67,31 @@ alias_targets() { printf 'products-v1\nproducts-v2\n'; }
 preflight_live products-v2 2>/dev/null && bad "preflight_live: aliasowany przeszedł" || ok "preflight_live odrzuca aliasowany"
 preflight_live products-break-1 2>/dev/null && ok "preflight_live: products-break-1 wolny" || bad "preflight_live odrzucił wolny"
 
+# alias_targets fail-closed: błąd odczytu któregokolwiek aliasu => odmowa
+. tools/es/lib.sh   # przywraca prawdziwe alias_targets (wyżej stub)
+alias_target() { if [[ "$1" == "${READ_ALIAS}" ]]; then return 1; else echo products-v2; fi; }
+alias_targets 2>/dev/null && bad "alias_targets: błąd odczytu read przeszedł" || ok "alias_targets: błąd odczytu read => kod 1"
+preflight_live products-v1 2>/dev/null && bad "preflight_live: przeszedł mimo błędu odczytu aliasu" || ok "preflight_live odmawia przy błędzie odczytu aliasu"
+alias_target() { if [[ "$1" == "${READ_ALIAS}" ]]; then echo products-v1; else return 1; fi; }
+alias_targets 2>/dev/null && bad "alias_targets: błąd odczytu write przeszedł" || ok "alias_targets: błąd odczytu write => kod 1"
+alias_target() { if [[ "$1" == "${READ_ALIAS}" ]]; then echo products-v1; fi; }
+alias_targets 2>/dev/null && bad "alias_targets: pusty write przeszedł" || ok "alias_targets: brak celu write => kod 1"
+# alias_target na prawdziwej funkcji: 404 = pusto/0, błąd = 1, sukces = lista
+. tools/es/lib.sh
+es() { echo '{"error":{"type":"aliases_not_found_exception"},"status":404}'; return 22; }
+out="$(alias_target x)"; rc=$?; eq "alias_target 404 => pusto, kod 0" "${rc}:${out}" "0:"
+es() { echo 'Bad Gateway'; return 22; }
+alias_target x >/dev/null 2>&1 && bad "alias_target: błąd transportu przeszedł" || ok "alias_target: błąd transportu => kod 1"
+es() { echo '{"error":{"type":"x"},"status":503}'; return 22; }
+alias_target x >/dev/null 2>&1 && bad "alias_target: 503 przeszedł" || ok "alias_target: 503 => kod 1"
+es() { echo '{"products-v1":{"aliases":{"products-search":{}}}}'; }
+eq "alias_target sukces" "$(alias_target x)" "products-v1"
+
+# reindeks z celem jako ŹRÓDŁEM nie jest dopasowany (kotwica " to [cel]")
+src='{"nodes":{"n1":{"tasks":{"n1:20":{"description":"reindex from [products-v2] to [products-v3][_doc]"}}}}}'
+eq "cel jako źródło nie pasuje" "$(running_reindex_ids products-v2 <<<"${src}")" ""
+eq "cel jako cel pasuje" "$(running_reindex_ids products-v3 <<<"${src}")" "n1:20"
+
 # --- cele Make ---------------------------------------------------------------
 for t in reindex reindex-abort reindex-cleanup reindex-break; do
   grep -qE "^${t}:" Makefile && ok "Makefile: cel ${t}" || bad "Makefile: brak celu ${t}"

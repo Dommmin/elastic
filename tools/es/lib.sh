@@ -42,7 +42,7 @@ target = "[%s]" % sys.argv[1]
 nodes = json.load(sys.stdin).get("nodes", {})
 for node in nodes.values():
     for tid, task in node.get("tasks", {}).items():
-        if "parent_task_id" not in task and target in task.get("description", ""):
+        if "parent_task_id" not in task and (" to " + target) in task.get("description", ""):
             print(tid)
 ' "$1"
 }
@@ -81,26 +81,42 @@ es() {
     "$1" "$2" "${3:-}"
 }
 
-# alias_target ALIAS — indeks(y) pod aliasem, jeden na linię (pusto, gdy brak)
+# alias_target ALIAS — indeks(y) pod aliasem, jeden na linię.
+# Brak aliasu (404) = pusto, kod 0. Błąd transportu/ES/parsowania = kod 1 (fail-closed).
 alias_target() {
-  es GET "/_alias/$1" 2>/dev/null | python3 -c '
-import json, sys
+  local body rc=0
+  body="$(es GET "/_alias/$1" 2>/dev/null)" || rc=$?
+  printf '%s' "${body}" | ALIAS_RC="${rc}" python3 -c '
+import json, os, sys
+rc = int(os.environ["ALIAS_RC"])
 try:
     data = json.load(sys.stdin)
 except ValueError:
-    sys.exit(0)
+    sys.exit(1)
+if not isinstance(data, dict):
+    sys.exit(1)
+if "error" in data:
+    sys.exit(0 if data.get("status") == 404 else 1)
+if rc != 0:
+    sys.exit(1)
 for name in sorted(data):
-    if "error" not in data:
-        print(name)'
+    print(name)'
 }
 
-# alias_targets — wszystkie cele obu aliasów (do preflightu)
-alias_targets() { { alias_target "${READ_ALIAS}"; alias_target "${WRITE_ALIAS}"; } | sort -u; }
+# alias_targets — cele obu aliasów (do preflightu). Fail-closed: błąd odczytu
+# któregokolwiek aliasu albo brak celu odczytu/zapisu = kod 1.
+alias_targets() {
+  local r w
+  r="$(alias_target "${READ_ALIAS}")" || return 1
+  w="$(alias_target "${WRITE_ALIAS}")" || return 1
+  [[ -n "${r}" && -n "${w}" ]] || return 1
+  printf '%s\n%s\n' "${r}" "${w}" | sort -u
+}
 
 # preflight_live INDEKS — preflight na żywych aliasach
 preflight_live() {
   local targets
-  targets="$(alias_targets)" || return 1
+  targets="$(alias_targets)" || { echo "preflight: nie umiem odczytać aliasów — odmawiam" >&2; return 1; }
   # shellcheck disable=SC2086
   preflight_index_free "$1" ${targets}
 }
@@ -113,13 +129,15 @@ reindex_task_ids() {
 # cancel_reindex_into CEL — anuluje trwający _reindex do CEL i czeka do zatrzymania
 cancel_reindex_into() {
   local target="$1" ids id tries=0
-  ids="$(reindex_task_ids "${target}")"
+  ids="$(reindex_task_ids "${target}")" || die "nie umiem odczytać zadań _reindex"
   [[ -n "${ids}" ]] || { info "  brak trwającego _reindex do ${target}"; return 0; }
   for id in ${ids}; do
     info "  anuluję zadanie ${id}"
     es POST "/_tasks/${id}/_cancel" >/dev/null || true
   done
-  while [[ -n "$(reindex_task_ids "${target}")" ]]; do
+  while :; do
+    ids="$(reindex_task_ids "${target}")" || die "nie umiem odczytać zadań _reindex"
+    [[ -n "${ids}" ]] || break
     tries=$((tries + 1))
     [[ ${tries} -le 60 ]] || die "_reindex do ${target} nie zatrzymał się w 120 s"
     sleep 2

@@ -6,6 +6,7 @@
 #    break                                              dowód bramki: niepełny indeks MUSI jej nie przejść
 #  Fail-closed: każdy krok, który zawiedzie, zatrzymuje skrypt.
 set -euo pipefail
+# shellcheck source=tools/es/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
@@ -41,7 +42,8 @@ cmd_run() {
   [[ "${source}" == es || "${source}" == pg ]] || die "source=es|pg (podano: ${source})"
 
   local old write target gate ndcg_old ndcg_new
-  old="$(alias_target "${READ_ALIAS}")"; write="$(alias_target "${WRITE_ALIAS}")"
+  old="$(alias_target "${READ_ALIAS}")" || die "nie umiem odczytać aliasu ${READ_ALIAS}"
+  write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
   [[ -n "${old}" && "${old}" == "${write}" ]] || die "aliasy muszą wskazywać ten sam indeks (read='${old}', write='${write}') — migracja w toku? make reindex-abort"
 
   trap 'echo; echo "przerwano — jeśli _reindex trwał, anuluję"; [[ -n "${target:-}" ]] && cancel_reindex_into "${target}"; echo "Stan: make es-health; wycofanie: make reindex-abort"; exit 130' INT TERM
@@ -96,7 +98,7 @@ summary() {
 
 cmd_abort() {
   local write
-  write="$(alias_target "${WRITE_ALIAS}")"
+  write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
   [[ -n "${write}" ]] || die "alias ${WRITE_ALIAS} nie istnieje"
   info "── 1/4 anulowanie _reindex do ${write} ──"
   cancel_reindex_into "${write}"
@@ -127,27 +129,28 @@ cmd_break() {
   brk=""
   local ts read_target count max out gate rc=0
   ts="$(date +%s)"; brk="products-break-${ts}"
-  read_target="$(alias_target "${READ_ALIAS}")"
+  read_target="$(alias_target "${READ_ALIAS}")" || die "nie umiem odczytać aliasu ${READ_ALIAS}"
   [[ -n "${read_target}" ]] || die "alias ${READ_ALIAS} nie istnieje"
   preflight_live "${brk}" || die "odmowa"
   # Zawsze sprzątamy indeks testowy; usuwamy WYŁĄCZNIE po nazwie (nigdy aliasy).
   trap '[[ -z "${brk}" ]] || es DELETE "/${brk}" >/dev/null 2>&1 || true; cleanup_tmp' EXIT
   trap 'exit 130' INT TERM
-  count="$(es GET "/${read_target}/_count" | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])')"
+  count="$(es GET "/${read_target}/_count" | python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])')" || die "nie umiem policzyć dokumentów ${read_target}"
   max=$((count * 30 / 100)); [[ ${max} -ge 1 ]] || max=1
   info "── ${read_target}: ${count} dok.; kopiuję max_docs=${max} (~30 %) do ${brk} (bez aliasów) ──"
   es POST "/_reindex?wait_for_completion=true&refresh=true" \
     "{\"max_docs\":${max},\"source\":{\"index\":\"${read_target}\"},\"dest\":{\"index\":\"${brk}\"}}" \
-    | python3 -c 'import json,sys; r=json.load(sys.stdin); print("  skopiowano created=%s total=%s failures=%s" % (r.get("created"), r.get("total"), len(r.get("failures", []))))'
+    | python3 -c 'import json,sys; r=json.load(sys.stdin); print("  skopiowano created=%s total=%s failures=%s" % (r.get("created"), r.get("total"), len(r.get("failures", []))))' \
+    || die "_reindex do ${brk} nie przeszedł"
   info "── bramka na niepełnym indeksie (oczekiwane GATE=FAIL) ──"
   set +e; out="$(sc search:index:gate "--index=${brk}" 2>&1)"; rc=$?; set -e
   echo "${out}"
   gate="$(echo "${out}" | kv_get GATE)"
-  if [[ "${gate}" == FAIL && ${rc} -ne 0 ]]; then
+  if [[ "${gate}" == FAIL && ${rc} -ne 0 ]] && grep -q 'NIESPEŁNIONE: liczba dokumentów' <<<"${out}"; then
     info "✓ bramka odmówiła niepełnemu indeksowi (GATE=FAIL) — działa."
     return 0
   fi
-  die "bramka NIE odmówiła niepełnemu indeksowi (GATE=${gate:-brak}, kod ${rc}) — nie wolno jej ufać"
+  die "bramka nie odmówiła z powodu liczby dokumentów (GATE=${gate:-brak}, kod ${rc}) — nie wolno jej ufać"
 }
 
 case "${1:-}" in
