@@ -48,6 +48,13 @@ cmd_run() {
 
   trap 'echo; echo "przerwano — jeśli _reindex trwał, anuluję"; [[ -n "${target:-}" ]] && cancel_reindex_into "${target}"; echo "Stan: make es-health; wycofanie: make reindex-abort"; exit 130' INT TERM
 
+  # nDCG starego indeksu mierzymy PRZED switch-write: potem ${old} już nie dostaje
+  # zapisów, a oceny search:eval liczą się z bazy catalogu — produkty usunięte w
+  # trakcie migracji zostają w ${old} bez oceny i strażnik remisów zgłasza fałszywy
+  # „Remis z różnymi ocenami” (exit 1). Złapane na żywo w ETAPIE 10 (Task 12).
+  step "ndcg ${old}" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || die "search:eval ${old} nie przeszedł (przed migracją — nic nie zmieniono)"
+  ndcg_old="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${old}"
+
   step prepare sc search:index:migrate prepare || die "prepare nie przeszedł"
   target="$(kv_get TARGET <"${OUT_FILE}")"
   [[ -n "${target}" ]] || die "prepare nie wypisał TARGET="
@@ -68,8 +75,6 @@ cmd_run() {
   gate="$(kv_get GATE <"${OUT_FILE}")"
   [[ "${gate}" == PASS ]] || die "bramka: GATE=${gate:-brak} — nie przełączam odczytu. make reindex-abort"
 
-  step "ndcg ${old}" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || die "search:eval ${old} nie przeszedł"
-  ndcg_old="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${old}"
   step "ndcg ${target}" ${DC} exec -T catalog-app php artisan search:eval "--index=${target}" || die "search:eval ${target} nie przeszedł"
   ndcg_new="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${target}"
   if ndcg_regressed "${ndcg_old}" "${ndcg_new}"; then

@@ -141,6 +141,12 @@ grep -nE '^ +ES_S3_(ACCESS|SECRET)_KEY: *[^$ ]' compose.yaml && bad "compose: kl
 for t in reindex reindex-abort reindex-cleanup reindex-break es-snapshots-setup es-restore-drill es-restore-drill-destructive es-slm-run; do
   grep -qE "^${t}:" Makefile && ok "Makefile: cel ${t}" || bad "Makefile: brak celu ${t}"
 done
+# Kolejność kroków run: nDCG starego indeksu przed switch-write (potem stary indeks
+# nie dostaje zapisów i strażnik remisów fałszywie odmawia — Task 12 ETAPU 10).
+l_eval_old="$(grep -n 'search:eval "--index=${old}"' tools/es/reindex.sh | head -1 | cut -d: -f1)"
+l_switch_write="$(grep -n '^  step switch-write ' tools/es/reindex.sh | head -1 | cut -d: -f1)"
+[[ -n "${l_eval_old}" && -n "${l_switch_write}" && ${l_eval_old} -lt ${l_switch_write} ]] \
+  && ok "nDCG starego indeksu przed switch-write" || bad "nDCG starego indeksu musi być przed switch-write"
 # Skrypt nie może wypisywać danych dostępowych.
 grep -nE 'echo[^|]*(PASSWORD|ELASTICSEARCH_USER)|printf[^|]*(PASSWORD|ELASTICSEARCH_USER)' tools/es/*.sh | grep -v '^tools/es/test.sh' \
   && bad "skrypt wypisuje dane dostępowe" || ok "brak wypisywania danych dostępowych"
