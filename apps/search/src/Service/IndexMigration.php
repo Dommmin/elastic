@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use Elastic\Elasticsearch\Client;
+use Elastic\Elasticsearch\Exception\ClientResponseException;
 
 /**
  * Kroki migracji indeksu produktów bez przestoju (ETAP 10, spec 5.3–5.5, 8):
@@ -20,7 +21,8 @@ use Elastic\Elasticsearch\Client;
  * Metadane migracji żyją w `mappings._meta.migration` indeksu vN+1:
  *   source            — vN, z którego migrujemy (tylko taki vN+1 jest "nasz")
  *   replicas, refresh_interval — wartości z pliku mapowania, przywracane w finalize
- *   prepared_at, switch_write_at, switched_read_at — znaczniki czasu ISO 8601 (UTC)
+ *   reindex_task      — id ostatniego zadania `_reindex` (jego wynik sprawdzają finalize/switch-read)
+ *   prepared_at, switch_write_at, switch_read_started_at, switched_read_at — ISO 8601 (UTC)
  */
 final class IndexMigration
 {
@@ -59,8 +61,14 @@ final class IndexMigration
             if (! $resume) {
                 throw new MigrationRefused("{$target} już istnieje. Jeśli to cel przerwanej migracji z {$source}, uruchom prepare z --resume.");
             }
-            if (($this->meta($target)['source'] ?? null) !== $source) {
+            $meta = $this->meta($target);
+            if (($meta['source'] ?? null) !== $source) {
                 throw new MigrationRefused("{$target} istnieje, ale nie utworzył go prepare migracji z {$source} — nie przejmuję obcego indeksu.");
+            }
+            if (isset($meta['switch_write_at'])) {
+                // Po switch-write (i abort) vN+1 dostał zapisy strumienia, a usunięć
+                // zrobionych w vN po abort nie zna — kopia z vN by ich nie usunęła.
+                throw new MigrationRefused("{$target} był już celem zapisu (switch-write {$meta['switch_write_at']}) — nie wznawiam. Usuń {$target} i uruchom prepare od nowa.");
             }
 
             return $target;
@@ -127,6 +135,7 @@ final class IndexMigration
     public function startReindex(IndexAliases $aliases, int|string $slices, float $rps): string
     {
         [$source, $target] = $this->inProgress($aliases);
+        $this->refuseWhileReindexRuns($target);
 
         // _reindex czyta przez search: zapisy sprzed przepięcia aliasu,
         // jeszcze nieodświeżone w vN, inaczej by się nie skopiowały.
@@ -142,8 +151,13 @@ final class IndexMigration
                 'dest' => ['index' => $target, 'version_type' => 'external'],
             ],
         ])->asArray();
+        $taskId = (string) $response['task'];
 
-        return (string) $response['task'];
+        // finalize i switch-read sprawdzają WYNIK tego zadania (Tasks API trzyma
+        // go w `.tasks`, bo wait_for_completion=false) — nie tylko to, że nie trwa.
+        $this->putMeta($target, ['reindex_task' => $taskId]);
+
+        return $taskId;
     }
 
     /**
@@ -174,7 +188,14 @@ final class IndexMigration
             }
 
             if (! $cancelRequested && $shouldCancel()) {
-                $this->client->tasks()->cancel(['task_id' => $taskId]);
+                try {
+                    $this->client->tasks()->cancel(['task_id' => $taskId]);
+                } catch (ClientResponseException $e) {
+                    // Zadanie skończyło się między get a _cancel — następny get to pokaże.
+                    if ($e->getCode() !== 404) {
+                        throw $e;
+                    }
+                }
                 $cancelRequested = true;
 
                 continue;
@@ -192,7 +213,7 @@ final class IndexMigration
     public function finalize(IndexAliases $aliases): string
     {
         [, $target] = $this->inProgress($aliases);
-        $this->refuseWhileReindexRuns($target);
+        $this->refuseUnlessReindexSucceeded($target);
         $meta = $this->meta($target);
 
         $this->client->indices()->putSettings(['index' => $target, 'body' => ['index' => [
@@ -214,21 +235,38 @@ final class IndexMigration
      * Bramka liczona tutaj, w tym samym procesie — nie ma flagi, która by
      * ją ominęła. Przy FAIL alias odczytu zostaje na vN (zwrócony wynik
      * mówi, co się nie zgadza).
+     *
+     * Wymaga udanego `_reindex` i finalize (repliki/refresh z mapowania) —
+     * bramka sama odświeża indeks i przy 0 replik jest zielona, więc bez tego
+     * odczyt mógłby trafić na indeks z `refresh_interval: -1`, w którym
+     * zapisy strumienia nigdy nie stają się widoczne.
+     *
+     * `switch_read_started_at` trafia do `_meta` PRZED przepięciem: jeśli proces
+     * padnie po nim, ponowne switch-read dokończy kroki po przepięciu
+     * (zwraca wtedy null), a abort już odmawia.
      */
-    public function switchRead(IndexAliases $aliases, float $tolerance): GateResult
+    public function switchRead(IndexAliases $aliases, float $tolerance): ?GateResult
     {
+        $read = $aliases->readTarget();
+        $meta = $read === null ? [] : $this->meta($read);
+        if ($read !== null && $read === $aliases->writeTarget() && isset($meta['switch_read_started_at']) && ! isset($meta['switched_read_at'])) {
+            $this->completeReadSwitch($read);
+
+            return null;
+        }
+
         [$source, $target] = $this->inProgress($aliases);
-        $this->refuseWhileReindexRuns($target);
+        $this->refuseUnlessReindexSucceeded($target);
+        $this->refuseUnlessFinalized($target);
 
         $result = $this->gate->check($target, $tolerance);
         if (! $result->passed()) {
             return $result;
         }
 
+        $this->putMeta($target, ['switch_read_started_at' => self::now()]);
         $aliases->swap($aliases->read, $source, $target);
-        // null = usuń ustawienie, czyli wróć do domyślnych 60 s.
-        $this->client->indices()->putSettings(['index' => $target, 'body' => ['index' => ['gc_deletes' => null]]]);
-        $this->putMeta($target, ['switched_read_at' => self::now()]);
+        $this->completeReadSwitch($target);
 
         return $result;
     }
@@ -246,7 +284,7 @@ final class IndexMigration
         $meta = $write === null ? [] : $this->meta($write);
         $source = $meta['source'] ?? null;
 
-        if ($write === null || $source === null || isset($meta['switched_read_at']) || ! isset($meta['switch_write_at'])) {
+        if ($write === null || $source === null || isset($meta['switch_read_started_at']) || ! isset($meta['switch_write_at'])) {
             throw new MigrationRefused(sprintf(
                 'Nic do cofnięcia: alias zapisu %s wskazuje %s, który nie jest celem migracji w toku (po switch-write, przed switch-read).',
                 $aliases->write,
@@ -256,6 +294,7 @@ final class IndexMigration
         if (! $this->exists($source)) {
             throw new MigrationRefused("Indeks źródłowy {$source} nie istnieje — nie ma dokąd wrócić.");
         }
+        $this->refuseWhileReindexRuns($write);
 
         $aliases->swap($aliases->write, $write, $source);
         if ($aliases->readTarget() === $write) {
@@ -267,9 +306,10 @@ final class IndexMigration
 
     /**
      * Indeksy tej samej rodziny (`<prefiks>-vK`), na które nie wskazuje żaden
-     * z dwóch aliasów — kandydaci do `cleanup`.
+     * z dwóch aliasów — kandydaci do `cleanup`. Pominięte (`skipped`): vN+1 po
+     * prepare, jeszcze bez switch-write — to zaczęta migracja, nie śmieć.
      *
-     * @return list<string>
+     * @return array{delete: list<string>, skipped: list<string>}
      */
     public function cleanupCandidates(IndexAliases $aliases): array
     {
@@ -281,7 +321,14 @@ final class IndexMigration
         $names = array_filter($names, static fn (string $name): bool => preg_match('/^'.preg_quote($prefix, '/').'\d+$/', $name) === 1 && $name !== $read);
         sort($names);
 
-        return array_values($names);
+        $result = ['delete' => [], 'skipped' => []];
+        foreach ($names as $name) {
+            $meta = $this->meta($name);
+            $prepared = isset($meta['source']) && ! isset($meta['switch_write_at']);
+            $result[$prepared ? 'skipped' : 'delete'][] = $name;
+        }
+
+        return $result;
     }
 
     /** Usuwa JEDEN indeks po jawnej nazwie, po ponownym sprawdzeniu, że nie jest celem aliasu. */
@@ -297,7 +344,13 @@ final class IndexMigration
     /** `products-v7` → `products-v8`. */
     public static function nextIndex(string $index): string
     {
-        return (string) preg_replace('/-v\d+$/', '-v'.(IndexAliases::versionOf($index) + 1), $index);
+        try {
+            $version = IndexAliases::versionOf($index);
+        } catch (\InvalidArgumentException) {
+            throw new MigrationRefused("Alias wskazuje {$index} — nazwa bez przyrostka -vN, nie wiem, jaka jest następna wersja.");
+        }
+
+        return (string) preg_replace('/-v\d+$/', '-v'.($version + 1), $index);
     }
 
     /** Stan spoczynku: oba aliasy na tym samym indeksie. Zwraca ten indeks. */
@@ -335,6 +388,62 @@ final class IndexMigration
         }
 
         return [$read, $write];
+    }
+
+    /** Zadanie z `_meta.reindex_task` skończone, bez błędu, bez `failures`, nieanulowane. */
+    private function refuseUnlessReindexSucceeded(string $target): void
+    {
+        $taskId = $this->meta($target)['reindex_task'] ?? null;
+        if ($taskId === null) {
+            throw new MigrationRefused("Do {$target} nie uruchomiono jeszcze `reindex`.");
+        }
+
+        try {
+            $task = $this->client->tasks()->get(['task_id' => $taskId])->asArray();
+        } catch (ClientResponseException $e) {
+            if ($e->getCode() !== 404) {
+                throw $e;
+            }
+            throw new MigrationRefused("Nie ma wyniku zadania {$taskId} w Tasks API — nie da się potwierdzić reindeksu. Uruchom `reindex` ponownie.");
+        }
+
+        if (! ($task['completed'] ?? false)) {
+            throw new MigrationRefused("_reindex do {$target} jeszcze trwa (zadanie {$taskId}) — poczekaj (`reindex --wait` pokaże postęp) albo go anuluj.");
+        }
+
+        $response = $task['response'] ?? [];
+        $problem = match (true) {
+            isset($task['error']) => 'błąd: '.json_encode($task['error'], \JSON_UNESCAPED_UNICODE),
+            ($response['canceled'] ?? null) !== null => 'anulowane ('.$response['canceled'].')',
+            ($response['failures'] ?? []) !== [] => \count($response['failures']).' błędów zapisu, np. '.json_encode($response['failures'][0], \JSON_UNESCAPED_UNICODE),
+            default => null,
+        };
+        if ($problem !== null) {
+            throw new MigrationRefused("_reindex do {$target} (zadanie {$taskId}) nie zakończył się pomyślnie: {$problem}. Uruchom `reindex` ponownie — kopiuje tylko brakujące.");
+        }
+    }
+
+    /** Repliki i refresh_interval takie jak w `_meta` (z pliku mapowania), czyli po finalize. */
+    private function refuseUnlessFinalized(string $target): void
+    {
+        $meta = $this->meta($target);
+        $settings = $this->client->indices()->getSettings(['index' => $target])->asArray()[$target]['settings']['index'];
+
+        if ((string) ($settings['number_of_replicas'] ?? '') !== (string) $meta['replicas']
+            || (string) ($settings['refresh_interval'] ?? '') !== (string) $meta['refresh_interval']) {
+            throw new MigrationRefused(sprintf(
+                '%s nie jest sfinalizowany (repliki %s, refresh_interval %s; oczekiwane %s, %s) — najpierw `finalize`.',
+                $target, $settings['number_of_replicas'] ?? '?', $settings['refresh_interval'] ?? '?', $meta['replicas'], $meta['refresh_interval'],
+            ));
+        }
+    }
+
+    /** Kroki po przepięciu odczytu — idempotentne, więc można je powtórzyć po awarii. */
+    private function completeReadSwitch(string $target): void
+    {
+        // null = usuń ustawienie, czyli wróć do domyślnych 60 s.
+        $this->client->indices()->putSettings(['index' => $target, 'body' => ['index' => ['gc_deletes' => null]]]);
+        $this->putMeta($target, ['switched_read_at' => self::now()]);
     }
 
     private function refuseWhileReindexRuns(string $target): void

@@ -3,7 +3,11 @@
 namespace App\Tests\Integration\Command;
 
 use App\Command\IndexGateCommand;
+use App\Service\CatalogProjectionClient;
 use App\Service\IndexGate;
+use App\Tracing\TraceContext;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 use App\Tests\Support\RealElasticsearch;
 use Elastic\Elasticsearch\Client;
 use PHPUnit\Framework\Attributes\Group;
@@ -84,6 +88,19 @@ final class IndexGateCommandTest extends TestCase
         $this->client->bulk(['body' => $body]);
 
         self::assertStringContainsString('GATE=PASS', $this->gate()->getDisplay());
+    }
+
+    public function test_catalog_niedostepny_to_fail(): void
+    {
+        $this->bulkProducts($this->client, $this->index, 1, 2000);
+        $catalog = new CatalogProjectionClient('http://catalog.invalid', new TraceContext, new MockHttpClient(new MockResponse('', ['http_code' => 503])));
+
+        $tester = new CommandTester(new IndexGateCommand(new IndexGate($this->client, $catalog)));
+        $tester->execute(['--index' => $this->index]);
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('GATE=FAIL', $tester->getDisplay());
+        self::assertStringContainsString('catalog niedostępny', $tester->getDisplay());
     }
 
     /** @param array<string, string> $options */

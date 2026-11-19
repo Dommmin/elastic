@@ -37,6 +37,8 @@ final class IndexMigrateCommandTest extends TestCase
     private string $mappingsDir;
     private IndexAliases $aliases;
     private int $catalogCount = self::DOCS;
+    /** @var list<string> dodatkowe jednorazowe indeksy do usunięcia w tearDown */
+    private array $extraIndices = [];
 
     protected function setUp(): void
     {
@@ -66,8 +68,8 @@ final class IndexMigrateCommandTest extends TestCase
         if (! isset($this->prefix)) {
             return;
         }
-        foreach ([1, 2, 3] as $version) {
-            $this->client->indices()->delete(['index' => $this->prefix.$version, 'ignore_unavailable' => true]);
+        foreach ([...array_map(fn (int $v) => $this->prefix.$v, [1, 2, 3]), ...$this->extraIndices] as $index) {
+            $this->client->indices()->delete(['index' => $index, 'ignore_unavailable' => true]);
         }
         foreach (glob($this->mappingsDir.'/*') ?: [] as $file) {
             unlink($file);
@@ -305,6 +307,152 @@ final class IndexMigrateCommandTest extends TestCase
         $this->assertStep('cleanup', ['--yes' => true]);
         self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.'1'])->asBool());
         self::assertTrue($this->client->indices()->exists(['index' => $this->prefix.'2'])->asBool());
+    }
+
+    public function test_switch_read_bez_finalize_odmawia(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $this->assertStep('reindex', ['--wait' => true]);
+
+        // Przy 0 replik indeks jest zielony, a bramka sama odświeża — liczba się zgadza.
+        $tester = $this->migrate('switch-read');
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('finalize', $this->flat($tester));
+        self::assertSame($this->prefix.'1', $this->aliases->readTarget());
+    }
+
+    public function test_finalize_bez_reindeksu_odmawia(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+
+        $tester = $this->migrate('finalize');
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('reindex', $this->flat($tester));
+        self::assertSame('0', $this->settings($this->prefix.'2')['number_of_replicas']);
+    }
+
+    public function test_anulowany_reindeks_blokuje_finalize_i_switch_read(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $taskId = $this->startThrottledReindex();
+
+        $this->client->tasks()->cancel(['task_id' => $taskId]);
+        $this->waitUntilCompleted($taskId);
+
+        $finalize = $this->migrate('finalize');
+        self::assertSame(Command::FAILURE, $finalize->getStatusCode());
+        self::assertStringContainsString('anulowane', $this->flat($finalize));
+
+        // Nawet ręcznie "sfinalizowany" indeks nie przejdzie: wynik zadania się nie zmienił.
+        $this->client->indices()->putSettings(['index' => $this->prefix.'2', 'body' => ['index' => ['number_of_replicas' => 1, 'refresh_interval' => '1s']]]);
+        $switch = $this->migrate('switch-read');
+        self::assertSame(Command::FAILURE, $switch->getStatusCode());
+        self::assertStringContainsString('anulowane', $this->flat($switch));
+        self::assertSame($this->prefix.'1', $this->aliases->readTarget());
+    }
+
+    public function test_reindex_i_abort_odmawiaja_gdy_reindeks_trwa(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $taskId = $this->startThrottledReindex();
+
+        try {
+            $again = $this->migrate('reindex');
+            self::assertSame(Command::FAILURE, $again->getStatusCode());
+            self::assertStringContainsString('trwa', $this->flat($again));
+
+            $abort = $this->migrate('abort');
+            self::assertSame(Command::FAILURE, $abort->getStatusCode());
+            self::assertSame($this->prefix.'2', $this->aliases->writeTarget());
+        } finally {
+            $this->client->tasks()->cancel(['task_id' => $taskId]);
+            $this->waitUntilCompleted($taskId);
+        }
+    }
+
+    public function test_resume_po_abort_odmawia(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $this->assertStep('abort');
+
+        $tester = $this->migrate('prepare', ['--resume' => true]);
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('Usuń '.$this->prefix.'2', $this->flat($tester));
+        self::assertStringNotContainsString('TARGET=', $tester->getDisplay());
+    }
+
+    public function test_switch_read_dokancza_po_awarii_po_przepieciu_a_abort_juz_odmawia(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $this->assertStep('reindex', ['--wait' => true]);
+        $this->assertStep('finalize');
+
+        // Symulacja: proces padł zaraz po przepięciu odczytu (znacznik startu jest, końca nie).
+        $mapping = $this->client->indices()->getMapping(['index' => $this->prefix.'2'])->asArray();
+        $meta = $mapping[$this->prefix.'2']['mappings']['_meta'];
+        $meta['migration']['switch_read_started_at'] = '2026-11-19T12:00:00+00:00';
+        $this->client->indices()->putMapping(['index' => $this->prefix.'2', 'body' => ['_meta' => $meta]]);
+        $this->aliases->swap($this->read, $this->prefix.'1', $this->prefix.'2');
+
+        self::assertSame(Command::FAILURE, $this->migrate('abort')->getStatusCode());
+
+        $this->assertStep('switch-read');
+        self::assertArrayNotHasKey('gc_deletes', $this->settings($this->prefix.'2'));
+        self::assertSame($this->prefix.'2', $this->aliases->readTarget());
+    }
+
+    public function test_alias_na_indeksie_bez_przyrostka_wersji_to_czytelna_odmowa(): void
+    {
+        $plain = $this->prefix.'1-plain';
+        $this->extraIndices[] = $plain;
+        $this->client->indices()->create(['index' => $plain, 'body' => $this->mappingBody(1)]);
+        $this->aliases->swap($this->read, $this->prefix.'1', $plain);
+        $this->aliases->swap($this->write, $this->prefix.'1', $plain);
+
+        $tester = $this->migrate('prepare');
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('-vN', $this->flat($tester));
+    }
+
+    public function test_cleanup_pomija_przygotowany_cel_bez_switch_write(): void
+    {
+        $this->fullMigration();
+        $this->assertStep('prepare'); // v3, jeszcze bez switch-write
+
+        $this->assertStep('cleanup', ['--yes' => true]);
+
+        self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.'1'])->asBool());
+        self::assertTrue($this->client->indices()->exists(['index' => $this->prefix.'3'])->asBool());
+    }
+
+    /** `reindex` bez --wait z rps=100: pierwsza paczka 1000, potem ~10 s przerwy — zadanie na pewno trwa. */
+    private function startThrottledReindex(): string
+    {
+        $tester = $this->assertStep('reindex', ['--rps' => '100']);
+        preg_match('/^TASK=(\S+)$/m', $tester->getDisplay(), $m);
+
+        return $m[1];
+    }
+
+    private function waitUntilCompleted(string $taskId): void
+    {
+        for ($i = 0; $i < 100; ++$i) {
+            if ($this->client->tasks()->get(['task_id' => $taskId])->asArray()['completed'] ?? false) {
+                return;
+            }
+            usleep(100_000);
+        }
+        self::fail("Zadanie {$taskId} nie skończyło się w 10 s.");
     }
 
     private function fullMigration(): void

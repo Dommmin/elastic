@@ -152,6 +152,12 @@ final class IndexMigrateCommand extends Command
         }
 
         $result = $this->migration->switchRead($aliases, (float) $tolerance);
+        if ($result === null) {
+            $io->success("{$aliases->read} był już przepięty — dokończono kroki po przepięciu (gc_deletes domyślne).");
+
+            return Command::SUCCESS;
+        }
+
         foreach ($result->lines() as $line) {
             $output->writeln($line);
         }
@@ -179,7 +185,10 @@ final class IndexMigrateCommand extends Command
 
     private function cleanup(InputInterface $input, SymfonyStyle $io, IndexAliases $aliases): int
     {
-        $candidates = $this->migration->cleanupCandidates($aliases);
+        ['delete' => $candidates, 'skipped' => $skipped] = $this->migration->cleanupCandidates($aliases);
+        foreach ($skipped as $index) {
+            $io->note("{$index}: przygotowany przez prepare, bez switch-write — pomijam (zaczęta migracja). Usuń ręcznie, jeśli porzucona.");
+        }
         if ($candidates === []) {
             $io->note('Brak indeksów bez aliasu — nic do usunięcia.');
 
