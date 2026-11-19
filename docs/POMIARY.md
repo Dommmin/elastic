@@ -647,7 +647,7 @@ nie opcja Messengera.
 > Szkic z Task 2 (seed 300 tys. i liczby wejściowe). Reindeks, bramka i dryf wersji dojdą
 > w kolejnych taskach. Maszyna współdzielona z innymi projektami: liczby **orientacyjne**.
 
-**Konfiguracja (fakt, sprawdzone `_nodes/stats` i `docker inspect`):** 3 węzły ES 9.x
+**Konfiguracja (fakt, sprawdzone `_nodes/stats` i `docker inspect`):** 3 węzły ES 9.5.1
 (`es01–03`), `products-v1` 1 shard + 1 replika, alias `products-search`. **Węzły działały
 z `-Xmx1g` i `mem_limit` 2 GiB, a NIE z zakładanymi `ES_HEAP=512m ES_MEM_LIMIT=1536m`**
 (stack wstał z domyślnych wartości `.env`; zmienne z powłoki działają dopiero po
