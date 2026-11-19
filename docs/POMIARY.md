@@ -639,3 +639,102 @@ prawdopodobnie nie jest broker, tylko pętla `basic.get` + pobranie projekcji z 
 zapis do ES w transakcji, po jednej wiadomości naraz (nie sprawdzałem tego osobno). Gdyby ten czas trzeba było skrócić, dźwignią jest równoległość konsumentów
 (`replicas` search-consumer) lub przejście na `basic.consume` z prefetch (inny transport),
 nie opcja Messengera.
+
+---
+
+## 15. ETAP 10 — operacje na indeksach: pomiary wstępne (2026-11-19) — SZKIC
+
+> Szkic z Task 2 (seed 300 tys. i liczby wejściowe). Reindeks, bramka i dryf wersji dojdą
+> w kolejnych taskach. Maszyna współdzielona z innymi projektami: liczby **orientacyjne**.
+
+**Konfiguracja (fakt, sprawdzone `_nodes/stats` i `docker inspect`):** 3 węzły ES 9.x
+(`es01–03`), `products-v1` 1 shard + 1 replika, alias `products-search`. **Węzły działały
+z `-Xmx1g` i `mem_limit` 2 GiB, a NIE z zakładanymi `ES_HEAP=512m ES_MEM_LIMIT=1536m`**
+(stack wstał z domyślnych wartości `.env`; zmienne z powłoki działają dopiero po
+odtworzeniu kontenerów, a `up --no-recreate` ich nie zmienia). Pomiary reindeksu pod
+budżet 512m wymagają więc odtworzenia węzłów z tymi zmiennymi. Docker VM: 10 CPU, ok. 15,6 GiB.
+Brak OOM-kill i restartów węzłów ES w czasie seeda (`OOMKilled=false`, `RestartCount=0`).
+
+### Seed 300 000 produktów (`marketplace:seed --n=300000 --big-seller=100000 --fresh`)
+
+Prawdziwy pipeline: wiersz `products` + zdarzenie w `outbox` (1 zdarzenie na produkt) →
+`outbox-publisher` → kolejka quorum `search.product.sync` → `search-consumer` →
+projekcja z catalogu (HTTP) → ES z `version = projected_at_us`.
+
+| Etap | Wynik |
+|---|---|
+| Generowanie w Postgresie + publikacja outboxu | ok. 21 min (≈ 14 tys. produktów/min, ≈ 240/s) |
+| Konsument ×1 (równolegle z seedem, który zajmuje CPU catalogu) | ≈ 25–30 dok./s (1 500–1 800/min); prognoza dla 300 tys.: ≈ 2,8–3,3 h |
+| Konsument ×4 (`--scale search-consumer=4`) | ≈ 70–100 dok./s (średnio ≈ 80/s w pierwszych 4 min, 4 700–6 000/min); ok. 3× przyspieszenia, nie 4× |
+| Całość: start seeda → pusta kolejka | ok. 73 min (20:36 → 21:49 UTC); ES = 300 000 dokumentów = `SELECT count(*) FROM products` |
+
+Fakty o przepustowości: kolejka rosła do ≈ 260 tys. wiadomości, bo producent (≈ 240/s) jest
+~8–10× szybszy niż jeden konsument. Przy 4 konsumentach `catalog-app` (projekcja przez HTTP)
+i Postgres były na 100–170 % CPU, a konsumenty na ≈ 10 % każdy — **wąskie gardło leży
+w catalogu (projekcja), nie w konsumentach ani w ES** (hipoteza oparta na `docker stats`,
+nie sprawdzona osobnym pomiarem). Zrównoleglenie konsumentów jest bezpieczne dzięki
+wersjonowaniu zewnętrznemu; po opróżnieniu kolejki wróciłem do 1 konsumenta.
+
+**Znalezione przy seedzie (RUNBOOK-worthy):**
+1. **Zgubiona wiadomość.** Po opróżnieniu kolejki w ES było 299 999 dokumentów. Brakujący
+   produkt (id 158 220) trafił do transportu `failed` (Doctrine) z
+   `RejectRedeliveredMessageException`, ok. 20:43 UTC, czyli jeszcze przy jednym konsumencie
+   (wiadomość wróciła do brokera po zerwaniu połączenia konsumenta i Symfony odrzuca
+   redelivery — przyczyny zerwania nie ustaliłem). `messenger:failed:retry 581 --force`
+   naprawiło (300 000). Wniosek: **po każdym dużym seedzie/reindeksie porównuj liczbę
+   dokumentów z `count(*)` i sprawdzaj `messenger:failed:show`** — sama pusta kolejka nie
+   dowodzi kompletności.
+2. **Seed nie tworzy opinii** — `rating_avg = null`, `rating_count = 0` dla wszystkich
+   300 tys. dokumentów (ratingi liczy projekcja z tabeli `reviews`). Skutek dla ETAPU 10:
+   pole, które ma zmienić typ w `v2`, jest puste w danych seeda (patrz niżej).
+3. DLQ `search.product.sync.dlq` ma 2 wiadomości: `{"id":"smoke-test","type":"offer.price_changed"}`
+   (odrzucone ok. 2026-10-10) — pozostałość po smoke teście obserwowalności, nie po seedzie.
+   Oglądane `rabbitmqadmin get --ack-mode ack_requeue_true`, nic nie skasowane.
+
+### half_float vs scaled_float (spec §5.2) — różnica JEST widoczna
+
+Jednorazowe indeksy `products-halffloat-probe-full-{a,b}` (usunięte po pomiarze, aliasów nie
+dotykałem): mapowanie z `products-v1.json`, tylko `rating_avg` = `half_float` (a) albo
+`scaled_float`/`scaling_factor: 100` (b); te same 300 000 dokumentów przez `_reindex` ze
+`products-v1`, **z przepisaną wartością `rating_avg`** skryptem painless: `(100 + hash(_id) % 401) / 100`
+(dwa miejsca po przecinku 1,00–5,00, jak `round(avg, 2)` w projekcji — bo seed nie ma opinii).
+
+| `range` na `rating_avg` | half_float (a) | scaled_float (b) |
+|---|---|---|
+| `gte 4.7` | 22 436 | **23 183** |
+| `gt 4.7` | 22 436 | 22 436 |
+| `lte 4.7` | 277 564 | 277 564 |
+| `gte 4.7, lt 4.8` | 6 737 | **7 484** |
+| `gte 3.3, lte 3.3` (dokładnie 3,3) | **0** | 751 |
+| `gte 4.5` | 38 137 | 38 137 |
+| `term 4.69 / 4.70 / 4.71` | 745 / 747 / 751 | 745 / 747 / 751 |
+
+Różnica `gte 4.7`: **747 dokumentów** = wszystkie z oceną dokładnie 4,70 (w `half_float` zapisane
+jako ≈ 4,6992 < 4,7, więc próg „od 4,7” ich gubi); `gte 3.3 ∧ lte 3.3` daje 0 zamiast 751.
+Przedział `gt`/`lte`/`≥ 4.5` zgodny. Czas `_reindex` 300 tys.: 29,0 s (a) i 27,4 s (b), rozmiar
+indeksu po 179 MB (bez repliki), 1 181 986 dokumentów Lucene (z zagnieżdżonymi ofertami).
+Ten sam test na 5 985 dokumentach dał tę samą klasę różnic (`gte 4.7`: 455 vs 471).
+**Zastrzeżenie:** wartości ratingu są syntetyczne (seed bez opinii) — pokazują własność typu,
+nie rzeczywisty rozkład ocen. `term` i `distinct` (401) nie różnią się: błąd dotyczy granic zakresu.
+
+### `make eval` na 300 tys.
+
+- Przed poprawką: **pada** `Allowed memory size of 134217728 bytes exhausted` — reguły
+  `category`/`brand` rozwijają się do ≈ 12–27 tys. `ratings` na zapytanie (kategoria ≈ 27 tys.
+  produktów, marka `Orn PLC` 12 486). Poprawka: `ini_set('memory_limit', '1G')` w `SearchEvalCommand`.
+- Po poprawce: 3 przebiegi, **wynik identyczny** (diff bez różnic), 13 zapytań, nDCG@10 = 1,000
+  dla wszystkich, 0 nieocenionych, 0 remisów z różnymi ocenami; czas 3,7–3,9 s (zimny: 4,5 s).
+- **Zastrzeżenie (nie naprawione, do rulingu):** strażnik remisów `hasMixedGradeTie` czyta
+  najwyżej `TIE_CHECK_MAX_HITS = 1000` trafień, a grupy remisu `_score` mają przy 300 tys.
+  ≈ 27 tys. dokumentów (kategorie) — strażnik widzi więc tylko ułamek grupy, a okno wyników
+  ES (10 000) też jest za małe. „Brak remisów z różnymi ocenami” jest tu zatem **niepotwierdzone**
+  dla największych grup; determinizm wyniku został potwierdzony empirycznie (3 równe przebiegi),
+  nie dowiedziony strażnikiem. Poprawka wymaga zmiany projektu strażnika (np. agregacja po ocenie
+  zamiast pobierania trafień) — poza zakresem tego taska.
+
+### Rozmiar i miejsce
+
+| Wielkość | Wartość |
+|---|---|
+| `products-v1` (1 shard + 1 replika) | 182 MB primary, 363 MB razem; 1 181 986 dokumentów Lucene (300 000 produktów + oferty zagnieżdżone) |
+| Dysk węzłów ES (współdzielona VM) | 238 GB użyte / 672 GB wolne na węzeł (26 %) |

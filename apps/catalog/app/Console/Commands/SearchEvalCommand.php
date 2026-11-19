@@ -55,6 +55,10 @@ class SearchEvalCommand extends Command
 
     public function handle(): int
     {
+        // Na 300 tys. produktów reguła kategorii/marki rozwija się do kilkudziesięciu
+        // tysięcy `ratings` na zapytanie; domyślne 128 MB CLI nie wystarcza (pomiar ETAPU 10).
+        ini_set('memory_limit', '1G');
+
         if (! is_file(self::QUERIES_PATH)) {
             $this->error('Brak pliku zapytań kontrolnych: '.self::QUERIES_PATH);
 
