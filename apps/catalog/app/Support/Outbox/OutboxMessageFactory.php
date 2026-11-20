@@ -14,6 +14,16 @@ final class OutboxMessageFactory
 {
     public static function make(Outbox $row): AMQPMessage
     {
+        return self::fromEnvelope(self::envelope($row), $row->trace_id);
+    }
+
+    /**
+     * Wiadomość z gotowej koperty — tej samej drogi używa symulator analityki.
+     *
+     * @param  array<string, mixed>  $envelope
+     */
+    public static function fromEnvelope(array $envelope, ?string $traceId = null): AMQPMessage
+    {
         $properties = [
             'content_type' => 'application/json',
             'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
@@ -21,35 +31,26 @@ final class OutboxMessageFactory
 
         // Nagłówek tylko dla wierszy ze śladem — stare wiersze (sprzed
         // migracji) lecą bez niego, a konsument to toleruje.
-        if ($row->trace_id !== null) {
-            $properties['application_headers'] = new AMQPTable(['trace_id' => $row->trace_id]);
+        if ($traceId !== null) {
+            $properties['application_headers'] = new AMQPTable(['trace_id' => $traceId]);
         }
 
-        return new AMQPMessage(json_encode(self::envelope($row), JSON_THROW_ON_ERROR), $properties);
+        return new AMQPMessage(json_encode($envelope, JSON_THROW_ON_ERROR), $properties);
     }
 
     /**
-     * Koperta zdarzenia — dokładnie ten kształt co w docs/05-SPOJNOSC-DANYCH.md
-     * (sekcja 3) i docs/02-APLIKACJE.md (sekcja 3). `sequence` to kopia
-     * wersji agregatu z momentu zdarzenia — konsument użyje jej jako
-     * `version_type=external` przy zapisie do Elasticsearcha.
-     *
      * @return array<string, mixed>
      */
     private static function envelope(Outbox $row): array
     {
-        return [
-            'id' => $row->event_id,
-            'type' => $row->event_type,
-            'version' => 1,
-            'source' => 'catalog',
-            'occurred_at' => $row->occurred_at->toIso8601String(),
-            'aggregate' => [
-                'type' => $row->aggregate_type,
-                'id' => $row->aggregate_id,
-            ],
-            'sequence' => $row->sequence,
-            'data' => $row->payload,
-        ];
+        return EventEnvelope::make(
+            id: $row->event_id,
+            type: $row->event_type,
+            occurredAt: $row->occurred_at,
+            aggregateType: $row->aggregate_type,
+            aggregateId: (string) $row->aggregate_id,
+            sequence: (int) $row->sequence,
+            data: $row->payload,
+        );
     }
 }

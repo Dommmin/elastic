@@ -272,6 +272,10 @@ es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (
 analytics-setup: ## ILM, pipeline, szablony i data streamy zdarzeń (idempotentne)
 	@bash infra/elasticsearch/setup-analytics.sh
 
+.PHONY: simulate
+simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
+	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)
+
 .PHONY: es-restore-drill
 es-restore-drill: ## Drill restore bez przestoju (make es-restore-drill repo=local-fs|minio-s3)
 	@bash tools/es/restore-drill.sh normal --repo=$(or $(repo),local-fs)
