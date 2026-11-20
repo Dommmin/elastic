@@ -4,7 +4,8 @@
 z nią robi: czego szuka, ile fraz kończy się pustą listą, w co klika, ile sesji z wyszukania dochodzi do koszyka
 i zakupu. Ten etap dokłada pełny tor danych: catalog zapisuje zdarzenia z sesji, search-service wpisuje je do data
 streamów, Transform liczy dzienne statystyki per fraza, a Kibana i ES|QL pokazują lejek, CTR i frazy bez wyników.
-Część 12b użyje tych danych do rankingu (popularność z korektą biasu pozycji).*
+Część 12b ([`etap-12b-popularnosc-w-rankingu.md`](etap-12b-popularnosc-w-rankingu.md)) używa tych danych do
+rankingu (popularność z korektą biasu pozycji).*
 
 > **Stan:** gałąź `etap-12-analityka` (niewypchnięta), lokalny stos Docker (3 węzły ES 9.5.1, Kibana 9.5.1),
 > sprawdzone 2026-11-20. **Na żywo:** symulator opublikował 30 dni historii (9000 sesji, 37 580 zdarzeń w 19,3 s),
@@ -101,7 +102,7 @@ make analytics-setup                     # ILM, pipeline, szablony, data streamy
 docker compose up -d analytics-consumer  # konsument kolejki search.analytics.ingest
 make simulate days=30                    # 30 dni historii (seed 1, 300 sesji/dzień)
 # po ~1 min (ingest) + ~1–2 min (checkpoint Transformu):
-open http://localhost:5601/app/dashboards#/view/search-analytics
+open "http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/search-analytics"
 ```
 
 Wynik `make analytics-setup` na działającym stosie (drugie i kolejne uruchomienie, nic się nie zmienia):
@@ -128,6 +129,9 @@ Wynik `make analytics-setup` na działającym stosie (drugie i kolejne uruchomie
 
 Przy pierwszym uruchomieniu w sekcji 2 zamiast „już istnieje” są linie `Tworzę indeks…`, `Tworzę transform…`,
 `Startuję transform…`.
+Adres dashboardu w ostatniej linii sekcji 3 składa się z `KIBANA_PORT` z `.env` (tu 5601; na maszynie współdzielonej
+z innymi projektami port może być przesunięty). Od części 12b skrypt ma jeszcze sekcje 4 (popularność, enrich)
+i 5 (reguły anomalii), opisane w [przewodniku 12b](etap-12b-popularnosc-w-rankingu.md).
 
 > **Węzły ES muszą mieć rolę `transform`.** W `compose.yaml` role węzłów są wypisane jawnie, a do ETAPU 12 nie było
 > wśród nich `transform`. Bez niej każde wywołanie `_transform` kończy się błędem
@@ -753,7 +757,7 @@ curl -s -u elastic:… -H 'Content-Type: application/json' 'http://localhost:192
 
 # dashboard: tylko import (sekcja 3 skryptu jest idempotentna)
 make analytics-setup
-open http://localhost:5601/app/dashboards#/view/search-analytics
+open "http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/search-analytics"
 ```
 
-`elastic:…` = hasło z `ELASTIC_PASSWORD` w `.env`.
+`elastic:…` = hasło z `ELASTIC_PASSWORD` w `.env`. `KIBANA_PORT` też jest w `.env` (domyślnie 5601).

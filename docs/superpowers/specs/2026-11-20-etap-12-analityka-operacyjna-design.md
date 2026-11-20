@@ -197,9 +197,20 @@ jest prawdziwy, bez HTTP):
    reguły (`RelevanceJudgments`) oceniają całe grupy remisu tak samo, więc z definicji nie zobaczą tej poprawy.
 2. **Stabilna linia bazowa mimo remisów.** Bez popularności kolejność w remisie to kolejność dokumentów w Lucene,
    zmienna przy każdej przebudowie (`search:eval` już to wykrywa — RUNBOOK #096), a migracja do v6 to przebudowa.
-   Dlatego eval dostaje `--tie-shuffles=N` (domyślnie 20): N przebiegów z dodanym `random_score` (ziarno = numer
-   przebiegu) o wadze tak małej, że rozstrzyga tylko remisy. Raport: średnia i min–max nDCG@10. Tak samo mierzymy
-   „przed” i „po” — produkty bez popularności dalej remisują i dalej są tasowane.
+   Dlatego eval dostaje `--tie-shuffles=N` (domyślnie 0 = jeden przebieg jak dotąd, ze strażnikiem remisów; dowód
+   używa N = 20): N przebiegów `_rank_eval`, w przebiegu `i` żądanie dostaje drugi klucz sortowania
+   `sort: [{_score: desc}, {_script: seedowany hash SplitMix64(_seq_no, created_at, ziarno = i), order: asc}]`.
+   `query` zostaje bez zmian, więc `_score` jest liczony bit w bit tak samo, a zmienia się wyłącznie kolejność
+   dokumentów o identycznym wyniku. `_seq_no` jest wspólny dla primary i repliki, więc kolejność nie zależy od
+   kopii shardu. Raport: średnia i min–max nDCG@10. Tak samo mierzymy „przed” i „po” — produkty bez popularności
+   dalej remisują i dalej są tasowane.
+
+   *Zmienione w trakcie implementacji (Task 10).* Pierwotnie: `function_score` z `random_score` (ziarno = numer
+   przebiegu) o wadze tak małej (1e-6), że rozstrzyga tylko remisy, i domyślne N = 20. Na żywym klastrze to nie
+   działa, bo `_score` to float32: przy wyniku ~27 odstęp między sąsiednimi floatami to ~1,9e-6, więc dodatek < 1e-6
+   zaokrągla się do zera dla ~95% dokumentów, a kolejność w remisie dalej wyznacza Lucene. Większa waga przestawiałaby
+   dokumenty o różnych wynikach (przy `rank_feature` wyniki są prawie ciągłe). Sortowanie osiąga cel z konstrukcji.
+   Domyślne 0 zachowuje dotychczasowe zachowanie `make eval`. Szczegóły: RUNBOOK #133, przewodnik 12b krok 5.
 3. **Pętla otwarta (dowód główny):** 30 dni symulacji przy wyłączonym boost (ranking stały) → refresh → `_rank_eval`
    bez popularności / z surową / z IPS. Czysty pomiar: kliknięcia zbierane na tym samym rankingu.
 4. **Eksperyment kontrolny** (`--flat-attractiveness`), też w pętli otwartej: kliknięcia zależą tylko od pozycji.

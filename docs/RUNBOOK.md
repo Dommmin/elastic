@@ -133,6 +133,12 @@
 | [130](#130) | Usunięte zdarzenie dalej liczone w `search-stats-daily`: Transform nie cofa | Elasticsearch | 12a |
 | [131](#131) | Wyjątek mappera w `AnalyticsEventHandler` zostawiał wiadomości paczki bez ack/nack | search-service | 12a |
 | [132](#132) | Powtórka dnia symulatora dawała inne ID i duplikaty: remisy w rankingu ES | narzędzia / Elasticsearch | 12a |
+| [133](#133) | `random_score` z wagą 1e-6 nie tasuje remisów `_score`: float32 połyka dodatek | Elasticsearch | 12b |
+| [134](#134) | Ten sam `_rank_eval`/`_search` daje inne top 10 przy kolejnym wywołaniu: remisy rozstrzyga kopia shardu | Elasticsearch | 12b |
+| [135](#135) | Enrich i `default_pipeline`: 500 przy tworzeniu pipeline'u, 409 przy usuwaniu polityki, 400 na każdym zapisie | Elasticsearch | 12b |
+| [136](#136) | `rank_feature` odrzuca 0, a `on_failure` pipeline'u tego nie łapie | Elasticsearch | 12b |
+| [137](#137) | `make reindex` nie skacze do `products-v6`: zawsze vN → vN+1 | narzędzia | 12b |
+| [138](#138) | `closed-loop.sh` wisi 24 min: zawieszony `rabbitmqctl` w kontenerze RabbitMQ | RabbitMQ / narzędzia | 12b |
 
 ---
 
@@ -5476,8 +5482,9 @@ grep -n 'node.roles' compose.yaml
 
 **Przyczyna**
 Od ETAPU 2 role węzłów są w `compose.yaml` wypisane jawnie. Gdy `node.roles` jest ustawione, węzeł ma **tylko** te
-role. Domyślny zestaw (bez `node.roles`) zawiera `transform`, więc k3s (ECK bez `node.roles`) i `compose.prod.yaml`
-problemu nie mają: to tylko lokalny Compose.
+role. Domyślny zestaw (bez `node.roles`) zawiera `transform`, więc k3s (ECK bez `node.roles`) problemu nie ma.
+`compose.prod.yaml` (VPS) miał go tak samo: nakładka nie ustawia `node.roles`, dziedziczy je z `compose.yaml`. Poprawka
+w `compose.yaml` naprawia więc oba (VPS po odtworzeniu węzłów z nową konfiguracją).
 
 **Naprawa**
 Dopisać `"transform"` do `node.roles` wszystkich trzech węzłów i odtworzyć je **po jednym**, czekając na zielony
@@ -5644,6 +5651,217 @@ jednego `user.searched` (same 409).
 Determinizm symulacji, która czyta z prawdziwego systemu, wymaga izolowania losowości per jednostkę (sesja,
 wyszukanie), bo wejście z systemu (ranking) nie jest w pełni deterministyczne. Powtórka dnia po zmianie rankingu
 (12b) i tak pomiesza stare `results` z nowymi kliknięciami: wtedy czyścić data streamy albo zmienić ziarno/`--as-of`.
+
+---
+
+<a id="133"></a>
+## 133 — `random_score` z wagą 1e-6 nie tasuje remisów `_score`: float32 połyka dodatek
+
+> ETAP 12b, Task 10 (2026-11-20). Plan `--tie-shuffles` w `search:eval`.
+
+**Objaw**
+Plan: owinąć zapytanie w `function_score { random_score {seed: i, field: _seq_no}, weight: 1e-6, boost_mode: sum }`,
+żeby losowy dodatek < 1e-6 rozstrzygał tylko remisy. Po owinięciu top 50 frazy „smartfony” nadal miało **jeden**
+`_score` (`distinct = 1`), a top 10 dla ziaren 1 i 2 pokrywało się w 0–2 z 10 pozycji w kolejności Lucene,
+zamiast być losową permutacją grupy.
+
+**Diagnoza** (schemat zapytania; pomiar szedł przez tinker na `products-v6`)
+```bash
+# _score i kolejność z owinięciem dla dwóch ziaren; liczba różnych _score w top 50
+curl -s -u elastic:… -H 'Content-Type: application/json' 'http://localhost:19200/products-search/_search?filter_path=hits.hits._id,hits.hits._score' \
+  -d '{"size":50,"query":{"function_score":{"query":{…zapytanie z buildSearchQuery…},
+       "functions":[{"random_score":{"seed":1,"field":"_seq_no"},"weight":0.000001}],"boost_mode":"sum"}}}'
+```
+Wynik tekstowy ~27,29. Odstęp między sąsiednimi floatami (ulp) w przedziale [16, 32) to 2^-19 ≈ 1,9e-6.
+
+**Przyczyna**
+`_score` w Lucene to float32. Dodatek `r·1e-6` mniejszy od połowy ulp (~0,95e-6, czyli dla ~95% dokumentów)
+zaokrągla się do zera, reszta dostaje +1 ulp. Powstają dwa poziomy, a w każdym dalej rozstrzyga doc id Lucene.
+Grupa ~700 dokumentów daje losowy podzbiór w kolejności Lucene, grupa < ~200 prawie się nie tasuje. Większa waga
+(1e-4) przy boost popularności zaczęłaby przestawiać dokumenty o **różnych** wynikach (`rank_feature` daje wyniki
+prawie ciągłe): nie ma wagi jednocześnie widocznej i nieszkodliwej.
+
+**Naprawa**
+Nie ruszać `query`, dołożyć drugi klucz sortowania: `sort: [{_score: desc}, {_script: SplitMix64(_seq_no,
+created_at, seed), order: asc}]` (`SearchEvalCommand::TIE_BREAK_SCRIPT`). `_score` zostaje bit w bit, zmienia się
+tylko kolejność dokumentów o identycznym wyniku. Sprawdzone na żywo: 400 przebiegów (10 fraz × 20 ziaren × B ∈ {0, 2}),
+0 przestawień między różnymi wynikami, kolejność ID zmieniona w każdym przebiegu. `_rank_eval` respektuje `sort`
+(porównanie z `_search`, POMIARY §16.1).
+
+**Czego się nauczyłem**
+„Dodaj epsilon do wyniku” trzeba policzyć w ulp przy realnej wielkości wyniku, a nie w wartościach bezwzględnych.
+Jeśli chcesz zmienić tylko kolejność remisów, zmieniaj sortowanie, nie wynik.
+
+---
+
+<a id="134"></a>
+## 134 — Ten sam `_rank_eval`/`_search` daje inne top 10 przy kolejnym wywołaniu: remisy rozstrzyga kopia shardu
+
+> ETAP 12b, Task 10 i 12 (2026-11-20). Sprawdzenie narzędzia przed dowodem popularności.
+
+**Objaw**
+Fraza „Romaguera Inc”, B = 0, ten sam `request` bez `sort` puszczony przez `_rank_eval` i przez `_search`: w jednej
+próbie top 10 identyczne, w drugiej zupełnie inne ID (wszystkie z `_score` 21,188114). Przy generowaniu ocen ta sama
+grupa remisu miała raz `_score` 8,748777, raz 8,752492.
+
+**Diagnoza**
+```bash
+# dwa razy to samo zapytanie, bez preference
+for i in 1 2; do curl -s -u elastic:… -H 'Content-Type: application/json' \
+  'http://localhost:19200/products-search/_search?filter_path=hits.hits._id,hits.hits._score' -d @query.json; done
+# z ?preference=stala -> powtarzalne; z sort [_score, hash] -> identyczne w _rank_eval i _search
+```
+
+**Przyczyna**
+Zapytanie bez `preference` trafia w primary albo replikę. Kopie mają inny układ segmentów (inna kolejność doc id
+w remisie) i minimalnie inne statystyki BM25 (usunięte, jeszcze nie scalone dokumenty liczą się do `docFreq`). Remis
+rozstrzyga więc kopia shardu. Pokrewne: [#096](#096), [#132](#132).
+
+**Naprawa**
+- Eval: drugi klucz sortowania z `_seq_no` (wspólny dla kopii), [#133](#133).
+- Generowanie ocen (`analytics:judgments`): stała `preference`.
+- Symulator (`analytics:simulate`) korzysta z `search()` bez tiebreakera, więc powtórka z tym samym ziarnem daje inne
+  kliknięcia: wyniki jednego przebiegu dowodu traktować z dokładnością ±0,03 (pętla otwarta) / ±0,05 (zamknięta).
+  Świadomie bez `dfs_query_then_fetch` w evalu, żeby mierzył to samo co żywe wyszukiwanie.
+
+**Czego się nauczyłem**
+Powtarzalny ranking w klastrze z replikami wymaga jawnego tiebreakera albo `preference`. Zanim zaufasz narzędziu
+pomiarowemu, puść ten sam pomiar dwa razy.
+
+---
+
+<a id="135"></a>
+## 135 — Enrich i `default_pipeline`: 500 przy tworzeniu pipeline'u, 409 przy usuwaniu polityki, 400 na każdym zapisie
+
+> ETAP 12b, Task 8 (2026-11-20). Pipeline `products-enrich-popularity` jako `default_pipeline` w `products-v6`.
+
+**Objaw**
+Próby z budowy (ES 9.5.1, jako `elastic`):
+```
+PUT _ingest/pipeline/<p> z enrich na niewykonaną/nieistniejącą politykę -> 500 "no enrich index exists for policy"
+DELETE _enrich/policy/<x>, gdy odwołuje się do niej pipeline            -> 409 "pipeline is referencing it"
+DELETE _ingest/pipeline/<p>, gdy jest default_pipeline indeksu          -> 400
+zapis do indeksu, którego default_pipeline nie istnieje                 -> 400 dla KAŻDEGO zapisu
+GET .enrich-<polityka>-*                                                -> 403 (indeks zastrzeżony)
+```
+
+**Diagnoza**
+```bash
+curl -s -u elastic:… 'http://localhost:19200/_enrich/policy/product-popularity-policy'
+curl -s -u elastic:… 'http://localhost:19200/_ingest/pipeline/products-enrich-popularity?filter_path=*.processors'
+curl -s -u elastic:… 'http://localhost:19200/products-v6/_settings/index.default_pipeline'
+```
+
+**Przyczyna**
+Procesor `enrich` przy tworzeniu pipeline'u wymaga istniejącego indeksu enrich (powstaje dopiero przez `_execute`).
+ES chroni zależności: polityki używanej przez pipeline nie usunie, pipeline'u używanego jako `default_pipeline` też
+nie. W drugą stronę ochrony nie ma: indeks może wskazywać pipeline, którego nie ma, i wtedy odrzuca zapisy.
+
+**Naprawa**
+Kolejność (sekcja 4 `setup-analytics.sh`): pusty indeks źródłowy → polityka → `_execute` → pipeline → dopiero potem
+indeks z `default_pipeline` (`make reindex` na v6). Na świeżym klastrze i na k3s/VPS sekcja 4 musi przejść przed
+migracją. Uwaga: sekcja 4 jest po sekcji 3 (Kibana), więc niedziałająca Kibana blokuje pipeline. Zmiana polityki:
+pusty pipeline (`{"processors":[]}`) → `DELETE` polityki → `make analytics-setup` → `search:popularity:refresh`.
+Otwarte: `IndexMigration::prepare` powinien odmówić, gdy pipeline z mapowania nie istnieje (końcowa fala ETAPU 12).
+
+**Czego się nauczyłem**
+Enrich to trzy obiekty z zależnościami (indeks źródłowy, polityka z jej indeksem `.enrich-*`, pipeline), a ES pilnuje
+tylko części z nich. `default_pipeline` to zależność, której przy tworzeniu indeksu nikt nie sprawdza.
+
+---
+
+<a id="136"></a>
+## 136 — `rank_feature` odrzuca 0, a `on_failure` pipeline'u tego nie łapie
+
+> ETAP 12b, Task 8 (2026-11-20). Test mutacyjny pipeline'u `products-enrich-popularity`.
+
+**Objaw**
+Po usunięciu z pipeline'u warunku `ctx._pop.popularity > 0` zapis produktu z popularnością 0 w indeksie enrich był
+**odrzucony** przez ES (błąd mapowania pola `popularity`), mimo że pipeline ma `on_failure`, który miał
+przepuszczać dokument przy każdej awarii. Padły `PopularityPipelineTest` dla zera i dla awarii.
+
+**Diagnoza**
+```bash
+docker compose exec search-consumer php bin/phpunit tests/Integration/PopularityPipelineTest.php
+```
+
+**Przyczyna**
+`rank_feature` przyjmuje tylko wartości dodatnie. Walidacja wartości to etap **mapowania** (parsowanie dokumentu
+przy indeksowaniu), który dzieje się po zakończeniu pipeline'u. `on_failure` obejmuje tylko wyjątki procesorów
+ingest, więc błąd mapowania przechodzi obok niego.
+
+**Naprawa**
+Warunek w procesorze `set`: `if: ctx._pop?.popularity != null && ctx._pop.popularity > 0` (0 albo brak = pole
+nieustawione, zero wkładu w wynik). Formuła popularności daje zawsze > 0 (prior i α > 0, `PopularityFormula` rzuca
+wyjątek przy c̄ ≤ 0), więc warunek to druga linia obrony.
+
+**Czego się nauczyłem**
+„Pipeline nigdy nie odrzuca” to obietnica tylko dla procesorów. Wszystko, co mapowanie może odrzucić (typy, zakresy,
+`dynamic: strict`), trzeba odfiltrować w samym pipeline, zanim dokument z niego wyjdzie.
+
+---
+
+<a id="137"></a>
+## 137 — `make reindex` nie skacze do `products-v6`: zawsze vN → vN+1
+
+> ETAP 12b, Task 8 (2026-11-20).
+
+**Objaw**
+Aliasy wskazywały `products-v4`, plik `products-v6.json` gotowy, a `make reindex` budował `products-v5`.
+
+**Diagnoza**
+```bash
+curl -s -u elastic:… 'http://localhost:19200/_cat/aliases/products-*?v'    # products-v4
+curl -s -u elastic:… 'http://localhost:19200/_cat/indices/products-*?v&h=index,docs.count'   # brak products-v5
+ls infra/elasticsearch/mappings/                                             # v1 … v6
+```
+
+**Przyczyna**
+`IndexMigration::prepare` zawsze bierze `nextIndex(cel aliasu)`, opcji celu nie ma. `products-v5.json` istniał
+(przebudowa bez zmian mapowania z ETAPU 10, pilnuje go `MappingRebuildTest`), ale fizyczny indeks nie powstał.
+
+**Naprawa**
+Dwa przebiegi zamiast dopisywania `--to=`: v4 → v5 jako czysta przebudowa (69 s, bramka PASS, nDCG 1,000), potem
+v5 → v6 (79 s, PASS, 1,000). Przed drugim przebiegiem pipeline `products-enrich-popularity` musi istnieć
+([#135](#135)). Na świeżym klastrze (`CURRENT_VERSION = 2`) do v6 prowadzą cztery przebiegi.
+
+**Czego się nauczyłem**
+Narzędzie, które zna tylko „następną wersję”, wymusza historię mapowań bez dziur. Tańszy był dodatkowy przebieg
+(~70 s) niż nowa opcja w narzędziu migracji.
+
+---
+
+<a id="138"></a>
+## 138 — `closed-loop.sh` wisi 24 min: zawieszony `rabbitmqctl` w kontenerze RabbitMQ
+
+> ETAP 12b, Task 12 (2026-11-20). Pierwszy przebieg pętli zamkniętej (wariant raw).
+
+**Objaw**
+`make closed-loop variant=raw days=30 boost=2 yes=1` stanął w dniu 17 na czekaniu na pustą kolejkę. 24 min bez
+żadnej linii, mimo `DRAIN_TIMEOUT=600`.
+
+**Diagnoza**
+```bash
+docker compose exec rabbitmq ps -ef      # szukaj rabbitmqctl i rabbitmq-diagnostics
+# było: zawieszony rabbitmqctl list_queues + ~10 procesów rabbitmq-diagnostics (healthcheck), najstarszy sprzed 2:53 h
+```
+
+**Przyczyna**
+Dwie naraz. CLI RabbitMQ (escript Erlanga) co jakiś czas zawiesza się w tym kontenerze; to samo widać po wiszących
+healthcheckach. A `wait_drain` sprawdzał `DRAIN_TIMEOUT` dopiero po powrocie z `rabbitmqctl`, więc zawieszony odczyt
+blokował pętlę bez limitu. Busybox `timeout` w kontenerze nie pomaga: zabija wrapper `sh`, escript zostaje i dalej
+drukuje.
+
+**Naprawa**
+`queue_busy()` woła `rabbitmqctl` przez `with_timeout` na hoście (perl: proces we własnej grupie, po czasie `kill`
+całej grupy, domyślnie 20 s, `RMQCTL_TIMEOUT`). Zawieszony odczyt = „kolejka zajęta” i kolejna próba. Sprawdzone
+ręcznie: pusta kolejka → wolna w 0,5 s; atrapa `sleep 30` przy `RMQCTL_TIMEOUT=2` → „zajęta” po 2,0 s, bez
+pozostawionych procesów (commit `b8c325b`). Własny zawieszony `rabbitmqctl` zabity ręcznie; healthchecków nie
+ruszałem. Przyczyna zawieszania się CLI jest nadal niezbadana.
+
+**Czego się nauczyłem**
+Limit czasu sprawdzany po wywołaniu nie jest limitem. Zewnętrzny proces trzeba ubijać razem z całą grupą procesów,
+a `docker compose exec` z `timeout` w kontenerze zabija tylko to, co jest najbliżej.
 
 ---
 

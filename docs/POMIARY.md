@@ -891,7 +891,8 @@ w 6,8 s. Restore z replikami 0. Przy jednym shardzie i lokalnym dysku MinIO nie 
 ## 16. ETAP 12 — analityka operacyjna (2026-11-20)
 
 > Część 12a: zdarzenia z sesji, data streamy, Transform `search-stats-daily`, dashboard. Przewodnik:
-> [`blog/etap-12a-zdarzenia-i-lejek.md`](blog/etap-12a-zdarzenia-i-lejek.md). Część 12b dopisze tu pomiary rankingu.
+> [`blog/etap-12a-zdarzenia-i-lejek.md`](blog/etap-12a-zdarzenia-i-lejek.md). Część 12b (popularność w rankingu, dowód,
+> §16.1–16.6): [`blog/etap-12b-popularnosc-w-rankingu.md`](blog/etap-12b-popularnosc-w-rankingu.md).
 > Maszyna współdzielona z innymi projektami: czasy **orientacyjne**.
 
 **Konfiguracja:** 3 węzły ES 9.5.1 (`es01–03`, role `dimrt` po dodaniu `transform`, RUNBOOK #128), data streamy
