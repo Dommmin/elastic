@@ -17,6 +17,10 @@ set -euo pipefail
 cd /opt/marketplace
 set -a; . ./.env; set +a
 NS=marketplace
+# Wspólny sekret /api/internal/* (RUNBOOK #127). Wymagany: catalog-app i search-consumer
+# mają go jako nieopcjonalny klucz Secretu, więc bez niego pody nie wstaną. Dopisanie:
+#   echo "INTERNAL_API_TOKEN=$(openssl rand -hex 32)" >> /opt/marketplace/.env
+: "${INTERNAL_API_TOKEN:?brak INTERNAL_API_TOKEN w /opt/marketplace/.env (RUNBOOK #127)}"
 
 apply() { kubectl apply -f - >/dev/null; }
 
@@ -33,6 +37,7 @@ kubectl -n "${NS}" create secret generic marketplace-secrets --dry-run=client -o
   --from-literal=ES_SEARCHSVC_PASSWORD="${ES_SEARCHSVC_PASSWORD}" \
   --from-literal=CATALOG_APP_KEY="${CATALOG_APP_KEY}" \
   --from-literal=SEARCH_APP_SECRET="${SEARCH_APP_SECRET}" \
+  --from-literal=INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN}" \
   --from-literal=DATABASE_URL="postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8" \
   --from-literal=MESSENGER_TRANSPORT_DSN="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   ${FAKE_GATEWAY_WEBHOOK_SECRET:+--from-literal=FAKE_GATEWAY_WEBHOOK_SECRET="${FAKE_GATEWAY_WEBHOOK_SECRET}"} \

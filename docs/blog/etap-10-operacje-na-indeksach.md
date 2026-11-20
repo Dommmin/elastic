@@ -609,11 +609,8 @@ awaryjnej policz, z czym rośnie jej koszt, zanim ją napiszesz.
 
 ## Otwarte sprawy
 
-- **`/api/internal/*` nie ma uwierzytelnienia.** Tak jest od ETAPU 6 (endpoint projekcji, komentarz w kodzie odkłada
-  klucze API na później), a trasy są osiągalne przez publiczny blok Caddy `/api/*`. Nowe endpointy (`count`, `ids`,
-  `changed`, `projections` do 500 naraz) zwracają tylko publiczne dane katalogu i ID zmian, ale **poszerzają
-  powierzchnię enumeracji i obciążenia**. Planowana poprawka w osobnym zadaniu: middleware ze wspólnym sekretem na
-  grupie `internal` i blokada `/api/internal` w publicznym bloku Caddy.
+- ~~**`/api/internal/*` nie ma uwierzytelnienia.**~~ Zamknięte osobnym PR: wspólny sekret `X-Internal-Token` i 404
+  w publicznym bloku Caddy, opis w [Uwierzytelnienie `/api/internal`](etap-10b-uwierzytelnienie-api-wewnetrznego.md).
 - **k3s/VPS nie są zaktualizowane** (brak serwera). Przy następnym wdrożeniu: `cancel_task` w roli `search_service`
   (`deploy/k8s/es-roles.yml`, [#120](../RUNBOOK.md#120)) i MinIO/SLM według potrzeb produkcji. Dopięcie
   `products-write` przed nowym konsumentem (krok 3) deploy robi już sam (`search:index:create` przy każdym wdrożeniu),
@@ -661,7 +658,8 @@ Gdy coś poszło nie tak: [RUNBOOK #110–#126](../RUNBOOK.md#110).
    na sondę `/search` (`took_ms`). To pomiar, którego przy jednym shardzie nie dało się zrobić.
 6. **Powrót po `switch-read`** ([#115](../RUNBOOK.md#115)): przećwicz ręczne przepięcie obu aliasów na vN i
    `make reindex-abort from=products-vN+1`, z `verify-convergence` na końcu. Zapisz wynik w POMIARACH.
-7. **Uwierzytelnij `/api/internal/*`**: middleware ze wspólnym sekretem w catalogu, nagłówek w `CatalogProjectionClient`,
-   blokada ścieżki w publicznym Caddy, test, że bez sekretu jest 401.
+7. ~~**Uwierzytelnij `/api/internal/*`**~~: zrobione, patrz
+   [Uwierzytelnienie `/api/internal`](etap-10b-uwierzytelnienie-api-wewnetrznego.md). Zadanie domowe w zamian: rotacja
+   tokenu bez przestoju (dwa ważne tokeny naraz w catalogu, potem przepięcie search, potem usunięcie starego).
 8. **Restore do innego klastra**: zarejestruj to samo repo `minio-s3` jako `readonly` w osobnym, jednowęzłowym ES i odtwórz
    tam snapshot. Co się stanie, gdy dwa klastry piszą do jednego repo?

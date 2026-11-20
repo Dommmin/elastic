@@ -2,6 +2,7 @@
 
 namespace Tests;
 
+use App\Http\Middleware\RequireInternalToken;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Bootstrap\LoadConfiguration;
@@ -40,6 +41,19 @@ abstract class TestCase extends BaseTestCase
         $app->make(Kernel::class)->bootstrap();
 
         return $app;
+    }
+
+    /**
+     * Wspólny sekret /api/internal/* (RequireInternalToken) dla wszystkich testów:
+     * testy endpointów wewnętrznych przechodzą przez prawdziwy middleware.
+     * Odmowy sprawdza InternalApiTokenTest (zaczyna od flushHeaders()).
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['services.internal_api.token' => 'test-internal-token']);
+        $this->withHeader(RequireInternalToken::HEADER, 'test-internal-token');
     }
 
     /**

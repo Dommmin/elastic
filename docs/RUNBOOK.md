@@ -127,6 +127,7 @@
 | [124](#124) | Przerwany `make churn` dalej pisze: zabity klient `exec`, nie proces | Docker | 10 |
 | [125](#125) | Migracja startuje w trakcie `_update_by_query` (zmiana nazwy sprzedawcy): vN+1 zostaje ze starą nazwą | Elasticsearch / narzędzia | 10 |
 | [126](#126) | Padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek | narzędzia | 10 |
+| [127](#127) | `/api/internal/*` bez uwierzytelnienia; po wprowadzeniu tokenu 401/503 w search-consumerze | bezpieczeństwo | 10b |
 
 ---
 
@@ -5402,6 +5403,49 @@ Przed przepięciem liczy bramkę od nowa i przepina, a po przepięciu tylko koń
 **Czego się nauczyłem**
 Znacznik „zacząłem” bez znacznika „skończyłem” to osobny stan, a nie wariant spoczynku. Orkiestrator musi go rozpoznać
 i wskazać jedyny krok, który z niego wychodzi.
+
+---
+
+<a id="127"></a>
+## 127 — `/api/internal/*` bez uwierzytelnienia; po wprowadzeniu tokenu 401/503 w search-consumerze
+
+**Objaw**
+Przegląd bezpieczeństwa przy pushu: trasy `/api/internal/products/{count,ids,changed,projections}` nie mają
+uwierzytelnienia. Z hosta działało `curl -H 'Host: catalog-app' http://127.0.0.1:18080/api/internal/products/count`
+i `https://catalog.localhost:8443/api/internal/products/count` (200 i liczba produktów).
+
+Po wprowadzeniu tokenu typowe objawy złej konfiguracji:
+- search-consumer: `ProjectionUnavailableException` z `401 Unauthorized`: token po stronie search pusty albo inny;
+- catalog: `503` i w logu `Żądanie /api/internal odrzucone: brak INTERNAL_API_TOKEN w konfiguracji.`;
+- k3s: pod `catalog-app` / `search-consumer` w `CreateContainerConfigError`, `couldn't find key INTERNAL_API_TOKEN`.
+
+**Diagnoza**
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: catalog-app' http://127.0.0.1:18080/api/internal/products/count   # 401 = OK
+curl -sk -o /dev/null -w '%{http_code}\n' https://catalog.localhost:8443/api/internal/products/count                 # 404 = OK
+docker compose exec search-consumer sh -c 'curl -s -w " %{http_code}\n" -H "X-Internal-Token: $INTERNAL_API_TOKEN" http://catalog-app/api/internal/products/count'
+```
+
+**Przyczyna**
+Od ETAPU 6 grupa `internal` nie miała middleware'u, a publiczny blok Caddy'ego przepuszczał całe `/api/*`. Blok
+`http://catalog-app` (port 80, opublikowany) wybiera nagłówek Host, który klient z zewnątrz może sfałszować, więc sama
+nazwa hosta nie jest granicą.
+
+**Naprawa**
+- catalog: `RequireInternalToken` na grupie `internal` (`hash_equals` z `services.internal_api.token`). Pusty sekret daje
+  503 dla każdego (fail closed), zły lub brak nagłówka daje 401.
+- search: `CatalogProjectionClient` wysyła `X-Internal-Token` w każdym żądaniu (opcja domyślna klienta HTTP).
+- Caddy: publiczny blok odpowiada 404 na `/api/internal/*` i `/index.php/api/internal/*` (obrona w głębi; zmiana
+  Caddyfile wymaga przebudowy obrazu: `docker compose build catalog-app`).
+- Sekret: Compose dev ma domyślną wartość `dev-only-…`; `compose.prod.yaml` wymaga `INTERNAL_API_TOKEN` w `.env`;
+  k3s bierze go z `marketplace-secrets` (klucz nieopcjonalny), `tools/k3s/secrets.sh` odmawia bez niego.
+  Na serwerze: `echo "INTERNAL_API_TOKEN=$(openssl rand -hex 32)" >> /opt/marketplace/.env`, potem `secrets.sh`
+  i restart obu Deploymentów.
+
+**Czego się nauczyłem**
+Granicą zaufania jest coś, co klient musi *wiedzieć* (sekret), a nie coś, co klient *deklaruje* (Host, ścieżka). Blokada
+ścieżki w proxy jest przydatna, ale tylko jako druga warstwa. Pusty sekret ma odmawiać, bo inaczej pusty nagłówek
+przechodzi porównanie.
 
 ---
 

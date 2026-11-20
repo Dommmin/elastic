@@ -104,6 +104,13 @@
 	@metrics path /prometheus /prometheus/* /index.php/prometheus /index.php/prometheus/*
 	respond @metrics 404
 
+	# /api/internal/* (search -> catalog) też tylko wewnętrznie: publicznie 404,
+	# z wariantem /index.php/… z tego samego powodu co przy /prometheus. To obrona
+	# w głębi; prawdziwą granicą jest token X-Internal-Token (RequireInternalToken),
+	# bo blok `http://catalog-app` niżej da się trafić sfałszowanym Host.
+	@internalApi path /api/internal/* /index.php/api/internal/*
+	respond @internalApi 404
+
 	php_server
 }
 

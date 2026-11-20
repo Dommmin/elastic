@@ -140,6 +140,12 @@ spec:
               valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_CATALOG_USER } }
             - name: ELASTICSEARCH_PASSWORD
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_CATALOG_PASSWORD } }
+            # Wspólny sekret /api/internal/* (X-Internal-Token): catalog-app sprawdza,
+            # search-consumer wysyła. Bez optional: brak klucza = pod nie wstaje, zamiast
+            # po cichu odpowiadać 503 na każdą projekcję (RUNBOOK #127).
+            # Na KOŃCU listy: overlay g5-local-ha łata env po indeksie (env/10).
+            - name: INTERNAL_API_TOKEN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: INTERNAL_API_TOKEN } }
           ports:
             - name: http
               containerPort: 80
