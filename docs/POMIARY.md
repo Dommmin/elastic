@@ -1034,7 +1034,8 @@ przypadkowa względem prawdy, więc nDCG stoi. Spadek przy dużym B (obie wersje
 do top 10 trafiają produkty nieocenione (liczone jako 0).
 
 Uczciwie o progu: próg (rozrzut tasowań ~0,09) jest tego samego rzędu co efekt w pętli otwartej, więc kryterium jest
-łagodne. Mocniejszym argumentem jest sama wielkość Δ w kontroli (0,002 vs 0,06–0,10).
+łagodne. Do tego porównuje średnią z 20 tasowań z rozrzutem min–max pojedynczych tasowań, a szum średniej to mniej
+więcej rozrzut/√20 (~0,02). Mocniejszym argumentem jest sama wielkość Δ w kontroli (0,002 vs 0,06–0,10).
 
 ### 16.4 Pętla zamknięta (`make closed-loop days=30 boost=2 yes=1`)
 
@@ -1068,9 +1069,10 @@ Fakty:
 - IPS osiąga maksimum w dniu 17 i potem spada w stronę surowej. Hipoteza (niesprawdzona): przy włączonym boost lepsze
   produkty stoją wyżej, więc CTR wg pozycji miesza pozycję z atrakcyjnością, oszacowane p(k) jest za strome i IPS
   przestaje poprawnie zdejmować bias.
-- Obie pętle zamknięte kończą niżej niż pętla otwarta z tymi samymi 30 dniami danych (0,228–0,230 vs 0,213–0,259).
-  Koszt sprzężenia zwrotnego tu to utrata eksploracji: boost skupia wyświetlenia na produktach już popularnych, więc
-  mniej produktów w ogóle dostaje sygnał.
+- Pętla zamknięta kończy w zakresie przebiegów pętli otwartej (dzień 30: raw 0,2283, ips 0,2304; pętla otwarta raw
+  0,2131–0,2453, ips 0,2214–0,2593). To przebiegi niesparowane, a szum jednego przebiegu to ~±0,03, więc **na tych
+  danych nie widać mierzalnego kosztu sprzężenia zwrotnego**. Hipoteza (niesprawdzona): przy dłuższym horyzoncie
+  boost skupi wyświetlenia na produktach już popularnych i mniej produktów dostanie sygnał (utrata eksploracji).
 
 ### 16.5 Strażnik i wybór B
 
@@ -1091,11 +1093,16 @@ Po ustawieniu domyślnego B = 2 i odtworzeniu `catalog-app`: `make eval` = **1,0
 - 2 to środek plateau: zapas w dół (inne skale wyniku tekstowego, inne frazy) i w górę (do pierwszych przeskoków).
   Ten zestaw nie pozwala rozróżnić B wewnątrz 0,5–4, więc to wybór asekuracyjny, a nie optimum.
 
+k3s celowo zostaje przy B = 0: `deploy/k8s` nie ustawia `SEARCH_POPULARITY_BOOST`, a `config/services.php` ma
+domyślnie 0. Zmienimy to, gdy na k3s będą `products-v6` i refresh popularności.
+
 ### 16.6 Interpretacja i zastrzeżenia
 
 - Wynik główny jest pozytywny i przeszedł test falsyfikujący: popularność z zaszumionych, przesuniętych przez pozycję
   kliknięć odzyskuje część ukrytej prawdy (+0,06…+0,10 nDCG@10), a przy kliknięciach bez sygnału nie „poprawia”
-  niczego. IPS > surowa, ale przewaga jest mała (0,008–0,014 w pętli otwartej) i w pętli zamkniętej na granicy szumu.
+  niczego. IPS > surowa w 2 z 2 sparowanych przebiegów pętli otwartej (raw i ips liczone z tych samych zdarzeń, więc
+  różnica jest mniej zaszumiona niż poziomy bezwzględne), ale przewaga jest mała (0,008–0,014) i nie jest potwierdzona
+  statystycznie. W pętli zamkniętej jest na granicy szumu.
 - **Prawda jest syntetyczna.** Atrakcyjność to Beta z hasha ID, a oceny to jej zaokrąglenie. Mierzymy, czy pętla
   odzyskuje model symulatora, a nie, czy ludzie uznaliby wyniki za trafniejsze.
 - **Bezwzględne nDCG jest niskie (~0,26).** Ideał to cała oceniona grupa ułożona po `a`, a sygnał dostają tylko
@@ -1106,7 +1113,9 @@ Po ustawieniu domyślnego B = 2 i odtworzeniu `catalog-app`: `make eval` = **1,0
   (powtórka: 0,213/0,221 zamiast 0,245/0,259). Liczby z jednego przebiegu traktować z dokładnością ~±0,03 (pętla
   otwarta) i ~±0,05 (pętla zamknięta, wczesne dni).
 - **Nieocenione dokumenty działają przeciw boostowi.** Produkt wciągnięty do top 10 spoza ocenianego zbioru liczy się
-  jako 0, nawet jeśli jest atrakcyjny. Spadki przy B ≥ 8 są więc częściowo artefaktem, a zyski są dolnym oszacowaniem.
+  jako 0, nawet jeśli jest atrakcyjny. Dotyczy to dopiero B ≥ 4: przy wybranym B ≤ 2 w top 10 było 0 nieocenionych,
+  więc tam zysk jest zmierzony wprost. Spadki przy B ≥ 8 są częściowo artefaktem, a wyniki przy B ≥ 4 są dolnym
+  oszacowaniem.
 - **Poprawka narzędzia w trakcie:** `closed-loop.sh` `queue_busy()` czekał bez limitu na `rabbitmqctl` (DRAIN_TIMEOUT
   sprawdzany dopiero po powrocie). Teraz odczyt idzie przez `with_timeout` (perl, własna grupa procesów, domyślnie
   20 s, `RMQCTL_TIMEOUT`). Zawieszony odczyt = „kolejka zajęta” i kolejna próba. Busybox `timeout` w kontenerze nie
