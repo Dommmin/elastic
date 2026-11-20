@@ -35,6 +35,13 @@
 #    3. make analytics-setup   (utworzy politykę z pliku, wykona ją, przywróci pipeline)
 #    4. search:popularity:refresh (Task 9) — dociągnie popularność do produktów
 #
+#  SEKCJA 5 (anomalie, spec §9): indeks `alerts-analytics` (jawne mapowanie),
+#  connectory Kibany (Index → alerts-analytics, Server log) o stałych ID oraz
+#  dwie reguły `.es-query` (ES|QL) z infra/kibana/rules/. Idempotencja po NAZWIE
+#  reguły (_find, dokładne dopasowanie): reguła istnieje → PUT nadpisuje definicję
+#  z pliku (reguły jako kod, plik jest źródłem prawdy; ręczne zmiany w Kibanie
+#  zostaną nadpisane), brak → POST. Connectory: GET po stałym ID → PUT albo POST.
+#
 #  Replik: 1 w klastrze wielowęzłowym, 0 przy jednym węźle (inaczej indeks
 #  zostałby żółty) — liczone z _cat/nodes.
 #
@@ -220,5 +227,88 @@ esa POST "/_enrich/policy/${POP_POLICY}/_execute?wait_for_completion=true" >/dev
 log "[4] Pipeline ${POP_PIPELINE} (on_failure: zapis produktu nigdy nie jest odrzucany)"
 esa PUT "/_ingest/pipeline/${POP_PIPELINE}" "${DIR}/pipeline-${POP_PIPELINE}.json" >/dev/null
 log "[4] OK"
+
+# ============================================================================
+#  SEKCJA 5 — anomalie: alerts-analytics, connectory i reguły Kibana Alerting
+# ============================================================================
+RULES_DIR="$(cd "${DIR}/../../kibana" && pwd)/rules"
+ALERTS_INDEX=alerts-analytics
+
+# kba METODA ŚCIEŻKA [PLIK_JSON] — wywołanie API Kibany jako `elastic` z es01
+kba() {
+  local method="$1" path="$2" file="${3:-}"
+  if [ -n "${file}" ]; then
+    ${DC} exec -T es01 sh -c \
+      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-analytics" -H "Content-Type: application/json" -X "$0" "$1$2" --data-binary @-' \
+      "${method}" "${KIBANA_URL}" "${path}" <"${file}"
+  else
+    ${DC} exec -T es01 sh -c \
+      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-analytics" -X "$0" "$1$2"' \
+      "${method}" "${KIBANA_URL}" "${path}"
+  fi
+}
+
+# kba_code ŚCIEŻKA — kod HTTP GET-a do Kibany
+kba_code() {
+  ${DC} exec -T es01 sh -c \
+    'curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ELASTIC_PASSWORD" "$0$1"' "${KIBANA_URL}" "$1"
+}
+
+if esa_exists "/${ALERTS_INDEX}"; then
+  log "[5] Indeks ${ALERTS_INDEX} już istnieje"
+else
+  log "[5] Tworzę indeks ${ALERTS_INDEX} (replik: ${REPLICAS})"
+  REPLICAS="${REPLICAS}" python3 -c '
+import json, os, sys
+t = json.load(open(sys.argv[1]))
+t["settings"]["index.number_of_replicas"] = int(os.environ["REPLICAS"])
+print(json.dumps(t))' "${DIR}/index-${ALERTS_INDEX}.json" >"${TMP}"
+  esa PUT "/${ALERTS_INDEX}" "${TMP}" >/dev/null
+fi
+
+# connector ID PLIK — tworzy albo aktualizuje connector o stałym ID
+connector() {
+  local id="$1" file="$2"
+  if [ "$(kba_code "/api/actions/connector/${id}")" = "200" ]; then
+    log "[5] Connector ${id}: aktualizuję"
+    python3 -c '
+import json, sys
+c = json.load(open(sys.argv[1]))
+c.pop("connector_type_id", None)  # typu nie da się zmienić
+print(json.dumps(c))' "${file}" >"${TMP}"
+    kba PUT "/api/actions/connector/${id}" "${TMP}" >/dev/null
+  else
+    log "[5] Connector ${id}: tworzę"
+    kba POST "/api/actions/connector/${id}" "${file}" >/dev/null
+  fi
+}
+connector analytics-alerts-index "${RULES_DIR}/connector-index.json"
+connector analytics-server-log "${RULES_DIR}/connector-server-log.json"
+
+# rule PLIK — idempotentnie po nazwie: jest → PUT, brak → POST
+rule() {
+  local file="$1" name rid
+  name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "${file}")"
+  rid="$(kba GET "/api/alerting/rules/_find?per_page=100" | python3 -c '
+import json, sys
+name = sys.argv[1]
+ids = [r["id"] for r in json.load(sys.stdin)["data"] if r["name"] == name]
+print(ids[0] if ids else "")' "${name}")"
+  if [ -n "${rid}" ]; then
+    log "[5] Reguła „${name}”: aktualizuję (${rid})"
+    python3 -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+body = {k: r[k] for k in ("name", "tags", "schedule", "params", "actions", "notify_when")}
+print(json.dumps(body))' "${file}" >"${TMP}"
+    kba PUT "/api/alerting/rule/${rid}" "${TMP}" >/dev/null
+  else
+    log "[5] Reguła „${name}”: tworzę"
+    kba POST "/api/alerting/rule" "${file}" >/dev/null
+  fi
+}
+rule "${RULES_DIR}/zero-results-spike.json"
+rule "${RULES_DIR}/ctr-drop.json"
+log "[5] OK — reguły: http://localhost:${KIBANA_PORT:-5601}/app/management/insightsAndAlerting/triggersActions/rules"
 
 log "Gotowe."

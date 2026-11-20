@@ -1,0 +1,8 @@
+{
+  "name": "Analityka: indeks alerts-analytics",
+  "connector_type_id": ".index",
+  "config": {
+    "index": "alerts-analytics",
+    "refresh": true
+  }
+}
