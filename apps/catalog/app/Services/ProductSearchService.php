@@ -66,18 +66,10 @@ class ProductSearchService
 
     public function search(SearchCriteria $criteria): SearchResult
     {
-        $filters = $this->buildFilters($criteria);
-        $filters[] = $this->cheapestOfferClause();
-
         [$pitId, $searchAfter] = $this->resolvePagination($criteria);
 
         $body = [
-            'query' => [
-                'bool' => [
-                    'must' => [$this->buildTextQuery($criteria->q)],
-                    'filter' => $filters,
-                ],
-            ],
+            'query' => $this->buildSearchRequestQuery($criteria),
             'sort' => $this->buildSort($criteria),
             'size' => $criteria->perPage,
             'pit' => ['id' => $pitId, 'keep_alive' => self::PIT_KEEP_ALIVE],
@@ -175,7 +167,7 @@ class ProductSearchService
             'size' => 0,
             'query' => [
                 'bool' => [
-                    'must' => [$this->buildTextQuery($criteria->q)],
+                    'must' => [$this->buildScoringQuery($criteria->q)],
                     // Histogram cenowy ignoruje WŁASNY filtr ceny — inaczej
                     // zawężenie suwakiem obcinałoby histogram do samego
                     // siebie, co jest bezużyteczne (ten sam problem co
@@ -263,8 +255,62 @@ class ProductSearchService
     {
         return [
             'bool' => [
-                'must' => [$this->buildTextQuery($criteria->q)],
+                'must' => [$this->buildScoringQuery($criteria->q)],
                 'filter' => $this->buildFilters($criteria),
+            ],
+        ];
+    }
+
+    /**
+     * `query` faktycznie wysyłane przez `search()`: część punktująca + filtry
+     * + klauzula najtańszej oferty. Wyjęte, żeby test mógł porównać je
+     * z `buildSearchQuery()` bez ES.
+     *
+     * @return array<string, mixed>
+     */
+    public function buildSearchRequestQuery(SearchCriteria $criteria): array
+    {
+        $filters = $this->buildFilters($criteria);
+        $filters[] = $this->cheapestOfferClause();
+
+        return [
+            'bool' => [
+                'must' => [$this->buildScoringQuery($criteria->q)],
+                'filter' => $filters,
+            ],
+        ];
+    }
+
+    /**
+     * Wspólna część PUNKTUJĄCA: tekst + (opcjonalnie) popularność. Używają
+     * jej `search()`, `priceHistogram()` i `buildSearchQuery()` (eval), więc
+     * `_rank_eval` ocenia to samo, co widzi użytkownik. Facety celowo
+     * zostają przy samym `buildTextQuery()` — tam wynik nie ma znaczenia.
+     *
+     * `rank_feature` na brakującym polu (przed `products-v6`) nic nie
+     * dodaje do wyniku. Konfig czytany przy każdym wywołaniu (Octane).
+     *
+     * @return array<string, mixed>
+     */
+    public function buildScoringQuery(string $q): array
+    {
+        $text = $this->buildTextQuery($q);
+        $boost = (float) config('services.search.popularity_boost', 0);
+
+        if ($q === '' || $boost <= 0) {
+            return $text;
+        }
+
+        return [
+            'bool' => [
+                'must' => [$text],
+                'should' => [[
+                    'rank_feature' => [
+                        'field' => 'popularity',
+                        'saturation' => new \stdClass,
+                        'boost' => $boost,
+                    ],
+                ]],
             ],
         ];
     }

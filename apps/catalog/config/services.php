@@ -54,6 +54,11 @@ return [
         'password' => env('ELASTICSEARCH_PASSWORD'),
     ],
 
+    // Waga popularności (rank_feature) w rankingu zapytań tekstowych; 0 = wyłączone.
+    'search' => [
+        'popularity_boost' => (float) env('SEARCH_POPULARITY_BOOST', 0),
+    ],
+
     // Wspólny sekret dla /api/internal/* (search-service -> catalog), nagłówek
     // X-Internal-Token. Pusty = endpointy odpowiadają 503 (RequireInternalToken).
     'internal_api' => [
