@@ -40,11 +40,32 @@ class SearchEvalCommand extends Command
      * Ścieżka ABSOLUTNA w kontenerze, nie wędrówka `../../` od repo — ten
      * sam powód i to samo rozwiązanie co `CreateSearchIndexCommand::
      * MAPPINGS_DIR` po stronie Symfony: `/tests/relevance` istnieje TYLKO
-     * dlatego, że compose.yaml montuje je jawnie do `catalog-app`.
+     * dlatego, że compose.yaml montuje je jawnie do `catalog-app`. Domyślna
+     * wartość `--queries`.
      */
     private const QUERIES_PATH = '/tests/relevance/queries.yaml';
 
-    protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k} {--index= : Indeks fizyczny zamiast aliasu (np. products-v2)}';
+    /**
+     * Klucz sortowania rozstrzygający remisy w przebiegu `--tie-shuffles`:
+     * deterministyczny hash (SplitMix64) z `_seq_no`, `created_at` i ziarna
+     * przebiegu. `_seq_no` jest wspólny dla kopii primary i replica, więc
+     * kolejność nie zależy od tego, którą kopię shardu trafi zapytanie;
+     * `created_at` rozdziela dokumenty z różnych shardów o tym samym `_seq_no`.
+     */
+    private const TIE_BREAK_SCRIPT = <<<'PAINLESS'
+        long created = doc['created_at'].size() == 0 ? 0L : doc['created_at'].value.toInstant().toEpochMilli();
+        long h = doc['_seq_no'].value * -7046029254386353131L + created + ((long) params.seed) * -4658895280553007687L;
+        h ^= h >>> 30; h *= -4658895280553007687L;
+        h ^= h >>> 27; h *= -7723592293110705685L;
+        h ^= h >>> 31;
+        return (double) (h >>> 11);
+        PAINLESS;
+
+    protected $signature = 'search:eval
+        {--k=10 : Głębokość nDCG@k}
+        {--index= : Indeks fizyczny zamiast aliasu (np. products-v2)}
+        {--queries='.self::QUERIES_PATH.' : Plik zapytań kontrolnych (ścieżka w kontenerze)}
+        {--tie-shuffles=0 : Liczba przebiegów z losową (ziarno = numer przebiegu) kolejnością wewnątrz remisów _score; 0 = jeden przebieg jak dotąd}';
 
     protected $description = 'Liczy nDCG@k na zestawie zapytań kontrolnych (_rank_eval) tym samym query template co ProductSearchService';
 
@@ -63,14 +84,17 @@ class SearchEvalCommand extends Command
         // tysięcy `ratings` na zapytanie; domyślne 128 MB CLI nie wystarcza (pomiar ETAPU 10).
         ini_set('memory_limit', '1G');
 
-        if (! is_file(self::QUERIES_PATH)) {
-            $this->error('Brak pliku zapytań kontrolnych: '.self::QUERIES_PATH);
+        $queriesPath = (string) $this->option('queries');
+
+        if (! is_file($queriesPath)) {
+            $this->error('Brak pliku zapytań kontrolnych: '.$queriesPath);
 
             return self::FAILURE;
         }
 
-        $data = Yaml::parseFile(self::QUERIES_PATH);
+        $data = Yaml::parseFile($queriesPath);
         $k = (int) $this->option('k');
+        $shuffles = max(0, (int) $this->option('tie-shuffles'));
         // Z `--index` oceniamy wskazany indeks fizyczny (np. nowy, jeszcze bez aliasu);
         // bez niego — cel aliasu `products-search`, jak dotąd.
         $target = $this->option('index') ?: self::ALIAS;
@@ -83,13 +107,11 @@ class SearchEvalCommand extends Command
             array_keys($queries),
         );
 
-        $response = $this->client->rankEval([
-            'index' => $target,
-            'body' => [
-                'requests' => $requests,
-                'metric' => ['dcg' => ['k' => $k, 'normalize' => true]],
-            ],
-        ])->asArray();
+        if ($shuffles > 0) {
+            return $this->evaluateWithTieShuffles($target, $queries, $requests, $k, $shuffles);
+        }
+
+        $response = $this->rankEval($target, $requests, $k);
 
         $unstable = array_map(
             fn (array $request) => $this->tieGuard->hasMixedGradeTie(
@@ -108,6 +130,117 @@ class SearchEvalCommand extends Command
         }
 
         return in_array(true, $unstable, true) ? self::TIE_UNSTABLE : self::SUCCESS;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $requests
+     * @return array<string, mixed>
+     */
+    private function rankEval(string $target, array $requests, int $k): array
+    {
+        return $this->client->rankEval([
+            'index' => $target,
+            'body' => [
+                'requests' => $requests,
+                'metric' => ['dcg' => ['k' => $k, 'normalize' => true]],
+            ],
+        ])->asArray();
+    }
+
+    /**
+     * Stabilna linia bazowa mimo remisów (spec ETAP 12, §8 krok 2): N przebiegów
+     * `_rank_eval`, w przebiegu `i` remisy `_score` rozstrzyga seedowany hash
+     * (drugi klucz sortowania), a nie wewnętrzny doc id Lucene.
+     *
+     * Dlaczego sortowanie, a nie `function_score` z `random_score` o wadze 1e-6
+     * dodawanym do wyniku: `_score` to float32. Przy wyniku ~27 odstęp między
+     * sąsiednimi floatami to 2^-19 ≈ 1.9e-6, więc dodatek < 1e-6 zaokrągla się
+     * do zera dla ~95% dokumentów, a reszta dostaje +1 ulp. Zamiast losowej
+     * kolejności powstają dwa poziomy, a w każdym dalej rozstrzyga doc id Lucene
+     * (sprawdzone na żywym `products-v6`: top 50 nadal z jednym `_score`). Duża
+     * grupa daje wtedy losowy podzbiór w kolejności Lucene, mała (< ~200) prawie
+     * się nie tasuje. Większa waga zaczęłaby przestawiać dokumenty o RÓŻNYCH
+     * wynikach (przy boost popularności wyniki są prawie ciągłe). Sortowanie
+     * `[_score desc, hash asc]` zostawia `_score` bit w bit i zmienia wyłącznie
+     * kolejność dokumentów o identycznym wyniku — z konstrukcji, bez progu.
+     *
+     * Strażnik remisów (`TieGroupGuard`) jest tu zbędny: remisy z różnymi ocenami
+     * są właśnie tym, co uśredniamy, a rozrzut widać w min–max.
+     *
+     * @param  array<int, array{query: string, relevant: array<int, array<string, mixed>>}>  $queries
+     * @param  array<int, array<string, mixed>>  $requests
+     */
+    private function evaluateWithTieShuffles(string $target, array $queries, array $requests, int $k, int $shuffles): int
+    {
+        /** @var array<int, list<float>> $perQuery */
+        $perQuery = [];
+        /** @var array<int, int> $maxUnrated */
+        $maxUnrated = [];
+        /** @var list<float> $overall */
+        $overall = [];
+
+        for ($seed = 1; $seed <= $shuffles; $seed++) {
+            $shuffled = array_map(static function (array $request) use ($seed): array {
+                $request['request']['sort'] = [
+                    ['_score' => 'desc'],
+                    ['_script' => [
+                        'type' => 'number',
+                        'order' => 'asc',
+                        'script' => ['source' => self::TIE_BREAK_SCRIPT, 'params' => ['seed' => $seed]],
+                    ]],
+                ];
+
+                return $request;
+            }, $requests);
+
+            $response = $this->rankEval($target, $shuffled, $k);
+
+            if ($response['failures'] !== []) {
+                $this->error("Błędy _rank_eval (przebieg {$seed}): ".json_encode($response['failures'], JSON_PRETTY_PRINT));
+
+                return self::FAILURE;
+            }
+
+            $overall[] = (float) $response['metric_score'];
+
+            foreach (array_keys($queries) as $i) {
+                $detail = $response['details']["q{$i}"];
+                $perQuery[$i][] = (float) $detail['metric_score'];
+                $maxUnrated[$i] = max($maxUnrated[$i] ?? 0, count($detail['unrated_docs'] ?? []));
+            }
+        }
+
+        $rows = [];
+        foreach ($queries as $i => $entry) {
+            $scores = $perQuery[$i];
+            $rows[] = [
+                $entry['query'],
+                number_format(array_sum($scores) / count($scores), 3),
+                number_format(min($scores), 3),
+                number_format(max($scores), 3),
+                $maxUnrated[$i],
+            ];
+        }
+
+        $mean = array_sum($overall) / count($overall);
+
+        $this->table(['Zapytanie', "nDCG@{$k} średnio", 'min', 'max', 'Nieocenione w top-k (maks.)'], $rows);
+        $this->newLine();
+        $this->info(sprintf(
+            'Średnie nDCG@%d z %d przebiegów: %.3f (min %.3f, max %.3f) na %d zapytaniach',
+            $k,
+            $shuffles,
+            $mean,
+            min($overall),
+            max($overall),
+            count($queries),
+        ));
+        // Linie maszynowe; min/max to skrajne średnie pojedynczych przebiegów.
+        $this->line(sprintf('NDCG=%s', $mean));
+        $this->line(sprintf('NDCG_MIN=%s', min($overall)));
+        $this->line(sprintf('NDCG_MAX=%s', max($overall)));
+
+        return self::SUCCESS;
     }
 
     /**

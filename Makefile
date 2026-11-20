@@ -231,6 +231,11 @@ admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); has
 eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
 	$(DC) exec catalog-app php artisan search:eval
 
+.PHONY: popularity-judgments
+popularity-judgments: ## Zestaw ocen tests/relevance/popularity-queries.yaml z prawdy symulatora (seed=1 n=10)
+	$(DC) exec catalog-app php artisan analytics:judgments --seed=$(or $(seed),1) --queries=$(or $(n),10)
+	cp apps/catalog/storage/app/private/popularity-queries.yaml tests/relevance/popularity-queries.yaml
+
 .PHONY: reproject
 reproject: ## Przelicz wszystkie dokumenty products-search z projekcji (jednorazowo po Panel [2/8])
 	$(DC) exec search-consumer php bin/console search:reproject
