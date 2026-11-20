@@ -109,12 +109,10 @@ spec:
           command:
             - sh
             - -c
-            - |
-              if curl -fs -o /dev/null -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" "$ELASTICSEARCH_HOST/_alias/products-search"; then
-                echo "alias products-search istnieje — pomijam tworzenie indeksu"
-              else
-                php bin/console search:index:create
-              fi
+            # Zawsze: na istniejącym klastrze dopina brakujący products-write (ETAP 10),
+            # na świeżym tworzy indeks i oba aliasy. Idempotentne — istniejących aliasów
+            # nie przepina, przy istniejącym aliasie nowego indeksu nie tworzy.
+            - php bin/console search:index:create
           envFrom:
             - configMapRef: { name: marketplace-config }
           env: *search-env

@@ -87,10 +87,12 @@ echo "[deploy] up --wait (całość)"
 docker compose up -d --wait --remove-orphans </dev/null
 
 set -a; . ./.env; set +a
-if ! curl -fs -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" "http://localhost:${ES_PORT}/_alias/products-search"; then
-  echo "[deploy] pierwszy start: indeks products-v1 + alias"
-  docker compose exec -T search-consumer php bin/console search:index:create </dev/null
-fi
+# Zawsze, nie tylko przy pierwszym starcie: na istniejącym klastrze dopina brakujący
+# products-write (ETAP 10 — nowy konsument pisze przez niego; bez aliasu ES utworzyłby
+# zwykły indeks o tej nazwie). Idempotentne: istniejących aliasów nie przepina, a przy
+# istniejącym aliasie nowego indeksu nie tworzy (search:index:create, docblock).
+echo "[deploy] indeks produktów: brakujące aliasy products-search / products-write"
+docker compose exec -T search-consumer php bin/console search:index:create </dev/null
 
 # --- backupy: konfiguracja w repo, instalowana przy każdym wdrożeniu --------
 # Wszystko idempotentne (PUT nadpisuje tym samym, install/enable bez zmian).

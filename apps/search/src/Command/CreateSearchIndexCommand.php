@@ -30,6 +30,12 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * jakości) — tylko dopina brakujący: na świeżym klastrze oba do `products-vN`,
  * na istniejącej instalacji z samym `products-search` dopina `products-write`
  * do tego samego indeksu.
+ *
+ * Deploy (VPS i job k8s) woła ją przy KAŻDYM wdrożeniu, bez `--index-version`.
+ * Dlatego gdy którykolwiek alias już istnieje, a wersji (ani --force) nie podano jawnie,
+ * indeksu nie tworzy — tylko dopina brakujący alias. Inaczej na klastrze
+ * z `products-v1` zostawiłaby osierocony `products-v{CURRENT}`, a kolejne
+ * `search:index:migrate prepare` odmówiłoby na „obcym” celu o tej nazwie.
  */
 #[AsCommand(name: 'search:index:create', description: 'Tworzy indeks products-vN i dopina brakujące aliasy products-search / products-write')]
 final class CreateSearchIndexCommand extends Command
@@ -83,6 +89,13 @@ final class CreateSearchIndexCommand extends Command
         }
 
         $body = $this->mappings->load($version);
+
+        if (! $input->hasParameterOption('--index-version') && ! $input->getOption('force') && ($this->aliases->readTarget() !== null || $this->aliases->writeTarget() !== null)) {
+            $io->note('Klaster ma już alias '.$this->aliases->read.'/'.$this->aliases->write.' — nie tworzę '.$indexName.' (nowa wersja przechodzi przez make reindex), tylko dopinam brakujący alias.');
+            $this->ensureAliases($io, $indexName);
+
+            return Command::SUCCESS;
+        }
 
         $exists = $this->client->indices()->exists(['index' => $indexName])->asBool();
 

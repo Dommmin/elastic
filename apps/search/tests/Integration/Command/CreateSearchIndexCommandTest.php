@@ -94,6 +94,22 @@ final class CreateSearchIndexCommandTest extends TestCase
         self::assertSame(Command::SUCCESS, $tester->getStatusCode());
         self::assertSame($this->prefix.'1', $this->aliases->readTarget());
         self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
+        // Deploy woła komendę bez --index-version przy każdym wdrożeniu: na istniejącym
+        // klastrze nie może zostawić osieroconego products-v{CURRENT}, bo kolejne
+        // `prepare` (v1 → v2) odmówiłoby na „obcym” celu.
+        self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.CreateSearchIndexCommand::CURRENT_VERSION])->asBool());
+    }
+
+    public function test_przy_istniejacych_aliasach_bez_jawnej_wersji_nic_nie_tworzy(): void
+    {
+        $this->run_(['--index-version' => '1']);
+
+        $tester = $this->run_();
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.CreateSearchIndexCommand::CURRENT_VERSION])->asBool());
+        self::assertSame($this->prefix.'1', $this->aliases->readTarget());
+        self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
     }
 
     public function test_nie_przepina_istniejacych_aliasow_przy_nowej_wersji(): void
