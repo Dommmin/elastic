@@ -129,9 +129,11 @@ Wynik `make analytics-setup` na działającym stosie (drugie i kolejne uruchomie
 
 Przy pierwszym uruchomieniu w sekcji 2 zamiast „już istnieje” są linie `Tworzę indeks…`, `Tworzę transform…`,
 `Startuję transform…`.
-Adres dashboardu w ostatniej linii sekcji 3 składa się z `KIBANA_PORT` z `.env` (tu 5601; na maszynie współdzielonej
-z innymi projektami port może być przesunięty). Od części 12b skrypt ma jeszcze sekcje 4 (popularność, enrich)
-i 5 (reguły anomalii), opisane w [przewodniku 12b](etap-12b-popularnosc-w-rankingu.md).
+Adres dashboardu w ostatniej linii sekcji Kibany składa się z `KIBANA_PORT` z `.env` (tu 5601; na maszynie współdzielonej
+z innymi projektami port może być przesunięty). Od części 12b skrypt ma jeszcze sekcję popularności (enrich) i sekcję 5
+(reguły anomalii), opisane w [przewodniku 12b](etap-12b-popularnosc-w-rankingu.md). W końcowej fali ETAPU 12 sekcja
+popularności przeszła **przed** Kibanę: dziś to sekcja 3, a import dashboardu ma numer 4 (linie `[4]`), żeby
+niedziałająca Kibana nie blokowała pipeline'u enrich.
 
 > **Węzły ES muszą mieć rolę `transform`.** W `compose.yaml` role węzłów są wypisane jawnie, a do ETAPU 12 nie było
 > wśród nich `transform`. Bez niej każde wywołanie `_transform` kończy się błędem
@@ -156,7 +158,7 @@ Zdarzenia (routing key = typ):
 | Typ | Kiedy | Co niesie |
 |---|---|---|
 | `user.searched` | `SearchController::index` (web i API), tylko pierwsza strona | `search_id`, `query` (trim + lowercase), `query_raw`, `filters`, `total_hits`, `results` (top 20 ID), `sort` |
-| `user.clicked_result` | wejście na `/products/{id}?sid=&pos=` | `search_id`, `query` (z Redisa), `product_id`, `position`, `dedup_key` |
+| `user.clicked_result` | wejście na `/products/{id}?sid=&pos=`, tylko gdy kontekst `sid` w Redisie zawiera ten produkt | `search_id`, `query` (z Redisa), `product_id`, `position` (z kontekstu, nie z `pos`), `dedup_key` |
 | `user.added_to_cart` | `CartController::store` (wymaga logowania) | `product_id`, `offer_id`, `search_id` i `query`, jeśli produkt otwarto z wyników |
 | `user.checked_out` | `CartController::checkout` | `order_ids`, `product_ids`, `amount_cents` |
 
@@ -296,8 +298,8 @@ Decyzje w tym pliku:
 - **`source.query` tylko wyszukania i kliknięcia.** Koszyk i zakup nie wchodzą do żadnej metryki, a zakup nie ma
   frazy, więc bez filtra wpadałby do kubełka „brak frazy” i zawyżał `sessions`.
 - **`missing_bucket: true`.** Bez tego wyszukania bez frazy (krok 1) w ogóle nie trafiłyby do indeksu. Z nim
-  powstaje kubełek `query = null`, czyli **przeglądanie bez frazy**. W nim lądują też kliknięcia, których kontekst
-  w Redisie wygasł (brak `query`).
+  powstaje kubełek `query = null`, czyli **przeglądanie bez frazy**. Kliknięcia tu nie trafiają: od końcowej fali
+  ETAPU 12 kliknięcie bez kontekstu w Redisie w ogóle nie tworzy zdarzenia (patrz ograniczenia).
 - **`avg` na `click.position` bez filtra.** Tylko kliknięcia mają to pole, więc średnia i tak liczy się z kliknięć.
 - **`ctr` to kliknięcia na wyszukanie**, nie „odsetek wyszukań z kliknięciem”. Jedno wyszukanie może dać kilka kliknięć,
   więc wartość potrafi przekroczyć 1 (np. `koszulka termoaktywna extreme`: 1,456).
@@ -718,10 +720,23 @@ Więcej: [`POMIARY.md` §16](../POMIARY.md).
 - **`sessions` w `search-stats-daily` nie sumuje się** po dniach ani frazach (cardinality, krok 8).
 - **Dashboard sprawdzony przez API, nie wzrokowo.** Import, referencje i odczyt dashboardu przez
   `/api/dashboards` są potwierdzone, renderu paneli w przeglądarce nie oglądałem.
-- **Kontekst w Redisie żyje 30 min.** Kliknięcie po dłuższej przerwie trafia do kubełka „brak frazy”.
-- **Znany błąd do poprawki w końcowej fali ETAPU 12:** w `CartController::checkout` odczyt ofert do zdarzenia
-  `user.checked_out` jest poza `try/catch`, więc wyjątek w tym miejscu dałby 500 już po złożeniu zamówień (wbrew
-  zasadzie „analityka nigdy nie psuje requestu”).
+- **Kontekst w Redisie żyje 30 min.** Kliknięcie po dłuższej przerwie nie jest rejestrowane, a koszyk traci
+  atrybucję wyszukania (`search_id`, `query`).
+- **Kliknięcie bez kontekstu → brak zdarzenia (poprawione w końcowej fali ETAPU 12).** Pierwotnie `?sid=&pos=` z URL-a
+  przyjmowane było na wiarę: każdy mógł dopisać produktowi kliknięcie na dowolnej pozycji, a IPS z 12b (waga 1/p(k))
+  wzmacnia właśnie kliknięcia z dalekich pozycji. Teraz `ProductPageController` zapisuje `user.clicked_result` tylko
+  wtedy, gdy kontekst `sid` istnieje i zawiera produkt; `position` = indeks w kontekście + 1, a `pos` z URL-a jest
+  ignorowane. Produkt spoza top 20 kontekstu (np. druga strona wyników) nie daje kliknięcia. `sid` musi pasować do
+  alfabetu ULID/UUID (do 64 znaków), zanim trafi do klucza w Redisie — także w formularzu koszyka. Symulator publikuje
+  zdarzenia prosto do RabbitMQ, więc tej zmiany nie dotyczy.
+- **Checkout odporny na błąd analityki (poprawione w końcowej fali ETAPU 12).** Odczyt ofert i zapis
+  `user.checked_out` w `CartController::recordCheckedOut` były poza `try/catch`: wyjątek dałby 500 już po złożeniu
+  zamówień. Teraz całe ciało jest w `try/catch (Throwable)` z `report()`; test w `FunnelEventsTest` wymusza wyjątek
+  recordera i sprawdza przekierowanie na `/orders` oraz zapisane zamówienie.
+- **Zapis analityki przed `make analytics-setup` ląduje w `failed`, nie w zwykłym indeksie.** `_bulk` idzie z
+  `require_data_stream=true`: bez szablonów ES odrzuca pozycję (404 `index_not_found_exception`) zamiast założyć zwykły
+  indeks `events-user-default`, który zablokowałby potem data stream o tej nazwie. Powód błędu ES (`type: reason`)
+  jest w komunikacie wiadomości w transporcie `failed`; po setupie `messenger:failed:retry`.
 
 ## Co wybuchło po drodze
 
@@ -755,7 +770,7 @@ curl -s -u elastic:… 'http://localhost:19200/_cat/indices/.ds-events-*,search-
 curl -s -u elastic:… -H 'Content-Type: application/json' 'http://localhost:19200/_query?format=txt' \
   -d '{"query":"FROM search-stats-daily | STATS s = SUM(searches), c = SUM(clicks) BY day | SORT day DESC | LIMIT 3"}'
 
-# dashboard: tylko import (sekcja 3 skryptu jest idempotentna)
+# dashboard: tylko import (sekcja 4 skryptu jest idempotentna)
 make analytics-setup
 open "http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/search-analytics"
 ```

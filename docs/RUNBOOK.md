@@ -139,6 +139,7 @@
 | [136](#136) | `rank_feature` odrzuca 0, a `on_failure` pipeline'u tego nie łapie | Elasticsearch | 12b |
 | [137](#137) | `make reindex` nie skacze do `products-v6`: zawsze vN → vN+1 | narzędzia | 12b |
 | [138](#138) | `closed-loop.sh` wisi 24 min: zawieszony `rabbitmqctl` w kontenerze RabbitMQ | RabbitMQ / narzędzia | 12b |
+| [139](#139) | `search.analytics.ingest` rośnie bez końca, gdy nie ma analytics-consumera (G5) | RabbitMQ | 12 |
 
 ---
 
@@ -5758,11 +5759,22 @@ ES chroni zależności: polityki używanej przez pipeline nie usunie, pipeline'u
 nie. W drugą stronę ochrony nie ma: indeks może wskazywać pipeline, którego nie ma, i wtedy odrzuca zapisy.
 
 **Naprawa**
-Kolejność (sekcja 4 `setup-analytics.sh`): pusty indeks źródłowy → polityka → `_execute` → pipeline → dopiero potem
-indeks z `default_pipeline` (`make reindex` na v6). Na świeżym klastrze i na k3s/VPS sekcja 4 musi przejść przed
-migracją. Uwaga: sekcja 4 jest po sekcji 3 (Kibana), więc niedziałająca Kibana blokuje pipeline. Zmiana polityki:
-pusty pipeline (`{"processors":[]}`) → `DELETE` polityki → `make analytics-setup` → `search:popularity:refresh`.
-Otwarte: `IndexMigration::prepare` powinien odmówić, gdy pipeline z mapowania nie istnieje (końcowa fala ETAPU 12).
+Kolejność (sekcja popularności `setup-analytics.sh`): pusty indeks źródłowy → polityka → `_execute` → pipeline →
+dopiero potem indeks z `default_pipeline` (`make reindex` na v6). Na świeżym klastrze i na k3s/VPS ta sekcja musi
+przejść przed migracją. Zmiana polityki: pusty pipeline (`{"processors":[]}`) → `DELETE` polityki →
+`make analytics-setup` → `search:popularity:refresh`.
+
+Poprawione w końcowej fali ETAPU 12:
+- **Strażnik w kodzie.** `IndexMigration::prepare` i `search:index:create` czytają `index.default_pipeline` z pliku
+  mapowania (`settings.index.default_pipeline`, płaskie `settings.default_pipeline`, `_none` pomijane), wołają
+  `GET _ingest/pipeline/<id>` i przy 404 odmawiają (`MigrationRefused` / błąd komendy) z podpowiedzią
+  `make analytics-setup`, zanim cokolwiek utworzą (`search:index:create --force` — jeszcze przed usunięciem
+  starego indeksu). Klasa `App\Service\DefaultPipeline`, testy: `DefaultPipelineTest` (jednostkowy) oraz
+  integracyjne w `IndexMigrateCommandTest` i `CreateSearchIndexCommandTest`.
+- **Kolejność skryptu.** Sekcja popularności to teraz sekcja 3, import do Kibany sekcja 4 — niedziałająca Kibana
+  nie blokuje już pipeline'u.
+- **Rola w k8s.** `deploy/k8s/es-roles.yml` ma `manage_transform`, `manage_enrich` i `product-popularity*` jak
+  `setup-security.sh` (bez tego refresh popularności na k3s dostałby 403).
 
 **Czego się nauczyłem**
 Enrich to trzy obiekty z zależnościami (indeks źródłowy, polityka z jej indeksem `.enrich-*`, pipeline), a ES pilnuje
@@ -5886,3 +5898,53 @@ a `docker compose exec` z `timeout` w kontenerze zabija tylko to, co jest najbli
 **Czego się nauczyłem**
 <zasada ogólna, która przyda się przy innym problemie>
 ```
+
+---
+
+<a id="139"></a>
+## 139 — `search.analytics.ingest` rośnie bez końca, gdy nie ma analytics-consumera (G5)
+
+> ETAP 12, końcowa recenzja gałęzi (2026-11-20). Znalezione w przeglądzie, nie w działaniu.
+
+**Objaw**
+Overlay G5 (`deploy/overlays/g5-base/delete-unneeded.yaml`) usuwa analytics-consumera, a catalog dalej zapisuje `user.*` do outboxu
+i `outbox-publisher` publikuje je do `marketplace.events`. Kolejka `search.analytics.ingest` (quorum, bez limitu)
+zbiera wszystko — pamięć i dysk brokera rosną, aż zadziała alarm pamięci i RabbitMQ zablokuje publikację **całemu**
+sklepowi (także `product.*`).
+
+**Diagnoza**
+```bash
+# API zarządzania (CLI w kontenerze potrafi wisieć, RUNBOOK #138); hasło z .env, nie wypisywać
+curl -s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "http://127.0.0.1:${RABBITMQ_UI_PORT}/api/queues/%2F/search.analytics.ingest" \
+  | python3 -c 'import json,sys;q=json.load(sys.stdin);print(q["messages"],q.get("policy"),q.get("effective_policy_definition"))'
+curl -s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "http://127.0.0.1:${RABBITMQ_UI_PORT}/api/policies/%2F"
+```
+
+**Przyczyna**
+Kolejka bez konsumenta i bez `max-length`. Analityka może ginąć (spec), więc brak konsumenta nie powinien zagrażać
+reszcie brokera.
+
+**Naprawa**
+Polityka `analytics-ingest-cap`: wzorzec `^search\.analytics\.ingest(\.dlq)?$`, `max-length: 100000`,
+`overflow: drop-head` (wyrzuca najstarsze). Jako kod w dwóch miejscach, pilnowanych przez
+`tools/k3d/topology-parity.rb` (woła je `tools/k3d/g5-check.sh`):
+- `infra/rabbitmq/definitions.template.json` → `policies` (Compose i baza k8s: `load_definitions` przy starcie brokera),
+- `deploy/k8s/rabbitmq-cluster/topology.yaml` → CR `Policy` (klaster operatora w G5).
+
+Nieoczywiste:
+- **`drop-head` + DLX.** Kolejka ma `x-dead-letter-exchange`, więc wyrzucone wiadomości nie znikają, tylko idą
+  do `search.analytics.ingest.dlq` (powód `maxlen`). Dlatego ten sam limit obejmuje `.dlq` — tam DLX-a nie ma, więc
+  `drop-head` naprawdę kasuje. Razem najwyżej ~200 tys. wiadomości. Skutek uboczny: przy zalewie DLQ też traci
+  najstarsze wpisy (dla analityki akceptowalne).
+- **Jedna polityka na kolejkę.** RabbitMQ stosuje tylko politykę o najwyższym priorytecie, nie łączy ich. Nowa
+  polityka pasująca do tych kolejek musi zawierać też ten limit; `topology-parity.rb` sprawdza, że każda kolejka
+  pasuje do najwyżej jednej polityki.
+- **Definicje ładują się tylko przy starcie.** Na działającym brokerze politykę wgrałem przez API
+  (`PUT /api/policies/%2F/analytics-ingest-cap`, ciało z pliku szablonu) i odświeżyłem lokalny `definitions.json`
+  (`python3 tools/render-rabbitmq-definitions.py`), żeby przetrwała restart. Kolejki quorum przyjmują politykę
+  z kilkusekundowym opóźnieniem (`effective_policy_definition` puste tuż po PUT).
+- **Stream w G5** (`search.analytics.stream`) ma własny `x-max-age: 7D`, polityka go nie dotyczy.
+
+**Czego się nauczyłem**
+Kolejka bez konsumenta to bomba z opóźnionym zapłonem dla całego brokera. Limit długości jest tani, ale przy DLX
+trzeba policzyć, dokąd trafiają wyrzucone wiadomości.

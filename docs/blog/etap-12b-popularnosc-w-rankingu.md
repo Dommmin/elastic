@@ -94,7 +94,7 @@ infra/elasticsearch/
   analytics/enrich-policy-product-popularity.json   match po product_id
   analytics/pipeline-products-enrich-popularity.json
   analytics/index-alerts-analytics.json          indeks dla connectora Index (dynamic: strict)
-  setup-analytics.sh                             sekcja 4 (popularność), sekcja 5 (anomalie)
+  setup-analytics.sh                             sekcja 3 (popularność, przed Kibaną), sekcja 5 (anomalie)
 infra/kibana/rules/                              zero-results-spike.json, ctr-drop.json, 2 connectory
 tests/relevance/popularity-queries.yaml          wygenerowany zestaw ocen (seed 1, 10 fraz, ~7 tys. linii)
 tools/analytics/closed-loop.sh                   pętla zamknięta: dzień -> ingest -> refresh -> eval -> CSV
@@ -211,8 +211,8 @@ Eksperymenty z budowy (szczegóły w [RUNBOOK #135](../RUNBOOK.md#135)):
 | zapis do indeksu, którego `default_pipeline` nie istnieje | **400 dla każdego zapisu** |
 | odczyt `.enrich-*` (nawet jako `elastic`) | **403** (indeks zastrzeżony) |
 
-Stąd kolejność w sekcji 4 `setup-analytics.sh`: pusty indeks `product-popularity` → polityka → `_execute` →
-pipeline. I dopiero potem migracja na `products-v6`. Stany „polityka usunięta” i „brak indeksu enrich” nie dają się
+Stąd kolejność w sekcji popularności `setup-analytics.sh` (przy budowie sekcja 4, od końcowej fali sekcja 3): pusty
+indeks `product-popularity` → polityka → `_execute` → pipeline. I dopiero potem migracja na `products-v6`. Stany „polityka usunięta” i „brak indeksu enrich” nie dają się
 wywołać zwykłym API, gdy pipeline już istnieje, więc test integracyjny sprawdza tor `on_failure` prawdziwą awarią
 procesora (zepsuty wpis enrich: napis zamiast liczby, Painless rzuca wyjątek przy `> 0`).
 
@@ -229,9 +229,11 @@ Przy pierwszym uruchomieniu zamiast „już istnieje” są linie `Tworzę pusty
 Polityki enrich nie da się zmienić w miejscu; procedura przebudowy jest w nagłówku `setup-analytics.sh` (pusty
 pipeline → `DELETE` polityki → `make analytics-setup` → refresh).
 
-> **Uwaga na kolejność sekcji.** Sekcja 4 jest po sekcji 3 (import dashboardu do Kibany). Jeśli Kibana nie
-> odpowiada, skrypt kończy się na sekcji 3 i pipeline **nie powstaje**. Na świeżym klastrze najpierw musi przejść
-> cały `make analytics-setup`, a dopiero potem migracja na v6. Inaczej każdy zapis produktu dostanie 400.
+> **Uwaga na kolejność sekcji.** Przy budowie sekcja popularności (wtedy 4) stała po imporcie do Kibany (3): gdy Kibana
+> nie odpowiadała, skrypt kończył się przed pipeline'em. W końcowej fali ETAPU 12 kolejność odwrócona: popularność
+> to sekcja 3 (linie `[3]`), Kibana 4. Powyższy wydruk pochodzi sprzed zmiany. Na świeżym klastrze i tak najpierw
+> `make analytics-setup`, potem migracja na v6 — a gdyby ktoś to pomylił, `search:index:create` i
+> `search:index:migrate prepare` odmówią utworzenia indeksu z `default_pipeline`, którego nie ma w klastrze.
 
 ### Migracja v4 → v5 → v6 w dwóch przebiegach
 
@@ -761,7 +763,7 @@ Zakładam stos z poprzednich etapów (`make up-apps`, klaster 3 węzłów, produ
 `products-search`/`products-write` z ETAPU 10) i dane 12a albo pusty tor zdarzeń. Kolejność ma znaczenie:
 
 ```bash
-# 1. tor analityki: sekcje 1–5 (Kibana MUSI odpowiadać: sekcja 3 jest przed sekcją 4 z pipeline'em enrich)
+# 1. tor analityki: sekcje 1–5 (pipeline enrich w sekcji 3, przed Kibaną w sekcji 4)
 make analytics-setup
 docker compose up -d analytics-consumer
 
@@ -792,16 +794,24 @@ docker compose exec catalog-app php artisan analytics:simulate --live --inject=z
 ```
 
 Na zupełnie świeżym klastrze `search:index:create` zakłada `products-v2` (`CURRENT_VERSION = 2`), więc do v6 dochodzi
-się czterema `make reindex`. Sekcja 4 musi przejść przed ostatnim z nich (patrz ograniczenia).
+się czterema `make reindex`. Sekcja 3 (popularność) musi przejść przed ostatnim z nich — inaczej `prepare` odmówi.
 
 ## Ograniczenia
 
-- **Świeży klaster i k3s/VPS: kolejność bootstrapu.** Indeks z `default_pipeline` wskazującym nieistniejący pipeline
-  odrzuca każdy zapis (400). `IndexMigration::prepare` tego dziś **nie sprawdza** (do poprawki w końcowej fali ETAPU 12:
-  ma odmówić, gdy pipeline z mapowania nie istnieje). Do tego sekcja 4 skryptu stoi za sekcją 3 (Kibana), więc
-  niedziałająca Kibana blokuje założenie pipeline'u.
+- **Świeży klaster i k3s/VPS: kolejność bootstrapu (poprawione w końcowej fali ETAPU 12).** Indeks z
+  `default_pipeline` wskazującym nieistniejący pipeline odrzuca każdy zapis (400), a ES tego przy tworzeniu nie
+  sprawdza. Teraz sprawdza kod: `IndexMigration::prepare` i `search:index:create` czytają `index.default_pipeline`
+  z pliku mapowania (zagnieżdżone i płaskie), pytają `GET _ingest/pipeline/<id>` i przy 404 odmawiają z podpowiedzią
+  `make analytics-setup` (create — jeszcze przed `--force`). Sekcja popularności skryptu stoi teraz przed Kibaną, więc
+  niedziałająca Kibana nie blokuje pipeline'u ([RUNBOOK #135](../RUNBOOK.md#135)).
+- **Refresh popularności na indeksie bez `popularity`** (np. alias zapisu jeszcze na v5) odmawia `PopularityRefused`
+  przed transformem, enrich i UBQ — sprawdza, że cel zapisu ma `popularity` typu `rank_feature`.
 - **k3s zostaje przy B = 0** i nie ma tam `products-v6`, `analytics-setup` ani refreshu popularności. Skrypt setupu
-  działa tylko na Compose.
+  działa tylko na Compose. Przygotowane w końcowej fali: rola `search_service` w `deploy/k8s/es-roles.yml` ma już
+  `manage_transform`, `manage_enrich` i `product-popularity*` (1:1 z `setup-security.sh`), a kolejka
+  `search.analytics.ingest` (i jej `.dlq`) ma politykę RabbitMQ `analytics-ingest-cap` (100 000 wiadomości,
+  `drop-head`) — w overlayu G5 nie ma analytics-consumera, a catalog dalej publikuje `user.*`
+  ([RUNBOOK #139](../RUNBOOK.md#139)).
 - **Przerwany refresh zostawia częściowy `product-popularity`.** Na żywo nic się nie dzieje (enrich czyta starą
   kopię), dopóki ktoś nie wykona polityki od nowa. `make analytics-setup` robi `_execute` zawsze, więc uruchomiony
   między padniętym a powtórzonym refreshem opublikuje częściowy indeks. Bezpiecznie: najpierw powtórzyć refresh.
@@ -815,8 +825,10 @@ się czterema `make reindex`. Sekcja 4 musi przejść przed ostatnim z nich (pat
 - **Reguły anomalii:** bazy uproszczone (zbiorczy udział zamiast mediany, cały okres zamiast tej samej godziny), jeden
   alert na regułę (bez grup per fraza), skok zero results wyzwala też regułę CTR.
 - **`make closed-loop` kasuje streamy analityczne** w całości (także dane demo 12a).
-- **Znany błąd z 12a do poprawki w końcowej fali:** `CartController::checkout` czyta oferty do `user.checked_out` poza
-  `try/catch` (przewodnik 12a, ograniczenia).
+- **Błąd z 12a poprawiony w końcowej fali:** `CartController::recordCheckedOut` jest w całości w `try/catch` +
+  `report()`, więc błąd analityki po złożeniu zamówień nie daje 500. Kliknięcia z UI liczą się tylko z kontekstem
+  wyszukania zawierającym produkt (pozycja z kontekstu), więc sfałszowane `?sid=&pos=` nie podbije IPS (przewodnik
+  12a, ograniczenia). `analytics:simulate` na produkcji wymaga `--force`.
 
 ## Co wybuchło po drodze
 
@@ -845,7 +857,7 @@ Do tego błąd projektowy znaleziony w recenzji, nie w działaniu: prior IPS w s
    i porównaj liczbę fałszywych alarmów przy `--live` bez wstrzyknięcia.
 5. **Alert per fraza.** Dodaj `BY search.query` do reguły zero results. Co się dzieje z `onActionGroupChange`, gdy ID
    alertu zależy od grupy?
-6. **Wdrożenie na k3s (na papierze).** Wypisz kolejność: rola `transform` węzłów (ECK ma domyślne role), sekcja 4 przed
+6. **Wdrożenie na k3s (na papierze).** Wypisz kolejność: rola `transform` węzłów (ECK ma domyślne role), sekcja 3 przed
    migracją, `SEARCH_POPULARITY_BOOST` na końcu listy env w `deploy/k8s` (overlay G5 łata po indeksie), CronJob
    refreshu.
 
@@ -880,7 +892,7 @@ curl -s -u elastic:… -H 'Content-Type: application/json' 'http://localhost:192
   -d '{"query":"FROM alerts-analytics | SORT @timestamp DESC | LIMIT 5"}'
 open "http://localhost:${KIBANA_PORT:-5601}/app/management/insightsAndAlerting/triggersActions/rules"
 
-# setup (idempotentny; sekcja 4 = enrich, sekcja 5 = reguły)
+# setup (idempotentny; sekcja 3 = enrich, sekcja 4 = Kibana, sekcja 5 = reguły)
 make analytics-setup
 ```
 
