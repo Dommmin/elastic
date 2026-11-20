@@ -408,7 +408,9 @@ make es-reset        # skasuj indeksy i szablony (tylko dev!)
 
 # aplikacja
 make seed n=5000000  # generuj dane testowe (domyślnie 5 mln produktów)
-make reindex         # pełny reindeks z zerowym downtime
+make reindex         # migracja vN → vN+1 z zerowym downtime (source=es|pg), dwa aliasy, bramka (ETAP 10)
+make reindex-abort   # wycofanie migracji po switch-write + nadrobienie okna z outboxu
+make reindex-cleanup # usuń stare indeksy bez aliasu
 make consume         # podgląd konsumentów
 make bench q=laptop  # test obciążeniowy zapytania
 ```

@@ -642,10 +642,12 @@ nie opcja Messengera.
 
 ---
 
-## 15. ETAP 10 — operacje na indeksach: pomiary wstępne (2026-11-19) — SZKIC
+## 15. ETAP 10 — operacje na indeksach (2026-11-19/20)
 
-> Szkic z Task 2 (seed 300 tys. i liczby wejściowe). Reindeks, bramka i dryf wersji dojdą
-> w kolejnych taskach. Maszyna współdzielona z innymi projektami: liczby **orientacyjne**.
+> Seed 300 tys. i liczby wejściowe (Task 2/2b), potem migracje na żywo pod churnem (Task 12/12c),
+> `_update_by_query` (Task 10), snapshoty (Task 11). Przewodnik:
+> [`blog/etap-10-operacje-na-indeksach.md`](blog/etap-10-operacje-na-indeksach.md).
+> Maszyna współdzielona z innymi projektami: czasy **orientacyjne**. Fakty i hipotezy oznaczone osobno.
 
 **Konfiguracja (fakt, sprawdzone `_nodes/stats` i `docker inspect`):** 3 węzły ES 9.5.1
 (`es01–03`), `products-v1` 1 shard + 1 replika, alias `products-search`. **Węzły działały
@@ -744,8 +746,9 @@ w Postgresie (`round(avg(rating), 2)` na grupie `product_id`):
 **Fakt:** już na v1 filtr „od 4,7” gubi **10 004 produkty** (85 % wyniku), bo 4,70 w `half_float`
 to ≈ 4,6992 i ląduje poniżej progu (stąd wynik w przedziale 4,69–4,7), a zakres „dokładnie 3,3”
 nie zwraca nic. `term 4.7` zgadza się z Postgresem, bo wartość zapytania też jest zaokrąglana do
-`half_float`, więc błąd widać dopiero na granicach przedziałów. **Hipoteza (do sprawdzenia po
-reindeksie na `v2`):** `scaled_float` (`scaling_factor: 100`) zwróci 11 746 i 10 187.
+`half_float`, więc błąd widać dopiero na granicach przedziałów. **Hipoteza ze szkicu
+(`scaled_float` zwróci tyle, co Postgres) — potwierdzona po reindeksie:** v2 `rating_avg >= 4.7` = 11 721 = baza 11 721
+(baza przeliczona po churnie, który usunął część produktów; v1 `half_float` w tej samej chwili: 1 741). Patrz „Droga A vs droga B”.
 
 ### `make eval` na 300 tys.
 
@@ -758,8 +761,9 @@ reindeksie na `v2`):** `scaled_float` (`scaling_factor: 100`) zwróci 11 746 i 1
   `TIE_CHECK_MAX_HITS = 1000` trafień. Zmierzona liczba trafień o `_score` ≥ k-tego (`min_score`,
   `track_total_hits`) na 300 tys.: `smartfon`/`komórka`/`telefon` 11 566, `meble ogrodowe` 11 583,
   `słuchawki bezprzewodowe` 11 417, `buty do biegania` 5 812, `kurtka zimowa` 5 732, `rower górski` 5 851,
-  `wiertarka` 5 679, `notebook` 5 695, `Orn PLC` 686, dwa zapytania po nazwie 26 i 40. Czyli 9 z 13 grup
-  przekraczało limit 1000, a 4 także okno wyników ES (10 000). Wynik „brak remisów z różnymi ocenami”
+  `wiertarka` 5 679, `notebook` 5 695, `Orn PLC` 686, dwa zapytania po nazwie 26 i 40. Czyli 10 z 13 grup
+  przekraczało limit 1000, a 5 także okno wyników ES (10 000) (poprawione przy Task 13: wcześniej
+  podane 9 i 4 to błąd liczenia tej samej listy). Wynik „brak remisów z różnymi ocenami”
   ze starego strażnika był więc **niepotwierdzony** dla większości zapytań.
 - **Nowy strażnik** (`App\Services\Search\TieGroupGuard`): top-k czytany normalnie, a grupę o `_score`
   równym k-temu — jedyną, która może wystawać poza k — czyta w całości przez PIT + `search_after`
@@ -782,3 +786,104 @@ reindeksie na `v2`):** `scaled_float` (`scaling_factor: 100`) zwróci 11 746 i 1
 |---|---|
 | `products-v1` (1 shard + 1 replika) | 182 MB primary, 363 MB razem; 1 181 986 dokumentów Lucene (300 000 produktów + oferty zagnieżdżone) |
 | Dysk węzłów ES (współdzielona VM) | 238 GB użyte / 672 GB wolne na węzeł (26 %) |
+| Po migracjach pod churnem (po scaleniu segmentów, z repliką; `_cat/indices`) | v1 398,4 MB / 199,5 MB primary; v2 382 MB / 192,6 MB; v3 377,1–385,6 MB / 186,7–192,7 MB; v4 369,8 MB / 182,5 MB, na koniec sesji (po kolejnych przebiegach churnu) 410,4 MB / 189,7 MB |
+| Tuż po `switch-read`, przed merge | v2 502,8 MB (obok v1 418 MB); v4 491,9 MB |
+
+**Fakt:** typ `rating_avg` (`half_float` → `scaled_float`) nie zmienia rozmiaru w sposób mierzalny — w próbie na 300 tys.
+syntetycznych ocen oba warianty po 179 MB primary. **Interpretacja:** różnice między v1–v4 (182–200 MB primary) idą za
+merge'ami i usuniętymi dokumentami (churn), nie za typem pola — v2–v4 mają identyczne mapowanie, a różnią się o ~10 MB primary.
+**Dodatkowe miejsce w migracji (wyliczone z powyższych faktów):** w czasie kopiowania vN+1 nie ma repliki, czyli dochodzi
+~1 primary (~190 MB); po `finalize` szczyt to dwa pełne indeksy z repliką, z nowym przed merge (v1 418 + v2 502,8 ≈ 920 MB).
+
+### Warunki przebiegów migracji (Task 12/12c)
+
+3 węzły ES 9.5.1, heap 1g, limit 2g (**nie** 512m z planu — Ruling B), indeks 1 shard + 1 replika, 297–300 tys. produktów.
+W tle `make churn rate=20 duration=300` (3 780–7 588 zmian i 220–412 usunięć na przebieg, `failed=0`). Sonda
+`GET /api/search?q=kurtka&brand=Bosco+PLC` co ~1 s; heap i odrzucenia z `_cat/nodes` / `_cat/thread_pool` co 5 s.
+
+| Sonda `/search` | Wynik |
+|---|---|
+| Task 12 (00:34–01:46, z incydentami) | **3 904 żądania, 3 904 × HTTP 200, 0 pustych**; `took_ms` p50 16, max 190 |
+| Task 12c (02:16–02:34) | **922 żądania, 922 × 200, 0 pustych**; `took_ms` max 144 |
+| Trafienia zapytania kontrolnego | 1203 → 1198: wyłącznie prawdziwe usunięcia z churnu, żadnego skoku przy przełączaniu aliasów |
+| Heap / odrzucenia write+search / breakery | max 88 % (jedna próbka), typowo 30–75 %; 0 odrzuceń w 851 próbkach; tripped 0 |
+
+### Droga A vs droga B (`make reindex` / `make reindex source=pg`)
+
+| krok | A: v1→v2 (przebieg 1b) | B: v3→v4 (przebieg 2, Task 12c) |
+|---|---|---|
+| ndcg stary | 6 s | 6 s |
+| prepare | 1 s | 1 s |
+| switch-write | 1 s | 0 s |
+| **wypełnienie** | **26 s** (`_reindex` 299 536 dok., `version_conflicts` 252) | **120 s** (backfill `indexed 298609, stale 3, errors 0`, 2 513 dok./s) |
+| finalize | 27 s | 15 s |
+| gate | 1 s (299 494 vs 299 492) | 1 s (298 544 = 298 544) |
+| ndcg nowy | 8 s | 7 s |
+| switch-read | 0 s | 1 s |
+| **razem** | **70 s** | **151 s** |
+| okno nieświeżego odczytu (switch-write → switch-read) | ~62 s | ~144 s |
+| `verify-convergence` po churnie | `checked=5697 mismatches=0` | `checked=5670 mismatches=0` |
+| `rating_avg >= 4.7` nowy vs baza | 11 721 = 11 721 (v1 `half_float`: 1 741) | 11 687 = 11 687 |
+
+B jest ~4,6× wolniejsza na wypełnieniu, ~2,2× w całości. Dla porównania próba `_reindex` 300 tys. przy pomiarze `half_float`
+(bez churnu, Task 2): 29,0 s i 27,4 s.
+
+**Backfill (droga B) przed i po przeprojektowaniu (Task 12 → 12b):**
+
+| Wersja | Przepustowość | 300 tys. |
+|---|---|---|
+| projekcja po jednej (`GET …/{id}/projection`, 29 ms) + zapis po jednym | 36,9 dok./s (9 004 ID w 244 s); w aborcie ~36 dok./s | szacunek ~8 100 s ≈ 2 h 15 min; **nie do ukończenia** (krok ginie przy restarcie konsumenta co 3600 s) |
+| projekcje partiami po 500 + jeden `_bulk` na partię | **2 667 dok./s** (298 682 w 112 s, jednorazowy indeks, 0 replik, `refresh -1`) | ~2 min (~72× szybciej) |
+| endpointy catalogu (żywy Postgres) | partia 500 projekcji 0,12 s; strona `changed` (limit 5000) 0,10 s | — |
+
+`slices`: **nie zmierzone** — indeks ma 1 shard, a `slices=auto` dzieli według liczby shardów (zachowanie z dokumentacji ES), więc
+daje jeden wątek. `rps` dla `_reindex` nie był zmieniany (domyślnie `-1`); wpływ `requests_per_second` zmierzony tylko na
+`_update_by_query` (niżej).
+
+### Przerwanie i wznowienie (Ctrl-C), wycofanie
+
+| Przebieg | Wynik |
+|---|---|
+| Ctrl-C w `reindex --wait` (v2→v3), SIGINT przy `created=21999/298957` | trap anulował zadanie, kod 130, `_cat/tasks` pusto |
+| wznowienie `make reindex` | **62 s** (ndcg zamrożonego 7, reindex 24 `created=268209 version_conflicts=30748`, finalize 24, gate 0, ndcg 6, switch-read 1); okno odczytu ~145 s z pauzą; `checked=11215 mismatches=0`; bramka 298 682 = 298 682 |
+| Ctrl-C przez `compose run` (v4→v5) | zadanie `canceled: "by user request"` przy 32 994/298 396, skrypt kod 130 w ~1 s, 0 kontenerów `run-*` |
+| abort v1 (projekt O(N), Task 12) | pełny backfill doszedł do 87 000/~299 600, **zginął po 40 min 55 s (137)**; v1 `checked=9004 mismatches=1643`; szacunek całości ~4,5 h |
+| ręczna naprawa (reproject 9 004 ID z outboxu) | 244 s: 8 561 indexed, 274 × 404, 169 deleted → `mismatches=0`, bramka 299 556 = 299 556 |
+| `--since` 1 h wstecz (Task 12b, pomiar samego nadrabiania) | 16 711 ID (15 837 indexed, 874 not_found) w 10 s = 1 624 dok./s |
+| **abort (okno z outboxu, Task 12c)** | **5,65 s** razem; nadrabianie od `switch_write_at − 300 s`: `indexed 4887, stale 3, not_found 222, deleted 26, errors 0` w 4 s (1 451 dok./s); kolejka 7 wiad.; `checked=7542 mismatches=0`; bramka 298 003 = 298 003; `rating >= 4.7` 11 671 = baza |
+| abort z trwającym `_reindex` (4b) | **6,25 s**; nadrabianie `indexed 4740, stale 4, not_found 265, deleted 7` w 4 s; kolejka 26 wiad.; równoległe `make reindex` fail-closed (kod 1); `checked=3821 mismatches=0` |
+| `make reindex-break` | kopia 89 604 z 298 682 (~30 %), `GATE=FAIL` (różnica 0,7000 > 0,001), 12 s, aliasy nietknięte |
+
+**Hipoteza (niesprawdzona):** margines 300 s wystarcza, dopóki opóźnienie kolejki w chwili `switch-write` jest krótsze; w obu
+przebiegach kolejka miała 7 i 26 wiadomości, czyli sekundy. Opóźnienia najstarszej wiadomości nie mierzyłem.
+
+### `search:verify-convergence`
+
+`checked=50021 mismatches=0` w ponad 2 min (Task 6, okno ~1 h); koszt O(N) zapytań do bazy (świeża projekcja na produkt).
+W przebiegach migracji 3 821–11 215 produktów na okno, czasów nie notowałem.
+
+### `_update_by_query`: zmiana nazwy sprzedawcy (Task 10, `products-v1`)
+
+Megasklep (id 61), **98 102** dokumenty z jego ofertą.
+
+| Faza | Wynik |
+|---|---|
+| start `rps=200` | ~350 dok./s w pierwszych 18 s (partie po 1 000, potem czekanie: dławienie skokowe) |
+| `_rethrottle` → 400 po ~18 s | status `requests_per_second: 400`, `updated 4000` |
+| `es-cancel` po ~137 s | 48 000 nowych / 50 102 starych, komenda kod 130 |
+| wznowienie `rps=1000` | `updated=50102` w ~61 s → 98 102 nowych, 0 starych |
+| powrót bez dławienia `rps=-1` | 98 102 w 15 s (~6 500 dok./s) |
+
+Liczby czytane tuż po końcu zadania spóźniają się o ~1 s (`refresh_interval`).
+
+### Snapshoty i restore (Task 11, `products-v1`, 299 999 produktów / 1 181 983 dok. z nested)
+
+| Drill | repo | snapshot | restore | rozmiar snapshotu |
+|---|---|---|---|---|
+| nieniszczący | local-fs | 6,0 s | 6,2 s | 214,8 MB (36 plików) |
+| nieniszczący | minio-s3 | 5,9 s | 6,0 s | 214,8 MB |
+| niszczący (kopia przez `_reindex` 22,3 s) | local-fs | 5,0 s | 5,2 s | 183,9 MB (58 plików) |
+| niszczący | minio-s3 | 5,8 s | 5,0 s | 184,2 MB |
+
+Wszystkie: liczba zgodna, próbka 100 dokumentów (`_source` + `_version`) zgodna. `make es-slm-run` (`local-nightly`): SUCCESS
+w 6,8 s. Restore z replikami 0. Przy jednym shardzie i lokalnym dysku MinIO nie jest wolniejszy od `fs`.

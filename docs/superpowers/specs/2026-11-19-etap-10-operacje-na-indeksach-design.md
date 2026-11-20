@@ -227,11 +227,39 @@ mierzy przepustowość; jeśli seed trwałby wiele godzin, wykonawca może doda�
 ## 8. Rozstrzygnięcia po recenzji wykonawcy (decyzje projektowe, do sprawdzenia przez użytkownika)
 
 1. **Droga powrotu nie jest bezstratna z samego przepięcia.** Po kroku 3 `vN` zamarza.
-   Powrót = przepięcie **obu** aliasów na `vN` + `search:reproject` (droga B) do `vN`,
-   który nadrabia zmiany od kroku 3 (wersje zewnętrzne odrzucą starsze). Bez podwójnego
-   zapisu (C zostaje odrzucone). RUNBOOK opisuje to jako procedurę, nie jedną linię.
-   Ta sama procedura obsługuje przerwanie migracji między krokami 3 a 7
-   (`make reindex-abort`).
+   Powrót = przepięcie **obu** aliasów na `vN` + nadrobienie w `vN` zmian z okna z outboxu
+   catalogu: `search:index:backfill --index=products-write --since=<switch_write_at − margines>`
+   (domyślnie 300 s; produkty dotknięte od tej chwili, projekcje partiami, `_bulk` z wersjami
+   zewnętrznymi, usunięte → wersjonowane `delete`). Bez podwójnego zapisu (C zostaje odrzucone).
+   RUNBOOK opisuje to jako procedurę, nie jedną linię (#115). Ta sama procedura obsługuje
+   przerwanie migracji między krokami 3 a 7 (`make reindex-abort`); po kroku 7 —
+   ręczne przepięcie aliasów + `make reindex-abort from=products-vN+1`.
+
+   > **Zmiana w trakcie realizacji (Task 12/12b).** Pierwotnie powrót = `search:reproject`
+   > (pełna droga B) do `vN`, a w implementacji (ruling A) pełny backfill + reproject wszystkich
+   > ID z porzuconego `vN+1`. Na żywo przy 300 tys. to O(N): ~37 dok./s, krok zginął po 40 min
+   > (restart konsumenta), szacunek ~4,5 h, `mismatches=1643` na przywróconym indeksie. Zastąpione
+   > nadrabianiem tylko okna (5,65 s na żywo). Założenia: margines dłuższy niż opóźnienie kolejki
+   > w chwili `switch-write`; zapisy bez outboxu (`_update_by_query`) nie są nadrabiane, więc
+   > `search:seller:rename` w trakcie migracji odmawia.
+   >
+   > Pozostałe odstępstwa od tego dokumentu:
+   > - ES lokalnie z heap 1g / limit 2g zamiast 512m / 1536m (§3) — stabilnie przy 300 tys.;
+   > - bramka porównuje z liczbą **wszystkich istniejących** produktów, nie `listed()` (§5.5);
+   > - backfill (§5.6) pobiera projekcje partiami po 500 (`/api/internal/products/projections`)
+   >   i pisze jednym `_bulk` na partię — wersja „projekcja po jednej” dawała 37 dok./s;
+   > - długie kroki `reindex.sh` przez `docker compose run --rm --no-deps`, nie `exec`
+   >   (konsument restartuje się co 3600 s);
+   > - przegląd po reindeksie (pkt 3) niepotrzebny: ES zostawia tombstone, wystarcza `gc_deletes: 1h`;
+   > - backfill do celu odczytu jest dozwolony (bez pieczęci), bo używa go nadrabianie;
+   > - `search:eval`: remis z różnymi ocenami = kod 2 (`TIE_UNSTABLE`), strażnik czyta całą grupę
+   >   remisu przez PIT; nDCG nasycone na 1,000 — słaby sygnał bramki (opisane w przewodniku);
+   > - `make reindex` wznawia migrację przerwaną po `switch-write`; nDCG starego indeksu mierzone
+   >   przed `switch-write`;
+   > - mapowania `products-v3..v5` = v2 (przebudowy bez zmiany mapowania pod kolejne przebiegi);
+   > - `marketplace:seed-reviews` dodany (seed nie tworzył opinii, `rating_avg` był pusty);
+   > - preflight „dość miejsca” (§5.3) nie zrobiony;
+   > - `search:index:create` ma `--index-version=N` (nie `--version`, zajęte przez Symfony).
 2. **Bramka nDCG jest względna.** Porównuje `vN` i `vN+1` na tych samych danych, więc
    liczy się różnica, nie wartość bezwzględna. Przed bramką krok pomiarowy: dwa przebiegi
    `search:eval` na tym samym indeksie 300 tys. muszą dać identyczny wynik
