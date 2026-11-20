@@ -128,6 +128,11 @@
 | [125](#125) | Migracja startuje w trakcie `_update_by_query` (zmiana nazwy sprzedawcy): vN+1 zostaje ze starą nazwą | Elasticsearch / narzędzia | 10 |
 | [126](#126) | Padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek | narzędzia | 10 |
 | [127](#127) | `/api/internal/*` bez uwierzytelnienia; po wprowadzeniu tokenu 401/503 w search-consumerze | bezpieczeństwo | 10b |
+| [128](#128) | `found no transform nodes`: węzły ES bez roli `transform` | Elasticsearch / Docker | 12a |
+| [129](#129) | Lens jako kod: `/api/visualizations` odrzuca ES\|QL, `/internal/lens/visualizations` daje 500 | Kibana | 12a |
+| [130](#130) | Usunięte zdarzenie dalej liczone w `search-stats-daily`: Transform nie cofa | Elasticsearch | 12a |
+| [131](#131) | Wyjątek mappera w `AnalyticsEventHandler` zostawiał wiadomości paczki bez ack/nack | search-service | 12a |
+| [132](#132) | Powtórka dnia symulatora dawała inne ID i duplikaty: remisy w rankingu ES | narzędzia / Elasticsearch | 12a |
 
 ---
 
@@ -5446,6 +5451,199 @@ nazwa hosta nie jest granicą.
 Granicą zaufania jest coś, co klient musi *wiedzieć* (sekret), a nie coś, co klient *deklaruje* (Host, ścieżka). Blokada
 ścieżki w proxy jest przydatna, ale tylko jako druga warstwa. Pusty sekret ma odmawiać, bo inaczej pusty nagłówek
 przechodzi porównanie.
+
+---
+
+<a id="128"></a>
+## 128 — `found no transform nodes`: węzły ES bez roli `transform`
+
+> ETAP 12a, Task 6 (2026-11-20).
+
+**Objaw**
+Pierwsze wywołanie Transformu (tu `POST _transform/_preview`, tak samo `PUT _transform/…`):
+```
+"type": "status_exception",
+"reason": "Transform requires the transform node role for at least 1 node, found no transform nodes"
+```
+
+**Diagnoza**
+```bash
+curl -s -u elastic:… 'http://localhost:19200/_cat/nodes?v&h=name,node.role'
+# es01 dimr   <- d(ata) i(ngest) m(aster) r(emote_cluster_client), brak t(ransform)
+grep -n 'node.roles' compose.yaml
+# node.roles: '["master","data","ingest","remote_cluster_client"]'   (es01, es02, es03)
+```
+
+**Przyczyna**
+Od ETAPU 2 role węzłów są w `compose.yaml` wypisane jawnie. Gdy `node.roles` jest ustawione, węzeł ma **tylko** te
+role. Domyślny zestaw (bez `node.roles`) zawiera `transform`, więc k3s (ECK bez `node.roles`) i `compose.prod.yaml`
+problemu nie mają: to tylko lokalny Compose.
+
+**Naprawa**
+Dopisać `"transform"` do `node.roles` wszystkich trzech węzłów i odtworzyć je **po jednym**, czekając na zielony
+klaster z 3 węzłami (repliki 1, więc dane są cały czas dostępne):
+```bash
+for n in es02 es03 es01; do
+  docker compose --profile cluster up -d --no-deps $n
+  # czekaj aż: _cluster/health -> "status":"green","number_of_nodes":3
+done
+curl -s -u elastic:… 'http://localhost:19200/_cat/nodes?v&h=name,node.role'   # dimrt na każdym
+```
+Na tym stosie każdy węzeł wrócił w ~29 s. Uwaga na es01: aplikacje, Kibana i port 19200 na hoście łączą się
+tylko z nim, więc jego restart to krótka przerwa dla wszystkich klientów (es02/es03 przechodzą bez przerwy).
+
+**Czego się nauczyłem**
+Jawna lista ról to lista **wyłączna**: każda nowa funkcja z własną rolą (transform, ml) wymaga jej dopisania.
+`_cat/nodes` z `node.role` pokazuje to jedną literą.
+
+---
+
+<a id="129"></a>
+## 129 — Lens jako kod w Kibanie 9.5: `/api/visualizations` odrzuca ES|QL, `/internal/lens/visualizations` daje 500
+
+> ETAP 12a, Task 6 (2026-11-20). Dashboard trzymany w repo jako NDJSON.
+
+**Objaw**
+Panel Lens oparty na ES|QL (`"data_source": {"type": "esql", "query": "…"}`) wysłany do publicznego API:
+```
+POST /api/visualizations
+400: [request body.layers.0.0.data_source]: expected "type" to be one of ["data_view_reference", "data_view_spec"] but got ["esql"]
+```
+To samo do API wewnętrznego (`/internal/lens/visualizations`, `x-elastic-internal-origin: kibana`,
+`Elastic-Api-Version: 1`): `500 Internal Server Error` bez szczegółów w logu Kibany. Po zapisaniu panelu ES|QL innym
+sposobem `GET /api/visualizations/<id>` też odpowiada 500 (panele na data view czyta bez problemu).
+
+**Diagnoza**
+```bash
+docker compose exec kibana grep -n 'lensApiConfigSchema' \
+  /usr/share/kibana/node_modules/@kbn/lens-plugin/server/api/routes/visualizations/schema/create.js
+# lensCreateRequestBodySchema = lensApiConfigSchemaNoESQL
+```
+Opis endpointu w kodzie: „ES|QL visualizations cannot be created through this endpoint”. Publiczne API ma schemat
+bez ES|QL na wejściu i na wyjściu (dlatego GET daje 500 na obiekcie ES|QL).
+
+**Przyczyna**
+Lens-as-code w 9.5 obsługuje publicznie tylko warstwy na data view. Konwersja „konfiguracja API → stan Lensa”
+(`LensConfigBuilder.fromAPIFormat`) umie ES|QL, ale nie jest wystawiona publicznie.
+
+**Naprawa**
+1. Panele na data view tworzyć przez `POST /api/visualizations` (Kibana waliduje i buduje stan).
+2. Panele ES|QL: zwalidować konfigurację i zbudować stan tym samym kodem, uruchamiając node z kontenera Kibany:
+   ```bash
+   # build.js: lensApiConfigSchema.validate(cfg) -> new LensConfigBuilder(undefined, true).fromAPIFormat(cfg)
+   docker compose cp build.js kibana:/tmp/build.js
+   docker compose exec -T kibana sh -c 'cd /usr/share/kibana && NODE_ENV=production ./node/default/bin/node /tmp/build.js' < panel.json
+   ```
+   Bez `NODE_ENV=production`: `Cannot find module './cjs/react.development.js'` (obraz ma tylko produkcyjny build Reacta).
+   Node nie jest w `PATH` (`sh: node: command not found`), leży w `/usr/share/kibana/node/default/bin/node`.
+3. Wynik zapisać jako saved object `lens` (`POST /api/saved_objects/lens/<id>`). Builder wpisuje typ `string`
+   kolumnom osi X; dla pozycji poprawiłem na `number` i dodałem `timeFieldName: "@timestamp"` do ad hoc data view.
+4. Dashboard przez `PUT /api/dashboards/<id>` (panele `{"type":"vis","config":{"ref_id":…}}`), potem
+   `_export` z `includeReferencesDeep` do NDJSON.
+
+**Czego się nauczyłem**
+Schemat API w Kibanie leży w `node_modules/@kbn/*/…/schema` w kontenerze. Komunikaty walidacji `@kbn/config-schema`
+pokazują wszystkie gałęzie unii naraz, ale zwykle tylko jedna linia jest o tym, co naprawdę jest źle. Import
+NDJSON do pustej przestrzeni (`/s/<space>/api/saved_objects/_import`) to tani test „czy to wstanie na świeżej Kibanie”.
+
+---
+
+<a id="130"></a>
+## 130 — Usunięte zdarzenie dalej liczone w `search-stats-daily`: Transform nie cofa
+
+> ETAP 12a, Task 6 (2026-11-20). Test spóźnionego zdarzenia z przewodnika 12a, krok 6.
+
+**Objaw**
+Testowe wyszukanie (`search.query: __late_event_test__`, `@timestamp` 3 dni temu) trafiło do kubełka 2026-11-17 po
+103 s. Po usunięciu dokumentu źródłowego kubełek został:
+```
+FROM events-user-* METADATA _id | WHERE _id == "late-event-test-1" | STATS n = COUNT(*)      -> 0
+FROM search-stats-daily | WHERE query == "__late_event_test__" | KEEP day, query, searches   -> 2026-11-17 | 1
+```
+
+**Diagnoza**
+`_transform/search-stats-daily/_stats`: brak nowego checkpointu po usunięciu (`checkpointing.last.checkpoint`
+bez zmian, `documents_deleted: 0`).
+
+**Przyczyna**
+Transform ciągły wykrywa zmiany po polu `sync.time.field` (`event.ingested`): przelicza tylko kubełki, w których
+pojawiły się dokumenty nowsze od poprzedniego checkpointu. Usunięcie niczego nie dopisuje, więc kubełka nikt nie
+przelicza. Nawet gdyby go przeliczył, pivot nie usuwa z indeksu docelowego kubełków, które zniknęły ze źródła.
+To samo spotka dane skasowane przez ILM po 90 dniach (kubełki zostaną) i usunięcia na żądanie (RODO).
+
+**Naprawa**
+- Pojedynczy kubełek, którego źródło na pewno nie wróci: `_delete_by_query` na `search-stats-daily`
+  (tu `{"query":{"term":{"query":"__late_event_test__"}}}` → `deleted: 1`).
+- Pełne przeliczenie: `_stop`, `DELETE _transform/search-stats-daily`, `DELETE search-stats-daily`,
+  `make analytics-setup` (tworzy indeks i Transform od nowa, pierwszy checkpoint przelicza całość).
+- Okno przesuwne (np. ostatnie 30 dni) liczyć Transformem wsadowym odtwarzanym od zera (tak będzie
+  `product-popularity` w 12b), nie ciągłym.
+
+**Czego się nauczyłem**
+Transform ciągły to „dopisz i zaktualizuj”, nie widok zmaterializowany. Spóźnione **dopisania** łapie dzięki sync po
+czasie przyjęcia, **usunięć** nie łapie wcale.
+
+---
+
+<a id="131"></a>
+## 131 — Wyjątek mappera w `AnalyticsEventHandler` zostawiał wiadomości paczki bez ack/nack
+
+> ETAP 12a, Task 2 (2026-11-20). Znalezione w przeglądzie kodu, naprawione testem (commit `4176f42`).
+
+**Objaw**
+Zdarzenie z `data` w nieoczekiwanym kształcie (np. tablica tam, gdzie mapper oczekuje skalara) rzuca wyjątek
+w `AnalyticsDocumentMapper::map()`. W pierwszej wersji wyjątek wylatywał z `process()` paczki, zanim którykolwiek job
+dostał ack/nack.
+
+**Diagnoza**
+Test `test_wyjatek_mappera_psuje_tylko_ta_wiadomosc_a_reszta_jest_zapisana` (mapper rzucający dla jednego zdarzenia
+w paczce) w `apps/search/tests/Unit/MessageHandler/AnalyticsEventHandlerTest.php`.
+
+**Przyczyna**
+`BatchHandlerTrait` przed wywołaniem `process()` opróżnia swoją listę jobów, więc za rozstrzygnięcie każdego
+`Acknowledger` odpowiada wyłącznie `process()`. Nieużyty `Acknowledger` rzuca `LogicException` w destruktorze,
+a jedna zła wiadomość wywracała całą paczkę (do 500 zdarzeń).
+
+**Naprawa**
+`process()` to osłona z `$settle(i, ?Throwable)` (dokładnie jedno ack/nack na job, idempotentnie). Wyjątek mappera =
+`UnrecoverableMessageHandlingException` tylko dla tej wiadomości (od razu `failed`), reszta paczki idzie do `_bulk`.
+Każdy inny wyjątek = nack `Recoverable` (`forceRetry: false`) dla wszystkich jeszcze nierozstrzygniętych.
+
+**Czego się nauczyłem**
+W handlerze paczkowym każda ścieżka, także wyjątkowa, musi rozstrzygnąć każdy job. Błąd pojedynczej wiadomości
+izolować, a nie przerywać nim paczki.
+
+---
+
+<a id="132"></a>
+## 132 — Powtórka dnia symulatora dawała inne ID i duplikaty: remisy w rankingu ES
+
+> ETAP 12a, Task 5 (2026-11-20). Wykryte na żywo przy teście powtórki dnia.
+
+**Objaw**
+`analytics:simulate --day=N` z tym samym ziarnem miało być idempotentne (te same ID zdarzeń, ES odpowiada 409).
+Pierwsza wersja dopisywała część zdarzeń drugi raz pod nowymi ID.
+
+**Diagnoza**
+To samo zapytanie dwa razy z rzędu („lampa led zenit”): w ~1 na 10 par kolejność wyników z równym `_score` była
+inna. Symulator brał kliknięcia z prawdziwego rankingu, a liczba kliknięć przesuwała **jeden wspólny** generator
+liczb losowych dnia, więc każda następna sesja dostawała inne liczby i inne ID.
+
+**Przyczyna**
+Remisy w ES nie są stabilne między wywołaniami: kolejne żądania (i PIT) trafiają w różne kopie shardów (primary albo
+replika), które mogą mieć dokumenty w innej kolejności wewnętrznej. Pokrewne: [#096](#096) (grupy remisów
+`_score` w `search:eval`).
+
+**Naprawa**
+Generator dnia oddaje każdej sesji tylko ziarno (32 bajty). Sesja wyprowadza z niego osobne generatory: dla sesji,
+dla każdego wyszukania, dla jego kliknięć i dla zakupu; czasy wyszukań są planowane z góry. Zmiana kolejności
+remisów zmienia już tylko kliknięcia tej jednej sesji. Sprawdzone na żywo: powtórka dnia 30 nie dopisała ani
+jednego `user.searched` (same 409).
+
+**Czego się nauczyłem**
+Determinizm symulacji, która czyta z prawdziwego systemu, wymaga izolowania losowości per jednostkę (sesja,
+wyszukanie), bo wejście z systemu (ranking) nie jest w pełni deterministyczne. Powtórka dnia po zmianie rankingu
+(12b) i tak pomiesza stare `results` z nowymi kliknięciami: wtedy czyścić data streamy albo zmienić ziarno/`--as-of`.
 
 ---
 

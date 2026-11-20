@@ -887,3 +887,62 @@ Liczby czytane tuż po końcu zadania spóźniają się o ~1 s (`refresh_interva
 
 Wszystkie: liczba zgodna, próbka 100 dokumentów (`_source` + `_version`) zgodna. `make es-slm-run` (`local-nightly`): SUCCESS
 w 6,8 s. Restore z replikami 0. Przy jednym shardzie i lokalnym dysku MinIO nie jest wolniejszy od `fs`.
+
+## 16. ETAP 12 — analityka operacyjna (2026-11-20)
+
+> Część 12a: zdarzenia z sesji, data streamy, Transform `search-stats-daily`, dashboard. Przewodnik:
+> [`blog/etap-12a-zdarzenia-i-lejek.md`](blog/etap-12a-zdarzenia-i-lejek.md). Część 12b dopisze tu pomiary rankingu.
+> Maszyna współdzielona z innymi projektami: czasy **orientacyjne**.
+
+**Konfiguracja:** 3 węzły ES 9.5.1 (`es01–03`, role `dimrt` po dodaniu `transform`, RUNBOOK #128), data streamy
+1 shard + 1 replika, jeden backing index na stream (rollover 1d/1GB jeszcze nie zadziałał: wszystko przyszło
+2026-11-20). Kibana 9.5.1.
+
+### Symulator (`make simulate days=30`, seed 1, 300 sesji/dzień, as-of 2026-11-20)
+
+| sesje | wyszukania | zero wyników | kliknięcia | koszyk | zakupy | opublikowane | czas komendy |
+|---|---|---|---|---|---|---|---|
+| 9000 | 17 972 | 925 (5,1%) | 17 175 | 1937 | 496 | 37 580 | **19,3 s** (19,7 s wall) |
+
+Ingest przez `analytics-consumer` (kolejka do zera): ~50–60 s na 37,6 tys. zdarzeń + 340,9 tys. impressions.
+DLQ = 0. Liczniki w ES zgodne z podsumowaniem komendy co do sztuki (plus pojedyncze zdarzenia z UI).
+
+### Miejsce na dysku (`_stats/store,docs`, 2026-11-20 ~15:30 UTC)
+
+| Indeks | dokumenty | primary | z repliką | B/dok. (primary) | segmenty (primary) |
+|---|---|---|---|---|---|
+| `events-user-default` | 37 583 | 12,1 MB (12 733 947 B) | 32,6 MB | 339 | 6 |
+| `events-impression-default` | 341 000 | 25,3 MB (26 587 453 B) | 67,9 MB | 78 | 5 |
+| `search-stats-daily` | 4941 | 543 KB (556 435 B) | 1,1 MB | 113 | 4 |
+
+Fakt: impressions to 9× więcej dokumentów niż zdarzenia, ale tylko 2× więcej miejsca (dokument to 4 krótkie pola
+keyword/integer + `@timestamp` + `event.ingested`). Zdarzenie `user.searched` niesie tablicę 20 ID wyników
+i `query_raw` jako `text`, stąd 339 B/dok. Hipoteza (niesprawdzona): po `_forcemerge` liczby spadną, bo segmenty
+są świeże; „z repliką” jest więcej niż 2× primary z tego samego powodu (repliki mają inne, niescalone segmenty).
+
+`_data_stream/events-*/_stats`: `total_store_size` 100,5 MB (105 425 202 B), 2 streamy, 2 backing indices.
+
+### Transform `search-stats-daily` (ciągły, sync `event.ingested`, delay 60 s, frequency 1m)
+
+| Moment | checkpoint | documents_processed | documents_indexed | uwagi |
+|---|---|---|---|---|
+| pierwszy checkpoint (historia 30 dni) | 1 | 35 148 | 4940 | `exponential_avg_checkpoint_duration_ms` 1308, `search_total` 6, `index_total` 5, 0 błędów |
+| po teście spóźnionego zdarzenia | 3 | 35 151 | 4942 | `trigger_count` 12, średni checkpoint ~940 ms |
+
+35 148 = 17 973 wyszukania + 17 175 kliknięć (koszyk i zakupy odfiltrowane w `source.query`). 4941 kubełków
+= pary (dzień, fraza) z 31 dni i 417 fraz (plus kubełek `null`, przeglądanie bez frazy).
+
+**Spóźnione zdarzenie:** dokument z `@timestamp` 3 dni wstecz, zapisany 15:22:23 UTC, widoczny w kubełku
+2026-11-17 po **103 s** (górna granica: frequency 60 s + delay 60 s).
+
+### Kibana
+
+`make analytics-setup` sekcja 3: import 9 obiektów (3 data views, 5 Lens, dashboard) w ~1 s. Import do pustej
+przestrzeni: `successCount: 9`, 0 błędów.
+
+### Rolling restart węzłów ES (dodanie roli `transform`)
+
+`docker compose --profile cluster up -d --no-deps esNN` po kolei es02 → es03 → es01: każdy węzeł z powrotem
+w klastrze i klaster zielony po **~28–29 s**. Przy es02 i es03 dane były cały czas dostępne (repliki 1). Restart
+es01 to krótka przerwa dla wszystkich klientów: aplikacje (`ELASTICSEARCH_HOST=http://es01:9200`), Kibana i port
+19200 na hoście łączą się tylko z es01.
