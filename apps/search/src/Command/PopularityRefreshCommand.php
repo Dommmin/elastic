@@ -19,6 +19,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  *
  * `--variant` wybiera, która wartość trafia do `popularity` (rank_feature);
  * obie zostają w `popularity_raw` / `popularity_ips` do porównań.
+ * `--reset` zeruje popularność zamiast ją liczyć (`PopularityRefresher::reset`).
  * Kody: 0 sukces, 1 błąd albo odmowa (puste okno), 130 przerwane Ctrl-C.
  */
 #[AsCommand(name: 'search:popularity:refresh', description: 'Przelicza popularność produktów (transform wsadowy, enrich, _update_by_query)')]
@@ -40,6 +41,7 @@ final class PopularityRefreshCommand extends Command
             ->addOption('as-of', null, InputOption::VALUE_REQUIRED, 'Koniec okna (wyłącznie), YYYY-MM-DD albo ISO-8601; domyślnie teraz (UTC)')
             ->addOption('window-days', null, InputOption::VALUE_REQUIRED, 'Długość okna w dniach', '30')
             ->addOption('alpha', null, InputOption::VALUE_REQUIRED, 'Siła wygładzania α (> 0)', '20')
+            ->addOption('reset', null, InputOption::VALUE_NONE, 'Zeruje popularność (pusty product-popularity, pola z produktów) i kończy; start pętli zamkniętej')
             ->addOption('rps', null, InputOption::VALUE_REQUIRED, 'requests_per_second dla _update_by_query (-1 = bez limitu)', '-1');
     }
 
@@ -56,6 +58,10 @@ final class PopularityRefreshCommand extends Command
             $io->error('--variant=ips|raw, --window-days ≥ 1, --alpha > 0, --rps liczba (-1 = bez limitu).');
 
             return Command::FAILURE;
+        }
+
+        if ($input->getOption('reset')) {
+            return $this->reset($io, $output, (float) $rps);
         }
 
         $asOf = self::parseAsOf($input->getOption('as-of'));
@@ -115,6 +121,38 @@ final class PopularityRefreshCommand extends Command
         }
 
         $io->success('Popularność przeliczona.');
+
+        return Command::SUCCESS;
+    }
+
+    private function reset(SymfonyStyle $io, OutputInterface $output, float $rps): int
+    {
+        try {
+            $outcome = $this->withSigint(fn () => $this->refresher->reset(
+                $rps,
+                onStep: static fn (string $step) => $output->writeln("→ {$step}"),
+                onProgress: static fn (array $status) => $output->writeln('  postęp: '.self::counts($status)),
+                shouldCancel: fn (): bool => $this->interrupted,
+            ));
+        } catch (PopularityRefused $e) {
+            $io->error($e->getMessage());
+
+            return Command::FAILURE;
+        }
+
+        if ($outcome['cancelled']) {
+            $io->warning('Zerowanie anulowane — część produktów ma jeszcze starą popularność. Uruchom ponownie.');
+
+            return self::EXIT_INTERRUPTED;
+        }
+        $failures = $outcome['result']['failures'] ?? [];
+        if ($outcome['error'] !== null || $failures !== []) {
+            $io->error('_update_by_query z błędami: '.json_encode($outcome['error'] ?? \array_slice($failures, 0, 3), \JSON_UNESCAPED_UNICODE));
+
+            return Command::FAILURE;
+        }
+
+        $io->success('Popularność wyzerowana (UBQ: '.self::counts($outcome['result']).').');
 
         return Command::SUCCESS;
     }

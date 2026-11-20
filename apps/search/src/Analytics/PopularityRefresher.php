@@ -203,6 +203,52 @@ final class PopularityRefresher
      */
     private function rebuild(array $window, array $propensity, PopularityFormula $raw, PopularityFormula $ips, string $variant): int
     {
+        $this->emptyPopularityIndex();
+
+        $this->client->transform()->putTransform([
+            'transform_id' => $this->transformId,
+            'body' => $this->transformBody($window, $propensity, $raw, $ips, $variant),
+        ]);
+        $this->client->transform()->startTransform(['transform_id' => $this->transformId]);
+        $this->waitForTransform();
+
+        $this->client->indices()->refresh(['index' => $this->popularityIndex]);
+
+        return (int) $this->client->count(['index' => $this->popularityIndex])->asArray()['count'];
+    }
+
+    /**
+     * Zerowanie popularności (`--reset`, start pętli zamkniętej): te same kroki co
+     * refresh, ale z pustym wynikiem — transform usunięty, `product-popularity`
+     * pusty, `_execute` polityki (pipeline czyta pustą kopię) i UBQ po produktach,
+     * które jeszcze noszą pola popularności (pipeline je kasuje). Idempotentne.
+     *
+     * @param ?callable(string): void               $onStep
+     * @param ?callable(array<string, mixed>): void $onProgress
+     * @param ?callable(): bool                     $shouldCancel
+     *
+     * @return array{cancelled: bool, result: array<string, mixed>, error: ?array<string, mixed>}
+     */
+    public function reset(float $rps = -1, ?callable $onStep = null, ?callable $onProgress = null, ?callable $shouldCancel = null): array
+    {
+        $onStep ??= static function (string $step): void {};
+        if (! $this->client->indices()->exists(['index' => $this->popularityIndex])->asBool()) {
+            throw new PopularityRefused("Brak indeksu {$this->popularityIndex} — najpierw make analytics-setup.");
+        }
+
+        $onStep('czyszczenie product-popularity');
+        $this->emptyPopularityIndex();
+        $this->client->indices()->refresh(['index' => $this->popularityIndex]);
+        $onStep('enrich _execute');
+        $this->client->enrich()->executePolicy(['name' => $this->policy, 'wait_for_completion' => true]);
+        $onStep('update_by_query');
+
+        return $this->updateProducts([], $rps, $onProgress, $shouldCancel);
+    }
+
+    /** Usuwa transform wsadowy i opróżnia `product-popularity` (kroki wspólne dla refresh i reset). */
+    private function emptyPopularityIndex(): void
+    {
         try {
             $this->client->transform()->deleteTransform(['transform_id' => $this->transformId, 'force' => true]);
         } catch (ClientResponseException $e) {
@@ -225,17 +271,6 @@ final class PopularityRefresher
                 json_encode(\array_slice($deleted['failures'] ?? [], 0, 3), \JSON_UNESCAPED_UNICODE),
             ));
         }
-
-        $this->client->transform()->putTransform([
-            'transform_id' => $this->transformId,
-            'body' => $this->transformBody($window, $propensity, $raw, $ips, $variant),
-        ]);
-        $this->client->transform()->startTransform(['transform_id' => $this->transformId]);
-        $this->waitForTransform();
-
-        $this->client->indices()->refresh(['index' => $this->popularityIndex]);
-
-        return (int) $this->client->count(['index' => $this->popularityIndex])->asArray()['count'];
     }
 
     /**

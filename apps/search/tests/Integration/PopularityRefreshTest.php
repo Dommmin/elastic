@@ -155,6 +155,29 @@ final class PopularityRefreshTest extends TestCase
         self::assertSame(0, (int) $this->client->transform()->getTransform(['transform_id' => $this->source.'*', 'allow_no_match' => true])['count']);
     }
 
+    public function test_reset_zeruje_product_popularity_i_pola_w_produktach(): void
+    {
+        $this->setUpWorld();
+        $this->refresh('ips');
+        self::assertArrayHasKey('popularity', $this->productSource('2'));
+
+        $outcome = $this->refresher()->reset();
+
+        self::assertFalse($outcome['cancelled']);
+        self::assertNull($outcome['error']);
+        self::assertSame([], $this->popularityIds());
+        foreach (['1', '2', '3', '999'] as $id) {
+            foreach (['popularity', 'popularity_raw', 'popularity_ips'] as $field) {
+                self::assertArrayNotHasKey($field, $this->productSource($id), "produkt {$id} traci {$field}");
+            }
+        }
+        self::assertSame(0, (int) $this->client->transform()->getTransform(['transform_id' => $this->source.'*', 'allow_no_match' => true])['count']);
+
+        // Idempotentne: drugie zerowanie nic nie znajduje i nie pada.
+        $again = $this->refresher()->reset();
+        self::assertSame(0, $again['result']['updated'] ?? null);
+    }
+
     // --- klocki -------------------------------------------------------------
 
     private function refresh(string $variant): PopularityRefreshed

@@ -273,6 +273,10 @@ es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (
 	@bash infra/elasticsearch/setup-snapshots.sh
 
 ## Analityka operacyjna (ETAP 12)
+.PHONY: closed-loop
+closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dniu → CSV w docs/data/etap-12 (variant=raw|ips days=30 boost=2 [seed= sessions= flat=1 yes=1]); CZYŚCI streamy events-*
+	@bash tools/analytics/closed-loop.sh variant=$(or $(variant),ips) days=$(or $(days),30) boost=$(or $(boost),2) seed=$(or $(seed),1) sessions=$(or $(sessions),300) $(if $(flat),--flat) $(if $(yes),--yes)
+
 .PHONY: analytics-setup
 analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
