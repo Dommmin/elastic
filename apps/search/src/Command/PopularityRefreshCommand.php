@@ -87,7 +87,8 @@ final class PopularityRefreshCommand extends Command
         $io->table(['k', 'wyświetlenia', 'kliknięcia', 'CTR', 'p(k)'], $rows);
 
         $io->definitionList(
-            ['c̄ (globalny CTR, pozycje 1..20)' => sprintf('%.5f', $result->meanCtr)],
+            ['c̄ (prior surowy: kliknięcia 1..20 / wyświetlenia)' => sprintf('%.5f', $result->meanCtr)],
+            ['c̄_ips (prior IPS: Σ 1/p(k) / wyświetlenia)' => sprintf('%.5f', $result->meanCtrIps)],
             ['produktów w product-popularity' => $result->products],
             ['UBQ' => self::counts($result->ubq)],
             ['czasy' => implode(', ', array_map(static fn (string $step, float $s): string => sprintf('%s %.1f s', $step, $s), array_keys($result->timings), $result->timings))],

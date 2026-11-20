@@ -18,6 +18,7 @@ final class PopularityRefreshed
         public readonly array $counts,
         public readonly array $propensity,
         public readonly float $meanCtr,
+        public readonly float $meanCtrIps,
         public readonly int $products,
         public readonly array $ubq,
         public readonly bool $cancelled,

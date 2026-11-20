@@ -102,6 +102,15 @@ final class PositionPropensityTest extends TestCase
         self::assertSame([1, 2], array_keys($p));
     }
 
+    public function test_klikniecia_wazone_1_przez_p_z_p20_poza_top_20(): void
+    {
+        $p = [1 => 1.0, 2 => 0.5, 3 => 0.25];
+
+        // 2×1/1 + 1×1/0,5 + 4×1/0,25 (pozycja 7 > ostatniej → p(3)) + pozycja 0 → p(1)
+        self::assertEqualsWithDelta(2 + 2 + 16 + 1, PositionPropensity::weightedClicks([1 => 2, 2 => 1, 7 => 4, 0 => 1], $p), 1e-12);
+        self::assertSame(0.0, PositionPropensity::weightedClicks([], $p));
+    }
+
     public function test_brak_klikniec_na_pozycji_1_to_blad(): void
     {
         $this->expectException(\InvalidArgumentException::class);

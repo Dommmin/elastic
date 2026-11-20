@@ -23,7 +23,8 @@ use PHPUnit\Framework\TestCase;
  * pozycja 1: 10 wyświetleń, 2 kliknięcia (produkt 1); pozycja 2: 10 wyświetleń,
  * 1 kliknięcie (produkt 2) → p(2) = 0,5; pozycje 3–20 bez wyświetleń dziedziczą 0,5.
  * Produkt 3: jedno kliknięcie na pozycji 25 (nieskończone przewijanie, bez
- * wyświetlenia) → waga 1/p(20) = 2. c̄ = 3/20 = 0,15 (kliknięcia 1..20 / wyświetlenia).
+ * wyświetlenia) → waga 1/p(20) = 2. Priory: surowy c̄ = 3/20 = 0,15 (kliknięcia 1..20
+ * / wyświetlenia), IPS c̄_ips = (2·1 + 1·2 + 1·2)/20 = 0,3 (Σ 1/p(k) / wyświetlenia).
  */
 #[Group('integration')]
 final class PopularityRefreshTest extends TestCase
@@ -84,6 +85,7 @@ final class PopularityRefreshTest extends TestCase
         self::assertSame('2026-10-21T00:00:00Z', $result->from);
         self::assertSame('2026-11-20T00:00:00Z', $result->to);
         self::assertEqualsWithDelta(0.15, $result->meanCtr, 1e-12);
+        self::assertEqualsWithDelta(0.3, $result->meanCtrIps, 1e-12);
         self::assertEqualsWithDelta(1.0, $result->propensity[1], 1e-12);
         self::assertEqualsWithDelta(0.5, $result->propensity[2], 1e-12);
         self::assertEqualsWithDelta(0.5, $result->propensity[20], 1e-12);
@@ -97,15 +99,19 @@ final class PopularityRefreshTest extends TestCase
         self::assertSame(1, $row['clicks']);
 
         $two = $this->productSource('2');
-        self::assertEqualsWithDelta(5 / 30, $two['popularity'], 1e-6, '(1/0,5 + 20·0,15) / (10 + 20)');
+        self::assertEqualsWithDelta(8 / 30, $two['popularity'], 1e-6, '(1/0,5 + 20·0,3) / (10 + 20)');
         self::assertEqualsWithDelta(4 / 30, $two['popularity_raw'], 1e-6, '(1 + 20·0,15) / (10 + 20)');
-        self::assertEqualsWithDelta(5 / 30, $two['popularity_ips'], 1e-6);
+        self::assertEqualsWithDelta(8 / 30, $two['popularity_ips'], 1e-6);
 
         $three = $this->productSource('3');
-        self::assertEqualsWithDelta(0.25, $three['popularity'], 1e-6, 'kliknięcie spoza top 20 z wagą 1/p(20)');
+        self::assertEqualsWithDelta(0.4, $three['popularity'], 1e-6, '(1/p(20) + 20·0,3) / (0 + 20) — kliknięcie spoza top 20');
         self::assertEqualsWithDelta(0.2, $three['popularity_raw'], 1e-6);
 
-        self::assertEqualsWithDelta(5 / 30, $this->productSource('1')['popularity'], 1e-6);
+        // Produkty 1 i 2: ten sam CTR po korekcie pozycji (0,2 na pozycji 1 = 0,1/0,5 na pozycji 2)
+        // → ta sama popularność IPS, choć surowe kliknięcia 2 vs 1.
+        $one = $this->productSource('1');
+        self::assertEqualsWithDelta(8 / 30, $one['popularity'], 1e-6, '(2 + 20·0,3) / (10 + 20)');
+        self::assertEqualsWithDelta(5 / 30, $one['popularity_raw'], 1e-6);
 
         foreach (['popularity', 'popularity_raw', 'popularity_ips'] as $field) {
             self::assertArrayNotHasKey($field, $this->productSource('999'), 'produkt spoza okna traci starą popularność');
@@ -123,13 +129,13 @@ final class PopularityRefreshTest extends TestCase
         $this->setUpWorld();
 
         $this->refresh('ips');
-        self::assertEqualsWithDelta(5 / 30, $this->productSource('2')['popularity'], 1e-6);
+        self::assertEqualsWithDelta(8 / 30, $this->productSource('2')['popularity'], 1e-6);
 
         $this->refresh('raw');
         $two = $this->productSource('2');
         self::assertEqualsWithDelta(4 / 30, $two['popularity'], 1e-6);
         self::assertEqualsWithDelta(4 / 30, $two['popularity_raw'], 1e-6);
-        self::assertEqualsWithDelta(5 / 30, $two['popularity_ips'], 1e-6, 'oba warianty zostają do wglądu');
+        self::assertEqualsWithDelta(8 / 30, $two['popularity_ips'], 1e-6, 'oba warianty zostają do wglądu');
         self::assertEqualsWithDelta(0.2, $this->productSource('3')['popularity'], 1e-6);
     }
 

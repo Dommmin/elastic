@@ -11,7 +11,12 @@ use Elastic\Elasticsearch\Exception\ClientResponseException;
  * Przeliczenie popularności produktów (ETAP 12, spec §6–7) — cztery kroki:
  *
  * 1. `p(k)` z agregacji kliknięć i wyświetleń w oknie `[as_of − dni, as_of)`
- *    (pozycje 1..20 — tyle wyświetleń zapisuje handler) i globalny CTR `c̄`.
+ *    (pozycje 1..20 — tyle wyświetleń zapisuje handler) i dwa priory, każdy
+ *    w skali swojego licznika: surowy `c̄ = kliknięcia(1..20) / wyświetlenia`
+ *    i IPS `c̄_ips = Σ 1/p(k) / wyświetlenia`. Σ 1/p(k) szacuje kliknięcia „jak
+ *    na pozycji 1”, więc IPS-owy CTR produktu zbiega do ~ctr(1), nie do c̄ —
+ *    z surowym c̄ prior ciągnąłby w dół produkty z małą ekspozycją i w kontroli
+ *    (płaska atrakcyjność) popularność rosłaby z liczbą wyświetleń.
  * 2. Transform wsadowy `product-popularity` usunięty i odtworzony z tym oknem:
  *    pivot po `product.id` przez OBA źródła (wyświetlenia + kliknięcia),
  *    waga kliknięcia `1/p(k)` z pola runtime, formuły jako `bucket_script`.
@@ -98,14 +103,15 @@ final class PopularityRefresher
         $from = $to->modify("-{$windowDays} days");
         $window = ['gte' => self::iso($from), 'lt' => self::iso($to)];
 
-        [$counts, $propensity, $meanCtr] = $clock('p(k)', fn () => $this->propensity($window));
-        $formula = new PopularityFormula($meanCtr, $alpha);
+        [$counts, $propensity, $meanCtr, $meanCtrIps] = $clock('p(k)', fn () => $this->propensity($window));
+        $raw = new PopularityFormula($meanCtr, $alpha);
+        $ips = new PopularityFormula($meanCtrIps, $alpha);
 
         if (! $this->client->indices()->exists(['index' => $this->popularityIndex])->asBool()) {
             throw new PopularityRefused("Brak indeksu {$this->popularityIndex} — najpierw make analytics-setup (tworzy go z mapowaniem i wykonuje politykę).");
         }
 
-        $products = $clock('transform', fn () => $this->rebuild($window, $propensity, $formula, $variant));
+        $products = $clock('transform', fn () => $this->rebuild($window, $propensity, $raw, $ips, $variant));
         $clock('enrich _execute', fn () => $this->client->enrich()->executePolicy(['name' => $this->policy, 'wait_for_completion' => true]));
 
         $ids = $this->productIds();
@@ -117,6 +123,7 @@ final class PopularityRefresher
             counts: $counts,
             propensity: $propensity,
             meanCtr: $meanCtr,
+            meanCtrIps: $meanCtrIps,
             products: $products,
             ubq: $outcome['result'],
             cancelled: $outcome['cancelled'],
@@ -126,11 +133,11 @@ final class PopularityRefresher
     }
 
     /**
-     * Krok 1: liczniki wg pozycji → p(k) i c̄ (kliknięcia 1..20 / wyświetlenia).
+     * Krok 1: liczniki wg pozycji → p(k), c̄ i c̄_ips.
      *
      * @param array{gte: string, lt: string} $window
      *
-     * @return array{0: array<int, array{impressions:int, clicks:int}>, 1: array<int, float>, 2: float}
+     * @return array{0: array<int, array{impressions:int, clicks:int}>, 1: array<int, float>, 2: float, 3: float}
      */
     private function propensity(array $window): array
     {
@@ -142,24 +149,26 @@ final class PopularityRefresher
                 'query' => ['range' => ['@timestamp' => $window]],
                 'aggs' => [
                     'impressions' => [
-                        'filter' => ['exists' => ['field' => 'impression.position']],
+                        'filter' => ['range' => ['impression.position' => ['gte' => 1, 'lte' => self::POSITIONS]]],
                         'aggs' => ['by_position' => ['terms' => ['field' => 'impression.position', 'size' => self::POSITIONS]]],
                     ],
                     'clicks' => [
-                        'filter' => ['bool' => ['filter' => [
-                            ['term' => ['event.type' => self::CLICK]],
-                            ['range' => ['click.position' => ['gte' => 1, 'lte' => self::POSITIONS]]],
-                        ]]],
-                        'aggs' => ['by_position' => ['terms' => ['field' => 'click.position', 'size' => self::POSITIONS]]],
+                        // Wszystkie pozycje: c̄ bierze 1..20, Σ 1/p(k) do c̄_ips także dalsze (z p(20)).
+                        'filter' => ['term' => ['event.type' => self::CLICK]],
+                        'aggs' => ['by_position' => ['terms' => ['field' => 'click.position', 'size' => 1000]]],
                     ],
                 ],
             ],
         ])->asArray()['aggregations'];
 
         $counts = array_fill(1, self::POSITIONS, ['impressions' => 0, 'clicks' => 0]);
+        $clicksByPosition = [];
         foreach (['impressions', 'clicks'] as $kind) {
             foreach ($aggs[$kind]['by_position']['buckets'] as $bucket) {
                 $k = (int) $bucket['key'];
+                if ($kind === 'clicks') {
+                    $clicksByPosition[$k] = (int) $bucket['doc_count'];
+                }
                 if ($k >= 1 && $k <= self::POSITIONS) {
                     $counts[$k][$kind] = (int) $bucket['doc_count'];
                 }
@@ -181,7 +190,7 @@ final class PopularityRefresher
             throw new PopularityRefused($e->getMessage().' Nic nie zapisano.', previous: $e);
         }
 
-        return [$counts, $propensity, $clicks / $impressions];
+        return [$counts, $propensity, $clicks / $impressions, PositionPropensity::weightedClicks($clicksByPosition, $propensity) / $impressions];
     }
 
     /**
@@ -192,7 +201,7 @@ final class PopularityRefresher
      *
      * @return int liczba produktów w wyniku
      */
-    private function rebuild(array $window, array $propensity, PopularityFormula $formula, string $variant): int
+    private function rebuild(array $window, array $propensity, PopularityFormula $raw, PopularityFormula $ips, string $variant): int
     {
         try {
             $this->client->transform()->deleteTransform(['transform_id' => $this->transformId, 'force' => true]);
@@ -202,16 +211,24 @@ final class PopularityRefresher
             }
         }
 
-        $this->client->deleteByQuery([
+        $deleted = $this->client->deleteByQuery([
             'index' => $this->popularityIndex,
             'conflicts' => 'proceed',
             'refresh' => true,
             'body' => ['query' => ['match_all' => new \stdClass()]],
-        ]);
+        ])->asArray();
+        // Niedoczyszczony indeks = stare wpisy w nowym wyniku; przed _execute nikogo to nie dotyka.
+        if (($deleted['failures'] ?? []) !== [] || ($deleted['deleted'] ?? 0) < ($deleted['total'] ?? 0)) {
+            throw new \RuntimeException(sprintf(
+                'Czyszczenie %s niepełne (deleted=%d z total=%d, konflikty=%d): %s — nic nie opublikowano, uruchom ponownie.',
+                $this->popularityIndex, $deleted['deleted'] ?? 0, $deleted['total'] ?? 0, $deleted['version_conflicts'] ?? 0,
+                json_encode(\array_slice($deleted['failures'] ?? [], 0, 3), \JSON_UNESCAPED_UNICODE),
+            ));
+        }
 
         $this->client->transform()->putTransform([
             'transform_id' => $this->transformId,
-            'body' => $this->transformBody($window, $propensity, $formula, $variant),
+            'body' => $this->transformBody($window, $propensity, $raw, $ips, $variant),
         ]);
         $this->client->transform()->startTransform(['transform_id' => $this->transformId]);
         $this->waitForTransform();
@@ -227,13 +244,16 @@ final class PopularityRefresher
      *
      * @return array<string, mixed>
      */
-    private function transformBody(array $window, array $propensity, PopularityFormula $formula, string $variant): array
+    private function transformBody(array $window, array $propensity, PopularityFormula $raw, PopularityFormula $ips, string $variant): array
     {
-        $raw = $formula->bucketScript('clicks._count');
-        $ips = $formula->bucketScript('clicks_ips');
+        $rawScript = $raw->bucketScript('clicks._count');
+        $ipsScript = $ips->bucketScript('clicks_ips');
 
         return [
-            'description' => "ETAP 12: popularność produktów, okno [{$window['gte']}, {$window['lt']}), α={$formula->alpha}, c̄={$formula->meanCtr}, popularity={$variant}. Wsadowy — odtwarzany przez search:popularity:refresh.",
+            'description' => sprintf(
+                'ETAP 12: popularność produktów, okno [%s, %s), α=%s, c̄=%.5f, c̄_ips=%.5f, popularity=%s. Wsadowy — odtwarzany przez search:popularity:refresh.',
+                $window['gte'], $window['lt'], $raw->alpha, $raw->meanCtr, $ips->meanCtr, $variant,
+            ),
             'source' => [
                 'index' => [$this->clicksIndex, $this->impressionsIndex],
                 'query' => ['bool' => [
@@ -272,9 +292,9 @@ final class PopularityRefresher
                     'impressions' => ['filter' => ['exists' => ['field' => 'impression.position']]],
                     'clicks' => ['filter' => ['term' => ['event.type' => self::CLICK]]],
                     'clicks_ips' => ['sum' => ['field' => 'click_weight']],
-                    'popularity_raw' => ['bucket_script' => $raw],
-                    'popularity_ips' => ['bucket_script' => $ips],
-                    'popularity' => ['bucket_script' => $variant === 'raw' ? $raw : $ips],
+                    'popularity_raw' => ['bucket_script' => $rawScript],
+                    'popularity_ips' => ['bucket_script' => $ipsScript],
+                    'popularity' => ['bucket_script' => $variant === 'raw' ? $rawScript : $ipsScript],
                 ],
             ],
             'settings' => ['max_page_search_size' => 5000],

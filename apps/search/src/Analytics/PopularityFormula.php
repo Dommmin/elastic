@@ -7,10 +7,12 @@ namespace App\Analytics;
  * rosłaby z ekspozycją i wygrywałyby produkty z częstych fraz:
  *
  * - surowa: `(kliknięcia + α·c̄) / (wyświetlenia + α)`
- * - IPS:    `(Σ 1/p(k) + α·c̄) / (wyświetlenia + α)`
+ * - IPS:    `(Σ 1/p(k) + α·c̄_ips) / (wyświetlenia + α)`
  *
- * `c̄` (globalny CTR okna) i `α` > 0, więc wynik zawsze > 0 — wymóg `rank_feature`.
- * Produkt bez danych dostaje dokładnie `c̄`; im więcej wyświetleń, tym bliżej
+ * Jedna klasa, dwie instancje: prior musi być w skali licznika — `c̄` = kliknięcia
+ * / wyświetlenia dla surowej, `c̄_ips` = Σ 1/p(k) / wyświetlenia dla IPS (dlaczego:
+ * `PopularityRefresher`). Prior i `α` > 0, więc wynik zawsze > 0 — wymóg `rank_feature`.
+ * Produkt bez danych dostaje dokładnie prior; im więcej wyświetleń, tym bliżej
  * własnego CTR. Liczy ją ES (`bucket_script` transformu z `bucketScript()`);
  * wersja PHP to wzorzec dla testów — te same parametry, to samo wyrażenie.
  */

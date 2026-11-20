@@ -69,6 +69,26 @@ final class PositionPropensity
         return $p;
     }
 
+    /**
+     * Σ 1/p(k) po kliknięciach — licznik IPS i prior `c̄_ips`. Pozycja spoza zakresu
+     * `$propensity` (kliknięcie po przewinięciu za top 20) liczy się z ostatnim p,
+     * poniżej pierwszej — z pierwszym; tak samo jak pole runtime `click_weight` transformu.
+     *
+     * @param array<int, int>   $clicksByPosition pozycja => liczba kliknięć
+     * @param array<int, float> $propensity       wynik fromCounts()
+     */
+    public static function weightedClicks(array $clicksByPosition, array $propensity): float
+    {
+        $first = array_key_first($propensity);
+        $last = array_key_last($propensity);
+        $sum = 0.0;
+        foreach ($clicksByPosition as $k => $clicks) {
+            $sum += $clicks / $propensity[max($first, min($last, $k))];
+        }
+
+        return $sum;
+    }
+
     /** @param array{clicks: float, impressions: float} $pool */
     private static function rate(array $pool): float
     {
