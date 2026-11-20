@@ -20,7 +20,7 @@
 - Cookie sesji `mp_sid`: UUID, 30 min bezczynności, przedłużane przy każdym żądaniu, przeżywa logowanie.
 - Kontekst wyszukiwania w Redisie: klucz `analytics:search:<search_id>`, TTL 30 min, wartość `{query, results}`.
 - Dedup kliknięcia: `data.dedup_key = "click:<search_id>:<product_id>"`; handler: `_id = data.dedup_key ?? id`.
-- Popularność: surowa `(clicks + α·c̄)/(impressions + α)`, IPS `(Σ_clicks 1/p(k) + α·c̄)/(impressions + α)`, α = 20, `p(k)` szacowane z danych (CTR wg pozycji / CTR pozycji 1). Wartość zawsze > 0.
+- Popularność: surowa `(clicks + α·c̄)/(impressions + α)`, IPS `(Σ_clicks 1/p(k) + α·c̄_ips)/(impressions + α)` gdzie `c̄_ips = Σ_clicks 1/p(k) / impressions` (surowa używa `c̄ = clicks/impressions`), α = 20, `p(k)` szacowane z danych (CTR wg pozycji / CTR pozycji 1). Wartość zawsze > 0.
 - Pipeline `products-enrich-popularity` nigdy nie odrzuca zapisu produktu (`on_failure` kasuje pola popularności).
 - Boost: `SEARCH_POPULARITY_BOOST` (0 = wyłączone), tylko przy zapytaniu tekstowym.
 - Kontener `catalog-app` montuje główny checkout (`apps/catalog` z `main`), nie worktree — weryfikację z worktree robić wg pamięci projektu (`kontener-montuje-glowny-checkout`). Pracujemy na gałęzi `etap-12-analityka` w głównym checkoucie.

@@ -133,7 +133,7 @@ produkty z częstych fraz (Zipf), a w kontroli popularność byłaby proporcjona
 - surowa: `(kliknięcia + α·c̄) / (wyświetlenia + α)`
 - IPS: `(Σ po kliknięciach 1/p(k) + α·c̄) / (wyświetlenia + α)`
 
-gdzie `c̄` to średni CTR globalnie, `α` (rzędu 20) to siła wygładzania. Wartość zawsze > 0 (wymóg `rank_feature`).
+gdzie `c̄` to średni CTR globalnie (dla surowej: kliknięcia / wyświetlenia; dla IPS: `Σ 1/p(k)` / wyświetlenia — prior musi być w tej samej skali co współczynnik, inaczej w kontroli IPS dalej rankowałaby po ekspozycji), `α` (rzędu 20) to siła wygładzania. Wartość zawsze > 0 (wymóg `rank_feature`).
 W kontroli (atrakcyjność płaska) IPS-owy współczynnik wychodzi ≈ stały dla wszystkich produktów → brak wpływu na
 kolejność. Raport porównuje obie wersje w `_rank_eval` (sekcja 8).
 
