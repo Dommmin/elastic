@@ -86,6 +86,53 @@ final class AnalyticsEventHandlerTest extends TestCase
         $this->assertInstanceOf(RecoverableMessageHandlingException::class, $this->results['b']);
     }
 
+    public function test_wyjatek_mappera_psuje_tylko_ta_wiadomosc_a_reszta_jest_zapisana(): void
+    {
+        $mapper = new class extends AnalyticsDocumentMapper {
+            public function map(IntegrationEvent $event): array
+            {
+                if ($event->id === 'bad') {
+                    throw new \RuntimeException('zniekształcone data');
+                }
+
+                return parent::map($event);
+            }
+        };
+        $writer = $this->createMock(AnalyticsBulkWriter::class);
+        $writer->expects(self::once())->method('write')
+            ->with(self::callback(fn (array $items) => \count($items) === 2))
+            ->willReturn(new BulkOutcome(created: 2));
+        $this->handler = new AnalyticsEventHandler($mapper, $writer, new NullLogger());
+
+        $this->feed('ok1', 'user.added_to_cart', ['product_id' => 1]);
+        $this->feed('bad', 'user.added_to_cart', ['product_id' => 2]);
+        $this->feed('ok2', 'user.added_to_cart', ['product_id' => 3]);
+        $this->handler->flush(true);
+
+        $this->assertSame('ack', $this->results['ok1']);
+        $this->assertInstanceOf(UnrecoverableMessageHandlingException::class, $this->results['bad']);
+        $this->assertSame('ack', $this->results['ok2']);
+    }
+
+    public function test_nieoczekiwany_wyjatek_poza_mapowaniem_i_zapisem_nie_zostawia_niezalatwionych_wiadomosci(): void
+    {
+        $mapper = new class extends AnalyticsDocumentMapper {
+            public function map(IntegrationEvent $event): array
+            {
+                // Zły kształt pozycji: TypeError w BulkOutcome::ref(), poza try/catch mapowania i zapisu.
+                return [['index' => [], 'id' => 'x', 'doc' => []]];
+            }
+        };
+        $this->handler = new AnalyticsEventHandler($mapper, $this->createStub(AnalyticsBulkWriter::class), new NullLogger());
+
+        $this->feed('a', 'user.added_to_cart', ['product_id' => 1]);
+        $this->feed('b', 'user.added_to_cart', ['product_id' => 2]);
+        $this->handler->flush(true);
+
+        $this->assertInstanceOf(RecoverableMessageHandlingException::class, $this->results['a']);
+        $this->assertInstanceOf(RecoverableMessageHandlingException::class, $this->results['b']);
+    }
+
     public function test_rozmiar_paczki_to_500(): void
     {
         $writer = $this->createMock(AnalyticsBulkWriter::class);

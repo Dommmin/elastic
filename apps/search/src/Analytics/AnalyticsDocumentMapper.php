@@ -12,7 +12,7 @@ use App\Message\IntegrationEvent;
  * ustawia pipeline `events-ingested`, nie ten kod. `trace.id` pomijamy: ślad
  * niesie stamp koperty Messengera, a handler partii dostaje samą wiadomość.
  */
-final class AnalyticsDocumentMapper
+class AnalyticsDocumentMapper
 {
     public const EVENTS_STREAM = 'events-user-default';
     public const IMPRESSIONS_STREAM = 'events-impression-default';

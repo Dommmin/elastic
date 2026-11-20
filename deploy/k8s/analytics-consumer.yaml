@@ -55,7 +55,6 @@ spec:
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
-            # Indeks 5 jak w search-consumer: łatka overlayu G5 (analytics-consumer-env.yaml) podmienia go po indeksie.
             - name: MESSENGER_TRANSPORT_DSN
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN } }
             - name: ELASTICSEARCH_USER
