@@ -110,6 +110,23 @@
 | [107](#107) | ECK: kustomize nie podmienia obrazu w CRD, `nodeSets` ginie przy patchu | k3d / kustomize | G5 |
 | [108](#108) | Świeży klaster: `migrate.sh` odmawia (brak AllReplicasReady), `Permission` `vhost_or_user_not_found` | k3d / RabbitMQ | G5 |
 | [109](#109) | Migracja, krok 6: `kc diff` czerwony na świeżym klastrze (wartości domyślne dopisane do CR-ów) | k3d / kustomize | G5 |
+| [110](#110) | Usunięty produkt wraca po `_reindex` (zombie): `gc_deletes` i tombstone | Elasticsearch | 10 |
+| [111](#111) | Kolejka pusta, a w ES brakuje produktu: wiadomość w transporcie `failed` | Symfony / Messenger | 10 |
+| [112](#112) | Długi krok ginie z `Error 137` po ~40 min: `--time-limit` konsumenta zabija `docker compose exec` | Docker | 10 |
+| [113](#113) | `make reindex` pada na nDCG starego indeksu po bramce PASS (zamrożony indeks) | Elasticsearch / narzędzia | 10 |
+| [114](#114) | Ponowne `make reindex` po Ctrl-C odmawia: brak wznowienia po `switch-write` | narzędzia | 10 |
+| [115](#115) | Wycofanie migracji O(N): godziny i zombie → nadrabianie okna z outboxu; margines, zapisy bez outboxu, powrót po `switch-read` | Architektura | 10 |
+| [116](#116) | Strażnik remisów `search:eval` ślepy przy 300 tys. (limit 1000 vs grupy 11 tys.) | Elasticsearch / Laravel | 10 |
+| [117](#117) | Filtr „od 4,7” gubi 85 % wyniku: precyzja `half_float` | Elasticsearch | 10 |
+| [118](#118) | MinIO: tagi `RELEASE` nie do pobrania → pin digestem | Docker | 10 |
+| [119](#119) | Repo `minio-s3` nie działa po odtworzeniu węzłów ES: keystore w kontenerze | Elasticsearch | 10 |
+| [120](#120) | 403 na `_tasks/<id>/_cancel`: brak `cancel_task` w roli `search_service` (k3s/VPS do zastosowania) | Elasticsearch | 10 |
+| [121](#121) | `curl -X HEAD` wisi | narzędzia | 10 |
+| [122](#122) | `echo tak \| make reindex-cleanup` nie usuwa: `exec -T` zjada stdin | narzędzia | 10 |
+| [123](#123) | `Allowed memory size of 134217728 bytes exhausted` przy 300 tys. | PHP | 10 |
+| [124](#124) | Przerwany `make churn` dalej pisze: zabity klient `exec`, nie proces | Docker | 10 |
+| [125](#125) | Migracja startuje w trakcie `_update_by_query` (zmiana nazwy sprzedawcy): vN+1 zostaje ze starą nazwą | Elasticsearch / narzędzia | 10 |
+| [126](#126) | Padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek | narzędzia | 10 |
 
 ---
 
@@ -4447,8 +4464,10 @@ wybrane ID-ki łamią to z definicji.
 2. Strażnik w `search:eval`: dla każdego zapytania pobiera k-ty wynik, potem
    wszystko z `min_score` = jego `_score` (cała graniczna grupa remisu, także
    za pozycją k) i sprawdza, czy w każdej grupie ocena jest jedna. Jeśli nie —
-   kolumna „Remis z różnymi ocenami” = `TAK`, komunikat i `exit 1`. Na starym
-   `queries.yaml` zgłasza 11 z 13 zapytań.
+   kolumna „Remis z różnymi ocenami” = `TAK`, komunikat i kod wyjścia **2**
+   (`TIE_UNSTABLE`; do ETAPU 10 był to `exit 1`, a 1 oznacza teraz błąd `_rank_eval`).
+   Na starym `queries.yaml` zgłasza 11 z 13 zapytań. Przy 300 tys. produktów ten
+   strażnik miał limit 1000 trafień i był ślepy — patrz [#116](#116).
 3. `ProductSearchService` bez zmian — nie dokładamy tie-breakera pod test.
 
 Weryfikacja (3 × od zera: `search:index:create --force` → `marketplace:seed
@@ -4869,6 +4888,520 @@ dokumenty `rabbitmq.com/*` i `k8s.elastic.co/*` przed `kc diff`. Zgodność CR-�
 **Czego się nauczyłem**
 Diff „repo kontra klaster” jest wiarygodny tylko dla obiektów, których klaster nie dopisuje sam. Dla CR-ów operatorów przyjmij, że
 pierwszy `apply` nie jest punktem stałym.
+
+---
+
+<a id="110"></a>
+## 110 — usunięty produkt wraca po `_reindex` (zombie): `gc_deletes` i tombstone
+
+> ETAP 10, test dowodowy 2026-11-19 (`apps/search/tests/Integration/DeleteDuringReindexTest.php`).
+
+**Objaw**
+Pułapka do sprawdzenia przed pierwszą migracją, nie awaria z produkcji. Po migracji vN → vN+1 w nowym indeksie jest produkt,
+którego nie ma w bazie. `search:verify-convergence` zgłasza go jako zombie; bramka może go nie zauważyć (mieści się w tolerancji 0,001).
+
+**Diagnoza**
+Odtworzenie wyścigu w teście na prawdziwym ES: dokument w vN, alias zapisu na vN+1, wersjonowane usunięcie przez `products-write`
+(dokumentu w vN+1 jeszcze nie ma, więc 404), potem `_reindex` vN → vN+1 z `dest.version_type: external`, `conflicts: proceed`.
+- `gc_deletes=1h`: odpowiedź `_reindex` `total=1, version_conflicts=1, created=0`, dokumentu nie ma;
+- `gc_deletes=0s`, 2 s czekania i `_refresh`: `total=1, created=1`, dokument wrócił.
+
+**Przyczyna**
+ES zostawia tombstone (zapamiętaną wersję usunięcia) także dla wersjonowanego usunięcia **nieistniejącego** dokumentu, ale tylko
+przez `index.gc_deletes` (domyślnie 60 s). Po wygaśnięciu tombstone `_reindex` widzi „brak dokumentu” i wstawia starą kopię z vN,
+bo nie ma z czym porównać wersji.
+
+**Naprawa**
+`search:index:migrate prepare` ustawia na vN+1 `index.gc_deletes: 1h` (opcja `--gc-deletes`), `switch-read` przywraca domyślne.
+Migracja dłuższa niż ta wartość znowu otwiera okno: podnieś `--gc-deletes` przed `prepare`. Po migracji zawsze
+`search:verify-convergence --since=<start churnu>`.
+
+**Czego się nauczyłem**
+Wersjonowanie zewnętrzne chroni przed starszym zapisem tylko tak długo, jak ES pamięta nowszy. Dla usunięć „pamięta” znaczy
+`gc_deletes`, a domyślna minuta jest krótsza niż każdy reindeks na prawdziwych danych.
+
+---
+
+<a id="111"></a>
+## 111 — kolejka pusta, a w ES brakuje produktu: wiadomość w transporcie `failed`
+
+> ETAP 10, seed 300 tys., 2026-11-19.
+
+**Objaw**
+Po `marketplace:seed --n=300000` kolejka `search.product.sync` = 0, DLQ bez zmian, a `_count` w ES = 299 999 przy 300 000 wierszy `products`.
+
+**Diagnoza**
+```bash
+docker compose exec search-consumer php bin/console messenger:failed:show
+```
+Brakujący produkt (id 158 220) leżał w transporcie `failed` (Doctrine, id 581) z `RejectRedeliveredMessageException`, ok. 20:43 UTC,
+jeszcze przy jednym konsumencie. W tej samej tabeli 501 starych wpisów z 2026-11-10 (failover G5, „No alive nodes”).
+
+**Przyczyna**
+Wiadomość wróciła do brokera po zerwaniu połączenia konsumenta (przyczyny zerwania nie ustaliłem), a Symfony odrzuca redelivery
+i przenosi ją do transportu `failed`. Ten transport to tabela w Postgresie: nie widać go w głębokości kolejki ani w DLQ RabbitMQ.
+
+**Naprawa**
+`messenger:failed:retry 581 --force` → 300 000. Po każdym dużym seedzie, reindeksie albo awarii: porównaj `_count` aliasu z
+`SELECT count(*) FROM products` (albo bramką: `search:index:gate --index=products-search`) i sprawdź `messenger:failed:show`.
+
+**Czego się nauczyłem**
+„Kolejka pusta” mówi, że nic nie czeka, a nie, że wszystko dotarło. Dowodem kompletności jest równość liczb na obu końcach.
+
+---
+
+<a id="112"></a>
+## 112 — długi krok ginie z `Error 137` po ~40 min: `--time-limit` konsumenta zabija `docker compose exec`
+
+> ETAP 10, Task 12 (2026-11-20), naprawione w Task 12b.
+
+**Objaw**
+`make reindex-abort` (wersja z pełnym backfillem) po 40 min 55 s: `make: *** [...] Error 137`. Backfill doszedł do 87 000 z ~299 600.
+
+**Diagnoza**
+```bash
+docker inspect marketplace-search-consumer-1 --format '{{.State.StartedAt}} {{.State.FinishedAt}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.RestartCount}}'
+```
+`FinishedAt 00:18:33.40Z`, `StartedAt 00:18:33.55Z`, `ExitCode 0`, `OOMKilled false`, `RestartCount 2`: kontener sam się zakończył
+(kod 0) i wstał od nowa dokładnie w chwili śmierci kroku.
+
+**Przyczyna**
+`search-consumer` uruchamia `messenger:consume … --time-limit=3600` z `restart: unless-stopped`. Co godzinę proces główny kończy się
+poprawnie, kontener startuje ponownie, a każdy `docker compose exec` w tym kontenerze ginie razem z nim (137 = SIGKILL).
+Krok trwający dłużej niż czas do najbliższego restartu nigdy się nie skończy.
+
+**Naprawa**
+Długie kroki (`reindex --wait`, `backfill`, `finalize`, `gate`, `switch-read`) idą przez osobny, jednorazowy kontener:
+`scr()` w `tools/es/lib.sh` = `docker compose run --rm --no-deps -T search-consumer php bin/console … </dev/null`. Krótkie kroki
+zostają na `exec`. Sprawdzone na żywo: Ctrl-C w `reindex --wait` przez `compose run` anuluje zadanie i nie zostawia kontenera `run-*`.
+Druga połowa naprawy: backfill partiami ([#115](#115)), więc krok trwa ~2 min zamiast ~2 h 15 min.
+
+**Czego się nauczyłem**
+`exec` dziedziczy cykl życia kontenera. Jeśli kontener ma własny limit życia (worker z `--time-limit`), to jest też limit
+każdego `exec`. Długie operacje administracyjne potrzebują własnego procesu.
+
+---
+
+<a id="113"></a>
+## 113 — `make reindex` pada na nDCG starego indeksu po bramce PASS: „remis z różnymi ocenami”
+
+> ETAP 10, Task 12, przebieg 1a (2026-11-20).
+
+**Objaw**
+Kroki prepare, switch-write, reindex, finalize i gate (299 939 vs 299 937, PASS) przechodzą, po czym `search:eval --index=products-v1`
+kończy się błędem: „Wynik NIEDETERMINISTYCZNY… remis z różnymi ocenami” w 5 zapytaniach. Migracja zostaje w połowie: zapis na v2,
+odczyt na v1.
+
+**Diagnoza**
+Chwilę później eval na v2 przeszedł czysto (NDCG=1, 0 remisów), a powtórzony na v1 pokazał już 10 zapytań z `TAK`. Liczba rosła
+razem z churnem.
+
+**Przyczyna**
+Od `switch-write` stary indeks nie dostaje zapisów, także usunięć. `search:eval` liczy oceny z bazy catalogu, więc produkty usunięte
+przez churn zostają w v1 bez oceny i tworzą w grupach remisu mieszankę „oceniony / nieoceniony”. To prawda o zamrożonym indeksie, nie błąd strażnika.
+
+**Naprawa**
+`reindex.sh` mierzy nDCG starego indeksu **przed** `switch-write` (commit 28acb22, test kolejności w `tools/es/test.sh`). Przy wznowieniu
+([#114](#114)) stary indeks jest już zamrożony: jego eval jest orientacyjny i tolerowany jest wyłącznie kod 2 (`TIE_UNSTABLE`); każdy inny
+kod (np. 1 = błąd `_rank_eval`) kończy przebieg. Wycofanie z tej sytuacji: `make reindex-abort`.
+
+**Czego się nauczyłem**
+Pomiar porównawczy trzeba zrobić, zanim jedna strona porównania przestanie się zmieniać razem ze źródłem prawdy. Ocena liczona
+z żywej bazy i indeks zamrożony w przeszłości mierzą dwie różne chwile.
+
+---
+
+<a id="114"></a>
+## 114 — ponowne `make reindex` po Ctrl-C odmawia: „aliasy muszą wskazywać ten sam indeks”
+
+> ETAP 10, Task 12, przebieg 3 (2026-11-20). Naprawione w fd44d78 i 4cd46b7.
+
+**Objaw**
+Po Ctrl-C w kroku reindeksu (zadanie poprawnie anulowane, kod 130; zapis na v3, odczyt na v2) ponowne `make reindex` kończyło się:
+„aliasy muszą wskazywać ten sam indeks… make reindex-abort”. Jedyną drogą było wycofanie, wtedy jeszcze O(N) ([#115](#115)).
+
+**Diagnoza**
+`curl …/_alias/products-search,products-write` (różne indeksy) i `GET products-v3/_mapping` → `_meta.migration.source = products-v2`,
+`switch_write_at` ustawione, `switched_read_at` brak. Stan był jednoznacznie „migracja w toku z v2”.
+
+**Przyczyna**
+Backend wznowienie wspierał (`switch-write` jest idempotentny, powtórny `_reindex` z wersjami zewnętrznymi kopiuje brakujące
+i niczego nie nadpisuje starszą wersją), ale preflight skryptu znał tylko stan spoczynku.
+
+**Naprawa**
+`resume_decision STARY ZAPIS` w `tools/es/lib.sh`: oba aliasy na tym samym indeksie → `fresh`; `_meta.migration.source` celu zapisu =
+indeks odczytu → `resume` (pomija prepare i switch-write, wznawia od reindeksu); cokolwiek innego (obce źródło, brak `_meta`, błąd ES,
+nie-JSON) → odmowa z powodem. Na żywo: wznowienie 62 s, `created=268209 version_conflicts=30748`, potem `verify-convergence … mismatches=0`.
+
+**Czego się nauczyłem**
+Jeśli stan migracji żyje na klastrze (`_meta`), to każde przerwanie jest wznawialne, ale tylko wtedy, gdy orkiestrator umie ten stan
+przeczytać. Odmowa „bo nie ten stan” bez rozpoznania stanu to fail-closed, który zamyka też drogę naprawy.
+
+---
+
+<a id="115"></a>
+## 115 — wycofanie migracji trwa godzinami i zostawia zombie: abort O(N) zamiast okna z outboxu
+
+> ETAP 10, Task 12 (2026-11-20). Projekt zmieniony w Task 12b, sprawdzony w Task 12c.
+
+**Objaw**
+`make reindex-abort` pod churnem: aliasy wróciły na v1, potem pełny backfill doszedł do 87 000 z ~299 600 i zginął po 40 min 55 s
+([#112](#112)). `verify-convergence --since=<switch-write>` na przywróconym v1: `checked=9004 mismatches=1643`, w tym usunięte produkty
+widoczne w `/search`.
+
+**Diagnoza**
+Pojedyncza projekcja: 29 ms na żądanie HTTP (101 sekwencyjnych projekcji z kontenera `search-consumer`). Przepustowość na żywo: celowany
+reproject 9 004 ID w 244 s = 36,9 dok./s (backfill w aborcie: ~36 dok./s). Pełny backfill + pełny reproject z porzuconego
+indeksu = ~600 tys. operacji ≈ 4,5 h. A zmienionych w oknie było 9004 produkty.
+
+**Przyczyna**
+Błąd projektu (ruling A): koszt wycofania rósł z wielkością katalogu, a nie z liczbą zmian w oknie. Do czasu skończenia obu przejść
+przywrócony indeks jest niespójny, czyli łamie anty-cel „żadnego wskrzeszonego produktu”.
+
+**Naprawa**
+1. Stan naprawiony ręcznie: 9004 ID z outboxu od początku okna (`product` → `aggregate_id`, `offer`/`review` → `payload->>'product_id'`),
+   jednorazowy `products-catchup-<ts>` z samymi `_id`, `search:reproject --ids-from=products-catchup-<ts> --write-to=products-write`
+   (244 s: 8 561 indexed, 274 × 404, 169 deleted), `mismatches=0`, usunięcie indeksu catchup po nazwie.
+2. Nowy abort (`tools/es/reindex.sh abort`): `switch_write_at` z `_meta` celu zapisu (bez niego odmowa przed ruszeniem aliasów) → cancel
+   `_reindex` → `search:index:migrate abort` → `search:index:backfill --index=products-write --since=<switch_write_at − margin>`. ID z
+   `GET /api/internal/products/changed?since=`, projekcje partiami po 500, jeden `_bulk` z wersjami zewnętrznymi na partię.
+   Na żywo: **5,65 s** (`indexed 4887, stale 3, not_found 222, deleted 26`), z trwającym `_reindex` 6,25 s; `mismatches=0` w obu.
+3. Nadrabianie przerwane w połowie: `make reindex-abort from=products-vN+1 [margin=…]` (aliasów nie rusza, okno z `_meta` porzuconego).
+
+**Założenia (sprawdź, zanim zaufasz):**
+- **Margines** (domyślnie 300 s) musi być dłuższy niż opóźnienie kolejki `search.product.sync` w chwili `switch-write`: zdarzenie sprzed
+  przepięcia, które czekało w kolejce, trafiło już tylko do vN+1. Abort wypisuje głębokość kolejki; przy zatorze podnieś `margin=`.
+- **Zapisy bez outboxu** w oknie (ręczny `_update_by_query`, ręczny reproject do `products-write`) nie wrócą: powtórz je po abort.
+  `search:seller:rename` w trakcie migracji odmawia, a `make seller-rename` sprawdza to (`--check-only`) przed zmianą bazy.
+  W drugą stronę: migracja nie startuje w trakcie `_update_by_query`; naprawa po fakcie to powtórka zmiany nazwy ([#125](#125)).
+
+**Powrót po zakończonej migracji (po `switch-read`, vN jeszcze nieusunięty)** — `make reindex-abort` odmawia, procedura ręczna,
+**nieprzećwiczona na żywo**:
+1. atomowo oba aliasy na vN (`POST _aliases` z `remove` + `add` dla `products-search` i `products-write` z `is_write_index: true`);
+2. `make reindex-abort from=products-vN+1` — nadrabia vN od `switch_write_at` porzuconego minus margines;
+3. `search:verify-convergence --since=<switch_write_at>` i `search:index:gate --index=products-search`.
+
+**Czego się nauczyłem**
+Procedura awaryjna musi kosztować tyle, ile zmieniło się od awarii, a nie tyle, ile jest danych. Zanim napiszesz wycofanie, policz,
+z czym rośnie jego czas, i sprawdź je na pełnej skali, bo przy 1500 produktach O(N) i O(okno) wyglądają tak samo.
+
+---
+
+<a id="116"></a>
+## 116 — strażnik remisów `search:eval` ślepy przy 300 tys.: czytał 1000 trafień z grup po 11 tys.
+
+> ETAP 10, Task 2 (2026-11-19). Uzupełnia [#096](#096).
+
+**Objaw**
+`make eval` na 300 tys.: nDCG@10 = 1,000 na 13 zapytaniach, kolumna remisów pusta, trzy przebiegi identyczne. Wynik wyglądał na
+dowiedziony, a dla większości zapytań nie był sprawdzony. Wcześniej eval padał na `Allowed memory size of 134217728 bytes exhausted` ([#123](#123)).
+
+**Diagnoza**
+Liczba trafień o `_score` ≥ k-tego (`min_score`, `track_total_hits`): `smartfon`/`komórka`/`telefon` 11 566, `meble ogrodowe` 11 583,
+`słuchawki bezprzewodowe` 11 417, kolejne pięć po ~5,7–5,9 tys. 10 z 13 grup przekracza 1000, 5 przekracza okno wyników ES (10 000).
+
+**Przyczyna**
+Stary strażnik (`hasMixedGradeTie`) czytał najwyżej `TIE_CHECK_MAX_HITS = 1000` trafień. Przy 1500 produktach grupy remisu miały
+kilkadziesiąt dokumentów i limit był niewidoczny.
+
+**Naprawa**
+`App\Services\Search\TieGroupGuard`: top-k czytany normalnie, a cała grupa o `_score` równym k-temu (jedyna, która może wystawać za k)
+przez PIT + `search_after`, strony po 5000, `min_score`, bez stałego limitu. Testy na sztucznym transporcie (rola `catalog` nie tworzy
+indeksów): inna ocena na pozycji 11 500 i w ogonie grupy 2000 → wykryta. Na żywym 300 tys. nic nie znalazł (4,6–6,0 s).
+Kody wyjścia: remis z różnymi ocenami = **2** (`TIE_UNSTABLE`), błędy `_rank_eval` = 1 (także razem z remisem).
+
+**Czego się nauczyłem**
+Strażnik ze stałym limitem odpowiada „nie znalazłem”, a nie „nie ma”. Przy każdej zmianie skali sprawdź, czy limity kontroli są
+większe niż to, co kontrolują; najlepiej usuń limit i stronicuj.
+
+---
+
+<a id="117"></a>
+## 117 — filtr „od 4,7 gwiazdki” gubi 85 % produktów: precyzja `half_float`
+
+> ETAP 10, Task 2/2b (2026-11-19), naprawione mapowaniem `products-v2`.
+
+**Objaw**
+`range rating_avg gte 4.7` na `products-v1`: 1 742 produkty. Postgres (`round(avg(rating), 2) >= 4.7`): 11 746. Zakres „dokładnie 3,3”
+zwraca 0 zamiast 10 187.
+
+**Diagnoza**
+`4.69 <= rating_avg < 4.7` w ES zwraca 10 004, czyli dokładnie tyle produktów, ile ma średnią 4,70 w bazie. `term rating_avg: 4.7`
+zwraca 10 004 (zgodnie z bazą), bo wartość zapytania też jest zaokrąglana.
+
+**Przyczyna**
+`half_float` ma 11 bitów mantysy; w [4, 8) krok to 1/256, więc 4,70 zapisuje się jako ≈ 4,6992 i ląduje poniżej progu. Błąd widać tylko
+na granicach przedziałów.
+
+**Naprawa**
+`products-v2.json`: `rating_avg` → `scaled_float`, `scaling_factor: 100` (dwa miejsca po przecinku, jak `round(avg, 2)` w projekcji).
+Typu pola nie da się zmienić `PUT _mapping`, więc `make reindex`. Po migracji: v1 1 741, v2 11 721 = baza 11 721. Rozmiar indeksu bez
+mierzalnej różnicy.
+
+**Czego się nauczyłem**
+Typ liczbowy w ES wybieraj pod zapytania, nie pod oszczędność miejsca: wartość, która trafia do filtrów progowych, musi być
+reprezentowana dokładnie z tą precyzją, z jaką użytkownik ją widzi.
+
+---
+
+<a id="118"></a>
+## 118 — `docker compose pull` MinIO nie działa: tagi `RELEASE` nie są już serwowane
+
+> ETAP 10, Task 11 (2026-11-20).
+
+**Objaw**
+Przy pinowaniu MinIO tagiem `quay.io/minio/minio:RELEASE.…`: quay odpowiada 401, Docker Hub nie ma tagu. Pierwsza wersja `compose.yaml`
+działała lokalnie tylko dlatego, że tag nadano ręcznie (`docker tag`) obrazowi, który już był na maszynie. Na czystej maszynie pull by się nie udał.
+Tag `mc` (`RELEASE.2025-08-13…`) był zgadnięty, a obraz pochodził z ok. 2025-08-06.
+
+**Diagnoza**
+```bash
+docker image inspect minio/minio --format '{{json .RepoDigests}} {{index .Config.Labels "version"}}'
+docker image inspect minio/mc --format '{{json .RepoDigests}} {{index .Config.Labels "release"}}'
+```
+Etykieta `version=RELEASE.2025-09-07T16-13-09Z` (MinIO) i `release=1754467928` (epoch, mc) oraz prawdziwe `RepoDigests`.
+
+**Przyczyna**
+Projekt community MinIO jest w trybie utrzymaniowym i przestał publikować obrazy z tagami wydań. Lokalny `docker tag` tworzy tag,
+którego rejestr nie zna.
+
+**Naprawa**
+Pin **digestem** z `RepoDigests`: `minio/minio@sha256:14cea493…936e`, `minio/mc@sha256:a7fe349e…1727`, wersje w komentarzu i w
+`docs/07-WERSJE.md`. `tools/es/test.sh` sprawdza, że każdy obraz `minio/minio|mc` w compose ma `@sha256:`. Ręcznie nadane tagi lokalne
+można usunąć `docker rmi <tag>` (usuwa tylko tag).
+
+**Czego się nauczyłem**
+Pin, którego nie da się pobrać na czystej maszynie, nie jest pinem. Wersję czytaj z etykiet obrazu, nie z nazwy tagu, a gdy wydawca
+nie publikuje tagów, przypinaj digest.
+
+---
+
+<a id="119"></a>
+## 119 — repo `minio-s3` przestaje działać po odtworzeniu węzłów ES: keystore zniknął
+
+> ETAP 10, Task 11 (2026-11-20).
+
+**Objaw**
+Po `docker compose up` z odtworzeniem `es01..03` (np. zmiana zmiennych węzła) repo `minio-s3` nie ma danych dostępowych klienta
+`default`, więc snapshot i `_verify` przestają działać, choć wcześniej działały. (Objaw opisany z mechanizmu: w Task 11 węzły
+odtwarzałem świadomie i od razu powtarzałem konfigurację, więc dokładnego komunikatu błędu nie zapisałem.)
+
+**Diagnoza**
+```bash
+docker compose exec es01 bin/elasticsearch-keystore list
+```
+Brak `s3.client.default.access_key` i `secret_key`.
+
+**Przyczyna**
+`elasticsearch.keystore` leży w katalogu konfiguracji w kontenerze, nie na wolumenie danych. Nowy kontener = nowy, pusty keystore.
+
+**Naprawa**
+Po każdym odtworzeniu węzłów ES: `make es-snapshots-setup` (idempotentne: keystore `--stdin --force` na każdym węźle,
+`_nodes/reload_secure_settings`, repo + `_verify`, SLM). Węzły odtwarzaj po kolei (es03, es02, es01) z czekaniem na green.
+
+**Czego się nauczyłem**
+Przy każdym sekrecie w kontenerze zapytaj: czy przeżyje `docker compose up --force-recreate`? Jeśli nie, krok konfiguracji musi być
+powtarzalny i opisany jako część odtworzenia.
+
+---
+
+<a id="120"></a>
+## 120 — Ctrl-C w `search:index:migrate reindex --wait`: 403 na `_tasks/<id>/_cancel`
+
+> ETAP 10, Task 7 (2026-11-19). **Do zastosowania na k3s/VPS przy następnym wdrożeniu ról.**
+
+**Objaw**
+Anulowanie zadania `_reindex` z komendy działającej jako użytkownik `search_service` zwraca 403: „…granted by the cluster privileges
+[cancel_task,manage,all]”. Bez anulowania Ctrl-C zostawiałby osierocone zadanie piszące do nowego indeksu.
+
+**Diagnoza**
+`GET _security/role/search_service`: przywileje klastra bez `cancel_task`.
+
+**Przyczyna**
+Rola z ETAPU 2/6 obejmowała zapis do `products-*`, ale nie zarządzanie zadaniami.
+
+**Naprawa**
+`cancel_task` dodany w `infra/elasticsearch/setup-security.sh` i `deploy/k8s/es-roles.yml`; lokalnie zastosowane przez
+`docker compose run --rm es-setup` (idempotentne). **Na k3s/VPS nie zastosowane** (brak serwera): przy następnym wdrożeniu nałóż ponownie
+`deploy/k8s/es-roles.yml`. Cele `make es-cancel` / `es-rethrottle` używają superużytkownika `elastic`, jak reszta celów `es-*`.
+
+**Czego się nauczyłem**
+Każda operacja, którą komenda może zacząć, musi dać się przez tę samą tożsamość zatrzymać. Sprawdzaj ścieżkę anulowania tym samym
+użytkownikiem co ścieżkę startu.
+
+---
+
+<a id="121"></a>
+## 121 — `curl -X HEAD` wisi w skrypcie
+
+> ETAP 10, Task 11 (2026-11-20).
+
+**Objaw**
+Pierwszy bieg `make es-restore-drill-destructive` zawisł bez komunikatu na sprawdzeniu, czy indeks istnieje.
+
+**Diagnoza**
+Zawieszone polecenie: `curl -X HEAD …/<indeks>`.
+
+**Przyczyna**
+`-X HEAD` zmienia tylko nazwę metody; curl dalej czeka na treść odpowiedzi, o której długości mówi nagłówek `content-length`, a odpowiedź
+na HEAD treści nie ma. Prawidłowy HEAD w curl to `-I` (`--head`).
+
+**Naprawa**
+W skryptach `GET _cat/indices/<nazwa>` (albo `curl -I`) zamiast `curl -X HEAD`.
+
+**Czego się nauczyłem**
+`-X` w curl nie zmienia zachowania klienta, tylko napis w żądaniu. Do HEAD jest osobna flaga.
+
+---
+
+<a id="122"></a>
+## 122 — `echo tak | make reindex-cleanup` niczego nie usuwa
+
+> ETAP 10, Task 12 (2026-11-20). Naprawione w 1b7df42.
+
+**Objaw**
+Interaktywnie `make reindex-cleanup` pokazuje listę, pyta i usuwa po „tak”. Z potokiem (`echo tak | make reindex-cleanup`) pokazuje
+listę i kończy się bez usunięcia.
+
+**Diagnoza**
+Odpowiedź znikała, zanim skrypt doszedł do `read`. Podgląd i preflight wołały `docker compose exec -T …` przed pytaniem.
+
+**Przyczyna**
+`docker compose exec -T` przekazuje stdin do kontenera, więc pierwsze wywołanie zjadło „tak” z potoku.
+
+**Naprawa**
+`</dev/null` przy wywołaniach w podglądzie i preflight (oraz w `scr()`); test offline w `tools/es/test.sh`.
+
+**Czego się nauczyłem**
+Każde polecenie w skrypcie, które może czytać stdin (`docker exec`, `ssh`, `kubectl exec`), dostaje `</dev/null`, chyba że ma czytać
+właśnie stdin skryptu.
+
+---
+
+<a id="123"></a>
+## 123 — `Allowed memory size of 134217728 bytes exhausted` przy 300 tys. produktów
+
+> ETAP 10, Task 2, 2b i 12b (2026-11-19/20).
+
+**Objaw**
+Trzy różne miejsca, ten sam komunikat (albo cichy exit 255): `make eval`, pierwszy przebieg `marketplace:seed-reviews`, pierwsza wersja
+`GET /api/internal/products/changed` z `since` sprzed seeda.
+
+**Diagnoza**
+- `search:eval`: reguły `category`/`brand` rozwijają się do 12–27 tys. ocen na zapytanie;
+- `seed-reviews`: `Product::…->pluck('id')` dla 300 tys. ≈ 195 MB;
+- `changed`: DISTINCT w SQL, ale filtr i stronicowanie w PHP, ~300 tys. ID w pamięci.
+
+**Przyczyna**
+Domyślny `memory_limit` PHP 128 MB i kod napisany przy 1500 produktach, kiedy całe zbiory mieściły się w pamięci.
+
+**Naprawa**
+`search:eval`: `ini_set('memory_limit', '1G')` (ewaluacja naprawdę potrzebuje pełnych zbiorów ocen). `seed-reviews`: kursor
+`DB::table()->cursor()` z `whereNotExists`. `changed`: DISTINCT, kursor i limit w SQL (`fromSub` + `CAST(CASE … AS BIGINT)`).
+
+**Czego się nauczyłem**
+Przy zmianie skali o dwa rzędy wielkości przejrzyj każde `pluck`/`get` bez limitu. Lepiej przenieść pracę do bazy albo stronicować
+niż podnosić limit; podniesienie ma sens tylko tam, gdzie pełny zbiór jest istotą algorytmu.
+
+---
+
+<a id="124"></a>
+## 124 — przerwany `make churn` dalej generuje zdarzenia
+
+> ETAP 10, Task 12 (2026-11-20).
+
+**Objaw**
+Po zatrzymaniu `make churn` (Ctrl-C/kill po stronie hosta, `docker compose exec` bez TTY) outbox nadal rośnie, aż do końca `--duration`.
+Ostatnie zdarzenie: start + 300 s; linia podsumowania `updated=… deleted=…` nie pojawiła się nigdzie.
+
+**Diagnoza**
+Obraz nie ma `ps`; procesy w kontenerze widać przez `/proc`:
+```bash
+docker compose exec catalog-app sh -c 'for p in /proc/[0-9]*; do tr "\0" " " <$p/cmdline; echo; done' | grep churn
+```
+
+**Przyczyna**
+Sygnał zabił klienta `docker compose exec` na hoście, a nie proces `php artisan marketplace:churn` w kontenerze. Bez TTY exec nie
+przekazuje sygnału (interaktywny Ctrl-C z TTY nie był sprawdzany).
+
+**Naprawa**
+Zatrzymanie: znajdź PID przez `/proc` jak wyżej i `docker compose exec catalog-app kill -INT <pid>`. Przy pomiarach ustawiaj `duration=`
+na tyle, ile potrzebujesz, zamiast przerywać.
+
+**Czego się nauczyłem**
+Zabicie klienta `exec` nie jest zabiciem procesu. Przy każdym przerwaniu sprawdź, czy proces w kontenerze naprawdę się skończył,
+zanim policzysz wynik pomiaru.
+
+---
+
+<a id="125"></a>
+## 125 — migracja startuje w trakcie `_update_by_query`: vN+1 zostaje ze starą nazwą sprzedawcy
+
+> ETAP 10, przegląd końcowy gałęzi (2026-11-20). Objaw z analizy kodu, nie z żywego przebiegu; odmowa sprawdzona testem.
+
+**Objaw**
+Po `make reindex` część dokumentów w nowym indeksie ma starą nazwę sprzedawcy, choć `make seller-rename` zakończył się
+sukcesem. Bramka przechodzi, `search:verify-convergence` nic nie widzi (zmiana nazwy nie ma zdarzeń w outboxie).
+
+**Diagnoza**
+```bash
+make es-tasks                                         # czy w trakcie migracji trwało update-by-query
+curl …/_tasks?actions=indices:data/write/update/byquery&detailed=true
+```
+Opis zadania wymienia indeksy tak, jak podano je w żądaniu: `update-by-query [products-write] …`.
+
+**Przyczyna**
+`search:seller:rename` odmawia, gdy migracja już trwa, ale nic nie broniło kolejności odwrotnej. `_update_by_query`
+zaczęty na vN pisze dalej do vN po `switch-write`, a te zapisy nie trafią do vN+1. `_reindex` mógł już skopiować dokument
+sprzed zmiany. Do tego `make seller-rename` to trzy kroki: `--check-only`, zmiana w bazie catalogu, `_update_by_query`.
+Migracja zaczęta między pierwszym a trzecim zostawia bazę zmienioną, a ES z odmową.
+
+**Naprawa**
+- Kod: `prepare`, `switch-write` i `reindex` odmawiają, gdy trwa `_update_by_query` na vN albo na którymś z aliasów
+  (`IndexMigration::refuseWhileUpdateByQueryRuns`, test `test_prepare_i_switch_write_odmawiaja_gdy_trwa_update_by_query_na_vn`).
+  Poczekaj na koniec zadania (`make es-tasks`) albo je anuluj (`make es-cancel task=…`) i powtórz krok.
+- Jeśli to już się stało (albo ES odmówił po zmianie w bazie): po `switch-read` powtórz `make seller-rename id=… name="…"`
+  z tą samą nazwą. Zapytanie dopasowuje tylko oferty tego sprzedawcy, które mają jeszcze inną nazwę, więc poprawi tylko
+  pominięte dokumenty. Komenda w bazie catalogu jest idempotentna.
+
+**Czego się nauczyłem**
+Blokada „A nie startuje w trakcie B” musi działać w obie strony. Jeśli zapis omija dziennik zmian, każda procedura, która
+na tym dzienniku polega (nadrabianie, weryfikacja), musi przed startem sprawdzić, czy taki zapis właśnie nie trwa.
+
+---
+
+<a id="126"></a>
+## 126 — padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek
+
+> ETAP 10, przegląd końcowy gałęzi (2026-11-20). Objaw z analizy kodu; odmowy sprawdzone testami.
+
+**Objaw**
+Jedno z dwóch, gdy proces `switch-read` zginął (kill, restart kontenera):
+- `make reindex-abort` / `search:index:migrate abort`: „switch-read na products-vN+1 już się zaczął (…) — abort odmawia”;
+- (przed poprawką) ponowne `make reindex` przy obu aliasach na vN+1 ruszało od razu z migracją do vN+2.
+
+**Diagnoza**
+```bash
+curl …/_alias/products-search,products-write
+curl …/products-vN+1/_mapping        # _meta.migration: switch_read_started_at jest, switched_read_at brak
+```
+Odczyt jeszcze na vN = proces padł przed przepięciem. Oba aliasy na vN+1 = po przepięciu, przed krokami po nim
+(`gc_deletes` z powrotem domyślne, `switched_read_at`).
+
+**Przyczyna**
+`switch_read_started_at` trafia do `_meta` **przed** przepięciem odczytu, żeby abort nie cofnął migracji, której odczyt
+mógł już zostać przepięty. Skrypt `run` przy obu aliasach na jednym indeksie nie czytał `_meta`, więc stan po przepięciu,
+ale przed `completeReadSwitch`, wyglądał jak spoczynek. vN+2 wystartowałaby wtedy z vN+1 z `gc_deletes: 1h` i bez znacznika końca.
+
+**Naprawa**
+W obu stanach to samo: `docker compose exec search-consumer php bin/console search:index:migrate switch-read`.
+Przed przepięciem liczy bramkę od nowa i przepina, a po przepięciu tylko kończy kroki po nim. `resume_decision` w
+`tools/es/lib.sh` czyta teraz `_meta` celu zapisu także przy obu aliasach na jednym indeksie i odmawia z tą podpowiedzią
+(test offline w `tools/es/test.sh`). Komunikat `abort` też wskazuje `switch-read`.
+
+**Czego się nauczyłem**
+Znacznik „zacząłem” bez znacznika „skończyłem” to osobny stan, a nie wariant spoczynku. Orkiestrator musi go rozpoznać
+i wskazać jedyny krok, który z niego wychodzi.
 
 ---
 

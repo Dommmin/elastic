@@ -135,6 +135,16 @@ es-hot: ## Co robi CPU w tej chwili
 es-tasks: ## Długo działające zadania (reindex, update_by_query)
 	@$(CURL_ES) "$(ES_URL)/_cat/tasks?v&detailed"
 
+.PHONY: es-rethrottle
+es-rethrottle: ## Zmień tempo działającego _update_by_query (make es-rethrottle task=node:id rps=50)
+	@test -n "$(task)" -a -n "$(rps)" || { echo "użycie: make es-rethrottle task=<node:id> rps=<liczba|-1>"; exit 1; }
+	@$(CURL_ES) -X POST "$(ES_URL)/_update_by_query/$(task)/_rethrottle?requests_per_second=$(rps)&filter_path=nodes.*.tasks.*.status.requests_per_second,nodes.*.tasks.*.status.updated,nodes.*.tasks.*.status.total"; echo
+
+.PHONY: es-cancel
+es-cancel: ## Anuluj zadanie z Tasks API (make es-cancel task=node:id)
+	@test -n "$(task)" || { echo "użycie: make es-cancel task=<node:id>"; exit 1; }
+	@$(CURL_ES) -X POST "$(ES_URL)/_tasks/$(task)/_cancel?filter_path=nodes.*.tasks.*.cancelled,nodes.*.tasks.*.action,node_failures"; echo
+
 .PHONY: es-breakers
 es-breakers: ## Stan circuit breakerów
 	@$(CURL_ES) "$(ES_URL)/_nodes/stats/breaker?pretty&filter_path=nodes.*.name,nodes.*.breakers.*.limit_size,nodes.*.breakers.*.estimated_size,nodes.*.breakers.*.tripped"
@@ -201,8 +211,16 @@ mq-get: ## Podejrzyj wiadomość bez usuwania (make mq-get q=search.product.sync
 
 ## Dane
 .PHONY: seed
-seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500), realnym pipeline'em outboxu
-	$(DC) exec catalog-app php artisan marketplace:seed --n=$(or $(n),1500)
+seed: ## Seeduje katalog pod wyszukiwarkę (make seed n=1500 [big=M: Megasklep w M produktach]), realnym pipeline'em outboxu
+	$(DC) exec catalog-app php artisan marketplace:seed --n=$(or $(n),1500) --big-seller=$(or $(big),0)
+
+.PHONY: churn
+churn: ## Ruch na katalogu pod reindeks: zmiany ofert i usunięcia przez outbox (make churn rate=20 duration=60)
+	$(DC) exec catalog-app php artisan marketplace:churn --rate=$(or $(rate),20) --duration=$(or $(duration),60)
+
+.PHONY: seed-reviews
+seed-reviews: ## Opinie dla części produktów, żeby rating_avg w ES miał wartości (make seed-reviews products=50000)
+	$(DC) exec catalog-app php artisan marketplace:seed-reviews --products=$(or $(products),50000)
 
 .PHONY: admin
 admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); hasło wypisane raz
@@ -216,6 +234,50 @@ eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
 .PHONY: reproject
 reproject: ## Przelicz wszystkie dokumenty products-search z projekcji (jednorazowo po Panel [2/8])
 	$(DC) exec search-consumer php bin/console search:reproject
+
+## Reindeks indeksu produktów bez przestoju (ETAP 10)
+.PHONY: seller-rename
+seller-rename: ## Zmiana nazwy sprzedawcy: baza + _update_by_query (make seller-rename id=1 name="Nowa" [rps=500])
+	@test -n "$(id)" -a -n "$(name)" || { echo 'użycie: make seller-rename id=<seller_id> name="<nowa nazwa>" [rps=500]'; exit 1; }
+	$(DC) exec search-consumer php bin/console search:seller:rename "$(id)" "$(name)" --check-only
+	$(DC) exec catalog-app php artisan marketplace:seller-rename "$(id)" "$(name)"
+	$(DC) exec search-consumer php bin/console search:seller:rename "$(id)" "$(name)" --rps=$(or $(rps),500)
+
+.PHONY: reindex
+reindex: ## Migracja vN → vN+1 (make reindex [source=es|pg] [slices=auto] [rps=-1])
+	@bash tools/es/reindex.sh run --source=$(or $(source),es) --slices=$(or $(slices),auto) --rps=$(or $(rps),-1)
+
+.PHONY: reindex-abort
+reindex-abort: ## Wycofaj migrację po switch-write i nadrób okno z outboxu (make reindex-abort [margin=300] [from=products-vN+1])
+	@bash tools/es/reindex.sh abort --margin=$(or $(margin),300) $(if $(from),--from=$(from))
+
+.PHONY: reindex-cleanup
+reindex-cleanup: ## Usuń indeksy bez aliasu (podgląd + pytanie w terminalu)
+	@bash tools/es/reindex.sh cleanup
+
+.PHONY: reindex-break
+reindex-break: ## Dowód bramki: niepełny indeks (30 %) MUSI jej nie przejść; nie rusza aliasów
+	@bash tools/es/reindex.sh break
+
+## Snapshoty, restore, SLM (ETAP 10)
+.PHONY: es-snapshots-setup
+es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (po odtworzeniu kontenerów ES uruchom ponownie)
+	$(DC) --profile snapshots up -d minio
+	$(DC) --profile snapshots up --no-deps minio-init
+	$(DC) --profile cluster up -d es01 es02 es03
+	@bash infra/elasticsearch/setup-snapshots.sh
+
+.PHONY: es-restore-drill
+es-restore-drill: ## Drill restore bez przestoju (make es-restore-drill repo=local-fs|minio-s3)
+	@bash tools/es/restore-drill.sh normal --repo=$(or $(repo),local-fs)
+
+.PHONY: es-restore-drill-destructive
+es-restore-drill-destructive: ## Drill „skasowałem indeks" na własnej kopii (make es-restore-drill-destructive repo=local-fs|minio-s3)
+	@bash tools/es/restore-drill.sh destructive --repo=$(or $(repo),local-fs)
+
+.PHONY: es-slm-run
+es-slm-run: ## Uruchom politykę SLM local-nightly teraz i poczekaj na wynik
+	@bash tools/es/restore-drill.sh slm-run
 
 ## Bazy danych
 .PHONY: psql

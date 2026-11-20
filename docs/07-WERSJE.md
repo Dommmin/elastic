@@ -45,6 +45,17 @@ stabilna wersja **co najmniej dwa tygodnie po wydaniu** (bez `rc`, `main`, `nigh
 | Porty hosta | 19090 / 19093 / 13000 | `PROMETHEUS_PORT` / `ALERTMANAGER_PORT` / `GRAFANA_PORT` | tylko `127.0.0.1` |
 | Port GlitchTipa | 18000 | `GLITCHTIP_PORT` | tylko `127.0.0.1` |
 
+### Snapshoty na S3 (ETAP 10, profil `snapshots`)
+
+Sprawdzone 2026-11-20. Własny MinIO tego stosu (osobny kontener i wolumen `minio-data`), niezależny od MinIO z innych projektów na tej samej maszynie.
+
+| Komponent | Wersja | Tag / zmienna | Uwagi |
+|---|---|---|---|
+| **MinIO** | **RELEASE.2025-09-07T16-13-09Z** (etykieta obrazu) | `minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e` | MinIO przestał serwować obrazy z tagami RELEASE (projekt community jest w trybie utrzymaniowym), więc pinem jest **digest**, nie tag; zero `:latest` |
+| **MinIO Client (mc)** | etykieta obrazu `release=1754467928` (epoch, ok. 2025-08-06) | `minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727` | wersja faktycznie testowana; jednorazowy `minio-init` (bucket + użytkownik z polityką tylko na ten bucket); pin digestem |
+| Porty hosta | 19000 / 19001 | `MINIO_API_PORT` / `MINIO_CONSOLE_PORT` | tylko `127.0.0.1` |
+| Repozytorium S3 w ES | moduł `repository-s3` w ES 9.5.1 | `s3.client.default.endpoint`, `path_style_access` (węzeł); `protocol` przestarzałe w 9.5 | klucze w keystore każdego węzła (`make es-snapshots-setup`) |
+
 ### Lokalny klaster k3d (ETAP G5)
 
 Sprawdzone 2026-11-10 (`brew install k3d`, `k3d version`). Podsieć Dockera klastra jest przypięta (`G5_SUBNET=172.22.0.0/16` w `tools/k3d/lib.sh`), bo NetworkPolicy `rabbitmq-ha-egress-api` opiera się na niej. Narzędzia pomocnicze skryptów: bash 3.2 i Ruby 2.6 z macOS (bez dodatkowych gemów).

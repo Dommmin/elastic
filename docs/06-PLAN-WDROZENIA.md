@@ -293,6 +293,17 @@ w psql zostaje wykryty i naprawiony automatycznie.
 **DoD:** `make reindex` przechodzi na 5 mln dokumentów bez przerwy w działaniu
 wyszukiwarki; kasujesz indeks i przywracasz ze snapshotu.
 
+**Stan (2026-11-20): zrobione lokalnie** na gałęzi `etap-10-indeksy`, sprawdzone na żywym stacku
+na **300 tys.** produktów (spec świadomie zmniejszył skalę z 5 mln — to cel ETAPU 8) pod ciągłym churnem:
+`make reindex` v1→v2 (zmiana typu `rating_avg`) 70 s, droga B z catalogu 151 s, Ctrl-C i wznowienie,
+`make reindex-abort` 5,65 s, bramka odmawia niepełnemu indeksowi (`make reindex-break`), sonda `/search`
+bez jednej pustej odpowiedzi; `_update_by_query` na 98 tys. dokumentów z `_rethrottle`, anulowaniem
+i wznowieniem; snapshot/restore na `fs` i MinIO, drill „skasowałem indeks” na kopii, SLM.
+Przewodnik: [`blog/etap-10-operacje-na-indeksach.md`](blog/etap-10-operacje-na-indeksach.md),
+spec: [`superpowers/specs/2026-11-19-etap-10-operacje-na-indeksach-design.md`](superpowers/specs/2026-11-19-etap-10-operacje-na-indeksach-design.md),
+RUNBOOK #110–#126, pomiary w [POMIARY §15](POMIARY.md). Nie wdrożone na k3s/VPS (brak serwera;
+przy wdrożeniu: `cancel_task` w roli `search_service`, alias `products-write` przed nowym konsumentem).
+
 ### ETAP 11 — Tor observability (3–4 dni) → **moduł 10a**
 Podział sygnałów według [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md):
 logi i ślady do ES, metryki i alerty do Prometheusa.

@@ -2,129 +2,160 @@
 
 namespace App\Command;
 
+use App\Service\IndexAliases;
+use App\Service\IndexMapping;
 use Elastic\Elasticsearch\Client;
-use Elastic\Elasticsearch\Exception\ClientResponseException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
- * `php bin/console search:index:create` — tworzy fizyczny indeks
- * `products-v1` z mapowania w infra/elasticsearch/mappings/products-v1.json
- * i podpina pod niego alias `products-search`.
+ * `php bin/console search:index:create [--index-version=N]` — tworzy fizyczny
+ * indeks `products-vN` z `infra/elasticsearch/mappings/products-vN.json`
+ * i dba o dwa aliasy: `products-search` (odczyt) i `products-write` (zapis).
  *
  * DLACZEGO mapowania i szablony tworzy KOD, nie klikanie w Kibanie
  * (docs/01-INFRASTRUKTURA.md, sekcja "Konwencje"): mapowanie w repo można
  * zrecenzować, wersjonować i odtworzyć identycznie na czystym klastrze.
  *
- * DLACZEGO alias, nie nazwa fizyczna wprost (D-11, docs/06-PLAN-WDROZENIA.md):
- * `ProductSearchService` (ETAP 7) i `ElasticsearchIndexer` (już napisane)
- * mówią zawsze do `products-search`. Reindeks w ETAPIE 10 stworzy
- * `products-v2` i atomowo przepnie alias — kod, który czyta/pisze, nigdy
- * się o tym nie dowie.
+ * DLACZEGO aliasy, nie nazwa fizyczna wprost (D-11, docs/06-PLAN-WDROZENIA.md):
+ * catalog czyta zawsze `products-search`, konsument pisze zawsze przez
+ * `products-write`. Reindeks (ETAP 10) tworzy `products-vN+1` i przepina
+ * aliasy osobno — kod, który czyta/pisze, nigdy się o tym nie dowie.
+ *
+ * Komenda NIGDY nie przepina istniejącego aliasu (to robi reindeks po bramce
+ * jakości) — tylko dopina brakujący: na świeżym klastrze oba do `products-vN`,
+ * na istniejącej instalacji z samym `products-search` dopina `products-write`
+ * do tego samego indeksu.
+ *
+ * Deploy (VPS i job k8s) woła ją przy KAŻDYM wdrożeniu, bez `--index-version`.
+ * Dlatego gdy którykolwiek alias już istnieje, a wersji (ani --force) nie podano jawnie,
+ * indeksu nie tworzy — tylko dopina brakujący alias. Inaczej na klastrze
+ * z `products-v1` zostawiłaby osierocony `products-v{CURRENT}`, a kolejne
+ * `search:index:migrate prepare` odmówiłoby na „obcym” celu o tej nazwie.
  */
-#[AsCommand(name: 'search:index:create', description: 'Tworzy indeks products-v1 i alias products-search')]
+#[AsCommand(name: 'search:index:create', description: 'Tworzy indeks products-vN i dopina brakujące aliasy products-search / products-write')]
 final class CreateSearchIndexCommand extends Command
 {
-    private const INDEX_NAME = 'products-v1';
-
-    private const ALIAS_NAME = 'products-search';
+    /**
+     * Wersja mapowania dla ŚWIEŻEGO klastra — jedyne miejsce, które trzeba zmienić
+     * po wdrożeniu nowej merytorycznej wersji. 2, nie 3: v3 to ta sama treść co v2
+     * (przebudowa do ćwiczenia przerwania migracji, ETAP 10), więc czysty klaster
+     * startuje od ostatniej wersji, która coś zmieniła. Żywy klaster przechodzi na
+     * kolejne wersje przez `make reindex`, nie przez tę komendę.
+     */
+    public const CURRENT_VERSION = 2;
 
     /**
-     * ŚCIEŻKA ABSOLUTNA, nie wędrówka `../../` od `%kernel.project_dir%`.
-     * Kontener search-consumer widzi WYŁĄCZNIE `./apps/search` jako `/app` —
-     * katalog `infra/` z korzenia repo w ogóle nie istnieje w jego systemie
-     * plików. compose.yaml montuje `infra/elasticsearch/mappings` osobno,
-     * dokładnie pod tę ścieżkę (patrz komentarz przy `search-consumer.volumes`).
-     * Odkryte dopiero przy realnym uruchomieniu — na hosta `../../` "działało"
-     * tylko dlatego, że lokalny filesystem ma tam repo, czego kontener nie ma.
+     * @param  string  $indexPrefix  prefiks nazwy indeksu (`products-v` → `products-v1`);
+     *                               parametr dla testów na jednorazowych indeksach
      */
-    private const MAPPINGS_DIR = '/infra/elasticsearch/mappings';
-
     public function __construct(
         private readonly Client $client,
+        private readonly IndexAliases $aliases,
+        private readonly string $indexPrefix = 'products-v',
+        private readonly IndexMapping $mappings = new IndexMapping(),
     ) {
         parent::__construct();
     }
 
     protected function configure(): void
     {
-        $this->addOption('force', null, null, 'Usuń i utwórz indeks od nowa, jeśli już istnieje (TYLKO dev!)');
+        $this
+            ->addOption('index-version', null, InputOption::VALUE_REQUIRED, 'Numer wersji mapowania (products-vN.json)', (string) self::CURRENT_VERSION)
+            ->addOption('force', null, null, 'Usuń i utwórz indeks od nowa, jeśli już istnieje (TYLKO dev, nie dla indeksu pod aliasem)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
 
-        $mappingPath = self::MAPPINGS_DIR.'/'.self::INDEX_NAME.'.json';
-
-        if (! is_file($mappingPath)) {
-            $io->error("Brak pliku mapowania: {$mappingPath}");
+        $version = (int) $input->getOption('index-version');
+        if ($version < 1) {
+            $io->error('--index-version musi być liczbą >= 1.');
 
             return Command::FAILURE;
         }
 
-        $body = json_decode(file_get_contents($mappingPath), associative: true, flags: JSON_THROW_ON_ERROR);
-        // "_meta" to dokumentacja dla ludzi (patrz sam plik) — ES przyjąłby ją
-        // jako część mappings, ale nie ma tu po co jej wysyłać.
-        unset($body['_meta']);
+        $indexName = $this->indexPrefix.$version;
 
-        $exists = $this->client->indices()->exists(['index' => self::INDEX_NAME])->asBool();
+        if (! $this->mappings->exists($version)) {
+            $io->error('Brak pliku mapowania: '.$this->mappings->path($version));
+
+            return Command::FAILURE;
+        }
+
+        $body = $this->mappings->load($version);
+
+        if (! $input->hasParameterOption('--index-version') && ! $input->getOption('force') && ($this->aliases->readTarget() !== null || $this->aliases->writeTarget() !== null)) {
+            $io->note('Klaster ma już alias '.$this->aliases->read.'/'.$this->aliases->write.' — nie tworzę '.$indexName.' (nowa wersja przechodzi przez make reindex), tylko dopinam brakujący alias.');
+            $this->ensureAliases($io, $indexName);
+
+            return Command::SUCCESS;
+        }
+
+        $exists = $this->client->indices()->exists(['index' => $indexName])->asBool();
 
         if ($exists && $input->getOption('force')) {
-            $io->warning('--force: usuwam istniejący indeks '.self::INDEX_NAME);
-            $this->client->indices()->delete(['index' => self::INDEX_NAME]);
+            if (in_array($indexName, [$this->aliases->readTarget(), $this->aliases->writeTarget()], true)) {
+                $io->error("--force: {$indexName} jest celem aliasu odczytu lub zapisu — odmawiam usunięcia.");
+
+                return Command::FAILURE;
+            }
+
+            $io->warning('--force: usuwam istniejący indeks '.$indexName);
+            $this->client->indices()->delete(['index' => $indexName]);
             $exists = false;
         }
 
         if ($exists) {
-            $io->note(self::INDEX_NAME.' już istnieje — pomijam tworzenie (użyj --force, żeby nadpisać).');
+            $io->note($indexName.' już istnieje — pomijam tworzenie (użyj --force, żeby nadpisać).');
         } else {
             $this->client->indices()->create([
-                'index' => self::INDEX_NAME,
+                'index' => $indexName,
                 'body' => $body,
             ]);
-            $io->success('Utworzono indeks '.self::INDEX_NAME);
+            $io->success('Utworzono indeks '.$indexName);
         }
 
-        $this->ensureAlias($io);
+        $this->ensureAliases($io, $indexName);
 
         return Command::SUCCESS;
     }
 
-    private function ensureAlias(SymfonyStyle $io): void
+    /**
+     * Dopina TYLKO brakujące aliasy. Istniejącego nigdy nie przepina — nawet
+     * jeśli wskazuje inny indeks niż ten, który właśnie utworzono (to robi
+     * reindeks po bramce jakości, nie ta komenda).
+     */
+    private function ensureAliases(SymfonyStyle $io, string $indexName): void
     {
-        try {
-            $currentIndices = $this->client->indices()
-                ->getAlias(['name' => self::ALIAS_NAME])
-                ->asArray();
-        } catch (ClientResponseException $e) {
-            if ($e->getCode() !== 404) {
-                throw $e;
-            }
-            $currentIndices = [];
-        }
+        $read = $this->aliases->readTarget();
+        $write = $this->aliases->writeTarget();
 
-        if (array_key_exists(self::INDEX_NAME, $currentIndices)) {
-            $io->note('Alias '.self::ALIAS_NAME.' już wskazuje na '.self::INDEX_NAME.'.');
+        if ($read === null && $write === null) {
+            $this->aliases->attach($this->aliases->read, $indexName);
+            $this->aliases->attach($this->aliases->write, $indexName);
+            $io->success('Aliasy '.$this->aliases->read.' i '.$this->aliases->write.' -> '.$indexName);
 
             return;
         }
 
-        // Atomowa zamiana: remove starych powiązań + add nowego w JEDNYM
-        // wywołaniu _aliases. Gdyby zrobić to jako dwa osobne zapytania,
-        // byłoby okno, w którym alias nie wskazuje na NIC — dokładnie ten
-        // problem, którego unikamy w ETAPIE 10 przy reindeksie.
-        $actions = [];
-        foreach (array_keys($currentIndices) as $oldIndex) {
-            $actions[] = ['remove' => ['index' => $oldIndex, 'alias' => self::ALIAS_NAME]];
+        if ($write === null) {
+            // Istniejąca instalacja z samym aliasem odczytu: zapis idzie do
+            // tego samego indeksu, z którego czyta catalog.
+            $this->aliases->attach($this->aliases->write, $read);
+            $io->success('Dopięto '.$this->aliases->write.' -> '.$read);
         }
-        $actions[] = ['add' => ['index' => self::INDEX_NAME, 'alias' => self::ALIAS_NAME]];
 
-        $this->client->indices()->updateAliases(['body' => ['actions' => $actions]]);
+        if ($read === null) {
+            $this->aliases->attach($this->aliases->read, $write);
+            $io->success('Dopięto '.$this->aliases->read.' -> '.$write);
+        }
 
-        $io->success('Alias '.self::ALIAS_NAME.' -> '.self::INDEX_NAME);
+        $io->note(sprintf('Aliasy: %s -> %s, %s -> %s.', $this->aliases->read, $this->aliases->readTarget(), $this->aliases->write, $this->aliases->writeTarget()));
     }
 }

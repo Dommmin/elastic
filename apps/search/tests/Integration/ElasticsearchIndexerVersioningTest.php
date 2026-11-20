@@ -92,6 +92,11 @@ final class ElasticsearchIndexerVersioningTest extends TestCase
         self::assertTrue($this->client->exists(['index' => $this->index, 'id' => self::PRODUCT_ID])->asBool());
     }
 
+    public function test_delete_nieistniejacego_dokumentu_to_not_found(): void
+    {
+        self::assertSame(IndexOutcome::NotFound, $this->indexer->deleteProduct('999', 1_000));
+    }
+
     /** @return array<string, mixed> */
     private function projection(int $priceMin): array
     {

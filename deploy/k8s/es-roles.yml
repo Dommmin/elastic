@@ -13,9 +13,10 @@ catalog_app:
       privileges: ["read", "view_index_metadata"]
 
 # Jedyny serwis, który pisze do ES; zarządza też szablonami i ILM,
-# bo mapowania są kodem (01-INFRASTRUKTURA.md).
+# bo mapowania są kodem (01-INFRASTRUKTURA.md). cancel_task: Ctrl-C w
+# `search:index:migrate reindex --wait` anuluje zadanie _reindex (ETAP 10).
 search_service:
-  cluster: ["monitor", "manage_index_templates", "manage_ilm", "manage_pipeline"]
+  cluster: ["monitor", "manage_index_templates", "manage_ilm", "manage_pipeline", "cancel_task"]
   indices:
     - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "logs-app-*"]
       privileges: ["all"]

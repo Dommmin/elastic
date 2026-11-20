@@ -72,6 +72,11 @@ x-es-common: &es-common
     # --- pozostałe ---
     bootstrap.memory_lock: "true"
     path.repo: /snapshots
+    # Repozytorium S3 (ETAP 10, profil `snapshots`): w ES 9 endpoint i path_style_access
+    # to ustawienia NODA, nie repozytorium; `protocol` jest w 9.5 przestarzałe (schemat niesie endpoint). Klucze dostępu trafiają do keystore'a
+    # (infra/elasticsearch/setup-snapshots.sh), nigdy do środowiska.
+    s3.client.default.endpoint: http://minio:9000
+    s3.client.default.path_style_access: "true"
     # ILM sprawdza polityki co 10 min; w dev chcemy widzieć przejścia od razu (ETAP 10)
     indices.lifecycle.poll_interval: 10s
   ulimits:
@@ -986,6 +991,81 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # ==========================================================================
+  #  ETAP 10 — snapshoty na S3. Profil `snapshots`
+  # ==========================================================================
+
+  # Własny MinIO tego stosu (osobny kontener i wolumen, nie ten z innych projektów
+  # na tej maszynie). Obraz przypięty do wydania (docs/07-WERSJE.md).
+  minio:
+    profiles: [snapshots]
+    # Wydanie RELEASE.2025-09-07T16-13-09Z. MinIO przestał serwować te tagi, więc pinem jest
+    # digest (docs/07-WERSJE.md).
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-19000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-19001}:9001"
+    healthcheck:
+      # Obraz nie ma curl ani mc: zapytanie HTTP przez /dev/tcp w bashu.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/9000 && printf "GET /minio/health/ready HTTP/1.0\r\n\r\n" >&3 && read -r l <&3 && [[ $$l == *200* ]]'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # Jednorazowo: bucket + osobny użytkownik MinIO dla Elasticsearcha z polityką
+  # ograniczoną do tego bucketa (nie konto root). Idempotentny.
+  minio-init:
+    profiles: [snapshots]
+    # mc w wersji faktycznie testowanej (etykieta obrazu release=1754467928, ok. 2025-08-06); pin digestem.
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
+        mc mb --ignore-existing "local/$$MINIO_BUCKET" >/dev/null
+        # Polityka ograniczona do jednego bucketa (wbudowana `readwrite` obejmuje wszystkie).
+        cat > /tmp/es-s3-policy.json <<POLICY
+        {"Version":"2012-10-17","Statement":[
+          {"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::$$MINIO_BUCKET"]},
+          {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::$$MINIO_BUCKET/*"]}]}
+        POLICY
+        mc admin policy create local es-snapshots-rw /tmp/es-s3-policy.json >/dev/null
+        # `user add` jest idempotentne (nadpisuje sekret); `attach` zgłasza już przypisaną politykę:
+        # tylko to tolerujemy, każdy inny błąd przerywa (set -e).
+        mc admin user add local "$$ES_S3_ACCESS_KEY" "$$ES_S3_SECRET_KEY" >/dev/null
+        if ! out="$$(mc admin policy attach local es-snapshots-rw --user "$$ES_S3_ACCESS_KEY" 2>&1)"; then
+          case "$$out" in
+            *"already"*) ;;
+            *) echo "$$out" >&2; exit 1 ;;
+          esac
+        fi
+        echo "[minio-init] bucket $$MINIO_BUCKET gotowy"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
+      MINIO_BUCKET: ${MINIO_BUCKET:-es-snapshots}
+      ES_S3_ACCESS_KEY: ${ES_S3_ACCESS_KEY:-}
+      ES_S3_SECRET_KEY: ${ES_S3_SECRET_KEY:-}
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [marketplace]
+    restart: "no"
+
 networks:
   marketplace:
     driver: bridge
@@ -998,6 +1078,7 @@ volumes:
   es03-data:
   es-certs:
   es-snapshots:
+  minio-data:
   kibana-data:
   rabbitmq-data:
   caddy-data:

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\ProductSearchService;
 use App\Services\Search\RelevanceJudgments;
 use App\Services\Search\SearchCriteria;
+use App\Services\Search\TieGroupGuard;
 use Elastic\Elasticsearch\Client;
 use Illuminate\Console\Command;
 use Illuminate\Http\Request;
@@ -28,6 +29,14 @@ class SearchEvalCommand extends Command
     private const ALIAS = 'products-search';
 
     /**
+     * Kod wyjścia, gdy jedynym problemem jest remis `_score` z różnymi ocenami
+     * (wynik niedeterministyczny), a `_rank_eval` przeszedł bez błędów. Osobny
+     * od FAILURE (1), żeby `tools/es/reindex.sh` mógł go tolerować na zamrożonym
+     * starym indeksie przy wznawianiu migracji, a na prawdziwej awarii nadal stawać.
+     */
+    public const TIE_UNSTABLE = 2;
+
+    /**
      * Ścieżka ABSOLUTNA w kontenerze, nie wędrówka `../../` od repo — ten
      * sam powód i to samo rozwiązanie co `CreateSearchIndexCommand::
      * MAPPINGS_DIR` po stronie Symfony: `/tests/relevance` istnieje TYLKO
@@ -35,13 +44,7 @@ class SearchEvalCommand extends Command
      */
     private const QUERIES_PATH = '/tests/relevance/queries.yaml';
 
-    /**
-     * Górna granica grupy remisu sprawdzanej przez `hasMixedGradeTie()` —
-     * na seedzie 1500 największa grupa ma kilkadziesiąt dokumentów.
-     */
-    private const TIE_CHECK_MAX_HITS = 1_000;
-
-    protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k}';
+    protected $signature = 'search:eval {--k=10 : Głębokość nDCG@k} {--index= : Indeks fizyczny zamiast aliasu (np. products-v2)}';
 
     protected $description = 'Liczy nDCG@k na zestawie zapytań kontrolnych (_rank_eval) tym samym query template co ProductSearchService';
 
@@ -49,12 +52,17 @@ class SearchEvalCommand extends Command
         private readonly Client $client,
         private readonly ProductSearchService $searchService,
         private readonly RelevanceJudgments $judgments,
+        private readonly TieGroupGuard $tieGuard,
     ) {
         parent::__construct();
     }
 
     public function handle(): int
     {
+        // Na 300 tys. produktów reguła kategorii/marki rozwija się do kilkudziesięciu
+        // tysięcy `ratings` na zapytanie; domyślne 128 MB CLI nie wystarcza (pomiar ETAPU 10).
+        ini_set('memory_limit', '1G');
+
         if (! is_file(self::QUERIES_PATH)) {
             $this->error('Brak pliku zapytań kontrolnych: '.self::QUERIES_PATH);
 
@@ -63,7 +71,10 @@ class SearchEvalCommand extends Command
 
         $data = Yaml::parseFile(self::QUERIES_PATH);
         $k = (int) $this->option('k');
-        $physicalIndex = $this->resolveAliasTarget();
+        // Z `--index` oceniamy wskazany indeks fizyczny (np. nowy, jeszcze bez aliasu);
+        // bez niego — cel aliasu `products-search`, jak dotąd.
+        $target = $this->option('index') ?: self::ALIAS;
+        $physicalIndex = $this->option('index') ?: $this->resolveAliasTarget();
 
         $queries = $data['queries'] ?? [];
         $requests = array_map(
@@ -73,7 +84,7 @@ class SearchEvalCommand extends Command
         );
 
         $response = $this->client->rankEval([
-            'index' => self::ALIAS,
+            'index' => $target,
             'body' => [
                 'requests' => $requests,
                 'metric' => ['dcg' => ['k' => $k, 'normalize' => true]],
@@ -81,70 +92,22 @@ class SearchEvalCommand extends Command
         ])->asArray();
 
         $unstable = array_map(
-            fn (array $request) => $this->hasMixedGradeTie($request, $k),
+            fn (array $request) => $this->tieGuard->hasMixedGradeTie(
+                $target,
+                $request['request']['query'],
+                array_column($request['ratings'], 'rating', '_id'),
+                $k,
+            ),
             $requests,
         );
 
         $this->renderResults($queries, $response, $unstable, $k);
 
-        return $response['failures'] === [] && ! in_array(true, $unstable, true)
-            ? self::SUCCESS
-            : self::FAILURE;
-    }
-
-    /**
-     * Strażnik determinizmu (docs/RUNBOOK.md #096): czy w top-k jest grupa
-     * remisu `_score`, w której dokumenty mają RÓŻNE oceny? Kolejność
-     * remisów rozstrzyga wewnętrzny doc id Lucene (zależny od refreshy
-     * i merge'ów), więc taka grupa daje nDCG zmieniające się między
-     * świeżymi indeksami na tych samych danych.
-     *
-     * Wszystkie grupy o `_score` WYŻSZYM niż k-ty wynik mieszczą się
-     * w top-k w całości; jedyna grupa, która może wystawać poza k, to ta
-     * z wynikiem RÓWNYM k-temu — stąd drugie zapytanie z `min_score`, które
-     * zwraca ją całą (także członków spoza top-k, mogących się zamienić
-     * miejscami z tymi w środku).
-     *
-     * @param  array{request: array{query: array<string, mixed>}, ratings: array<int, array{_id: string, rating: int}>}  $request
-     */
-    private function hasMixedGradeTie(array $request, int $k): bool
-    {
-        $query = $request['request']['query'];
-        $grades = array_column($request['ratings'], 'rating', '_id');
-
-        $top = $this->client->search([
-            'index' => self::ALIAS,
-            'body' => ['query' => $query, 'size' => $k, '_source' => false],
-        ])->asArray()['hits']['hits'];
-
-        if ($top === []) {
-            return false;
+        if ($response['failures'] !== []) {
+            return self::FAILURE;
         }
 
-        $tied = $this->client->search([
-            'index' => self::ALIAS,
-            'body' => [
-                'query' => $query,
-                'min_score' => end($top)['_score'],
-                'size' => self::TIE_CHECK_MAX_HITS,
-                '_source' => false,
-            ],
-        ])->asArray()['hits']['hits'];
-
-        $gradesByScore = [];
-
-        foreach ($tied as $hit) {
-            // Klucz jako string: identyczny float32 z ES serializuje się identycznie.
-            $gradesByScore[(string) $hit['_score']][$grades[$hit['_id']] ?? 0] = true;
-        }
-
-        foreach ($gradesByScore as $distinctGrades) {
-            if (count($distinctGrades) > 1) {
-                return true;
-            }
-        }
-
-        return false;
+        return in_array(true, $unstable, true) ? self::TIE_UNSTABLE : self::SUCCESS;
     }
 
     /**
@@ -229,6 +192,8 @@ class SearchEvalCommand extends Command
             (float) $response['metric_score'],
             count($queries),
         ));
+        // Linia maszynowa dla skryptów (bramka reindeksu); kropka dziesiętna niezależna od locale.
+        $this->line(sprintf('NDCG=%s', (float) $response['metric_score']));
 
         if (in_array(true, $unstable, true)) {
             $this->error('Wynik NIEDETERMINISTYCZNY: w top-k jest remis `_score` między dokumentami o różnych ocenach — '

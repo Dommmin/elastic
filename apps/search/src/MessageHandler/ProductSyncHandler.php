@@ -111,6 +111,10 @@ final class ProductSyncHandler
                 'Pominięto nieaktualne zdarzenie (nowsza wersja już zaindeksowana).',
                 ['product_id' => $productId, 'event_type' => $event->type, 'sequence' => $event->sequence, 'doc_version' => $docVersion],
             ),
+            IndexOutcome::NotFound => $this->logger->debug(
+                'Usunięcie produktu, którego nie było w indeksie (404).',
+                ['product_id' => $productId, 'event_type' => $event->type, 'sequence' => $event->sequence, 'doc_version' => $docVersion],
+            ),
         };
     }
 }

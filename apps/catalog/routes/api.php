@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\SuggestController;
 use App\Http\Controllers\HealthController;
+use App\Http\Controllers\Internal\ProductIdsController;
 use App\Http\Controllers\Internal\ProductProjectionController;
 use Illuminate\Support\Facades\Route;
 
@@ -20,5 +21,9 @@ Route::get('/suggest', SuggestController::class);
 // dockerowej, nigdy z przeglądarki. Docs/02-APLIKACJE.md, sekcja 7.1,
 // wariant B (read-back API). Prawdziwa izolacja (API keys) w ETAPIE 12.
 Route::prefix('internal')->group(function () {
+    Route::get('/products/count', [ProductIdsController::class, 'count']);
+    Route::get('/products/ids', [ProductIdsController::class, 'ids']);
+    Route::get('/products/changed', [ProductIdsController::class, 'changed']);
+    Route::get('/products/projections', [ProductProjectionController::class, 'index']);
     Route::get('/products/{id}/projection', [ProductProjectionController::class, 'show']);
 });

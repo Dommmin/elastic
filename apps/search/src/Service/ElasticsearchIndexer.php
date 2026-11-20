@@ -27,17 +27,21 @@ use Elastic\Elasticsearch\Exception\ClientResponseException;
  */
 class ElasticsearchIndexer
 {
+    /** Ile powodów błędów pozycji `_bulk` zwracać z bulkSync (reszta tylko w liczniku). */
+    public const MAX_ERROR_SAMPLES = 5;
+
     /**
-     * @param  string  $alias  alias, NIE nazwa fizycznego indeksu
-     *                         (docs/06-PLAN-WDROZENIA.md, D-11 — aliasy od dnia 1).
-     *                         Reindeks w ETAPIE 10 przełączy ten alias na nowy
-     *                         indeks atomowo; ten kod nigdy nie dowie się, że to
-     *                         się stało. Parametr tylko dla testu integracyjnego,
-     *                         który pisze do jednorazowego indeksu.
+     * @param  string  $alias  alias ZAPISU (`products-write`), NIE nazwa fizycznego
+     *                         indeksu (docs/06-PLAN-WDROZENIA.md, D-11). Odczyt
+     *                         idzie osobnym `products-search`, więc reindeks
+     *                         w ETAPIE 10 może przepiąć zapis na nowy indeks,
+     *                         zanim odczyt dostanie go w całości; ten kod nigdy
+     *                         nie dowie się, że to się stało. Parametr także dla
+     *                         testów, które piszą do jednorazowego indeksu.
      */
     public function __construct(
         private readonly Client $client,
-        private readonly string $alias = 'products-search',
+        private readonly string $alias = IndexAliases::WRITE,
     ) {
     }
 
@@ -94,13 +98,81 @@ class ElasticsearchIndexer
             return IndexOutcome::Indexed;
         } catch (ClientResponseException $e) {
             // 404 = już nie istnieje (poprzednie delete albo nigdy nie
-            // zaindeksowany) — to również nie jest błąd.
-            if (in_array($e->getCode(), [404, 409], true)) {
-                return IndexOutcome::Stale;
-            }
-
-            throw $e;
+            // zaindeksowany), 409 = jest nowsza wersja — oba to NIE błąd,
+            // ale to różne fakty, więc liczymy je osobno.
+            return match ($e->getCode()) {
+                404 => IndexOutcome::NotFound,
+                409 => IndexOutcome::Stale,
+                default => throw $e,
+            };
         }
+    }
+
+    /**
+     * Partia jednym `_bulk` (ETAP 10, Task 12b: droga B i nadrabianie po abort)
+     * — ta sama decyzja co indexProduct/deleteProduct, tylko bez żądania na
+     * produkt: `index` dla projekcji, `delete` dla `missing`, wszystko
+     * z `version_type: external` i wersją = `projected_at_us` partii.
+     *
+     * Wynik pozycji: 409 = stale (nowsza wersja już jest — sukces, nie błąd),
+     * 404 przy delete = not_found (ES i tak zostawia tombstone z tą wersją,
+     * więc spóźniona starsza projekcja nie wskrzesi produktu — Task 5),
+     * każdy inny błąd pozycji = errors (pierwsze MAX_ERROR_SAMPLES powodów
+     * w `error_samples`). Błąd całego żądania (sieć, 5xx) leci wyjątkiem,
+     * odpowiedź z inną liczbą pozycji niż akcji — UnexpectedValueException.
+     *
+     * @param list<array<string, mixed>> $items   projekcje z catalogu
+     * @param list<int>                  $missing ID bez produktu w catalogu
+     * @param int                        $version `projected_at_us` partii
+     *
+     * @return array{indexed: int, stale: int, deleted: int, not_found: int, errors: int, error_samples: list<string>}
+     */
+    public function bulkSync(array $items, array $missing, int $version): array
+    {
+        $result = ['indexed' => 0, 'stale' => 0, 'deleted' => 0, 'not_found' => 0, 'errors' => 0, 'error_samples' => []];
+        if ($items === [] && $missing === []) {
+            return $result;
+        }
+
+        $body = [];
+        foreach ($items as $projection) {
+            $body[] = ['index' => ['_index' => $this->alias, '_id' => (string) $projection['id'], 'version' => $version, 'version_type' => 'external']];
+            $body[] = $this->toEsDocument($projection);
+        }
+        foreach ($missing as $productId) {
+            $body[] = ['delete' => ['_index' => $this->alias, '_id' => (string) $productId, 'version' => $version, 'version_type' => 'external']];
+        }
+
+        $response = $this->client->bulk(['body' => $body])->asArray();
+
+        // Każda akcja musi mieć swoją pozycję w odpowiedzi. Krótsza lista dałaby
+        // zaniżone liczniki z 0 błędów — backfill postawiłby pieczęć mimo braków.
+        $expected = \count($items) + \count($missing);
+        $entries = $response['items'] ?? null;
+        if (! \is_array($entries) || \count($entries) !== $expected) {
+            throw new \UnexpectedValueException(\sprintf('_bulk: wysłano %d akcji, odpowiedź ma %s pozycji.', $expected, \is_array($entries) ? \count($entries) : 'brak'));
+        }
+
+        foreach ($entries as $entry) {
+            $action = array_key_first($entry);
+            $item = $entry[$action];
+            $status = (int) ($item['status'] ?? 0);
+
+            $key = match (true) {
+                $status === 409 => 'stale',
+                $action === 'delete' && $status === 404 => 'not_found',
+                $action === 'delete' && $status >= 200 && $status < 300 => 'deleted',
+                $action === 'index' && $status >= 200 && $status < 300 => 'indexed',
+                default => 'errors',
+            };
+            ++$result[$key];
+
+            if ($key === 'errors' && \count($result['error_samples']) < self::MAX_ERROR_SAMPLES) {
+                $result['error_samples'][] = sprintf('%s: %s %s', $item['_id'] ?? '?', $item['error']['type'] ?? "HTTP {$status}", $item['error']['reason'] ?? '');
+            }
+        }
+
+        return $result;
     }
 
     /**
