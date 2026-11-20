@@ -276,6 +276,10 @@ analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, d
 simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
 	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)
 
+.PHONY: popularity-refresh
+popularity-refresh: ## Przelicz popularność produktów i doklej do indeksu (make popularity-refresh [variant=ips|raw as_of=2026-11-20 days=30 alpha=20 rps=-1])
+	$(DC) exec search-consumer php bin/console search:popularity:refresh --variant=$(or $(variant),ips) $(if $(as_of),--as-of=$(as_of)) --window-days=$(or $(days),30) --alpha=$(or $(alpha),20) --rps=$(or $(rps),-1)
+
 .PHONY: es-restore-drill
 es-restore-drill: ## Drill restore bez przestoju (make es-restore-drill repo=local-fs|minio-s3)
 	@bash tools/es/restore-drill.sh normal --repo=$(or $(repo),local-fs)
