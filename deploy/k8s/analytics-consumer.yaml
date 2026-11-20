@@ -1,0 +1,76 @@
+# ============================================================================
+#  analytics-consumer (Symfony Messenger) — ETAP 12
+#  Drugi konsument tego samego obrazu co search-consumer: transport `analytics`
+#  (kolejka search.analytics.ingest) -> _bulk do data streamów events-*.
+#  Nie czyta catalogu ani Redisa, więc bez INTERNAL_API_TOKEN i bez trasy do
+#  catalog-app (NetworkPolicy: tylko RabbitMQ, ES, Postgres failure transportu,
+#  GlitchTip). Bez etykiety `app: search-consumer`: deploy.sh wdraża go razem
+#  z catalogiem (OTHER_APPS_SEL) i nie musi go zatrzymywać na czas migracji.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-consumer
+  labels:
+    app.kubernetes.io/component: app
+    app: analytics-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics-consumer
+  template:
+    metadata:
+      labels:
+        app: analytics-consumer
+    spec:
+      serviceAccountName: search
+      automountServiceAccountToken: false
+      # Profil „restricted” (ETAP G2), jak search-consumer: tylko /tmp zapisywalny.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP)
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: consumer
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["php", "bin/console", "messenger:consume", "analytics", "--time-limit=3600", "--memory-limit=256M"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            - name: ERROR_TRACKING_PROCESS
+              value: analytics-consumer
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_SEARCH, optional: true } }
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            # Indeks 5 jak w search-consumer: łatka overlayu G5 (analytics-consumer-env.yaml) podmienia go po indeksie.
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -f messenger:consume"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

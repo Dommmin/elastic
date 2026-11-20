@@ -19,6 +19,14 @@ kind: Deployment
 metadata:
   name: catalog-scheduler
 ---
+# ETAP 12: analityka (search.analytics.ingest -> events-*) leży poza ścieżką outbox -> search-consumer
+# -> ES, którą mierzy G5; jej konsument nie mieści się też w budżecie 5 Gi.
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-consumer
+---
 $patch: delete
 apiVersion: apps/v1
 kind: Deployment

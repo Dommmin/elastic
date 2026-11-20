@@ -22,6 +22,7 @@ resources:
   - catalog.yaml
   - hpa.yaml
   - search-consumer.yaml
+  - analytics-consumer.yaml
   - glitchtip.yaml
   - jobs/migrate.yaml
   - backup.yaml

@@ -699,6 +699,40 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # ETAP 12: ingest zdarzeń user.* (kolejka search.analytics.ingest) do data streamów
+  # events-*. Osobny proces od search-consumer (inny rytm: paczki _bulk po 500, niezależny
+  # restart), ten sam obraz. Nie czyta catalogu, więc bez CATALOG_INTERNAL_BASE_URL.
+  analytics-consumer:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["php", "bin/console", "messenger:consume", "analytics", "-vv", "--time-limit=3600", "--memory-limit=256M"]
+    environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: analytics-consumer
+      # Jak w search-consumer: bez APP_ENV (rządzi apps/search/.env), serverVersion Doctrine
+      # jawnie (failure transport `doctrine://`).
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      ELASTICSEARCH_HOST: http://es01:9200
+      ELASTICSEARCH_USER: searchsvc
+      ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
+      MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+    volumes:
+      - ./apps/search:/app
+    depends_on:
+      postgres: { condition: service_healthy }
+      es01: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    mem_limit: 512m
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
   # ==========================================================================
   #  Profil `obs` (ETAP 11)
   #  Obserwowalność: logi (Filebeat -> ES), metryki (Prometheus, Grafana),

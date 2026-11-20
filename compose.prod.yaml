@@ -190,6 +190,17 @@ services:
       DEFAULT_URI: http://localhost
     volumes: !reset []
 
+  analytics-consumer:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
+      APP_ENV: prod
+      APP_SECRET: ${SEARCH_APP_SECRET:?}
+      MAILER_DSN: null://null
+      DEFAULT_URI: http://localhost
+    volumes: !reset []
+
   # --- GlitchTip (ETAP 11b, ADR-0009) ------------------------------------------
   # Obraz z CI (infra/glitchtip/Dockerfile): oficjalny GlitchTip + skrypty w środku, bo na
   # serwerze nie ma repo. Kolejność z compose.yaml: db-setup -> glitchtip -> setup.
