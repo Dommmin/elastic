@@ -267,6 +267,12 @@ final class IndexMigrateCommandTest extends TestCase
         self::assertGreaterThanOrEqual($before, $since);
         self::assertLessThanOrEqual(new \DateTimeImmutable('+1 second'), $since);
         self::assertTrue($this->client->indices()->exists(['index' => $this->prefix.'2'])->asBool(), 'vN+1 zostaje do diagnostyki.');
+        // Podpowiedź nadrabiania: make reindex-abort robi to sam; ręcznie backfill --since.
+        // Nie odsyłamy już do search:reproject (pełny O(N), sprzed Task 12b).
+        $display = preg_replace('/\s+/', ' ', $abort->getDisplay());
+        self::assertStringContainsString('make reindex-abort', $display);
+        self::assertStringContainsString('search:index:backfill --index='.$this->aliases->write.' --since=', $display);
+        self::assertStringNotContainsString('search:reproject', $display);
     }
 
     public function test_switch_read_przy_niezdanej_bramce_odmawia_i_nie_rusza_aliasu_odczytu(): void

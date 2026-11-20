@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "Mapowanie products-v3 = products-v2: przebudowa bez zmiany mapowania (ETAP 10: ćwiczenie przerwania). Różni się od v2 tylko _meta (MappingV3Test).",
+    "description": "Mapowanie products-v3 = products-v2: przebudowa bez zmiany mapowania (ETAP 10: ćwiczenie przerwania). Różni się od v2 tylko _meta (MappingRebuildTest).",
     "note": "Pola offers/attributes/category odzwierciedlają dokładnie kształt odpowiedzi GET /internal/products/{id}/projection (apps/catalog). Zmiana jednej strony bez drugiej cicho zepsuje indeksację — to jest kontrakt, nie przypadek."
   },
   "settings": {

@@ -177,7 +177,9 @@ final class IndexMigrateCommand extends Command
     {
         $result = $this->migration->abort($aliases);
         $io->warning("Oba aliasy z powrotem na {$result['source']}; {$result['target']} zostaje do diagnostyki. "
-            ."{$result['source']} nie widział zapisów od switch-write — uruchom search:reproject od tego czasu.");
+            ."{$result['source']} nie widział zapisów od switch-write ({$result['since']}). "
+            .'make reindex-abort nadrabia je sam (krok 3/3); ręcznie: '
+            ."search:index:backfill --index={$aliases->write} --since=<switch_write_at − margines, domyślnie 300 s>.");
         $output->writeln("REPROJECT_NEEDED_SINCE={$result['since']}");
 
         return Command::SUCCESS;

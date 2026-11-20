@@ -29,6 +29,14 @@ class SearchEvalCommand extends Command
     private const ALIAS = 'products-search';
 
     /**
+     * Kod wyjścia, gdy jedynym problemem jest remis `_score` z różnymi ocenami
+     * (wynik niedeterministyczny), a `_rank_eval` przeszedł bez błędów. Osobny
+     * od FAILURE (1), żeby `tools/es/reindex.sh` mógł go tolerować na zamrożonym
+     * starym indeksie przy wznawianiu migracji, a na prawdziwej awarii nadal stawać.
+     */
+    public const TIE_UNSTABLE = 2;
+
+    /**
      * Ścieżka ABSOLUTNA w kontenerze, nie wędrówka `../../` od repo — ten
      * sam powód i to samo rozwiązanie co `CreateSearchIndexCommand::
      * MAPPINGS_DIR` po stronie Symfony: `/tests/relevance` istnieje TYLKO
@@ -95,9 +103,11 @@ class SearchEvalCommand extends Command
 
         $this->renderResults($queries, $response, $unstable, $k);
 
-        return $response['failures'] === [] && ! in_array(true, $unstable, true)
-            ? self::SUCCESS
-            : self::FAILURE;
+        if ($response['failures'] !== []) {
+            return self::FAILURE;
+        }
+
+        return in_array(true, $unstable, true) ? self::TIE_UNSTABLE : self::SUCCESS;
     }
 
     /**

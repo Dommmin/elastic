@@ -53,6 +53,24 @@ if value:
 # migration_source <_mapping — źródło migracji (wznowienie po Ctrl-C)
 migration_source() { migration_field source; }
 
+# resume_decision STARY ZAPIS <_mapping celu zapisu — co ma zrobić `run`:
+#   STARY == ZAPIS                         → "fresh"  (kod 0, stdin nieczytany)
+#   _meta.migration.source celu == STARY   → "resume" (kod 0; migracja przerwana po switch-write)
+#   cokolwiek innego (obce źródło, brak _meta, błąd ES, nie-JSON) → powód odmowy, kod 1
+resume_decision() {
+  local old="$1" write="$2" src
+  if [[ "${old}" == "${write}" ]]; then echo fresh; return 0; fi
+  src="$(migration_source)" || { echo "nie umiem odczytać _meta ${write} — make reindex-abort"; return 1; }
+  if [[ -n "${src}" && "${src}" == "${old}" ]]; then echo resume; return 0; fi
+  echo "aliasy wskazują różne indeksy (read='${old}', write='${write}'), a ${write} nie jest celem migracji z ${old} — make reindex-abort"
+  return 1
+}
+
+# eval_frozen_ok KOD — czy kod search:eval na ZAMROŻONYM starym indeksie (wznowienie)
+# jest do przyjęcia: 0 albo 2 (SearchEvalCommand::TIE_UNSTABLE — remis z różnymi
+# ocenami, bo usunięte produkty zostały w starym indeksie bez oceny). Reszta = awaria.
+eval_frozen_ok() { [[ "$1" == 0 || "$1" == 2 ]]; }
+
 # migration_switch_write_at <_mapping — chwila switch-write porzuconego indeksu (abort)
 migration_switch_write_at() { migration_field switch_write_at; }
 

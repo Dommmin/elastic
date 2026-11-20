@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "description": "Mapowanie products-v5 = products-v2: przebudowa bez zmiany mapowania (ETAP 10: ćwiczenie drogi B i aborta). Różni się od v2 tylko _meta (MappingV5Test).",
+    "description": "Mapowanie products-v5 = products-v2: przebudowa bez zmiany mapowania (ETAP 10: ćwiczenie drogi B i aborta). Różni się od v2 tylko _meta (MappingRebuildTest).",
     "note": "Pola offers/attributes/category odzwierciedlają dokładnie kształt odpowiedzi GET /internal/products/{id}/projection (apps/catalog). Zmiana jednej strony bez drugiej cicho zepsuje indeksację — to jest kontrakt, nie przypadek."
   },
   "settings": {

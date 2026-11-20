@@ -155,7 +155,22 @@ eq "migration_source z _meta" "$(migration_source <<<'{"products-v3":{"mappings"
 eq "migration_source bez _meta" "$(migration_source <<<'{"products-v3":{"mappings":{}}}')" ""
 migration_source <<<'nie json' >/dev/null 2>&1 && bad "migration_source: śmieci powinny odmówić" || ok "migration_source: śmieci odrzucone (fail-closed)"
 migration_source <<<'{"error":{"type":"x"},"status":500}' >/dev/null 2>&1 && bad "migration_source: błąd ES powinien odmówić" || ok "migration_source: błąd ES odrzucony"
-grep -q 'resume=1' tools/es/reindex.sh && ok "run wznawia migrację w toku (read≠write, cel z prepare)" || bad "run musi wznawiać migrację w toku"
+# resume_decision STARY ZAPIS <_mapping celu zapisu — decyzja run przy read≠write
+m_ok='{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2"}}}}}'
+m_other='{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v1"}}}}}'
+eq "resume_decision: ten sam indeks = fresh" "$(resume_decision products-v2 products-v2 </dev/null)" "fresh"
+eq "resume_decision: cel z prepare = resume" "$(resume_decision products-v2 products-v3 <<<"${m_ok}")" "resume"
+out="$(resume_decision products-v2 products-v3 <<<"${m_other}")" && bad "resume_decision: obce źródło powinno odmówić" \
+  || { grep -q 'nie jest celem migracji z products-v2' <<<"${out}" && ok "resume_decision: obce źródło = odmowa z powodem" || bad "resume_decision: brak powodu odmowy ('${out}')"; }
+resume_decision products-v2 products-v3 <<<'{"products-v3":{"mappings":{}}}' >/dev/null && bad "resume_decision: cel bez _meta powinien odmówić" || ok "resume_decision: cel bez _meta = odmowa"
+resume_decision products-v2 products-v3 <<<'nie json' >/dev/null && bad "resume_decision: śmieci powinny odmówić" || ok "resume_decision: śmieci = odmowa (fail-closed)"
+resume_decision products-v2 products-v3 <<<'{"error":{"type":"x"},"status":500}' >/dev/null && bad "resume_decision: błąd ES powinien odmówić" || ok "resume_decision: błąd ES = odmowa"
+grep -q 'resume_decision "${old}" "${write}"' tools/es/reindex.sh && ok "run używa resume_decision" || bad "run musi używać resume_decision"
+# eval_frozen_ok KOD — na zamrożonym starym indeksie tolerujemy tylko 0 i remis (2)
+eval_frozen_ok 0 && ok "eval_frozen_ok 0" || bad "eval_frozen_ok 0 powinno przejść"
+eval_frozen_ok 2 && ok "eval_frozen_ok 2 (TIE_UNSTABLE)" || bad "eval_frozen_ok 2 powinno przejść"
+for rc in 1 3 127 130 255; do eval_frozen_ok "${rc}" && bad "eval_frozen_ok ${rc} powinno odmówić" || ok "eval_frozen_ok ${rc} = awaria"; done
+grep -q 'search:eval "--index=${old}" || true' tools/es/reindex.sh && bad "resume nie może połykać błędów eval (|| true)" || ok "resume nie połyka błędów eval"
 # --- Task 12b: długie kroki przez `compose run`, abort ograniczony do okna ---
 # `docker compose exec` ginie (137) przy godzinnym restarcie search-consumer
 # (--time-limit=3600); `compose run --rm --no-deps` to osobny kontener.

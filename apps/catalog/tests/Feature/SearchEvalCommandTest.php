@@ -1,6 +1,8 @@
 <?php
 
+use App\Console\Commands\SearchEvalCommand;
 use App\Services\Search\RelevanceJudgments;
+use App\Services\Search\TieGroupGuard;
 use Elastic\Elasticsearch\Client;
 use Elastic\Elasticsearch\ClientBuilder;
 use GuzzleHttp\Psr7\Response;
@@ -84,4 +86,48 @@ test('bez --index zachowanie bez zmian: alias rozwiązany, zapytania na products
 
     expect(collect($this->log)->filter(fn ($l) => str_contains($l, '_alias')))->not->toBeEmpty()
         ->and(collect($this->log)->filter(fn ($l) => str_contains($l, '_rank_eval') && str_contains($l, '/products-search/')))->not->toBeEmpty();
+});
+
+test('sam remis z różnymi ocenami kończy się kodem 2 (TIE_UNSTABLE), nie 1 — skrypt reindeksu odróżnia go od awarii', function () {
+    $this->app->instance(TieGroupGuard::class, new class(app(Client::class)) extends TieGroupGuard
+    {
+        public function hasMixedGradeTie(string $index, array $query, array $grades, int $k): bool
+        {
+            return true;
+        }
+    });
+
+    $this->artisan('search:eval', ['--index' => 'products-v2'])
+        ->expectsOutputToContain('NDCG=0.8125')
+        ->expectsOutputToContain('NIEDETERMINISTYCZNY')
+        ->assertExitCode(SearchEvalCommand::TIE_UNSTABLE);
+});
+
+test('błędy _rank_eval kończą się kodem 1 także przy remisie', function () {
+    $this->app->instance(TieGroupGuard::class, new class(app(Client::class)) extends TieGroupGuard
+    {
+        public function hasMixedGradeTie(string $index, array $query, array $grades, int $k): bool
+        {
+            return true;
+        }
+    });
+    $log = [];
+    $this->app->instance(Client::class, ClientBuilder::create()
+        ->setHosts(['http://es.invalid:9200'])
+        ->setHttpClient(new class implements ClientInterface
+        {
+            public function sendRequest(RequestInterface $request): ResponseInterface
+            {
+                $json = str_contains($request->getUri()->getPath(), '/_rank_eval')
+                    ? ['metric_score' => 0.5, 'details' => (object) [], 'failures' => ['q0' => ['error' => 'boom']]]
+                    : ['hits' => ['hits' => []]];
+
+                return new Response(200, ['X-Elastic-Product' => 'Elasticsearch', 'Content-Type' => 'application/json'], json_encode($json));
+            }
+        })
+        ->build());
+
+    $this->artisan('search:eval', ['--index' => 'products-v2'])
+        ->expectsOutputToContain('Błędy _rank_eval')
+        ->assertExitCode(1);
 });

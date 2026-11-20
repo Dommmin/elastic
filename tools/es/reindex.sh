@@ -43,7 +43,7 @@ cmd_run() {
   done
   [[ "${source}" == es || "${source}" == pg ]] || die "source=es|pg (podano: ${source})"
 
-  local old write target="" gate ndcg_old ndcg_new resume=0 msrc
+  local old write target="" gate ndcg_old ndcg_new resume=0 decision eval_rc
   old="$(alias_target "${READ_ALIAS}")" || die "nie umiem odczytać aliasu ${READ_ALIAS}"
   write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
   [[ -n "${old}" && -n "${write}" ]] || die "brak aliasu (read='${old}', write='${write}')"
@@ -51,8 +51,8 @@ cmd_run() {
     # Migracja w toku (np. po Ctrl-C w _reindex): zapis już na celu z prepare.
     # Wznawiamy od reindeksu — _reindex z version_type=external kopiuje tylko
     # brakujące, a zapisy ze strumienia w celu wygrywają. Abort to droga O(N).
-    msrc="$(es GET "/${write}/_mapping" | migration_source)" || die "nie umiem odczytać _meta ${write}"
-    [[ "${msrc}" == "${old}" ]] || die "aliasy wskazują różne indeksy (read='${old}', write='${write}'), a ${write} nie jest celem migracji z ${old} — make reindex-abort"
+    decision="$(es GET "/${write}/_mapping" 2>/dev/null | resume_decision "${old}" "${write}")" || die "${decision:-nie umiem odczytać _meta ${write}}"
+    [[ "${decision}" == resume ]] || die "nieoczekiwana decyzja wznowienia: ${decision}"
     resume=1; target="${write}"
     info "Wznawiam migrację w toku: ${old} → ${target} (zapis już na ${target}; prepare i switch-write pomijam)"
   fi
@@ -74,9 +74,12 @@ cmd_run() {
     step switch-write sc search:index:migrate switch-write || die "switch-write nie przeszedł (cel ${target}); make reindex-abort, jeśli aliasy się zmieniły"
   else
     # ${old} od switch-write nie dostaje zapisów: strażnik remisów może fałszywie
-    # odmówić (usunięte produkty bez oceny), więc kod wyjścia tu nie decyduje —
-    # bierzemy samą liczbę NDCG= jako orientacyjną. Nowy indeks oceniamy ściśle.
-    step "ndcg ${old} (zamrożony, orientacyjnie)" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || true
+    # odmówić (usunięte produkty bez oceny) — tolerujemy WYŁĄCZNIE ten kod
+    # (TIE_UNSTABLE = 2) i bierzemy NDCG= jako orientacyjne. Inna awaria eval
+    # (błędy _rank_eval, brak pliku, ES niedostępny) zatrzymuje skrypt. Nowy indeks oceniamy ściśle.
+    eval_rc=0
+    step "ndcg ${old} (zamrożony, orientacyjnie)" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || eval_rc=$?
+    eval_frozen_ok "${eval_rc}" || die "search:eval ${old} nie przeszedł (kod ${eval_rc}, a tolerowany jest tylko remis = 2)"
     ndcg_old="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${old}"
   fi
 
