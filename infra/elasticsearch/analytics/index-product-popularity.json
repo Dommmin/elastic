@@ -1,0 +1,32 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  },
+  "mappings": {
+    "_meta": {
+      "description": "Popularność produktu (ETAP 12, spec §7). Wypełnia search:popularity:refresh (Task 9); czyta polityka enrich product-popularity-policy. popularity = wariant wybrany przy refresh (raw|ips), zawsze > 0. dynamic: false — pola pomocnicze transformu zostają w _source, ale niczego nie psują."
+    },
+    "dynamic": false,
+    "properties": {
+      "product_id": {
+        "type": "keyword"
+      },
+      "popularity": {
+        "type": "float"
+      },
+      "popularity_raw": {
+        "type": "float"
+      },
+      "popularity_ips": {
+        "type": "float"
+      },
+      "impressions": {
+        "type": "long"
+      },
+      "clicks": {
+        "type": "long"
+      }
+    }
+  }
+}

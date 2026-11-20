@@ -19,6 +19,22 @@
 #  z infra/kibana/analytics-dashboard.ndjson (overwrite=true). Kibana wołana
 #  z wnętrza es01 po sieci compose (KIBANA_URL, domyślnie http://kibana:5601).
 #
+#  SEKCJA 4 (popularność, spec §7): pusty indeks `product-popularity` (gdy go
+#  brak), polityka enrich `product-popularity-policy` (gdy jej brak), `_execute`
+#  polityki (zawsze — tworzy/odświeża indeks enrich), pipeline
+#  `products-enrich-popularity` (PUT nadpisuje). Kolejność jest wymuszona przez
+#  ES: pipeline z procesorem enrich nie powstanie bez wykonanej polityki,
+#  a products-v6 (default_pipeline) bez pipeline'u odrzuca KAŻDY zapis — więc
+#  ta sekcja musi przejść przed `make reindex` na v6.
+#  Polityki enrich nie da się zmienić w miejscu ani usunąć, dopóki odwołuje się
+#  do niej pipeline (409). Skrypt tylko ostrzega o rozjeździe z plikiem.
+#  Przebudowa polityki (zapisy produktów w tym czasie przejdą bez popularności,
+#  nadrobi je `search:popularity:refresh`):
+#    1. PUT _ingest/pipeline/products-enrich-popularity {"processors":[]}
+#    2. DELETE _enrich/policy/product-popularity-policy
+#    3. make analytics-setup   (utworzy politykę z pliku, wykona ją, przywróci pipeline)
+#    4. search:popularity:refresh (Task 9) — dociągnie popularność do produktów
+#
 #  Replik: 1 w klastrze wielowęzłowym, 0 przy jednym węźle (inaczej indeks
 #  zostałby żółty) — liczone z _cat/nodes.
 #
@@ -160,5 +176,49 @@ if not r.get("success"):
     sys.exit(1)
 print("[analytics] [3] Zaimportowano obiektów: %d" % r["successCount"])'
 log "[3] OK — dashboard: http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/search-analytics"
+
+# ============================================================================
+#  SEKCJA 4 — popularność: indeks product-popularity, polityka enrich, pipeline
+# ============================================================================
+POP_INDEX=product-popularity
+POP_POLICY=product-popularity-policy
+POP_PIPELINE=products-enrich-popularity
+
+if esa_exists "/${POP_INDEX}"; then
+  log "[4] Indeks ${POP_INDEX} już istnieje"
+else
+  log "[4] Tworzę pusty indeks ${POP_INDEX} (replik: ${REPLICAS})"
+  REPLICAS="${REPLICAS}" python3 -c '
+import json, os, sys
+t = json.load(open(sys.argv[1]))
+t["settings"]["number_of_replicas"] = int(os.environ["REPLICAS"])
+print(json.dumps(t))' "${DIR}/index-${POP_INDEX}.json" >"${TMP}"
+  esa PUT "/${POP_INDEX}" "${TMP}" >/dev/null
+fi
+
+# GET nieistniejącej polityki to 200 z pustą listą — liczymy definicje.
+POLICY_JSON="$(esa GET "/_enrich/policy/${POP_POLICY}")"
+if printf '%s' "${POLICY_JSON}" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["policies"] else 1)'; then
+  log "[4] Polityka ${POP_POLICY} już istnieje (polityk nie da się aktualizować w miejscu)"
+  printf '%s' "${POLICY_JSON}" | python3 -c '
+import json, sys
+live = json.load(sys.stdin)["policies"][0]["config"]["match"]
+want = json.load(open(sys.argv[1]))["match"]
+keys = ("indices", "match_field", "enrich_fields")
+norm = lambda m: {k: sorted(m[k]) if isinstance(m[k], list) else [m[k]] for k in keys}
+if norm(live) != norm(want):
+    print("[analytics] [4] UWAGA: polityka w klastrze różni się od pliku — przebudowa: nagłówek skryptu", file=sys.stderr)' \
+    "${DIR}/enrich-policy-${POP_INDEX}.json"
+else
+  log "[4] Tworzę politykę enrich ${POP_POLICY}"
+  esa PUT "/_enrich/policy/${POP_POLICY}" "${DIR}/enrich-policy-${POP_INDEX}.json" >/dev/null
+fi
+
+log "[4] _execute ${POP_POLICY} (indeks enrich z bieżącego ${POP_INDEX})"
+esa POST "/_enrich/policy/${POP_POLICY}/_execute?wait_for_completion=true" >/dev/null
+
+log "[4] Pipeline ${POP_PIPELINE} (on_failure: zapis produktu nigdy nie jest odrzucany)"
+esa PUT "/_ingest/pipeline/${POP_PIPELINE}" "${DIR}/pipeline-${POP_PIPELINE}.json" >/dev/null
+log "[4] OK"
 
 log "Gotowe."

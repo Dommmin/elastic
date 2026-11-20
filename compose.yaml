@@ -692,6 +692,9 @@ services:
       # (search:index:create) czyta stąd mapowanie products-v1.json — ta sama
       # zawartość, którą montujemy też do node'ów ES (analysis/synonyms.txt).
       - ./infra/elasticsearch/mappings:/infra/elasticsearch/mappings:ro
+      # Pipeline, polityka enrich i indeks popularności (ETAP 12): czyta je
+      # PopularityPipelineTest (te same pliki co setup-analytics.sh).
+      - ./infra/elasticsearch/analytics:/infra/elasticsearch/analytics:ro
     depends_on:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
