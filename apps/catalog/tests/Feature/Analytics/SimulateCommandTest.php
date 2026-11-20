@@ -219,3 +219,22 @@ test('błędna opcja --inject kończy się błędem', function () {
 
     $this->artisan('analytics:simulate', ['--inject' => 'cos'])->assertFailed();
 });
+
+test('na produkcji symulator odmawia bez --force', function () {
+    $publisher = new FakeSimulatedEventPublisher;
+    app()->instance(SimulatedEventPublisher::class, $publisher);
+    app()->detectEnvironment(fn () => 'production');
+
+    $this->artisan('analytics:simulate', ['--live' => true, '--sessions-per-day' => 1])
+        ->expectsOutputToContain('--force')
+        ->assertFailed();
+
+    expect($publisher->envelopes)->toBeEmpty();
+});
+
+test('na produkcji z --force symulator działa', function () {
+    simulationCatalog();
+    app()->detectEnvironment(fn () => 'production');
+
+    expect(simulate(['--live' => true, '--sessions-per-day' => 5, '--force' => true]))->not->toBeEmpty();
+});

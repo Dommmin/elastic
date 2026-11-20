@@ -18,6 +18,17 @@ class SearchContextStore
     public const TTL_SECONDS = 1800;
 
     /**
+     * Dopuszczalny `search_id` z wejścia (URL, formularz): alfabet ULID/UUID,
+     * do 64 znaków. Nic spoza niego nie trafia do klucza w Redisie.
+     */
+    public const SEARCH_ID_PATTERN = '/^[0-9A-Za-z-]{1,64}$/';
+
+    public static function isValidSearchId(mixed $value): bool
+    {
+        return is_string($value) && preg_match(self::SEARCH_ID_PATTERN, $value) === 1;
+    }
+
+    /**
      * @param  list<int>  $results
      */
     public function put(string $searchId, string $query, array $results): void

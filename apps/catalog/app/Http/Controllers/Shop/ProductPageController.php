@@ -65,31 +65,34 @@ class ProductPageController extends Controller
     }
 
     /**
-     * Kliknięcie to wejście na stronę z `?sid=&pos=` (linki z wyników). Bez
-     * poprawnego `sid` i `pos` (liczba całkowita >= 1) zdarzenia nie ma, ale
-     * strona działa. Odświeżenie nie dubluje kliknięcia: `dedup_key` jest stały,
-     * a search-service używa go jako `_id` dokumentu (drugi zapis dostaje 409).
+     * Kliknięcie to wejście na stronę z `?sid=` (linki z wyników). Zdarzenie
+     * powstaje tylko wtedy, gdy kontekst wyszukiwania jest w Redisie i zawiera
+     * ten produkt — inaczej każdy mógłby dopisać kliknięcie dowolnemu produktowi,
+     * a IPS (waga 1/p(k)) wzmocniłby fałszywe kliknięcia na dalekich pozycjach.
+     * Pozycja to indeks w kontekście + 1; `pos` z URL-a jest ignorowane. Produkt
+     * spoza top-20 kontekstu (np. druga strona wyników) nie daje zdarzenia.
+     * Odświeżenie nie dubluje kliknięcia: `dedup_key` jest stały, a search-service
+     * używa go jako `_id` dokumentu (drugi zapis dostaje 409).
      */
     private function recordClick(Request $request, Product $product, ?string $searchId): void
     {
-        $position = $request->query('pos');
+        if ($searchId === null) {
+            return;
+        }
 
-        if ($searchId === null || ! is_string($position) || ! ctype_digit($position) || strlen($position) > 4 || (int) $position < 1) {
+        $context = $this->contexts->get($searchId);
+        $index = $context === null ? false : array_search($product->id, $context['results'], true);
+        if ($index === false) {
             return;
         }
 
         $data = [
             'search_id' => $searchId,
+            'query' => $context['query'],
             'product_id' => $product->id,
-            'position' => (int) $position,
+            'position' => $index + 1,
             'dedup_key' => "click:{$searchId}:{$product->id}",
         ];
-
-        // Brak wpisu w Redisie (wygasł) = zdarzenie bez frazy.
-        $context = $this->contexts->get($searchId);
-        if ($context !== null) {
-            $data['query'] = $context['query'];
-        }
 
         if ($request->user() !== null) {
             $data['user_id'] = $request->user()->getAuthIdentifier();
@@ -99,10 +102,11 @@ class ProductPageController extends Controller
     }
 
     /**
-     * `sid` z URL-a: niepusty napis do 64 znaków, inaczej null (nie ufamy wejściu).
+     * `sid` z URL-a: alfabet ULID/UUID do 64 znaków, inaczej null (nie ufamy
+     * wejściu, a wartość trafia do klucza w Redisie).
      */
     private static function searchId(mixed $value): ?string
     {
-        return is_string($value) && $value !== '' && strlen($value) <= 64 ? $value : null;
+        return SearchContextStore::isValidSearchId($value) ? $value : null;
     }
 }

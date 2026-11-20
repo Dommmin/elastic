@@ -27,6 +27,7 @@ use Ordering\Domain\InvalidOrderLines;
 use Ordering\Domain\OrderId;
 use Ordering\Infrastructure\ReadModel\CartView;
 use SharedKernel\DomainException;
+use Throwable;
 
 /**
  * Koszyk kupującego i składanie zamówień. Koszyk to dane robocze (bez agregatu);
@@ -189,19 +190,18 @@ class CartController extends Controller
 
     /**
      * `user.added_to_cart` po udanym zapisie koszyka. `search_id` i `query` tylko,
-     * gdy produkt otwarto z wyników (formularz niesie `sid`).
+     * gdy produkt otwarto z wyników (formularz niesie `sid`) i kontekst tego
+     * wyszukiwania jest w Redisie — bez kontekstu `sid` jest nieweryfikowalny.
      */
     private function recordAddedToCart(AddToCartRequest $request, Offer $offer): void
     {
         $data = ['product_id' => $offer->product_id, 'offer_id' => $offer->id];
 
         $searchId = $request->validated('sid');
-        if (is_string($searchId) && $searchId !== '') {
+        $context = is_string($searchId) && $searchId !== '' ? $this->contexts->get($searchId) : null;
+        if ($context !== null) {
             $data['search_id'] = $searchId;
-            $context = $this->contexts->get($searchId);
-            if ($context !== null) {
-                $data['query'] = $context['query'];
-            }
+            $data['query'] = $context['query'];
         }
 
         $data['user_id'] = self::userId($request);
@@ -218,16 +218,22 @@ class CartController extends Controller
      */
     private function recordCheckedOut(CheckoutRequest $request, array $orderIds): void
     {
-        $lines = $request->cartLines();
-        $productIds = Offer::query()->whereIn('id', array_map(fn ($line) => $line->offerId, $lines))->pluck('product_id', 'id');
+        // Zamówienia są już zapisane: żaden błąd analityki (zapytanie o oferty,
+        // składanie danych, recorder) nie może zamienić udanego zakupu w 500.
+        try {
+            $lines = $request->cartLines();
+            $productIds = Offer::query()->whereIn('id', array_map(fn ($line) => $line->offerId, $lines))->pluck('product_id', 'id');
 
-        $this->recorder->record('user.checked_out', AnalyticsSession::currentId($request), [
-            'order_ids' => array_map(fn (OrderId $id): int => $id->value(), $orderIds),
-            'product_ids' => $productIds->unique()->values()->map(fn ($id): int => (int) $id)->all(),
-            // Handler potwierdził ceny z formularza, więc suma z linii = suma zamówień.
-            'amount_cents' => array_sum(array_map(fn ($line): int => $line->quantity * $line->expectedUnitPriceCents, $lines)),
-            'user_id' => self::userId($request),
-        ]);
+            $this->recorder->record('user.checked_out', AnalyticsSession::currentId($request), [
+                'order_ids' => array_map(fn (OrderId $id): int => $id->value(), $orderIds),
+                'product_ids' => $productIds->unique()->values()->map(fn ($id): int => (int) $id)->all(),
+                // Handler potwierdził ceny z formularza, więc suma z linii = suma zamówień.
+                'amount_cents' => array_sum(array_map(fn ($line): int => $line->quantity * $line->expectedUnitPriceCents, $lines)),
+                'user_id' => self::userId($request),
+            ]);
+        } catch (Throwable $e) {
+            report($e);
+        }
     }
 
     private static function item(Request $request, int $offer): CartItem

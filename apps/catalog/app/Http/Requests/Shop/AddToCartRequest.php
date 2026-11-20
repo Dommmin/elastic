@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Shop;
 
+use App\Analytics\SearchContextStore;
 use App\Models\CartItem;
 use App\Models\Offer;
 use Illuminate\Contracts\Validation\ValidationRule;
@@ -37,7 +38,8 @@ class AddToCartRequest extends FormRequest
             'quantity' => ['required', 'integer', 'min:1', 'max:'.self::MAX_PER_LINE],
             'unit_price_cents' => ['required', 'integer', 'min:0'],
             // Identyfikator wyszukiwania, z którego kupujący trafił na produkt (analityka).
-            'sid' => ['nullable', 'string', 'max:64'],
+            // Alfabet ULID/UUID: wartość trafia do klucza w Redisie.
+            'sid' => ['nullable', 'string', 'max:64', 'regex:'.SearchContextStore::SEARCH_ID_PATTERN],
         ];
     }
 

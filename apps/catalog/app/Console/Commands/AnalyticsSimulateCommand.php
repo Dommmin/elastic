@@ -30,7 +30,9 @@ use Random\Randomizer;
  * Determinizm: każdy dzień ma własny generator z hasha (ziarno, data), więc
  * `--day=N` daje dokładnie dzień N pełnego przebiegu, a ponowny przebieg z tym
  * samym ziarnem daje te same sesje, czasy i ID wyszukań (ES odrzuci duplikaty
- * 409). Kliknięcia zależą od rankingu: kolejność remisów w ES zmienia się między
+ * 409 — ale tylko w obrębie jednego indeksu zaplecza data streamu; ILM robi
+ * rollover codziennie, więc powtórka po rolloverze zapisze duplikaty do nowego
+ * indeksu). Kliknięcia zależą od rankingu: kolejność remisów w ES zmienia się między
  * wywołaniami, więc powtórka dnia może dopisać kliknięcia w inne produkty —
  * przed powtórką czyść data streamy albo zmień ziarno. Wyniki
  * wyszukiwań są cache'owane per fraza tylko w obrębie jednego wywołania —
@@ -48,7 +50,8 @@ class AnalyticsSimulateCommand extends Command
         {--inject= : Anomalia: zero-results albo ctr-drop (ostatnia godzina ostatniego dnia, z --live cała paczka)}
         {--live : Paczka sesji w ostatnich 15 minutach zamiast historii}
         {--day= : Tylko dzień N (1 = najstarszy) — pętla zamknięta}
-        {--as-of= : Koniec historii YYYY-MM-DD (domyślnie dziś 00:00 UTC)}';
+        {--as-of= : Koniec historii YYYY-MM-DD (domyślnie dziś 00:00 UTC)}
+        {--force : Pozwól uruchomić na produkcji (sztuczne zdarzenia w prawdziwej analityce)}';
 
     protected $description = 'Symuluje ruch klientów (wyszukania, kliknięcia, koszyk, zakup) i publikuje zdarzenia user.* do RabbitMQ';
 
@@ -112,6 +115,13 @@ class AnalyticsSimulateCommand extends Command
     public function handle(ProductSearchService $search, SimulatedEventPublisher $publisher): int
     {
         $started = microtime(true);
+
+        // Sztuczne sesje na produkcji zatrułyby popularność i alerty — tylko świadomie.
+        if (app()->isProduction() && ! $this->option('force')) {
+            $this->error('Środowisko produkcyjne: symulator publikuje sztuczne zdarzenia do prawdziwej analityki. Uruchom z --force, jeśli na pewno tego chcesz.');
+
+            return self::FAILURE;
+        }
 
         $inject = $this->option('inject');
         $inject = $inject === null || $inject === '' ? null : (string) $inject;
