@@ -153,7 +153,7 @@
   - `reindex` — startuje `_reindex vN→vN+1` (`wait_for_completion=false`, `dest.version_type: external`, `conflicts: proceed`), wypisuje `TASK=<id>`; `--wait` śledzi `_tasks/<id>` i drukuje postęp (`created/updated/version_conflicts/total`), przy SIGINT woła `_cancel` i kończy kodem 130.
   - `finalize` — przywraca repliki i `refresh_interval` z pliku mapowania, `_refresh`, czeka na zielony.
   - `switch-read` — `products-search` → `vN+1`, potem `gc_deletes` domyślne. Wywołuje bramkę i odmawia, jeśli nie przeszła (bramka liczy, `switch-read` nie ma obejścia).
-  - `abort` — oba aliasy z powrotem na `vN`, `vN+1` zostaje do diagnostyki; wypisuje `REPROJECT_NEEDED_SINCE=<ISO czasu switch-write>` (zapisany w `_meta` indeksu `vN+1` w `prepare`/`switch-write`).
+  - `abort` — oba aliasy z powrotem na `vN`, `vN+1` zostaje do diagnostyki; wypisuje `CATCHUP_SINCE=<ISO czasu switch-write>` (do przeglądu końcowego `REPROJECT_NEEDED_SINCE=`) (zapisany w `_meta` indeksu `vN+1` w `prepare`/`switch-write`).
   - `cleanup` — usuwa indeksy `products-v*` niebędące celem żadnego aliasu, po potwierdzeniu `--yes`.
 - Produces: `search:index:gate --index=<name> [--tolerance=0.001]` — zielony, po `_refresh`; `|count(index) − catalog.count| / catalog.count ≤ tolerance`; wypisuje `GATE=PASS|FAIL` i każdą niespełnioną regułę. nDCG porównuje skrypt (Task 9), bo `search:eval` żyje w catalogu.
 
@@ -163,7 +163,7 @@
   - drugi przebieg z `vN+1` liczy `vN+2` (Review Focus 3).
   - `prepare` odmawia, gdy aliasy wskazują różne indeksy.
   - `reindex` przerwany (`_cancel`) i powtórzony → ta sama liczba dokumentów, brak dubli (Review Focus 2).
-  - `abort` przywraca oba aliasy na `vN` i drukuje `REPROJECT_NEEDED_SINCE` (Review Focus 4).
+  - `abort` przywraca oba aliasy na `vN` i drukuje `CATCHUP_SINCE` (Review Focus 4).
   - gate: indeks z 30 % dokumentów → `GATE=FAIL` z regułą liczby; pełny → `PASS`; `switch-read` przy FAIL → kod ≠ 0, alias odczytu nietknięty (Review Focus 5).
 - [ ] **Step 2–4:** FAIL → implementacja → PASS (cały `bin/phpunit`)
 - [ ] **Step 5: Commit** `feat(search): search:index:migrate i bramka jakości`

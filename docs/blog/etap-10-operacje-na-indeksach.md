@@ -14,7 +14,7 @@ indeks”.*
 > Sonda `/search` co sekundę w oknach pomiarów Task 12 i Task 12c: 3904 + 922 żądania, **każde HTTP 200, żadne puste**.
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-19-etap-10-operacje-na-indeksach-design.md),
 > plan: [plan implementacji](../superpowers/plans/2026-11-19-etap-10-operacje-na-indeksach.md).
-> Pomiary: [`POMIARY.md` §15](../POMIARY.md). Błędy z drogi: RUNBOOK [#110–#124](../RUNBOOK.md#110).
+> Pomiary: [`POMIARY.md` §15](../POMIARY.md). Błędy z drogi: RUNBOOK [#110–#126](../RUNBOOK.md#110).
 > Nie wdrożone na k3s/VPS (brak serwera, patrz [otwarte sprawy](#otwarte-sprawy)).
 
 ---
@@ -160,6 +160,13 @@ na nowy indeks wszystkie zapisy z czasu kopiowania trafiłyby do starego. Dlateg
    (idempotentnie, nigdy nie przesuwa istniejących aliasów).
 2. Dopiero potem restart konsumenta z nową nazwą aliasu.
 
+Deploy robi krok 1 **przy każdym wdrożeniu** (`tools/vps/deploy.sh`, job `deploy/k8s/jobs/migrate.yaml`), przed
+podmianą konsumenta. Wcześniej oba skrypty wołały `search:index:create` tylko wtedy, gdy nie było `products-search`,
+czyli istniejący klaster nigdy nie dostałby `products-write` (przegląd końcowy, I2). Żeby bezwarunkowe wywołanie było
+bezpieczne, komenda bez jawnego `--index-version` (i bez `--force`) przy istniejącym aliasie **nie tworzy indeksu**,
+tylko dopina brakujący alias. Inaczej na klastrze z `products-v1` zostawiłaby osierocony `products-v2`, a następne
+`prepare` (v1 → v2) odmówiłoby na „obcym” celu o tej nazwie.
+
 Odwrotnie konsument przez chwilę pisałby do aliasu, którego nie ma. Hipoteza (nie sprawdzałem tego na żywo):
 ES przy `index` na nieistniejącą nazwę utworzyłby **indeks** `products-write` z dynamicznym mapowaniem, a nie alias
 (klaster nie ma `action.auto_create_index: false`, a rola `search_service` ma `all` na `products-*`), i kolejne
@@ -182,7 +189,7 @@ w `IndexMigration`. Kroki (vN = obecny indeks, vN+1 = nowy):
 | # | Krok | Co robi |
 |---|---|---|
 | 0 | `ndcg vN` | `search:eval --index=vN` — punkt odniesienia dla bramki, **przed** zamrożeniem vN ([#113](../RUNBOOK.md#113)) |
-| 1 | `prepare` | oba aliasy na tym samym indeksie, klaster nie czerwony, plik `products-vN+1.json` istnieje; tworzy vN+1 z `number_of_replicas: 0`, `refresh_interval: -1`, `gc_deletes: 1h` |
+| 1 | `prepare` | oba aliasy na tym samym indeksie, klaster nie czerwony, plik `products-vN+1.json` istnieje, na vN nie trwa `_update_by_query`; tworzy vN+1 z `number_of_replicas: 0`, `refresh_interval: -1`, `gc_deletes: 1h` |
 | 2 | `switch-write` | zapisuje `switch_write_at` w `_meta`, potem atomowo przepina `products-write` na vN+1. Od teraz strumień pisze tylko do nowego indeksu |
 | 3 | `reindex --wait` / `backfill` | droga A: `_reindex` z `dest.version_type: external`, `conflicts: proceed`, jako zadanie śledzone w Tasks API. Droga B: `search:index:backfill` |
 | 4 | `finalize` | sprawdza, że wypełnienie się udało (zadanie `completed`, bez `failures`, nie anulowane; albo backfill z 0 błędów), przywraca repliki i `refresh_interval`, czeka na zielony |
@@ -339,6 +346,13 @@ dokończyć, bo krok ginął po godzinie ([#112](../RUNBOOK.md#112)). Poprawka:
 
 Pełny backfill 298 682 produktów do jednorazowego indeksu: **112 s, 2 667 dok./s, ~72× szybciej**.
 
+**Pieczęć backfillu** (`fill_method: backfill`, `backfill_completed_at`, liczniki w `_meta.migration`) dostaje tylko
+cel migracji **w toku**: cel `products-write`, gdy `products-search` wskazuje jeszcze jego `_meta.migration.source`.
+Pierwsza wersja pieczętowała każdy indeks z `_meta.migration`, a ten ma też żywy vN+1 po udanej migracji. Od drugiej
+migracji pełny backfill do `products-write` w spoczynku nadpisywał więc pieczęć zakończonej migracji (przegląd
+końcowy). Backfill do przygotowanego celu przed `switch-write` też nie pieczętuje: zapisy strumienia sprzed przepięcia
+by go ominęły, a `finalize` i tak wymaga `switch-write`.
+
 `slices` nie zmierzyłem sensownie: indeks ma jeden shard, a `slices=auto` dzieli według liczby shardów, więc daje
 jeden wątek. To zostaje na ETAP 8 (więcej shardów).
 
@@ -367,6 +381,9 @@ z wersjami zewnętrznymi niczego nie nadpisze starszą wersją), brakowało go w
 
 - oba aliasy na tym samym indeksie → `fresh` (zwykły przebieg),
 - `_meta.migration.source` celu zapisu = indeks odczytu → `resume` (pomija prepare i switch-write),
+- oba aliasy na vN+1, ale `switch_read_started_at` bez `switched_read_at` (proces padł po przepięciu odczytu,
+  przed krokami po nim) → odmowa z podpowiedzią „uruchom `search:index:migrate switch-read`, żeby dokończyć”.
+  Wcześniej skrypt brał to za spoczynek i startował vN+2 (przegląd końcowy, [#126](../RUNBOOK.md#126)),
 - wszystko inne (obce źródło, brak `_meta`, błąd ES) → odmowa z powodem.
 
 Wznowienie trwało 62 s: `reindex created=268209 version_conflicts=30748 total=298957`. Zmierzone są tylko sumy
@@ -427,7 +444,12 @@ bramka 298 003 = 298 003, `rating_avg >= 4.7` 11 671 = baza. Wariant z `_reindex
   (na żywo 7 i 26 wiadomości). To założenie, nie sprawdzenie: przy wielominutowym zatorze podnieś `margin=`.
 - **Zapisy bez outboxu.** Nadrabiane jest tylko to, co jest w outboxie. Ręczny `_update_by_query` albo ręczny reproject
   do `products-write` w oknie migracji nie wrócą. Dlatego `search:seller:rename` w trakcie migracji **odmawia**
-  (krok 10), a `make seller-rename` sprawdza to (`--check-only`), zanim zmieni bazę.
+  (krok 10), a `make seller-rename` sprawdza to (`--check-only`), zanim zmieni bazę. Działa to też w drugą stronę:
+  `prepare`, `switch-write` i `reindex` odmawiają, gdy na vN (albo na którymś z aliasów) trwa `_update_by_query`.
+  Inaczej zapisy zmiany nazwy po `switch-write` trafiałyby tylko do zamrożonego vN, a bramka i `verify-convergence`
+  by tego nie zobaczyły ([#125](../RUNBOOK.md#125)). Między `--check-only` a zmianą w ES wciąż jest okno: jeśli migracja
+  zacznie się akurat wtedy, ES odmówi, a baza zostanie już zmieniona. Naprawa: po `switch-read` powtórz
+  `make seller-rename` z tą samą nazwą (zapytanie dopasowuje tylko dokumenty ze starą nazwą).
 
 ### Powrót po zakończonej migracji
 
@@ -464,6 +486,11 @@ Na żywo (Megasklep, 98 102 dokumenty):
 | powrót bez dławienia `rps=-1` | 98 102 w 15 s (~6 500 dok./s) |
 
 Liczby czytane tuż po końcu zadania potrafią się spóźnić o ~1 s (`refresh_interval`); czytaj drugi raz.
+
+**Konflikty wersji.** Przy `conflicts: proceed` dokument zmieniony między odczytem scrolla a zapisem (np. przez
+strumień) jest pomijany i zostaje ze starą nazwą. Komenda kończy się wtedy kodem 0 (nic nie jest zepsute), ale
+wypisuje ostrzeżenie „… dokumentów pominiętych przez konflikt wersji — uruchom ponownie to samo polecenie”. Test:
+dokument zmieniony w przerwie między paczkami daje `updated=1499 version_conflicts=1`, a powtórka `updated=1`.
 
 **Wersje.** `_update_by_query` podbija wersję dokumentu **wewnętrznie** o 1. Przy wersjach zewnętrznych w mikrosekundach
 to nie psuje kolejności: test (`SellerRenameIndexCommandTest`) pokazuje wersję V → V+1, potem zdarzenie strumienia
@@ -572,6 +599,8 @@ Specyfikacja ma przy §8.1 notę „Zmiana w trakcie realizacji” z tą listą.
 | `echo tak \| make reindex-cleanup` nie usuwa | [#122](../RUNBOOK.md#122) |
 | `Allowed memory size of 134217728 bytes exhausted` przy 300 tys. | [#123](../RUNBOOK.md#123) |
 | przerwany `make churn` dalej pisze | [#124](../RUNBOOK.md#124) |
+| (przegląd końcowy) migracja startuje w trakcie `_update_by_query` zmiany nazwy | [#125](../RUNBOOK.md#125) |
+| (przegląd końcowy) padnięty `switch-read`: `abort` odmawia, `run` brał to za spoczynek | [#126](../RUNBOOK.md#126) |
 
 Wspólny wzór: prawie każdy z tych błędów był niewidoczny przy 1500 produktach i krótkich krokach. Ujawniła je dopiero
 skala (300 tys.), czas (krok dłuższy niż godzina życia konsumenta) i ruch w tle (churn). Najdroższy był #115: projekt,
@@ -586,8 +615,9 @@ awaryjnej policz, z czym rośnie jej koszt, zanim ją napiszesz.
   powierzchnię enumeracji i obciążenia**. Planowana poprawka w osobnym zadaniu: middleware ze wspólnym sekretem na
   grupie `internal` i blokada `/api/internal` w publicznym bloku Caddy.
 - **k3s/VPS nie są zaktualizowane** (brak serwera). Przy następnym wdrożeniu: `cancel_task` w roli `search_service`
-  (`deploy/k8s/es-roles.yml`, [#120](../RUNBOOK.md#120)), dopięcie `products-write` przed nowym konsumentem (krok 3),
-  `cancel_task` i MinIO/SLM według potrzeb produkcji.
+  (`deploy/k8s/es-roles.yml`, [#120](../RUNBOOK.md#120)) i MinIO/SLM według potrzeb produkcji. Dopięcie
+  `products-write` przed nowym konsumentem (krok 3) deploy robi już sam (`search:index:create` przy każdym wdrożeniu),
+  ale nie było to uruchomione na serwerze.
 - **Margines abortu to założenie.** Skrypt pokazuje głębokość kolejki, ale nie mierzy opóźnienia najstarszej wiadomości.
 - **Kursor PIT z `/api/search`** jest przypięty do fizycznego indeksu: otwarty przed `switch-read` działa dalej na
   starym, dopóki ten istnieje. Po `reindex-cleanup` stare kursory przestaną działać. Nie sprawdzone na żywo.
@@ -614,7 +644,7 @@ make es-slm-run
 bash tools/es/test.sh                                # testy skryptów bez klastra
 ```
 
-Gdy coś poszło nie tak: [RUNBOOK #110–#124](../RUNBOOK.md#110).
+Gdy coś poszło nie tak: [RUNBOOK #110–#126](../RUNBOOK.md#110).
 
 ## Co dalej / zadania domowe
 

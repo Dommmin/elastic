@@ -301,7 +301,7 @@ bez jednej pustej odpowiedzi; `_update_by_query` na 98 tys. dokumentów z `_reth
 i wznowieniem; snapshot/restore na `fs` i MinIO, drill „skasowałem indeks” na kopii, SLM.
 Przewodnik: [`blog/etap-10-operacje-na-indeksach.md`](blog/etap-10-operacje-na-indeksach.md),
 spec: [`superpowers/specs/2026-11-19-etap-10-operacje-na-indeksach-design.md`](superpowers/specs/2026-11-19-etap-10-operacje-na-indeksach-design.md),
-RUNBOOK #110–#124, pomiary w [POMIARY §15](POMIARY.md). Nie wdrożone na k3s/VPS (brak serwera;
+RUNBOOK #110–#126, pomiary w [POMIARY §15](POMIARY.md). Nie wdrożone na k3s/VPS (brak serwera;
 przy wdrożeniu: `cancel_task` w roli `search_service`, alias `products-write` przed nowym konsumentem).
 
 ### ETAP 11 — Tor observability (3–4 dni) → **moduł 10a**

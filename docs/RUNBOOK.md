@@ -125,6 +125,8 @@
 | [122](#122) | `echo tak \| make reindex-cleanup` nie usuwa: `exec -T` zjada stdin | narzędzia | 10 |
 | [123](#123) | `Allowed memory size of 134217728 bytes exhausted` przy 300 tys. | PHP | 10 |
 | [124](#124) | Przerwany `make churn` dalej pisze: zabity klient `exec`, nie proces | Docker | 10 |
+| [125](#125) | Migracja startuje w trakcie `_update_by_query` (zmiana nazwy sprzedawcy): vN+1 zostaje ze starą nazwą | Elasticsearch / narzędzia | 10 |
+| [126](#126) | Padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek | narzędzia | 10 |
 
 ---
 
@@ -5071,6 +5073,7 @@ przywrócony indeks jest niespójny, czyli łamie anty-cel „żadnego wskrzeszo
   przepięcia, które czekało w kolejce, trafiło już tylko do vN+1. Abort wypisuje głębokość kolejki; przy zatorze podnieś `margin=`.
 - **Zapisy bez outboxu** w oknie (ręczny `_update_by_query`, ręczny reproject do `products-write`) nie wrócą: powtórz je po abort.
   `search:seller:rename` w trakcie migracji odmawia, a `make seller-rename` sprawdza to (`--check-only`) przed zmianą bazy.
+  W drugą stronę: migracja nie startuje w trakcie `_update_by_query`; naprawa po fakcie to powtórka zmiany nazwy ([#125](#125)).
 
 **Powrót po zakończonej migracji (po `switch-read`, vN jeszcze nieusunięty)** — `make reindex-abort` odmawia, procedura ręczna,
 **nieprzećwiczona na żywo**:
@@ -5328,6 +5331,77 @@ na tyle, ile potrzebujesz, zamiast przerywać.
 **Czego się nauczyłem**
 Zabicie klienta `exec` nie jest zabiciem procesu. Przy każdym przerwaniu sprawdź, czy proces w kontenerze naprawdę się skończył,
 zanim policzysz wynik pomiaru.
+
+---
+
+<a id="125"></a>
+## 125 — migracja startuje w trakcie `_update_by_query`: vN+1 zostaje ze starą nazwą sprzedawcy
+
+> ETAP 10, przegląd końcowy gałęzi (2026-11-20). Objaw z analizy kodu, nie z żywego przebiegu; odmowa sprawdzona testem.
+
+**Objaw**
+Po `make reindex` część dokumentów w nowym indeksie ma starą nazwę sprzedawcy, choć `make seller-rename` zakończył się
+sukcesem. Bramka przechodzi, `search:verify-convergence` nic nie widzi (zmiana nazwy nie ma zdarzeń w outboxie).
+
+**Diagnoza**
+```bash
+make es-tasks                                         # czy w trakcie migracji trwało update-by-query
+curl …/_tasks?actions=indices:data/write/update/byquery&detailed=true
+```
+Opis zadania wymienia indeksy tak, jak podano je w żądaniu: `update-by-query [products-write] …`.
+
+**Przyczyna**
+`search:seller:rename` odmawia, gdy migracja już trwa, ale nic nie broniło kolejności odwrotnej. `_update_by_query`
+zaczęty na vN pisze dalej do vN po `switch-write`, a te zapisy nie trafią do vN+1. `_reindex` mógł już skopiować dokument
+sprzed zmiany. Do tego `make seller-rename` to trzy kroki: `--check-only`, zmiana w bazie catalogu, `_update_by_query`.
+Migracja zaczęta między pierwszym a trzecim zostawia bazę zmienioną, a ES z odmową.
+
+**Naprawa**
+- Kod: `prepare`, `switch-write` i `reindex` odmawiają, gdy trwa `_update_by_query` na vN albo na którymś z aliasów
+  (`IndexMigration::refuseWhileUpdateByQueryRuns`, test `test_prepare_i_switch_write_odmawiaja_gdy_trwa_update_by_query_na_vn`).
+  Poczekaj na koniec zadania (`make es-tasks`) albo je anuluj (`make es-cancel task=…`) i powtórz krok.
+- Jeśli to już się stało (albo ES odmówił po zmianie w bazie): po `switch-read` powtórz `make seller-rename id=… name="…"`
+  z tą samą nazwą. Zapytanie dopasowuje tylko oferty tego sprzedawcy, które mają jeszcze inną nazwę, więc poprawi tylko
+  pominięte dokumenty. Komenda w bazie catalogu jest idempotentna.
+
+**Czego się nauczyłem**
+Blokada „A nie startuje w trakcie B” musi działać w obie strony. Jeśli zapis omija dziennik zmian, każda procedura, która
+na tym dzienniku polega (nadrabianie, weryfikacja), musi przed startem sprawdzić, czy taki zapis właśnie nie trwa.
+
+---
+
+<a id="126"></a>
+## 126 — padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek
+
+> ETAP 10, przegląd końcowy gałęzi (2026-11-20). Objaw z analizy kodu; odmowy sprawdzone testami.
+
+**Objaw**
+Jedno z dwóch, gdy proces `switch-read` zginął (kill, restart kontenera):
+- `make reindex-abort` / `search:index:migrate abort`: „switch-read na products-vN+1 już się zaczął (…) — abort odmawia”;
+- (przed poprawką) ponowne `make reindex` przy obu aliasach na vN+1 ruszało od razu z migracją do vN+2.
+
+**Diagnoza**
+```bash
+curl …/_alias/products-search,products-write
+curl …/products-vN+1/_mapping        # _meta.migration: switch_read_started_at jest, switched_read_at brak
+```
+Odczyt jeszcze na vN = proces padł przed przepięciem. Oba aliasy na vN+1 = po przepięciu, przed krokami po nim
+(`gc_deletes` z powrotem domyślne, `switched_read_at`).
+
+**Przyczyna**
+`switch_read_started_at` trafia do `_meta` **przed** przepięciem odczytu, żeby abort nie cofnął migracji, której odczyt
+mógł już zostać przepięty. Skrypt `run` przy obu aliasach na jednym indeksie nie czytał `_meta`, więc stan po przepięciu,
+ale przed `completeReadSwitch`, wyglądał jak spoczynek. vN+2 wystartowałaby wtedy z vN+1 z `gc_deletes: 1h` i bez znacznika końca.
+
+**Naprawa**
+W obu stanach to samo: `docker compose exec search-consumer php bin/console search:index:migrate switch-read`.
+Przed przepięciem liczy bramkę od nowa i przepina, a po przepięciu tylko kończy kroki po nim. `resume_decision` w
+`tools/es/lib.sh` czyta teraz `_meta` celu zapisu także przy obu aliasach na jednym indeksie i odmawia z tą podpowiedzią
+(test offline w `tools/es/test.sh`). Komunikat `abort` też wskazuje `switch-read`.
+
+**Czego się nauczyłem**
+Znacznik „zacząłem” bez znacznika „skończyłem” to osobny stan, a nie wariant spoczynku. Orkiestrator musi go rozpoznać
+i wskazać jedyny krok, który z niego wychodzi.
 
 ---
 
