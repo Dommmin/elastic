@@ -119,7 +119,15 @@ sc() { ${DC} exec -T search-consumer php bin/console "$@"; }
 # restart: unless-stopped), a razem z nim ginie każde `exec` (kod 137 — Task 12,
 # abort zabity po 40 min). `run --rm --no-deps` ma ten sam obraz, env i wolumen,
 # ale własny cykl życia; --no-deps: nie budzi zależności, stos już działa.
-scr() { ${DC} run --rm --no-deps -T search-consumer php bin/console "$@"; }
+# </dev/null: run czyta stdin i zjadłby dane podane skryptowi potokiem (jak w 1b7df42).
+scr() { ${DC} run --rm --no-deps -T search-consumer php bin/console "$@" </dev/null; }
+
+# sync_queue_depth — liczba wiadomości w search.product.sync (tylko odczyt:
+# rabbitmqctl list_queues; nigdy „get” przez narzędzie admina — domyślnie konsumuje).
+sync_queue_depth() {
+  ${DC} exec -T rabbitmq rabbitmqctl list_queues -q name messages </dev/null 2>/dev/null \
+    | awk '$1 == "search.product.sync" { print $2 }'
+}
 
 # es METODA ŚCIEŻKA [JSON] — wywołanie ES z danymi dostępowymi z kontenera
 es() {

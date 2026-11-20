@@ -159,8 +159,8 @@ grep -q 'resume=1' tools/es/reindex.sh && ok "run wznawia migrację w toku (read
 # --- Task 12b: długie kroki przez `compose run`, abort ograniczony do okna ---
 # `docker compose exec` ginie (137) przy godzinnym restarcie search-consumer
 # (--time-limit=3600); `compose run --rm --no-deps` to osobny kontener.
-grep -qE '^scr\(\) \{ \$\{DC\} run --rm --no-deps -T search-consumer php bin/console "\$@"; \}' tools/es/lib.sh \
-  && ok "lib: scr = compose run --rm --no-deps -T search-consumer" || bad "lib: brak scr (compose run --rm --no-deps)"
+grep -qE '^scr\(\) \{ \$\{DC\} run --rm --no-deps -T search-consumer php bin/console "\$@" </dev/null; \}' tools/es/lib.sh \
+  && ok "lib: scr = compose run --rm --no-deps -T search-consumer, stdin z /dev/null" || bad "lib: brak scr (compose run --rm --no-deps … </dev/null)"
 for pat in 'step reindex scr search:index:migrate reindex --wait' 'step backfill scr search:index:backfill' \
            'step finalize scr search:index:migrate finalize' 'step gate scr search:index:gate' 'step switch-read scr search:index:migrate switch-read'; do
   grep -qF "${pat}" tools/es/reindex.sh && ok "run: ${pat%% search:*} … przez compose run" || bad "run: brak '${pat}'"
@@ -187,9 +187,11 @@ printf '%s\n' "$*" >>"${STUB_LOG}"
 case "$*" in
   *"sh -c"*" GET /_alias/products-write"*) echo "{\"${STUB_WRITE}\":{\"aliases\":{\"products-write\":{}}}}" ;;
   *"sh -c"*" GET /_alias/products-search"*) echo "{\"${STUB_WRITE}\":{\"aliases\":{\"products-search\":{}}}}" ;;
+  *"sh -c"*" GET /products-v9/_mapping"*) echo '{"products-v9":{"mappings":{"_meta":{}}}}' ;;
   *"sh -c"*" GET /products-v3/_mapping"*) echo '{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_write_at":"2026-11-20T00:40:06+00:00"}}}}}' ;;
   *"sh -c"*" GET /_tasks"*) echo '{"nodes":{}}' ;;
   *"search:index:migrate abort"*) echo 'REPROJECT_NEEDED_SINCE=2026-11-20T00:40:06+00:00' ;;
+  *"rabbitmq rabbitmqctl list_queues"*) printf 'search.product.sync.dlq\t2\nsearch.product.sync\t4321\n' ;;
   *) echo "ok" ;;
 esac
 STUB
@@ -199,6 +201,9 @@ eq "abort (stub): kod 0" "${rc}" "0"
 grep -qF 'run --rm --no-deps -T search-consumer php bin/console search:index:backfill --index=products-write --since=2026-11-20T00:35:06+00:00' "${stub_dir}/log" \
   && ok "abort: nadrabia --since=switch_write_at − 300 s przez compose run" || bad "abort: brak backfill --since z marginesem 300 s: $(cat "${stub_dir}/log")"
 grep -q 'search:index:migrate abort' "${stub_dir}/log" && ok "abort: woła migrate abort" || bad "abort: nie wołał migrate abort"
+grep -q 'kolejka search.product.sync: 4321' "${stub_dir}/out" && ok "abort: pokazuje głębokość kolejki (podpowiedź do margin=)" || bad "abort: brak głębokości kolejki: $(cat "${stub_dir}/out")"
+grep -q 'rabbitmqadmin' tools/es/reindex.sh tools/es/lib.sh && bad "rabbitmqadmin get konsumuje wiadomości — tylko rabbitmqctl list_queues" || ok "kolejka czytana bez konsumowania (rabbitmqctl list_queues)"
+grep -q 'bez outboxu' "${stub_dir}/out" && ok "abort: ostrzega, że zapisy bez outboxu (np. ręczny _update_by_query) nie są nadrabiane" || bad "abort: brak ostrzeżenia o zapisach bez outboxu"
 grep -E 'search:index:backfill' "${stub_dir}/log" | grep -qv -- '--since=' && bad "abort: pełny backfill bez --since" || ok "abort: brak pełnego backfillu"
 : >"${stub_dir}/log"
 STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort --margin=60 >"${stub_dir}/out" 2>&1
@@ -213,6 +218,12 @@ STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools
   && bad "abort --from: przeszedł, choć porzucony indeks jest pod aliasem" || ok "abort --from odmawia indeksu pod aliasem"
 STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort --margin=x >/dev/null 2>&1 \
   && bad "abort --margin=x przeszedł" || ok "abort odrzuca nieliczbowy margines"
+# brak switch_write_at w _meta porzuconego indeksu = odmowa PRZED cancel/abort (aliasy nietknięte)
+: >"${stub_dir}/log"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v9 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort >/dev/null 2>&1 \
+  && bad "abort bez switch_write_at przeszedł" || ok "abort bez switch_write_at odmawia"
+grep -q 'search:index:migrate abort' "${stub_dir}/log" && bad "abort bez switch_write_at przepiął aliasy" || ok "abort bez switch_write_at nie rusza aliasów"
+grep -q 'REPROJECT_NEEDED_SINCE' tools/es/reindex.sh && bad "reindex.sh: martwy fallback REPROJECT_NEEDED_SINCE" || ok "reindex.sh: okno tylko z _meta (bez martwego fallbacku)"
 rm -rf "${stub_dir}"
 grep -qE '^reindex-abort:.*' Makefile && grep -A2 -E '^reindex-abort:' Makefile | grep -q -- '--margin=$(or $(margin),300)' \
   && ok "Makefile: reindex-abort margin= (domyślnie 300)" || bad "Makefile: reindex-abort bez margin="

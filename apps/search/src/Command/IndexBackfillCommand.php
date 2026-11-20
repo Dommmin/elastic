@@ -173,7 +173,7 @@ final class IndexBackfillCommand extends Command
         try {
             $batch = $this->catalogClient->fetchProjections($ids);
             $result = $indexer->bulkSync($batch['items'], $batch['missing'], $batch['projected_at_us']);
-        } catch (ProjectionUnavailableException|ClientResponseException|ServerResponseException $e) {
+        } catch (ProjectionUnavailableException|ClientResponseException|ServerResponseException|\UnexpectedValueException $e) {
             $before = $counts['errors'];
             $counts['errors'] += \count($ids);
             if ($before < self::MAX_REPORTED_ERRORS) {

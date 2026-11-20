@@ -118,7 +118,8 @@ class ElasticsearchIndexer
      * 404 przy delete = not_found (ES i tak zostawia tombstone z tą wersją,
      * więc spóźniona starsza projekcja nie wskrzesi produktu — Task 5),
      * każdy inny błąd pozycji = errors (pierwsze MAX_ERROR_SAMPLES powodów
-     * w `error_samples`). Błąd całego żądania (sieć, 5xx) leci wyjątkiem.
+     * w `error_samples`). Błąd całego żądania (sieć, 5xx) leci wyjątkiem,
+     * odpowiedź z inną liczbą pozycji niż akcji — UnexpectedValueException.
      *
      * @param list<array<string, mixed>> $items   projekcje z catalogu
      * @param list<int>                  $missing ID bez produktu w catalogu
@@ -144,7 +145,15 @@ class ElasticsearchIndexer
 
         $response = $this->client->bulk(['body' => $body])->asArray();
 
-        foreach ($response['items'] ?? [] as $entry) {
+        // Każda akcja musi mieć swoją pozycję w odpowiedzi. Krótsza lista dałaby
+        // zaniżone liczniki z 0 błędów — backfill postawiłby pieczęć mimo braków.
+        $expected = \count($items) + \count($missing);
+        $entries = $response['items'] ?? null;
+        if (! \is_array($entries) || \count($entries) !== $expected) {
+            throw new \UnexpectedValueException(\sprintf('_bulk: wysłano %d akcji, odpowiedź ma %s pozycji.', $expected, \is_array($entries) ? \count($entries) : 'brak'));
+        }
+
+        foreach ($entries as $entry) {
             $action = array_key_first($entry);
             $item = $entry[$action];
             $status = (int) ($item['status'] ?? 0);

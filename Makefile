@@ -239,6 +239,7 @@ reproject: ## Przelicz wszystkie dokumenty products-search z projekcji (jednoraz
 .PHONY: seller-rename
 seller-rename: ## Zmiana nazwy sprzedawcy: baza + _update_by_query (make seller-rename id=1 name="Nowa" [rps=500])
 	@test -n "$(id)" -a -n "$(name)" || { echo 'użycie: make seller-rename id=<seller_id> name="<nowa nazwa>" [rps=500]'; exit 1; }
+	$(DC) exec search-consumer php bin/console search:seller:rename "$(id)" "$(name)" --check-only
 	$(DC) exec catalog-app php artisan marketplace:seller-rename "$(id)" "$(name)"
 	$(DC) exec search-consumer php bin/console search:seller:rename "$(id)" "$(name)" --rps=$(or $(rps),500)
 

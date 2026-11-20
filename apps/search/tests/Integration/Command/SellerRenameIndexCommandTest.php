@@ -4,6 +4,7 @@ namespace App\Tests\Integration\Command;
 
 use App\Command\SellerRenameIndexCommand;
 use App\Service\ElasticsearchIndexer;
+use App\Service\IndexAliases;
 use App\Service\IndexOutcome;
 use App\Service\SellerRenamer;
 use App\Service\TaskWaiter;
@@ -27,19 +28,63 @@ final class SellerRenameIndexCommandTest extends TestCase
 
     private Client $client;
     private string $index;
+    /** Drugi indeks — cel zapisu w scenariuszu „migracja w toku”. */
+    private string $other;
+    private string $read;
+    private string $write;
 
     protected function setUp(): void
     {
         $this->client = $this->elasticsearchOrSkip();
-        $this->index = 'products-seller-'.uniqid();
+        $id = uniqid();
+        $this->index = "products-seller-{$id}";
+        $this->other = "products-seller-{$id}-next";
+        $this->read = "products-seller-read-{$id}";
+        $this->write = "products-seller-write-{$id}";
         $this->client->indices()->create(['index' => $this->index, 'body' => $this->mappingBody(1)]);
     }
 
     protected function tearDown(): void
     {
         if (isset($this->index)) {
-            $this->client->indices()->delete(['index' => $this->index, 'ignore_unavailable' => true]);
+            $this->client->indices()->delete(['index' => $this->index.','.$this->other, 'ignore_unavailable' => true]);
         }
+    }
+
+    public function test_odmawia_w_trakcie_migracji_gdy_aliasy_wskazuja_rozne_indeksy(): void
+    {
+        $this->seed(10, sellerEvery: 1);
+        $this->client->indices()->create(['index' => $this->other, 'body' => $this->mappingBody(1)]);
+        $aliases = new IndexAliases($this->client, $this->read, $this->write);
+        $aliases->attach($this->read, $this->index);
+        $aliases->attach($this->write, $this->other);
+
+        foreach ([[], ['--check-only' => true]] as $options) {
+            $tester = $this->rename('Nowa Nazwa', $options);
+
+            self::assertSame(Command::FAILURE, $tester->getStatusCode());
+            $flat = preg_replace('/\s+/', ' ', $tester->getDisplay());
+            self::assertStringContainsString('trwa migracja', $flat);
+            self::assertStringContainsString('make reindex albo make reindex-abort', $flat);
+            self::assertStringNotContainsString('TASK=', $tester->getDisplay());
+        }
+        $this->client->indices()->refresh(['index' => $this->index]);
+        self::assertSame(10, $this->countSeller('Stara Nazwa'));
+    }
+
+    public function test_check_only_przechodzi_bez_migracji_i_niczego_nie_zmienia(): void
+    {
+        $this->seed(10, sellerEvery: 1);
+        $aliases = new IndexAliases($this->client, $this->read, $this->write);
+        $aliases->attach($this->read, $this->index);
+        $aliases->attach($this->write, $this->index);
+
+        $tester = $this->rename('Nowa Nazwa', ['--check-only' => true]);
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertStringNotContainsString('TASK=', $tester->getDisplay());
+        $this->client->indices()->refresh(['index' => $this->index]);
+        self::assertSame(10, $this->countSeller('Stara Nazwa'));
     }
 
     public function test_zmienia_tylko_oferty_sprzedawcy_a_powtorka_nic_nie_robi(): void
@@ -103,7 +148,7 @@ final class SellerRenameIndexCommandTest extends TestCase
         }
         self::assertSame(
             Command::FAILURE,
-            $this->tester()->execute(['seller_id' => 'abc', 'name' => 'X', '--index' => $this->index]),
+            $this->tester()->execute(['seller_id' => 'abc', 'name' => 'X', '--index' => $this->index, '--read-alias' => $this->read, '--write-alias' => $this->write]),
         );
         $this->client->indices()->refresh(['index' => $this->index]);
         self::assertSame(10, $this->countSeller('Stara Nazwa'));
@@ -113,14 +158,14 @@ final class SellerRenameIndexCommandTest extends TestCase
     private function rename(string $name, array $options = []): CommandTester
     {
         $tester = $this->tester();
-        $tester->execute(array_merge(['seller_id' => self::SELLER, 'name' => $name, '--index' => $this->index, '--rps' => '-1'], $options));
+        $tester->execute(array_merge(['seller_id' => self::SELLER, 'name' => $name, '--index' => $this->index, '--rps' => '-1', '--read-alias' => $this->read, '--write-alias' => $this->write], $options));
 
         return $tester;
     }
 
     private function tester(): CommandTester
     {
-        return new CommandTester(new SellerRenameIndexCommand(new SellerRenamer($this->client), new TaskWaiter($this->client, 0.1)));
+        return new CommandTester(new SellerRenameIndexCommand(new SellerRenamer($this->client), new TaskWaiter($this->client, 0.1), $this->client));
     }
 
     /** Co `$sellerEvery`-ty produkt ma ofertę sprzedawcy 42 („Stara Nazwa”) + ofertę sprzedawcy 7 („Inny”). */

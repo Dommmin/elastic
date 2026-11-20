@@ -144,12 +144,15 @@ cmd_abort() {
     write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
     [[ -n "${write}" ]] || die "alias ${WRITE_ALIAS} nie istnieje"
     abandoned="${write}"
+    # Okno z _meta celu zapisu, odczytane PRZED abortem: bez switch_write_at nie
+    # wiadomo, od kiedy nadrabiać — odmawiamy, zanim ruszymy aliasy (migrate abort
+    # i tak odmawia bez switch-write, więc jego wypis niczego tu nie dodaje).
     switched="$(es GET "/${write}/_mapping" | migration_switch_write_at)" || die "nie umiem odczytać _meta ${write}"
+    [[ -n "${switched}" ]] || die "${write} nie ma switch_write_at w _meta.migration — to nie migracja po switch-write, nic do cofnięcia"
     info "── 1/3 anulowanie _reindex do ${write} ──"
     cancel_reindex_into "${write}"
     info "── 2/3 search:index:migrate abort ──"
-    sc search:index:migrate abort | tee "${OUT_FILE}"
-    [[ -n "${switched}" ]] || switched="$(kv_get REPROJECT_NEEDED_SINCE <"${OUT_FILE}")"
+    sc search:index:migrate abort
   else
     abandoned="${from}"
     preflight_live "${from}" || die "${from} jest celem aliasu — to nie porzucony indeks; bez --from abort cofa migrację w toku"
@@ -160,6 +163,9 @@ cmd_abort() {
   since="$(since_minus "${switched}" "${margin}")" || die "zła data switch_write_at: ${switched}"
 
   info "── 3/3 nadrabianie ${WRITE_ALIAS}: produkty zmienione od ${since} (switch-write ${switched} − ${margin} s) ──"
+  info "   kolejka search.product.sync: $(sync_queue_depth || true) wiad. — duże opóźnienie kolejki przy switch-write = większy margin="
+  info "   UWAGA: nadrabiane są tylko zmiany z outboxu. Zapisy bez outboxu w oknie (ręczny _update_by_query, ręczny reproject"
+  info "   do ${WRITE_ALIAS}) nie wrócą do ${WRITE_ALIAS} — powtórz je po abort. search:seller:rename w trakcie migracji odmawia."
   scr search:index:backfill "--index=${WRITE_ALIAS}" "--since=${since}" \
     || die "nadrabianie nie przeszło — ponów: make reindex-abort from=${abandoned} margin=${margin}"
   info "Gotowe. ${abandoned} zostaje do diagnostyki (usunie go make reindex-cleanup)."
