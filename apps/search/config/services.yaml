@@ -7,6 +7,8 @@
 # Put parameters here that don't need to change on each machine where the app is deployed
 # https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
 parameters:
+    # Domyślna wartość dla %env(INTERNAL_API_TOKEN)% (patrz bind $internalApiToken).
+    env(INTERNAL_API_TOKEN): ''
 
 services:
     # default configuration for services in *this* file
@@ -22,6 +24,9 @@ services:
         # trzeba je jawnie zbindować z env.
         bind:
             $baseUrl: '%env(CATALOG_INTERNAL_BASE_URL)%'
+            # Wspólny sekret /api/internal/* (X-Internal-Token). Domyślnie pusty
+            # (parametr env() wyżej), żeby testy i cache:clear nie wymagały zmiennej.
+            $internalApiToken: '%env(INTERNAL_API_TOKEN)%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

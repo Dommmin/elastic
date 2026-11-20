@@ -54,6 +54,12 @@ return [
         'password' => env('ELASTICSEARCH_PASSWORD'),
     ],
 
+    // Wspólny sekret dla /api/internal/* (search-service -> catalog), nagłówek
+    // X-Internal-Token. Pusty = endpointy odpowiadają 503 (RequireInternalToken).
+    'internal_api' => [
+        'token' => env('INTERNAL_API_TOKEN'),
+    ],
+
     // Symulowana bramka płatności (app/FakePaymentGateway, spec §6).
     // `webhook_url` w Compose wskazuje wewnętrzny adres catalog-app w sieci
     // `marketplace` (bez TLS), a nie publiczną nazwę przeglądarkową.

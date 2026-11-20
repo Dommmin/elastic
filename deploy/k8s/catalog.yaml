@@ -124,6 +124,11 @@ spec:
             # optional: bez klucza w Secrecie kontroler odrzuca webhooki (500) — RUNBOOK #085.
             - name: FAKE_GATEWAY_WEBHOOK_SECRET
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: FAKE_GATEWAY_WEBHOOK_SECRET, optional: true } }
+            # Wspólny sekret /api/internal/* (X-Internal-Token): catalog-app sprawdza,
+            # search-consumer wysyła. Bez optional: brak klucza = pod nie wstaje, zamiast
+            # po cichu odpowiadać 503 na każdą projekcję (RUNBOOK #127).
+            - name: INTERNAL_API_TOKEN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: INTERNAL_API_TOKEN } }
             - name: APP_KEY
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: CATALOG_APP_KEY } }
             - name: DB_DATABASE

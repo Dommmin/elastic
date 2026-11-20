@@ -406,6 +406,10 @@ services:
       FAKE_GATEWAY_WEBHOOK_URL: ${FAKE_GATEWAY_WEBHOOK_URL:-http://catalog-app/webhooks/payments}
       FAKE_GATEWAY_WEBHOOK_DELAY_SECONDS: ${FAKE_GATEWAY_WEBHOOK_DELAY_SECONDS:-2}
       FAKE_GATEWAY_FAIL_FIRST_REFUND: ${FAKE_GATEWAY_FAIL_FIRST_REFUND:-false}
+      # Wspólny sekret /api/internal/* (X-Internal-Token): catalog sprawdza,
+      # search-consumer wysyła. Ta sama wartość w obu serwisach. Domyślna tylko
+      # dla dev; compose.prod.yaml wymaga jawnej (RUNBOOK #127).
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-only-internal-api-token}
     volumes:
       - ./apps/catalog:/app
       - caddy-data:/data
@@ -676,6 +680,8 @@ services:
       # przy bloku "catalog-app:80" (SNI nie pasowałby do certyfikatu
       # wystawionego dla catalog.localhost).
       CATALOG_INTERNAL_BASE_URL: http://catalog-app
+      # Wspólny sekret /api/internal/* — ta sama wartość co w catalog-app.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-only-internal-api-token}
     volumes:
       - ./apps/search:/app
       # search-consumer widzi TYLKO ./apps/search jako /app — infra/ w repo

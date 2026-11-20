@@ -79,6 +79,7 @@ ES_SEARCHSVC_PASSWORD="$(keep $M ES_SEARCHSVC_PASSWORD "$(rand)")"
 CATALOG_APP_KEY="$(keep $M CATALOG_APP_KEY "base64:$(openssl rand -base64 32)")"
 SEARCH_APP_SECRET="$(keep $M SEARCH_APP_SECRET "$(rand)")"
 FAKE_GATEWAY_WEBHOOK_SECRET="$(keep $M FAKE_GATEWAY_WEBHOOK_SECRET "$(rand)")"
+INTERNAL_API_TOKEN="$(keep $M INTERNAL_API_TOKEN "$(rand)")"
 ELASTIC_PASSWORD="$(keep marketplace-es-elastic-user elastic "$(rand)")"
 # Hasło użytkownika `marketplace` na nowym klastrze RabbitMQ (rabbitmq-ha).
 HA_PASSWORD="$(keep rabbitmq-ha-marketplace-user password "$(rand)")"
@@ -95,6 +96,7 @@ apply_secret $M \
   CATALOG_APP_KEY="$CATALOG_APP_KEY" \
   SEARCH_APP_SECRET="$SEARCH_APP_SECRET" \
   FAKE_GATEWAY_WEBHOOK_SECRET="$FAKE_GATEWAY_WEBHOOK_SECRET" \
+  INTERNAL_API_TOKEN="$INTERNAL_API_TOKEN" \
   DATABASE_URL="postgresql://searchsvc:${SEARCHSVC_DB_PASSWORD}@postgres:5432/searchsvc?serverVersion=18.4&charset=utf8" \
   MESSENGER_TRANSPORT_DSN="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   MESSENGER_TRANSPORT_DSN_HA="amqp://${RABBITMQ_USER}:${HA_PASSWORD}@rabbitmq-ha:5672/%2f"

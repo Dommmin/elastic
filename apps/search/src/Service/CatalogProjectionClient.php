@@ -29,11 +29,21 @@ class CatalogProjectionClient
         private readonly string $baseUrl,
         private readonly TraceContext $trace,
         ?HttpClientInterface $client = null,
+        string $internalApiToken = '',
     ) {
         // Timeout 3 s stosujemy ZAWSZE, także do klienta wstrzykniętego przez
         // kontener (autowiring podstawia domyślny klient frameworka z timeoutem
         // ~60 s) — inaczej wolny catalog blokowałby workera na minutę.
-        $this->client = ($client ?? HttpClient::create())->withOptions(['timeout' => 3.0]);
+        //
+        // Wspólny sekret /api/internal/* (catalog: RequireInternalToken) jako
+        // nagłówek domyślny — trafia do każdego żądania, pojedynczego i wsadowego.
+        // Pusty token = brak nagłówka; catalog odpowie wtedy 401/503, a klient
+        // zgłosi ProjectionUnavailableException (głośno, z ponowieniem).
+        $options = ['timeout' => 3.0];
+        if ($internalApiToken !== '') {
+            $options['headers'] = ['X-Internal-Token' => $internalApiToken];
+        }
+        $this->client = ($client ?? HttpClient::create())->withOptions($options);
     }
 
     /**

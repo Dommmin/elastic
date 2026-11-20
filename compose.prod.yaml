@@ -110,6 +110,8 @@ services:
       # tunelem SSH (docs/08-PLAN-ETAP-D-VPS.md, Task 9).
       SERVER_NAME: ":80"
       APP_ENV: production
+      # Bez domyślnej z compose.yaml: na serwerze sekret musi być w .env (RUNBOOK #127).
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?ustaw INTERNAL_API_TOKEN w .env}
       APP_DEBUG: "false"
       APP_KEY: ${CATALOG_APP_KEY:?}
       # Adres widziany w przeglądarce przez tunel SSH (make vps-tunnel):
@@ -183,6 +185,7 @@ services:
       SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
       APP_ENV: prod
       APP_SECRET: ${SEARCH_APP_SECRET:?}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?ustaw INTERNAL_API_TOKEN w .env}
       MAILER_DSN: null://null
       DEFAULT_URI: http://localhost
     volumes: !reset []

@@ -64,6 +64,9 @@ spec:
               valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
             - name: ELASTICSEARCH_PASSWORD
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+            # Wspólny sekret /api/internal/* — wysyłany w X-Internal-Token (RUNBOOK #127).
+            - name: INTERNAL_API_TOKEN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: INTERNAL_API_TOKEN } }
           livenessProbe:
             exec:
               command: ["sh", "-c", "pgrep -f messenger:consume"]
