@@ -60,11 +60,22 @@ es() {
     "$@" </dev/null
 }
 
+# with_timeout SEKUNDY POLECENIE… — uruchamia polecenie we własnej grupie procesów i po czasie
+# zabija całą grupę (docker → wtyczka compose trzymająca potok). macOS nie ma `timeout`.
+with_timeout() {
+  perl -e '$t = shift; $p = fork // die; if (!$p) { setpgrp(0, 0); exec @ARGV or die }
+           $SIG{ALRM} = sub { kill "KILL", -$p }; alarm $t; waitpid $p, 0; exit($? & 127 ? 124 : $? >> 8)' "$@"
+}
+
 # queue_busy — zwraca 0, gdy w kolejce ingestu są wiadomości (ready lub unacked).
 # Tylko odczyt (rabbitmqctl list_queues); nigdy „get" — konsumuje.
+# Limit czasu po stronie hosta (with_timeout; busybox `timeout` w kontenerze zabija tylko
+# wrapper sh, nie escript): rabbitmqctl potrafi zawisnąć (Task 12:
+# 24 min bez odpowiedzi, a DRAIN_TIMEOUT sprawdzany jest dopiero po powrocie). Zawieszony
+# odczyt = „zajęta”, kolejna próba.
 queue_busy() {
   local ready unacked
-  read -r ready unacked < <(${DC} exec -T rabbitmq rabbitmqctl list_queues -q name messages_ready messages_unacknowledged </dev/null \
+  read -r ready unacked < <(with_timeout "${RMQCTL_TIMEOUT:-20}" ${DC} exec -T rabbitmq rabbitmqctl list_queues -q name messages_ready messages_unacknowledged </dev/null \
     | awk -v q="${QUEUE}" '$1 == q { print $2, $3 }') || return 0
   [[ -n "${ready:-}" && "${ready}" == 0 && "${unacked}" == 0 ]] && return 1
   return 0
