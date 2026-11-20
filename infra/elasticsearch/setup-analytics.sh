@@ -41,6 +41,11 @@
 #  reguły (_find, dokładne dopasowanie): reguła istnieje → PUT nadpisuje definicję
 #  z pliku (reguły jako kod, plik jest źródłem prawdy; ręczne zmiany w Kibanie
 #  zostaną nadpisane), brak → POST. Connectory: GET po stałym ID → PUT albo POST.
+#  Uwagi: skok zero results oczekiwanie wyzwala też regułę CTR (wyszukania bez
+#  wyników nie mają kliknięć) — to korelacja, nie błąd. Bazy (7 dni) nie mają
+#  minimalnego wolumenu: przy prawie pustej historii baza jest niewiarygodna
+#  (minimum dotyczy tylko okna bieżącego). Trwała anomalia daje jeden dokument
+#  na regułę (alert o stałym ID, notify_when=onActionGroupChange), nie co minutę.
 #
 #  Replik: 1 w klastrze wielowęzłowym, 0 przy jednym węźle (inaczej indeks
 #  zostałby żółty) — liczone z _cat/nodes.
