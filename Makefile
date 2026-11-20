@@ -247,8 +247,8 @@ reindex: ## Migracja vN → vN+1 (make reindex [source=es|pg] [slices=auto] [rps
 	@bash tools/es/reindex.sh run --source=$(or $(source),es) --slices=$(or $(slices),auto) --rps=$(or $(rps),-1)
 
 .PHONY: reindex-abort
-reindex-abort: ## Wycofaj migrację po switch-write i nadrób okno (backfill + reproject)
-	@bash tools/es/reindex.sh abort
+reindex-abort: ## Wycofaj migrację po switch-write i nadrób okno z outboxu (make reindex-abort [margin=300] [from=products-vN+1])
+	@bash tools/es/reindex.sh abort --margin=$(or $(margin),300) $(if $(from),--from=$(from))
 
 .PHONY: reindex-cleanup
 reindex-cleanup: ## Usuń indeksy bez aliasu (podgląd + pytanie w terminalu)

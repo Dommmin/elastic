@@ -156,6 +156,68 @@ eq "migration_source bez _meta" "$(migration_source <<<'{"products-v3":{"mapping
 migration_source <<<'nie json' >/dev/null 2>&1 && bad "migration_source: śmieci powinny odmówić" || ok "migration_source: śmieci odrzucone (fail-closed)"
 migration_source <<<'{"error":{"type":"x"},"status":500}' >/dev/null 2>&1 && bad "migration_source: błąd ES powinien odmówić" || ok "migration_source: błąd ES odrzucony"
 grep -q 'resume=1' tools/es/reindex.sh && ok "run wznawia migrację w toku (read≠write, cel z prepare)" || bad "run musi wznawiać migrację w toku"
+# --- Task 12b: długie kroki przez `compose run`, abort ograniczony do okna ---
+# `docker compose exec` ginie (137) przy godzinnym restarcie search-consumer
+# (--time-limit=3600); `compose run --rm --no-deps` to osobny kontener.
+grep -qE '^scr\(\) \{ \$\{DC\} run --rm --no-deps -T search-consumer php bin/console "\$@"; \}' tools/es/lib.sh \
+  && ok "lib: scr = compose run --rm --no-deps -T search-consumer" || bad "lib: brak scr (compose run --rm --no-deps)"
+for pat in 'step reindex scr search:index:migrate reindex --wait' 'step backfill scr search:index:backfill' \
+           'step finalize scr search:index:migrate finalize' 'step gate scr search:index:gate' 'step switch-read scr search:index:migrate switch-read'; do
+  grep -qF "${pat}" tools/es/reindex.sh && ok "run: ${pat%% search:*} … przez compose run" || bad "run: brak '${pat}'"
+done
+grep -qE '(^|[^r])sc search:index:(backfill|gate)|sc search:index:migrate (reindex|finalize|switch-read)|sc search:reproject' tools/es/reindex.sh \
+  && bad "długi krok nadal przez exec (sc)" || ok "żaden długi krok nie idzie przez exec"
+grep -q 'search:reproject' tools/es/reindex.sh && bad "abort: zostały kroki ruling A (reproject z porzuconego)" || ok "abort: bez pełnego reproject z porzuconego indeksu"
+# since_minus ISO SEKUNDY — początek okna nadrabiania (switch_write_at − margines)
+eq "since_minus Z" "$(since_minus 2026-11-20T00:40:06Z 300)" "2026-11-20T00:35:06+00:00"
+eq "since_minus +00:00 przez północ" "$(since_minus 2026-11-20T00:02:00+00:00 300)" "2026-11-19T23:57:00+00:00"
+eq "since_minus margines 0" "$(since_minus 2026-11-20T00:40:06+00:00 0)" "2026-11-20T00:40:06+00:00"
+since_minus 'wczoraj' 300 >/dev/null 2>&1 && bad "since_minus: śmieci powinny odmówić" || ok "since_minus: śmieci odrzucone"
+since_minus 2026-11-20T00:40:06Z abc >/dev/null 2>&1 && bad "since_minus: margines nieliczbowy powinien odmówić" || ok "since_minus: zły margines odrzucony"
+# migration_switch_write_at <_mapping — switch_write_at porzuconego indeksu
+eq "switch_write_at z _meta" "$(migration_switch_write_at <<<'{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_write_at":"2026-11-20T00:40:06+00:00"}}}}}')" "2026-11-20T00:40:06+00:00"
+eq "switch_write_at brak" "$(migration_switch_write_at <<<'{"products-v3":{"mappings":{}}}')" ""
+migration_switch_write_at <<<'nie json' >/dev/null 2>&1 && bad "migration_switch_write_at: śmieci powinny odmówić" || ok "migration_switch_write_at: śmieci odrzucone"
+
+# abort end-to-end na stubie `docker compose` (DC): loguje wywołania, odpowiada fixturami.
+stub_dir="$(mktemp -d)"
+cat >"${stub_dir}/dc" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_LOG}"
+case "$*" in
+  *"sh -c"*" GET /_alias/products-write"*) echo "{\"${STUB_WRITE}\":{\"aliases\":{\"products-write\":{}}}}" ;;
+  *"sh -c"*" GET /_alias/products-search"*) echo "{\"${STUB_WRITE}\":{\"aliases\":{\"products-search\":{}}}}" ;;
+  *"sh -c"*" GET /products-v3/_mapping"*) echo '{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_write_at":"2026-11-20T00:40:06+00:00"}}}}}' ;;
+  *"sh -c"*" GET /_tasks"*) echo '{"nodes":{}}' ;;
+  *"search:index:migrate abort"*) echo 'REPROJECT_NEEDED_SINCE=2026-11-20T00:40:06+00:00' ;;
+  *) echo "ok" ;;
+esac
+STUB
+chmod +x "${stub_dir}/dc"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort >"${stub_dir}/out" 2>&1; rc=$?
+eq "abort (stub): kod 0" "${rc}" "0"
+grep -qF 'run --rm --no-deps -T search-consumer php bin/console search:index:backfill --index=products-write --since=2026-11-20T00:35:06+00:00' "${stub_dir}/log" \
+  && ok "abort: nadrabia --since=switch_write_at − 300 s przez compose run" || bad "abort: brak backfill --since z marginesem 300 s: $(cat "${stub_dir}/log")"
+grep -q 'search:index:migrate abort' "${stub_dir}/log" && ok "abort: woła migrate abort" || bad "abort: nie wołał migrate abort"
+grep -E 'search:index:backfill' "${stub_dir}/log" | grep -qv -- '--since=' && bad "abort: pełny backfill bez --since" || ok "abort: brak pełnego backfillu"
+: >"${stub_dir}/log"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort --margin=60 >"${stub_dir}/out" 2>&1
+grep -qF -- '--since=2026-11-20T00:39:06+00:00' "${stub_dir}/log" && ok "abort --margin=60" || bad "abort: margines 60 nieuwzględniony"
+# ponowienie samego nadrabiania po udanym abort: aliasy już na v2, okno z _meta porzuconego v3
+: >"${stub_dir}/log"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v2 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort --from=products-v3 >"${stub_dir}/out" 2>&1; rc=$?
+eq "abort --from (stub): kod 0" "${rc}" "0"
+grep -q 'search:index:migrate abort' "${stub_dir}/log" && bad "abort --from: nie powinien drugi raz przepinać aliasów" || ok "abort --from: aliasów nie rusza"
+grep -qF -- 'search:index:backfill --index=products-write --since=2026-11-20T00:35:06+00:00' "${stub_dir}/log" && ok "abort --from: nadrabia z _meta porzuconego indeksu" || bad "abort --from: brak nadrabiania: $(cat "${stub_dir}/log")"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort --from=products-v3 >/dev/null 2>&1 \
+  && bad "abort --from: przeszedł, choć porzucony indeks jest pod aliasem" || ok "abort --from odmawia indeksu pod aliasem"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort --margin=x >/dev/null 2>&1 \
+  && bad "abort --margin=x przeszedł" || ok "abort odrzuca nieliczbowy margines"
+rm -rf "${stub_dir}"
+grep -qE '^reindex-abort:.*' Makefile && grep -A2 -E '^reindex-abort:' Makefile | grep -q -- '--margin=$(or $(margin),300)' \
+  && ok "Makefile: reindex-abort margin= (domyślnie 300)" || bad "Makefile: reindex-abort bez margin="
+grep -A2 -E '^reindex-abort:' Makefile | grep -q -- '--from=' && ok "Makefile: reindex-abort from=" || bad "Makefile: reindex-abort bez from="
+
 # Skrypt nie może wypisywać danych dostępowych.
 grep -nE 'echo[^|]*(PASSWORD|ELASTICSEARCH_USER)|printf[^|]*(PASSWORD|ELASTICSEARCH_USER)' tools/es/*.sh | grep -v '^tools/es/test.sh' \
   && bad "skrypt wypisuje dane dostępowe" || ok "brak wypisywania danych dostępowych"

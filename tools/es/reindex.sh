@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 #  tools/es/reindex.sh — reindeks bez przestoju (ETAP 10, spec 5.3/8.1).
 #    run [--source=es|pg] [--slices=auto] [--rps=-1]   pełna migracja vN → vN+1
-#    abort                                              wycofanie po switch-write + nadrobienie okna
+#    abort [--margin=300] [--from=<porzucony>]          wycofanie po switch-write + nadrobienie okna z outboxu
 #    cleanup                                            usuń indeksy bez aliasu (po potwierdzeniu)
 #    break                                              dowód bramki: niepełny indeks MUSI jej nie przejść
 #  Fail-closed: każdy krok, który zawiedzie, zatrzymuje skrypt.
+#  Długie kroki (reindex --wait, backfill, finalize, gate, switch-read, nadrabianie)
+#  idą przez `scr` (compose run), krótkie przez `sc` (exec) — patrz lib.sh.
 set -euo pipefail
 # shellcheck source=tools/es/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -79,16 +81,16 @@ cmd_run() {
   fi
 
   if [[ "${source}" == es ]]; then
-    step reindex sc search:index:migrate reindex --wait "--slices=${slices}" "--rps=${rps}" \
+    step reindex scr search:index:migrate reindex --wait "--slices=${slices}" "--rps=${rps}" \
       || die "reindeks nie przeszedł (cel ${target}). Wznowienie: powtórz reindeks; wycofanie: make reindex-abort"
   else
-    step backfill sc search:index:backfill "--index=${target}" \
+    step backfill scr search:index:backfill "--index=${target}" \
       || die "backfill nie przeszedł (cel ${target}). Wycofanie: make reindex-abort"
   fi
 
-  step finalize sc search:index:migrate finalize || die "finalize nie przeszedł (cel ${target})"
+  step finalize scr search:index:migrate finalize || die "finalize nie przeszedł (cel ${target})"
 
-  step gate sc search:index:gate "--index=${target}" || true
+  step gate scr search:index:gate "--index=${target}" || true
   gate="$(kv_get GATE <"${OUT_FILE}")"
   [[ "${gate}" == PASS ]] || die "bramka: GATE=${gate:-brak} — nie przełączam odczytu. make reindex-abort"
 
@@ -98,7 +100,7 @@ cmd_run() {
     die "nDCG spadł: ${old}=${ndcg_old} → ${target}=${ndcg_new} (próg 0.01) — nie przełączam odczytu. make reindex-abort"
   fi
 
-  step switch-read sc search:index:migrate switch-read || die "switch-read odmówił (odczyt zostaje na ${old})"
+  step switch-read scr search:index:migrate switch-read || die "switch-read odmówił (odczyt zostaje na ${old})"
 
   summary "${old}" "${target}" "${source}" "${slices}" "${rps}" "${ndcg_old}" "${ndcg_new}"
 }
@@ -118,20 +120,49 @@ summary() {
   es GET "/_cat/indices/${old},${new}?h=index,docs.count,store.size&s=index" || true
 }
 
+# abort: oba aliasy z powrotem na vN, potem nadrobienie TYLKO produktów zmienionych
+# od switch-write (outbox catalogu → partie projekcji → _bulk do products-write).
+# Zastępuje ruling A (pełny backfill + pełny reproject z porzuconego vN+1, O(N),
+# ~4,5 h przy 300 tys. — Task 12): koszt rośnie z ruchem w oknie, nie z katalogiem.
+# Margines (domyślnie 300 s) przesuwa początek okna wstecz: zdarzenie sprzed
+# switch-write, które czekało w kolejce, trafiło już tylko do vN+1 — margines
+# musi być dłuższy niż opóźnienie kolejki w chwili switch-write.
+# --from=<porzucony>: samo nadrabianie po wcześniejszym abort (aliasy już cofnięte,
+# np. gdy nadrabianie przerwano) — okno z _meta.migration porzuconego indeksu.
 cmd_abort() {
-  local write
-  write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
-  [[ -n "${write}" ]] || die "alias ${WRITE_ALIAS} nie istnieje"
-  info "── 1/4 anulowanie _reindex do ${write} ──"
-  cancel_reindex_into "${write}"
-  info "── 2/4 search:index:migrate abort ──"
-  sc search:index:migrate abort | tee "${OUT_FILE}"
-  info "   okno od: $(kv_get REPROJECT_NEEDED_SINCE <"${OUT_FILE}")"
-  info "── 3/4 backfill ${WRITE_ALIAS} (produkty z catalogu — nowe i zmienione w oknie) ──"
-  sc search:index:backfill "--index=${WRITE_ALIAS}"
-  info "── 4/4 reproject: ID z porzuconego ${write} → ${WRITE_ALIAS} (nadrabia usunięcia: 404 → delete) ──"
-  sc search:reproject "--ids-from=${write}" "--write-to=${WRITE_ALIAS}"
-  info "Gotowe. ${write} zostaje do diagnostyki (usunie go make reindex-cleanup)."
+  local margin=300 from="" arg write abandoned switched since
+  for arg in "$@"; do
+    case "${arg}" in
+      --margin=*) margin="${arg#*=}" ;;
+      --from=*)   from="${arg#*=}" ;;
+      *) die "nieznany argument: ${arg}" ;;
+    esac
+  done
+  [[ "${margin}" =~ ^[0-9]+$ ]] || die "margin musi być liczbą sekund (podano: ${margin})"
+
+  if [[ -z "${from}" ]]; then
+    write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
+    [[ -n "${write}" ]] || die "alias ${WRITE_ALIAS} nie istnieje"
+    abandoned="${write}"
+    switched="$(es GET "/${write}/_mapping" | migration_switch_write_at)" || die "nie umiem odczytać _meta ${write}"
+    info "── 1/3 anulowanie _reindex do ${write} ──"
+    cancel_reindex_into "${write}"
+    info "── 2/3 search:index:migrate abort ──"
+    sc search:index:migrate abort | tee "${OUT_FILE}"
+    [[ -n "${switched}" ]] || switched="$(kv_get REPROJECT_NEEDED_SINCE <"${OUT_FILE}")"
+  else
+    abandoned="${from}"
+    preflight_live "${from}" || die "${from} jest celem aliasu — to nie porzucony indeks; bez --from abort cofa migrację w toku"
+    switched="$(es GET "/${from}/_mapping" | migration_switch_write_at)" || die "nie umiem odczytać _meta ${from}"
+    info "── 1–2/3 pomijam: aliasy już cofnięte, okno z _meta.migration ${from} ──"
+  fi
+  [[ -n "${switched}" ]] || die "brak switch_write_at dla ${abandoned} — nie wiem, od kiedy nadrabiać"
+  since="$(since_minus "${switched}" "${margin}")" || die "zła data switch_write_at: ${switched}"
+
+  info "── 3/3 nadrabianie ${WRITE_ALIAS}: produkty zmienione od ${since} (switch-write ${switched} − ${margin} s) ──"
+  scr search:index:backfill "--index=${WRITE_ALIAS}" "--since=${since}" \
+    || die "nadrabianie nie przeszło — ponów: make reindex-abort from=${abandoned} margin=${margin}"
+  info "Gotowe. ${abandoned} zostaje do diagnostyki (usunie go make reindex-cleanup)."
 }
 
 cmd_cleanup() {
@@ -166,7 +197,7 @@ cmd_break() {
     | python3 -c 'import json,sys; r=json.load(sys.stdin); print("  skopiowano created=%s total=%s failures=%s" % (r.get("created"), r.get("total"), len(r.get("failures", []))))' \
     || die "_reindex do ${brk} nie przeszedł"
   info "── bramka na niepełnym indeksie (oczekiwane GATE=FAIL) ──"
-  set +e; out="$(sc search:index:gate "--index=${brk}" 2>&1)"; rc=$?; set -e
+  set +e; out="$(scr search:index:gate "--index=${brk}" 2>&1)"; rc=$?; set -e
   echo "${out}"
   gate="$(echo "${out}" | kv_get GATE)"
   if [[ "${gate}" == FAIL && ${rc} -ne 0 ]] && grep -q 'NIESPEŁNIONE: liczba dokumentów' <<<"${out}"; then
@@ -178,8 +209,8 @@ cmd_break() {
 
 case "${1:-}" in
   run)     shift; cmd_run "$@" ;;
-  abort)   cmd_abort ;;
+  abort)   shift; cmd_abort "$@" ;;
   cleanup) cmd_cleanup ;;
   break)   cmd_break ;;
-  *) die "użycie: reindex.sh run [--source=es|pg] [--slices=auto] [--rps=-1] | abort | cleanup | break" ;;
+  *) die "użycie: reindex.sh run [--source=es|pg] [--slices=auto] [--rps=-1] | abort [--margin=300] [--from=INDEKS] | cleanup | break" ;;
 esac

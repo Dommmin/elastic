@@ -33,9 +33,9 @@ ndcg_regressed() {
   awk -v o="$1" -v n="$2" 'BEGIN { exit !(n + 0 < o - 0.01) }'
 }
 
-# migration_source <JSON z GET /INDEKS/_mapping — `_meta.migration.source` (puste,
+# migration_field POLE <JSON z GET /INDEKS/_mapping — `_meta.migration.POLE` (puste,
 # gdy indeks nie jest celem migracji). Błąd ES albo nie-JSON = kod 1 (fail-closed).
-migration_source() {
+migration_field() {
   python3 -c '
 import json, sys
 try:
@@ -45,9 +45,32 @@ except ValueError:
 if not isinstance(data, dict) or "error" in data or len(data) != 1:
     sys.exit(1)
 meta = next(iter(data.values())).get("mappings", {}).get("_meta", {}).get("migration", {})
-src = meta.get("source", "")
-if src:
-    print(src)'
+value = meta.get(sys.argv[1], "")
+if value:
+    print(value)' "$1"
+}
+
+# migration_source <_mapping — źródło migracji (wznowienie po Ctrl-C)
+migration_source() { migration_field source; }
+
+# migration_switch_write_at <_mapping — chwila switch-write porzuconego indeksu (abort)
+migration_switch_write_at() { migration_field switch_write_at; }
+
+# since_minus ISO SEKUNDY — ISO minus SEKUNDY, w UTC (`+00:00`). Początek okna
+# nadrabiania po abort. Data bez strefy, śmieci albo zły margines = kod 1.
+since_minus() {
+  python3 -c '
+import datetime, sys
+iso, margin = sys.argv[1], sys.argv[2]
+if not margin.isdigit():
+    sys.exit(1)
+try:
+    t = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+except ValueError:
+    sys.exit(1)
+if t.tzinfo is None:
+    sys.exit(1)
+print((t - datetime.timedelta(seconds=int(margin))).astimezone(datetime.timezone.utc).isoformat(timespec="seconds"))' "$1" "$2"
 }
 
 # running_reindex_ids CEL <JSON z _tasks — id zadań nadrzędnych _reindex do CEL.
@@ -88,8 +111,15 @@ fmt_secs() { printf '%ds' "$1"; }
 
 # --- rozmowa z klastrem -------------------------------------------------------
 
-# sc ARGS… — php bin/console w search-consumer
+# sc ARGS… — php bin/console w DZIAŁAJĄCYM search-consumer (krótkie kroki)
 sc() { ${DC} exec -T search-consumer php bin/console "$@"; }
+
+# scr ARGS… — php bin/console w OSOBNYM, jednorazowym kontenerze search-consumer
+# (długie kroki). search-consumer kończy się co godzinę (`--time-limit=3600`,
+# restart: unless-stopped), a razem z nim ginie każde `exec` (kod 137 — Task 12,
+# abort zabity po 40 min). `run --rm --no-deps` ma ten sam obraz, env i wolumen,
+# ale własny cykl życia; --no-deps: nie budzi zależności, stos już działa.
+scr() { ${DC} run --rm --no-deps -T search-consumer php bin/console "$@"; }
 
 # es METODA ŚCIEŻKA [JSON] — wywołanie ES z danymi dostępowymi z kontenera
 es() {
