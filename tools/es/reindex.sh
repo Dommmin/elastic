@@ -119,11 +119,12 @@ cmd_abort() {
 
 cmd_cleanup() {
   local preview idx answer
-  preview="$(sc search:index:migrate cleanup)"
+  # </dev/null: `docker compose exec -T` czyta stdin i zjadłby odpowiedź „tak” podaną potokiem.
+  preview="$(sc search:index:migrate cleanup </dev/null)"
   echo "${preview}"
   local candidates; candidates="$(echo "${preview}" | cleanup_candidates)"
   [[ -n "${candidates}" ]] || { info "Nic do usunięcia."; return 0; }
-  for idx in ${candidates}; do preflight_live "${idx}" || die "odmowa: ${idx}"; done
+  for idx in ${candidates}; do preflight_live "${idx}" </dev/null || die "odmowa: ${idx}"; done
   printf 'Usunąć powyższe indeksy NA ZAWSZE? Wpisz "tak": '
   read -r answer || answer=""
   [[ "${answer}" == tak ]] || { info "Przerwano — nic nie usunięto."; return 0; }

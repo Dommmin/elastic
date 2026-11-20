@@ -147,6 +147,9 @@ l_eval_old="$(grep -n 'search:eval "--index=${old}"' tools/es/reindex.sh | head 
 l_switch_write="$(grep -n '^  step switch-write ' tools/es/reindex.sh | head -1 | cut -d: -f1)"
 [[ -n "${l_eval_old}" && -n "${l_switch_write}" && ${l_eval_old} -lt ${l_switch_write} ]] \
   && ok "nDCG starego indeksu przed switch-write" || bad "nDCG starego indeksu musi być przed switch-write"
+grep -q 'sc search:index:migrate cleanup </dev/null' tools/es/reindex.sh \
+  && grep -q 'preflight_live "${idx}" </dev/null' tools/es/reindex.sh \
+  && ok "cleanup: podgląd i preflight nie zjadają stdin (echo tak | make reindex-cleanup)" || bad "cleanup: podgląd i preflight muszą mieć </dev/null"
 # Skrypt nie może wypisywać danych dostępowych.
 grep -nE 'echo[^|]*(PASSWORD|ELASTICSEARCH_USER)|printf[^|]*(PASSWORD|ELASTICSEARCH_USER)' tools/es/*.sh | grep -v '^tools/es/test.sh' \
   && bad "skrypt wypisuje dane dostępowe" || ok "brak wypisywania danych dostępowych"
