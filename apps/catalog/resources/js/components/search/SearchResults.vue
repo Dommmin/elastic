@@ -23,6 +23,7 @@ import ProductCard from './ProductCard.vue';
  */
 defineProps<{
     results: SearchResults;
+    searchId: string | null;
 }>();
 </script>
 
@@ -43,10 +44,13 @@ defineProps<{
             :buffer="600"
             class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
         >
+            <!-- position = globalny indeks wyniku (1-based), także po doklejeniu kolejnych stron -->
             <ProductCard
-                v-for="product in results.data"
+                v-for="(product, index) in results.data"
                 :key="product.id"
                 :product="product"
+                :position="index + 1"
+                :search-id="searchId"
             />
 
             <template #next="{ loading, hasMore }">
