@@ -110,6 +110,7 @@ final class PopularityRefresher
         if (! $this->client->indices()->exists(['index' => $this->popularityIndex])->asBool()) {
             throw new PopularityRefused("Brak indeksu {$this->popularityIndex} — najpierw make analytics-setup (tworzy go z mapowaniem i wykonuje politykę).");
         }
+        $this->refuseWithoutPopularityField();
 
         $products = $clock('transform', fn () => $this->rebuild($window, $propensity, $raw, $ips, $variant));
         $clock('enrich _execute', fn () => $this->client->enrich()->executePolicy(['name' => $this->policy, 'wait_for_completion' => true]));
@@ -235,6 +236,7 @@ final class PopularityRefresher
         if (! $this->client->indices()->exists(['index' => $this->popularityIndex])->asBool()) {
             throw new PopularityRefused("Brak indeksu {$this->popularityIndex} — najpierw make analytics-setup.");
         }
+        $this->refuseWithoutPopularityField();
 
         $onStep('czyszczenie product-popularity');
         $this->emptyPopularityIndex();
@@ -353,6 +355,28 @@ final class PopularityRefresher
                 throw new \RuntimeException("Transform {$this->transformId} nie skończył w ".self::TRANSFORM_TIMEOUT_SECONDS." s (stan: {$state}).");
             }
             usleep((int) ($this->pollSeconds * 1_000_000));
+        }
+    }
+
+    /**
+     * Warunek UBQ z pipeline'em popularności: cel zapisu (alias `products-write`)
+     * musi mieć `popularity` jako `rank_feature` (products-v6+). Na starszym
+     * mapowaniu UBQ dopisałby pola dynamicznie (zły typ) albo padł na `strict` —
+     * a transform i enrich zostałyby już przebudowane. Sprawdzane przed
+     * jakimkolwiek zapisem w refresh/reset.
+     */
+    private function refuseWithoutPopularityField(): void
+    {
+        $mappings = $this->client->indices()->getFieldMapping(['index' => $this->productsIndex, 'fields' => 'popularity'])->asArray();
+        $bad = [];
+        foreach ($mappings as $index => $entry) {
+            $type = $entry['mappings']['popularity']['mapping']['popularity']['type'] ?? null;
+            if ($type !== 'rank_feature') {
+                $bad[] = $index.' ('.($type ?? 'brak pola').')';
+            }
+        }
+        if ($mappings === [] || $bad !== []) {
+            throw new PopularityRefused("Cel zapisu {$this->productsIndex} nie ma pola popularity typu rank_feature: ".($bad === [] ? 'brak indeksu' : implode(', ', $bad)).' — najpierw migracja do products-v6 (make reindex). Nic nie zapisano.');
         }
     }
 

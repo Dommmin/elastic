@@ -2,6 +2,7 @@
 
 namespace App\Command;
 
+use App\Service\DefaultPipeline;
 use App\Service\IndexAliases;
 use App\Service\IndexMapping;
 use Elastic\Elasticsearch\Client;
@@ -98,6 +99,13 @@ final class CreateSearchIndexCommand extends Command
         }
 
         $exists = $this->client->indices()->exists(['index' => $indexName])->asBool();
+
+        // Przed --force (usunięciem), żeby odmowa niczego nie zepsuła.
+        if ((! $exists || $input->getOption('force')) && ($pipeline = DefaultPipeline::missing($this->client, $body)) !== null) {
+            $io->error("Mapowanie {$indexName} ma index.default_pipeline \"{$pipeline}\", którego nie ma w klastrze — ES odrzuciłby każdy zapis do tego indeksu. ".DefaultPipeline::SETUP_HINT);
+
+            return Command::FAILURE;
+        }
 
         if ($exists && $input->getOption('force')) {
             if (in_array($indexName, [$this->aliases->readTarget(), $this->aliases->writeTarget()], true)) {

@@ -5,6 +5,7 @@ namespace App\Tests\Integration\Command;
 use App\Command\CreateSearchIndexCommand;
 use App\Service\ElasticsearchClientFactory;
 use App\Service\IndexAliases;
+use App\Service\IndexMapping;
 use Elastic\Elasticsearch\Client;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -121,6 +122,35 @@ final class CreateSearchIndexCommandTest extends TestCase
         self::assertTrue($this->client->indices()->exists(['index' => $this->prefix.'2'])->asBool());
         self::assertSame($this->prefix.'1', $this->aliases->readTarget());
         self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
+    }
+
+    public function test_odmawia_gdy_default_pipeline_z_mapowania_nie_istnieje(): void
+    {
+        $dir = sys_get_temp_dir().'/ct-mappings-'.uniqid();
+        mkdir($dir);
+        $body = json_decode(file_get_contents(IndexMapping::DIR.'/products-v2.json'), true);
+        $body['settings']['index']['default_pipeline'] = 'brak-pipeline-'.uniqid();
+        file_put_contents($dir.'/products-v2.json', json_encode($body));
+
+        try {
+            $tester = new CommandTester(new CreateSearchIndexCommand(
+                $this->client,
+                new IndexAliases($this->client, $this->read, $this->write),
+                indexPrefix: $this->prefix,
+                mappings: new IndexMapping($dir),
+            ));
+            $tester->execute(['--index-version' => '2']);
+        } finally {
+            @unlink($dir.'/products-v2.json');
+            @rmdir($dir);
+        }
+
+        $display = preg_replace('/\s+/', ' ', $tester->getDisplay());
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString($body['settings']['index']['default_pipeline'], $display);
+        self::assertStringContainsString('make analytics-setup', $display);
+        self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.'2'])->asBool());
+        self::assertNull($this->aliases->readTarget());
     }
 
     public function test_version_of_i_swap(): void

@@ -117,7 +117,9 @@ final class AnalyticsEventHandler implements BatchHandlerInterface
             $refs = $refsByJob[$i] ?? [];
 
             if ($bad = array_values(array_filter($refs, fn (string $r) => isset($rejected[$r])))) {
-                $settle($i, new UnrecoverableMessageHandlingException(\sprintf('Elasticsearch odrzucił dokument analityki (%s): %s', $event->type, implode(', ', $bad))));
+                // Ref + błąd ES (`type: reason`), żeby z `messenger:failed:show` było widać przyczynę.
+                $reasons = array_map(fn (string $r) => isset($outcome->rejectedErrors[$r]) ? "{$r} ({$outcome->rejectedErrors[$r]})" : $r, $bad);
+                $settle($i, new UnrecoverableMessageHandlingException(\sprintf('Elasticsearch odrzucił dokument analityki (%s): %s', $event->type, implode(', ', $reasons))));
             } elseif ($again = array_values(array_filter($refs, fn (string $r) => isset($retryable[$r])))) {
                 $settle($i, new RecoverableMessageHandlingException(\sprintf('Elasticsearch chwilowo nie przyjął dokumentu analityki (%s): %s', $event->type, implode(', ', $again)), forceRetry: false));
             } else {

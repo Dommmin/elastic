@@ -16,6 +16,9 @@ final class AnalyticsBulkWriterTest extends TestCase
     /** @var list<string> */
     private array $bodies = [];
 
+    /** @var list<string> */
+    private array $queries = [];
+
     public function test_pusta_lista_nie_woła_es(): void
     {
         $outcome = (new AnalyticsBulkWriter($this->esReturning([])))->write([]);
@@ -42,6 +45,35 @@ final class AnalyticsBulkWriterTest extends TestCase
         $this->assertSame(['create' => ['_index' => 'events-impression-default', '_id' => 'b']], $lines[2]);
         $this->assertSame(2, $outcome->created);
         $this->assertSame(0, $outcome->duplicates);
+    }
+
+    public function test_bulk_wymaga_data_streamu(): void
+    {
+        $writer = new AnalyticsBulkWriter($this->esReturning(['took' => 1, 'errors' => false, 'items' => [
+            ['create' => ['_id' => 'a', 'status' => 201]],
+            ['create' => ['_id' => 'b', 'status' => 201]],
+        ]]));
+
+        $writer->write($this->two());
+
+        // Bez szablonów ES nie może po cichu założyć zwykłego indeksu, który zablokuje data stream.
+        parse_str($this->queries[0], $query);
+        $this->assertSame('true', $query['require_data_stream'] ?? null);
+    }
+
+    public function test_odrzucenie_niesie_typ_i_powod_bledu_es(): void
+    {
+        $writer = new AnalyticsBulkWriter($this->esReturning(['took' => 1, 'errors' => true, 'items' => [
+            ['create' => ['_id' => 'a', 'status' => 404, 'error' => ['type' => 'index_not_found_exception', 'reason' => 'no such index [events-user-default] and [require_data_stream] request flag is [true]']]],
+            ['create' => ['_id' => 'b', 'status' => 400, 'error' => ['type' => 'mapper_parsing_exception']]],
+        ]]));
+
+        $outcome = $writer->write($this->two());
+
+        $this->assertSame([
+            BulkOutcome::ref('events-user-default', 'a') => 'index_not_found_exception: no such index [events-user-default] and [require_data_stream] request flag is [true]',
+            BulkOutcome::ref('events-impression-default', 'b') => 'mapper_parsing_exception',
+        ], $outcome->rejectedErrors);
     }
 
     public function test_409_to_duplikat_a_nie_blad(): void
@@ -120,7 +152,7 @@ final class AnalyticsBulkWriterTest extends TestCase
 
             public function sendRequest(RequestInterface $request): ResponseInterface
             {
-                $this->test->record((string) $request->getBody());
+                $this->test->record((string) $request->getBody(), $request->getUri()->getQuery());
 
                 return new Response(200, ['X-Elastic-Product' => 'Elasticsearch', 'Content-Type' => 'application/json'], json_encode($this->body));
             }
@@ -129,8 +161,9 @@ final class AnalyticsBulkWriterTest extends TestCase
         return ClientBuilder::create()->setHosts(['http://es.invalid:9200'])->setHttpClient($http)->build();
     }
 
-    public function record(string $body): void
+    public function record(string $body, string $query = ''): void
     {
         $this->bodies[] = $body;
+        $this->queries[] = $query;
     }
 }

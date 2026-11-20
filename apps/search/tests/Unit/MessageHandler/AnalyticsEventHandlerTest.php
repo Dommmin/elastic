@@ -60,6 +60,24 @@ final class AnalyticsEventHandlerTest extends TestCase
         $this->assertSame('ack', $this->results['c']);
     }
 
+    public function test_komunikat_odrzucenia_niesie_typ_i_powod_bledu_es(): void
+    {
+        $ref = BulkOutcome::ref('events-user-default', 'a');
+        $writer = $this->createStub(AnalyticsBulkWriter::class);
+        $writer->method('write')->willReturn(new BulkOutcome(
+            rejected: [$ref],
+            rejectedErrors: [$ref => 'mapper_parsing_exception: failed to parse field [product_id]'],
+        ));
+        $this->handlerWith($writer);
+
+        $this->feed('a', 'user.added_to_cart', ['product_id' => 1]);
+        $this->handler->flush(true);
+
+        $this->assertInstanceOf(UnrecoverableMessageHandlingException::class, $this->results['a']);
+        $this->assertStringContainsString('mapper_parsing_exception: failed to parse field [product_id]', $this->results['a']->getMessage());
+        $this->assertStringContainsString($ref, $this->results['a']->getMessage());
+    }
+
     public function test_nieznany_typ_jest_ackowany_bez_zapisu(): void
     {
         $writer = $this->createMock(AnalyticsBulkWriter::class);

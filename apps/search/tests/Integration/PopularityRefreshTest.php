@@ -155,6 +155,24 @@ final class PopularityRefreshTest extends TestCase
         self::assertSame(0, (int) $this->client->transform()->getTransform(['transform_id' => $this->source.'*', 'allow_no_match' => true])['count']);
     }
 
+    public function test_indeks_produktow_bez_pola_popularity_odmawia_przed_zapisem(): void
+    {
+        $this->setUpWorld(mappingVersion: 5);
+
+        foreach (['refresh' => fn () => $this->refresh('ips'), 'reset' => fn () => $this->refresher()->reset()] as $name => $call) {
+            try {
+                $call();
+                self::fail("{$name} na indeksie bez popularity przeszedł.");
+            } catch (PopularityRefused $e) {
+                self::assertStringContainsString('popularity', $e->getMessage(), $name);
+                self::assertStringContainsString('rank_feature', $e->getMessage(), $name);
+            }
+        }
+
+        self::assertSame(['999'], $this->popularityIds(), 'stary wpis nietknięty');
+        self::assertSame(0, (int) $this->client->transform()->getTransform(['transform_id' => $this->source.'*', 'allow_no_match' => true])['count']);
+    }
+
     public function test_reset_zeruje_product_popularity_i_pola_w_produktach(): void
     {
         $this->setUpWorld();
@@ -202,7 +220,7 @@ final class PopularityRefreshTest extends TestCase
     }
 
     /** Zdarzenia, źródło popularności ze starym wpisem 999, polityka, pipeline i produkty 1, 2, 3, 999. */
-    private function setUpWorld(): void
+    private function setUpWorld(int $mappingVersion = 6): void
     {
         $this->createEvents();
 
@@ -227,9 +245,16 @@ final class PopularityRefreshTest extends TestCase
         unset($processor);
         $this->client->ingest()->putPipeline(['id' => $this->pipeline, 'body' => $pipeline]);
 
-        $mapping = $this->mappingBody(6);
-        $mapping['settings']['index']['default_pipeline'] = $this->pipeline;
+        $mapping = $this->mappingBody($mappingVersion);
         $mapping['settings']['number_of_replicas'] = 0;
+        if ($mappingVersion < 6) {
+            // Mapowanie sprzed popularności (np. products-v5 pod aliasem zapisu): bez pipeline'u.
+            $this->client->indices()->create(['index' => $this->products, 'body' => $mapping]);
+            $this->bulkProducts($this->client, $this->products, 1, 3, self::VERSION);
+
+            return;
+        }
+        $mapping['settings']['index']['default_pipeline'] = $this->pipeline;
         $this->client->indices()->create(['index' => $this->products, 'body' => $mapping]);
         $this->bulkProducts($this->client, $this->products, 1, 3, self::VERSION);
         $this->bulkProducts($this->client, $this->products, 999, 999, self::VERSION);
