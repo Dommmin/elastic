@@ -11,7 +11,7 @@ indeks”.*
 > **Stan:** gałąź `etap-10-indeksy` (niewypchnięta), wszystko na lokalnym stosie Docker (3 węzły ES 9.5.1).
 > **Na żywo (2026-11-19/20):** droga A v1→v2 w 70 s, droga B v3→v4 w 151 s, przerwanie Ctrl-C i wznowienie,
 > wycofanie w 5,65 s, bramka odmawia niepełnemu indeksowi; po każdym przebiegu `verify-convergence … mismatches=0`.
-> Sonda `/search` co sekundę przez wszystkie przebiegi: 3904 + 922 żądania, **każde HTTP 200, żadne puste**.
+> Sonda `/search` co sekundę w oknach pomiarów Task 12 i Task 12c: 3904 + 922 żądania, **każde HTTP 200, żadne puste**.
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-19-etap-10-operacje-na-indeksach-design.md),
 > plan: [plan implementacji](../superpowers/plans/2026-11-19-etap-10-operacje-na-indeksach.md).
 > Pomiary: [`POMIARY.md` §15](../POMIARY.md). Błędy z drogi: RUNBOOK [#110–#124](../RUNBOOK.md#110).
@@ -262,8 +262,8 @@ Bramka (`search:index:gate`, wołana też wewnątrz `switch-read`) przepuszcza t
 
 Liczba z catalogu to **wszystkie istniejące produkty** (`/api/internal/products/count`), bo projekcja istnieje dla
 każdego produktu, a filtr `listed()` dotyczy ofert w jego wnętrzu. Tolerancja 0,001 (300 dok. przy 300 tys.)
-pokrywa zdarzenia w locie: pod churnem liczba w ES bywała o 2–3 większa niż w catalogu (usunięcia jeszcze
-w kolejce), po opróżnieniu kolejki równa.
+pokrywa zdarzenia w locie: pod churnem liczba w ES bywała o 2 większa niż w catalogu (bramki: 299 494 vs 299 492, 299 939 vs 299 937;
+usunięcia jeszcze w kolejce), po opróżnieniu kolejki równa.
 
 Do tego krok nDCG w skrypcie: nowy indeks nie może dać nDCG@10 niższego o więcej niż 0,01 niż stary. Bramka jest
 **względna**: liczy się różnica między vN a vN+1 na tych samych danych, nie wartość bezwzględna.
@@ -369,8 +369,9 @@ z wersjami zewnętrznymi niczego nie nadpisze starszą wersją), brakowało go w
 - `_meta.migration.source` celu zapisu = indeks odczytu → `resume` (pomija prepare i switch-write),
 - wszystko inne (obce źródło, brak `_meta`, błąd ES) → odmowa z powodem.
 
-Wznowienie trwało 62 s: `reindex created=268209 version_conflicts=30748 total=298957`. 30 748 konfliktów to ~22 tys.
-dokumentów skopiowanych przed przerwaniem plus zapisy strumienia, które wygrały z kopią. Nic nie zostało nadpisane
+Wznowienie trwało 62 s: `reindex created=268209 version_conflicts=30748 total=298957`. Zmierzone są tylko sumy
+(SIGINT przy `created=21999`, potem `version_conflicts=30748`). Interpretacja, nie rozbita pomiarem: 30 748 konfliktów to
+prawdopodobnie ~22 tys. dokumentów skopiowanych przed przerwaniem plus zapisy strumienia, które wygrały z kopią. Nic nie zostało nadpisane
 starszą wersją: `verify-convergence … checked=11215 mismatches=0`, bramka 298 682 = 298 682.
 
 Przy wznowieniu stary indeks jest już zamrożony, więc jego nDCG ma fałszywe remisy ([#113](../RUNBOOK.md#113)).
@@ -530,8 +531,8 @@ Rzeczy, które wyglądały na zdrowe, a nie były:
    z odpowiedzią ([#122](../RUNBOOK.md#122)).
 6. **128 MB `memory_limit` przy 300 tys.**: `search:eval`, `pluck('id')` w `seed-reviews` i pierwsza wersja `/changed`
    (DISTINCT w SQL, filtr w PHP) padały na pamięci, bo przy 1500 produktach nikt tego nie widział ([#123](../RUNBOOK.md#123)).
-7. **Zabicie `docker compose exec` po stronie hosta nie zatrzymuje procesu w kontenerze.** Przerwany `make churn` dalej
-   produkował zdarzenia do końca `--duration` ([#124](../RUNBOOK.md#124)).
+7. **Zabicie `docker compose exec` (bez TTY) po stronie hosta nie zatrzymuje procesu w kontenerze.** Przerwany `make churn` dalej
+   produkował zdarzenia do końca `--duration`; interaktywnego Ctrl-C z TTY nie sprawdzałem ([#124](../RUNBOOK.md#124)).
 
 ## Odstępstwa od planu
 

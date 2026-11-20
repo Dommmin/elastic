@@ -5048,7 +5048,8 @@ przeczytać. Odmowa „bo nie ten stan” bez rozpoznania stanu to fail-closed, 
 widoczne w `/search`.
 
 **Diagnoza**
-Przepustowość backfillu 36,9 dok./s (101 sekwencyjnych projekcji: 29 ms na żądanie HTTP). Pełny backfill + pełny reproject z porzuconego
+Pojedyncza projekcja: 29 ms na żądanie HTTP (101 sekwencyjnych projekcji z kontenera `search-consumer`). Przepustowość na żywo: celowany
+reproject 9 004 ID w 244 s = 36,9 dok./s (backfill w aborcie: ~36 dok./s). Pełny backfill + pełny reproject z porzuconego
 indeksu = ~600 tys. operacji ≈ 4,5 h. A zmienionych w oknie było 9004 produkty.
 
 **Przyczyna**

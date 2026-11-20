@@ -845,7 +845,7 @@ daje jeden wątek. `rps` dla `_reindex` nie był zmieniany (domyślnie `-1`); wp
 | Przebieg | Wynik |
 |---|---|
 | Ctrl-C w `reindex --wait` (v2→v3), SIGINT przy `created=21999/298957` | trap anulował zadanie, kod 130, `_cat/tasks` pusto |
-| wznowienie `make reindex` | **62 s** (ndcg zamrożonego 7, reindex 24 `created=268209 version_conflicts=30748`, finalize 24, gate 0, ndcg 6, switch-read 1); okno odczytu ~145 s z pauzą; `checked=11215 mismatches=0`; bramka 298 682 = 298 682 |
+| wznowienie `make reindex` | **62 s** (ndcg zamrożonego 7, reindex 24 `created=268209 version_conflicts=30748`, finalize 24, gate 0, ndcg 6, switch-read 1); okno odczytu ~145 s z pauzą; `checked=11215 mismatches=0`; bramka 298 682 = 298 682. Interpretacja (nie rozbita pomiarem): 30 748 konfliktów to prawdopodobnie ~22 tys. skopiowanych przed przerwaniem + zapisy strumienia |
 | Ctrl-C przez `compose run` (v4→v5) | zadanie `canceled: "by user request"` przy 32 994/298 396, skrypt kod 130 w ~1 s, 0 kontenerów `run-*` |
 | abort v1 (projekt O(N), Task 12) | pełny backfill doszedł do 87 000/~299 600, **zginął po 40 min 55 s (137)**; v1 `checked=9004 mismatches=1643`; szacunek całości ~4,5 h |
 | ręczna naprawa (reproject 9 004 ID z outboxu) | 244 s: 8 561 indexed, 274 × 404, 169 deleted → `mismatches=0`, bramka 299 556 = 299 556 |
