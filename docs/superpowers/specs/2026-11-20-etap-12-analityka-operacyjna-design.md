@@ -64,9 +64,10 @@ potrzebuje kolejności per agregat).
 - **Kontekst wyszukiwania w Redisie:** przy `user.searched` catalog zapisuje `search_id → {query, results}` na 30 min.
   Kliknięcie i koszyk dociągają z niego `query`, więc każde zdarzenie niesie frazę, a Transform może liczyć CTR per
   fraza bez joinów (pivot nie umie łączyć dokumentów po `search_id`). Brak wpisu (wygasł) = zdarzenie bez `query`.
-- **Odświeżenie strony produktu nie dubluje kliknięcia:** `id` zdarzenia `user.clicked_result` jest deterministyczny,
-  UUIDv5 z (`search_id`, `product_id`). Drugi zapis dostaje 409 w handlerze (sekcja 5) — deduplikacja w jednym
-  miejscu, Transformy jej nie potrzebują.
+- **Odświeżenie strony produktu nie dubluje kliknięcia:** `user.clicked_result` niesie w `data` deterministyczny
+  `dedup_key` = `click:<search_id>:<product_id>`, a handler używa go jako `_id` zamiast `id` koperty (kolumna
+  `outbox.event_id` to ULID, więc nie da się w niej trzymać klucza wyliczonego). Drugi zapis dostaje 409
+  (sekcja 5) — deduplikacja w jednym miejscu, Transformy jej nie potrzebują.
 - **Koniec lejka to `user.checked_out` z warstwy web, nie zdarzenie kontekstu Ordering.** Ordering celowo nie
   wypuszcza zdarzeń zamówienia (`OrderEventLog`), a potwierdzenie płatności przychodzi webhookiem bramki
   (`PaymentWebhookController`) bez cookie sesji. Checkout to fakt analityczny z requestu kupującego — granica kontekstu zostaje nienaruszona. Płatność
