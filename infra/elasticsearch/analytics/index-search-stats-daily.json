@@ -1,0 +1,19 @@
+{
+  "settings": {
+    "index.number_of_shards": 1,
+    "index.number_of_replicas": 1
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "day": { "type": "date" },
+      "query": { "type": "keyword" },
+      "searches": { "type": "long" },
+      "zero_results": { "type": "long" },
+      "sessions": { "type": "long" },
+      "clicks": { "type": "long" },
+      "avg_click_position": { "type": "double" },
+      "ctr": { "type": "double" }
+    }
+  }
+}

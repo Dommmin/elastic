@@ -1,0 +1,55 @@
+{
+  "description": "ETAP 12: dzienne statystyki wyszukiwarki per fraza (wyszukania, zero results, sesje, kliknięcia, CTR, średnia pozycja kliknięcia)",
+  "source": {
+    "index": ["events-user-*"],
+    "query": {
+      "terms": { "event.type": ["user.searched", "user.clicked_result"] }
+    }
+  },
+  "dest": { "index": "search-stats-daily" },
+  "frequency": "1m",
+  "sync": {
+    "time": { "field": "event.ingested", "delay": "60s" }
+  },
+  "pivot": {
+    "group_by": {
+      "day": {
+        "date_histogram": { "field": "@timestamp", "calendar_interval": "1d" }
+      },
+      "query": {
+        "terms": { "field": "search.query", "missing_bucket": true }
+      }
+    },
+    "aggregations": {
+      "searches": {
+        "filter": { "term": { "event.type": "user.searched" } }
+      },
+      "zero_results": {
+        "filter": {
+          "bool": {
+            "filter": [
+              { "term": { "event.type": "user.searched" } },
+              { "term": { "search.total_hits": 0 } }
+            ]
+          }
+        }
+      },
+      "sessions": {
+        "cardinality": { "field": "session.id" }
+      },
+      "clicks": {
+        "filter": { "term": { "event.type": "user.clicked_result" } }
+      },
+      "avg_click_position": {
+        "avg": { "field": "click.position" }
+      },
+      "ctr": {
+        "bucket_script": {
+          "buckets_path": { "clicks": "clicks._count", "searches": "searches._count" },
+          "script": "params.searches > 0 ? (double) params.clicks / params.searches : null"
+        }
+      }
+    }
+  },
+  "settings": { "max_page_search_size": 1000 }
+}

@@ -269,8 +269,8 @@ es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (
 
 ## Analityka operacyjna (ETAP 12)
 .PHONY: analytics-setup
-analytics-setup: ## ILM, pipeline, szablony i data streamy zdarzeń (idempotentne)
-	@bash infra/elasticsearch/setup-analytics.sh
+analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
+	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
 .PHONY: simulate
 simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
