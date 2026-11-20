@@ -34,8 +34,14 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 #[AsCommand(name: 'search:index:create', description: 'Tworzy indeks products-vN i dopina brakujące aliasy products-search / products-write')]
 final class CreateSearchIndexCommand extends Command
 {
-    /** Bieżąca wersja mapowania — jedyne miejsce, które trzeba zmienić po wdrożeniu nowej. */
-    public const CURRENT_VERSION = 1;
+    /**
+     * Wersja mapowania dla ŚWIEŻEGO klastra — jedyne miejsce, które trzeba zmienić
+     * po wdrożeniu nowej merytorycznej wersji. 2, nie 3: v3 to ta sama treść co v2
+     * (przebudowa do ćwiczenia przerwania migracji, ETAP 10), więc czysty klaster
+     * startuje od ostatniej wersji, która coś zmieniła. Żywy klaster przechodzi na
+     * kolejne wersje przez `make reindex`, nie przez tę komendę.
+     */
+    public const CURRENT_VERSION = 2;
 
     /**
      * @param  string  $indexPrefix  prefiks nazwy indeksu (`products-v` → `products-v1`);

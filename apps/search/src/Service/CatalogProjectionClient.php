@@ -20,6 +20,9 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 class CatalogProjectionClient
 {
+    /** Timeout żądań wsadowych (partia projekcji, lista zmienionych z outboxu). */
+    private const BATCH_TIMEOUT = 30.0;
+
     private readonly HttpClientInterface $client;
 
     public function __construct(
@@ -125,28 +128,93 @@ class CatalogProjectionClient
     public function productIds(?int $after, int $limit): array
     {
         $query = http_build_query(array_filter(['after' => $after, 'limit' => $limit], static fn ($v) => $v !== null));
-        $data = $this->getJson('/api/internal/products/ids?'.$query, 'listy ID produktów');
 
+        return $this->idPage($this->getJson('/api/internal/products/ids?'.$query, 'listy ID produktów'), 'Lista ID produktów');
+    }
+
+    /**
+     * Projekcje partii produktów jednym żądaniem (ETAP 10, Task 12b) — droga B
+     * i nadrabianie po abort. Jeden `projected_at_us` na partię (catalog mierzy
+     * czas raz, przed odczytem), `missing` = ID bez wiersza `products`.
+     *
+     * @param list<int> $ids najwyżej 500 (limit catalogu)
+     *
+     * @return array{projected_at_us: int, items: list<array<string, mixed>>, missing: list<int>}
+     *
+     * @throws ProjectionUnavailableException gdy catalog nie odpowiada albo
+     *                                        odpowiada w innym kształcie — nie
+     *                                        zgadujemy wersji ani tego, czego brakuje
+     */
+    public function fetchProjections(array $ids): array
+    {
+        if ($ids === []) {
+            return ['projected_at_us' => 0, 'items' => [], 'missing' => []];
+        }
+
+        $data = $this->getJson('/api/internal/products/projections?'.http_build_query(['ids' => implode(',', $ids)]), 'partii projekcji', self::BATCH_TIMEOUT);
+        $items = $data['items'] ?? null;
+        $missing = $data['missing'] ?? null;
+        if (! \is_int($data['projected_at_us'] ?? null)
+            || ! \is_array($items) || ! array_is_list($items)
+            || array_filter($items, static fn ($item) => ! \is_array($item) || ! \is_int($item['id'] ?? null)) !== []
+            || ! self::isIntList($missing)) {
+            throw new ProjectionUnavailableException('Partia projekcji z catalogu w nieoczekiwanym kształcie — nie zgaduję wersji dokumentów.');
+        }
+
+        return ['projected_at_us' => $data['projected_at_us'], 'items' => $items, 'missing' => $missing];
+    }
+
+    /**
+     * Strona ID produktów zmienionych od `$since` według outboxu catalogu
+     * (także usuniętych) — ograniczone nadrabianie po reindex-abort.
+     *
+     * @return array{ids: list<int>, next_after: ?int} `next_after` null = koniec listy
+     *
+     * @throws ProjectionUnavailableException
+     */
+    public function changedProductIds(string $since, ?int $after, int $limit): array
+    {
+        $query = http_build_query(array_filter(['since' => $since, 'after' => $after, 'limit' => $limit], static fn ($v) => $v !== null));
+
+        return $this->idPage($this->getJson('/api/internal/products/changed?'.$query, 'listy zmienionych produktów', self::BATCH_TIMEOUT), 'Lista zmienionych produktów');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     *
+     * @return array{ids: list<int>, next_after: ?int}
+     */
+    private function idPage(array $data, string $what): array
+    {
         $ids = $data['ids'] ?? null;
         $next = $data['next_after'] ?? null;
-        if (! \is_array($ids) || ! array_is_list($ids) || array_filter($ids, static fn ($id) => ! \is_int($id)) !== []
-            || ! ($next === null || \is_int($next))) {
-            throw new ProjectionUnavailableException('Lista ID produktów z catalogu w nieoczekiwanym kształcie.');
+        if (! self::isIntList($ids) || ! ($next === null || \is_int($next))) {
+            throw new ProjectionUnavailableException("{$what} z catalogu w nieoczekiwanym kształcie.");
         }
 
         return ['ids' => $ids, 'next_after' => $next];
     }
 
+    /** @phpstan-assert-if-true list<int> $value */
+    private static function isIntList(mixed $value): bool
+    {
+        return \is_array($value) && array_is_list($value) && array_filter($value, static fn ($v) => ! \is_int($v)) === [];
+    }
+
     /**
+     * Narzędzia operatorskie (partie, outbox) dostają dłuższy timeout niż
+     * consumer: 500 projekcji to ~0,1 s na pustym stosie, ale pod churnem
+     * i przy dużym outboxie może być wielokrotnie więcej — a nie blokują workera.
+     *
      * GET z odpowiedzią JSON; każdy błąd (4xx, 5xx, sieć, nie-JSON) to
      * ProjectionUnavailableException — operator ma ponowić, nie zgadywać.
      *
      * @return array<string, mixed>
      */
-    private function getJson(string $path, string $what): array
+    private function getJson(string $path, string $what, float $timeout = 3.0): array
     {
         try {
-            return $this->client->request('GET', rtrim($this->baseUrl, '/').$path)->toArray();
+            return $this->client->request('GET', rtrim($this->baseUrl, '/').$path, ['timeout' => $timeout])->toArray();
         } catch (HttpExceptionInterface|TransportExceptionInterface|DecodingExceptionInterface $e) {
             throw new ProjectionUnavailableException("Nie udało się pobrać {$what} z catalogu: {$e->getMessage()}", previous: $e);
         }

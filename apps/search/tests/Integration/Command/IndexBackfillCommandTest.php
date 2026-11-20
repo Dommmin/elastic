@@ -44,6 +44,10 @@ final class IndexBackfillCommandTest extends TestCase
     private array $failingIds = [];
     /** @var list<int>|null ID z działającą projekcją (null = wszystkie z katalogu) */
     private ?array $catalogProjectable = null;
+    /** @var list<int> ID zwracane przez /products/changed */
+    private array $changedIds = [];
+    /** @var list<string> ścieżki z zapytaniem, o które pytał backfill */
+    private array $requests = [];
 
     protected function setUp(): void
     {
@@ -91,9 +95,92 @@ final class IndexBackfillCommandTest extends TestCase
         self::assertSame(3, substr_count($tester->getDisplay(), 'strona '), 'Trzy strony: 3 + 3 + 1.');
         $this->client->indices()->refresh(['index' => $this->prefix.'2']);
         self::assertSame(7, $this->countDocs($this->client, $this->prefix.'2'));
+        // Jedna wersja na partię: projected_at_us odpowiedzi (fałszywy catalog: PROJECTED_AT + największe ID partii).
         foreach ($this->catalogIds as $id) {
-            self::assertSame(self::PROJECTED_AT + $id, $this->client->get(['index' => $this->prefix.'2', 'id' => (string) $id])->asArray()['_version']);
+            self::assertSame(self::PROJECTED_AT + min(7, (int) ceil($id / 3) * 3), $this->client->get(['index' => $this->prefix.'2', 'id' => (string) $id])->asArray()['_version']);
         }
+    }
+
+    public function test_pelny_backfill_pobiera_projekcje_partiami_nie_po_jednej(): void
+    {
+        $this->prepareTarget();
+        $this->catalogIds = range(1, 7);
+
+        $this->assertBackfill($this->prefix.'2', ['--batch' => '3']);
+
+        $projections = array_values(array_filter($this->requests, static fn (string $r) => str_contains($r, '/projection')));
+        self::assertSame([
+            '/api/internal/products/projections?ids=1,2,3',
+            '/api/internal/products/projections?ids=4,5,6',
+            '/api/internal/products/projections?ids=7',
+        ], array_map('urldecode', $projections));
+    }
+
+    public function test_since_bierze_id_z_changed_i_nie_rusza_pieczeci(): void
+    {
+        $this->prepareTarget();
+        $this->catalogIds = range(1, 3);
+        $this->assertBackfill($this->prefix.'2');
+        $sealed = $this->meta();
+        self::assertSame('backfill', $sealed['fill_method']);
+        (new ElasticsearchIndexer($this->client, $this->prefix.'2'))->indexProduct(['id' => 2] + $this->product(2, 'Ze strumienia'), self::PROJECTED_AT + 1_000);
+
+        // 2 zmieniony (strumień już zapisał nowszą wersję), 9 usunięty w catalogu i nigdy nie zaindeksowany.
+        $this->changedIds = [2, 9];
+        $this->requests = [];
+        $tester = $this->backfill($this->prefix.'2', ['--since' => '2026-11-20T00:35:06+00:00']);
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertStringContainsString('stale(409): 1, not_found: 1, deleted: 0, errors: 0', $tester->getDisplay());
+        self::assertSame([
+            '/api/internal/products/changed?since=2026-11-20T00:35:06+00:00&limit=500',
+            '/api/internal/products/projections?ids=2,9',
+        ], array_map('urldecode', $this->requests));
+        self::assertSame($sealed, $this->meta(), '--since to nadrabianie: pieczęć ani nie kasowana, ani nie stawiana.');
+        self::assertStringContainsString('nadrabianie', $this->flat($tester));
+    }
+
+    public function test_since_na_celu_bez_pieczeci_jej_nie_stawia(): void
+    {
+        $this->prepareTarget();
+        $this->changedIds = [1];
+        $this->catalogIds = [1];
+
+        $tester = $this->backfill($this->prefix.'2', ['--since' => '2026-11-20T00:00:00+00:00']);
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertStringContainsString('indexed: 1', $tester->getDisplay());
+        self::assertArrayNotHasKey('fill_method', $this->meta());
+        self::assertArrayNotHasKey('backfill_completed_at', $this->meta());
+    }
+
+    public function test_since_z_bledem_konczy_sie_kodem_bledu(): void
+    {
+        $this->prepareTarget();
+        $this->changedIds = [1, 2];
+        $this->catalogIds = [1, 2];
+        $this->failingIds = [2];
+
+        $tester = $this->backfill($this->prefix.'2', ['--since' => '2026-11-20T00:00:00+00:00']);
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('errors: 2', $tester->getDisplay());
+    }
+
+    public function test_since_z_bledna_data_odmawia(): void
+    {
+        $tester = $this->backfill($this->write, ['--since' => 'wczoraj']);
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertSame([], $this->requests);
+    }
+
+    public function test_batch_ponad_500_odmawia(): void
+    {
+        $tester = $this->backfill($this->write, ['--batch' => '501']);
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('1..500', $this->flat($tester));
     }
 
     public function test_dokument_z_wyzsza_wersja_jest_stale_i_nie_zostaje_nadpisany(): void
@@ -185,10 +272,11 @@ final class IndexBackfillCommandTest extends TestCase
         $this->catalogIds = range(1, 5);
         $this->failingIds = [3];
 
-        $tester = $this->backfill($this->prefix.'2');
+        // Partia [3, 4] kończy się 500 — cała strona to błędy, reszta idzie dalej.
+        $tester = $this->backfill($this->prefix.'2', ['--batch' => '2']);
 
         self::assertSame(Command::FAILURE, $tester->getStatusCode());
-        self::assertStringContainsString('errors: 1', $tester->getDisplay());
+        self::assertStringContainsString('indexed: 3, stale(409): 0, not_found: 0, deleted: 0, errors: 2', $tester->getDisplay());
         self::assertArrayNotHasKey('fill_method', $this->meta());
         self::assertArrayNotHasKey('backfill_completed_at', $this->meta());
 
@@ -284,9 +372,10 @@ final class IndexBackfillCommandTest extends TestCase
         return $tester;
     }
 
-    private function assertBackfill(string $index): void
+    /** @param array<string, string|bool> $options */
+    private function assertBackfill(string $index, array $options = []): void
     {
-        $tester = $this->backfill($index);
+        $tester = $this->backfill($index, $options);
         self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
     }
 
@@ -315,6 +404,9 @@ final class IndexBackfillCommandTest extends TestCase
             $path = parse_url($url, \PHP_URL_PATH);
             parse_str((string) parse_url($url, \PHP_URL_QUERY), $query);
             $json = ['response_headers' => ['content-type: application/json']];
+            if (! str_ends_with($path, '/count')) {
+                $this->requests[] = $path.(parse_url($url, \PHP_URL_QUERY) !== null ? '?'.parse_url($url, \PHP_URL_QUERY) : '');
+            }
 
             if (str_ends_with($path, '/api/internal/products/count')) {
                 return new MockResponse(json_encode(['count' => \count($this->catalogIds)]), $json);
@@ -325,6 +417,27 @@ final class IndexBackfillCommandTest extends TestCase
                 $page = \array_slice($rest, 0, (int) $query['limit']);
 
                 return new MockResponse(json_encode(['ids' => $page, 'next_after' => \count($rest) > \count($page) ? end($page) : null]), $json);
+            }
+            if (str_ends_with($path, '/api/internal/products/changed')) {
+                $after = isset($query['after']) ? (int) $query['after'] : 0;
+                $rest = array_values(array_filter($this->changedIds, static fn (int $id) => $id > $after));
+                $page = \array_slice($rest, 0, (int) $query['limit']);
+
+                return new MockResponse(json_encode(['ids' => $page, 'next_after' => \count($rest) > \count($page) ? end($page) : null]), $json);
+            }
+            if (str_ends_with($path, '/api/internal/products/projections')) {
+                $ids = array_map('intval', explode(',', (string) $query['ids']));
+                if (array_intersect($ids, $this->failingIds) !== []) {
+                    return new MockResponse('', ['http_code' => 500]);
+                }
+                $projectable = $this->catalogProjectable ?? $this->catalogIds;
+                $at = self::PROJECTED_AT + max($ids);
+                $items = [];
+                foreach (array_intersect($ids, $projectable) as $id) {
+                    $items[] = ['id' => $id, 'projected_at_us' => $at, 'version' => 1] + $this->product($id);
+                }
+
+                return new MockResponse(json_encode(['projected_at_us' => $at, 'items' => $items, 'missing' => array_values(array_diff($ids, $projectable))]), $json);
             }
             if (preg_match('#/api/internal/products/(\d+)/projection$#', $path, $m) === 1) {
                 $id = (int) $m[1];

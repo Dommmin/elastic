@@ -58,16 +58,17 @@ final class CreateSearchIndexCommandTest extends TestCase
         }
     }
 
-    public function test_swiezy_klaster_dostaje_oba_aliasy_na_v1_z_write_index(): void
+    public function test_swiezy_klaster_dostaje_oba_aliasy_na_biezacej_wersji_z_write_index(): void
     {
         $tester = $this->run_();
+        $current = $this->prefix.CreateSearchIndexCommand::CURRENT_VERSION;
 
         self::assertSame(Command::SUCCESS, $tester->getStatusCode());
-        self::assertSame($this->prefix.'1', $this->aliases->readTarget());
-        self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
+        self::assertSame($current, $this->aliases->readTarget());
+        self::assertSame($current, $this->aliases->writeTarget());
 
         $alias = $this->client->indices()->getAlias(['name' => $this->write])->asArray();
-        self::assertTrue($alias[$this->prefix.'1']['aliases'][$this->write]['is_write_index']);
+        self::assertTrue($alias[$current]['aliases'][$this->write]['is_write_index']);
     }
 
     public function test_drugi_przebieg_jest_idempotentny(): void
@@ -76,8 +77,8 @@ final class CreateSearchIndexCommandTest extends TestCase
         $tester = $this->run_();
 
         self::assertSame(Command::SUCCESS, $tester->getStatusCode());
-        self::assertSame($this->prefix.'1', $this->aliases->readTarget());
-        self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
+        self::assertSame($this->prefix.CreateSearchIndexCommand::CURRENT_VERSION, $this->aliases->readTarget());
+        self::assertSame($this->prefix.CreateSearchIndexCommand::CURRENT_VERSION, $this->aliases->writeTarget());
     }
 
     public function test_jest_tylko_alias_odczytu_to_dopina_zapis_na_ten_sam_indeks(): void
@@ -97,7 +98,7 @@ final class CreateSearchIndexCommandTest extends TestCase
 
     public function test_nie_przepina_istniejacych_aliasow_przy_nowej_wersji(): void
     {
-        $this->run_();
+        $this->run_(['--index-version' => '1']);
         $tester = $this->run_(['--index-version' => '2']);
 
         self::assertSame(Command::SUCCESS, $tester->getStatusCode());
@@ -110,7 +111,7 @@ final class CreateSearchIndexCommandTest extends TestCase
     {
         self::assertSame(7, IndexAliases::versionOf('products-v7'));
 
-        $this->run_();
+        $this->run_(['--index-version' => '1']);
         $this->run_(['--index-version' => '2']);
         $this->aliases->swap($this->write, $this->prefix.'1', $this->prefix.'2');
 
