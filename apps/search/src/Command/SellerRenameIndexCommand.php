@@ -115,6 +115,14 @@ final class SellerRenameIndexCommand extends Command
             return Command::FAILURE;
         }
 
+        // conflicts: proceed — dokument zmieniony w trakcie (np. przez strumień) został
+        // pominięty i może mieć jeszcze starą nazwę. Kod 0 (nic nie jest zepsute),
+        // ale powtórka jest potrzebna; zapytanie pomija dokumenty już poprawione.
+        $conflicts = (int) ($outcome['result']['version_conflicts'] ?? 0);
+        if ($conflicts > 0) {
+            $io->warning("{$conflicts} dokumentów pominiętych przez konflikt wersji (zmienione w trakcie) — uruchom ponownie to samo polecenie, poprawi tylko resztę.");
+        }
+
         return Command::SUCCESS;
     }
 

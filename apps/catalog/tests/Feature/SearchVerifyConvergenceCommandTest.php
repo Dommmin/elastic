@@ -154,3 +154,17 @@ test('zdarzenia sprzed --since są pomijane, a odczyt idzie partiami przez mget'
 
     expect($this->log)->toHaveCount(2);
 });
+
+test('--since z przesunięciem strefy nie przesuwa okna', function () {
+    $old = Product::factory()->create();
+    outboxFor('product', (string) $old->id);
+    Outbox::query()->update(['occurred_at' => now()->subMinutes(50)]);
+    $fresh = Product::factory()->create();
+    outboxFor('product', (string) $fresh->id);
+    $this->docs[(string) $fresh->id] = projectionDoc($fresh);
+
+    // now()-30 min zapisane w -05:00: bez sprowadzenia do UTC okno zaczęłoby się 5 h wcześniej.
+    $this->artisan('search:verify-convergence', ['--since' => now()->subMinutes(30)->setTimezone('-05:00')->toIso8601String()])
+        ->expectsOutputToContain('checked=1 mismatches=0')
+        ->assertExitCode(0);
+});

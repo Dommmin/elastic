@@ -59,6 +59,7 @@ final class IndexMigration
     public function prepare(IndexAliases $aliases, string $gcDeletes, bool $resume): string
     {
         $source = $this->idleIndex($aliases);
+        $this->refuseWhileUpdateByQueryRuns($aliases, $source);
 
         $health = (string) $this->client->cluster()->health()->asArray()['status'];
         if ($health === 'red') {
@@ -108,8 +109,9 @@ final class IndexMigration
     /**
      * Krok 3: alias zapisu → vN+1. Od teraz strumień pisze tylko do nowego
      * indeksu, a odczyt dalej z kompletnego vN. Czas przepięcia trafia do
-     * `_meta` PRZED przepięciem — abort poda go jako początek reprojekcji
-     * (wcześniejszy znacznik = bezpieczniej, wersje odrzucą duplikaty).
+     * `_meta` PRZED przepięciem — po abort to początek okna nadrabiania
+     * (`search:index:backfill --since`, minus margines w `make reindex-abort`;
+     * wcześniejszy znacznik = bezpieczniej, wersje odrzucą duplikaty).
      *
      * @return array{target: string, already: bool}
      */
@@ -125,6 +127,7 @@ final class IndexMigration
         }
 
         $source = $this->idleIndex($aliases);
+        $this->refuseWhileUpdateByQueryRuns($aliases, $source);
         $target = self::nextIndex($source);
         if (! $this->exists($target) || ($this->meta($target)['source'] ?? null) !== $source) {
             throw new MigrationRefused("Brak {$target} utworzonego przez prepare z {$source} — najpierw `prepare`.");
@@ -150,6 +153,7 @@ final class IndexMigration
     {
         [$source, $target] = $this->inProgress($aliases);
         $this->refuseWhileReindexRuns($target);
+        $this->refuseWhileUpdateByQueryRuns($aliases, $source);
 
         // _reindex czyta przez search: zapisy sprzed przepięcia aliasu,
         // jeszcze nieodświeżone w vN, inaczej by się nie skopiowały.
@@ -257,7 +261,9 @@ final class IndexMigration
     /**
      * Przerwanie migracji po switch-write (spec 8.1): oba aliasy z powrotem
      * na vN, vN+1 zostaje do diagnostyki. vN nie widział zapisów od
-     * switch-write — zwracany czas to początek `search:reproject` do vN.
+     * switch-write — zwracany czas (`switch_write_at`) to początek okna
+     * nadrabiania z outboxu (`search:index:backfill --since`, Task 12b);
+     * `make reindex-abort` czyta go sam z `_meta` i odejmuje margines.
      *
      * @return array{source: string, target: string, since: string}
      */
@@ -267,7 +273,12 @@ final class IndexMigration
         $meta = $write === null ? [] : $this->meta($write);
         $source = $meta['source'] ?? null;
 
-        if ($write === null || $source === null || isset($meta['switch_read_started_at']) || ! isset($meta['switch_write_at'])) {
+        if ($write !== null && $source !== null && isset($meta['switch_read_started_at'])) {
+            // Znacznik stawiany PRZED przepięciem odczytu: proces mógł paść przed albo
+            // po nim. Z obu stanów wychodzi się tak samo — ponownym switch-read.
+            throw new MigrationRefused("switch-read na {$write} już się zaczął ({$meta['switch_read_started_at']}) — abort odmawia. Dokończ go: search:index:migrate switch-read (bramka liczona od nowa, jeśli odczyt nie był jeszcze przepięty).");
+        }
+        if ($write === null || $source === null || ! isset($meta['switch_write_at'])) {
             throw new MigrationRefused(sprintf(
                 'Nic do cofnięcia: alias zapisu %s wskazuje %s, który nie jest celem migracji w toku (po switch-write, przed switch-read).',
                 $aliases->write,
@@ -377,13 +388,20 @@ final class IndexMigration
      * Początek `search:index:backfill`: cel migracji traci stare pieczęcie
      * wypełnienia (zadanie `_reindex` i poprzedni backfill), więc częściowy
      * albo nieudany backfill nigdy nie przejdzie na cudzym wyniku.
-     * Indeks bez migracji w `_meta` (np. stary vN przy abort) zostaje nietknięty.
      *
-     * @return bool czy indeks jest celem migracji (ma `_meta.migration`)
+     * Cel migracji = cel aliasu zapisu W TRAKCIE migracji (odczyt na jego
+     * `_meta.migration.source`). Każdy inny indeks zostaje nietknięty: stary vN
+     * po abort, ale też vN+1 po udanej migracji (żywy, oba aliasy na nim — ma
+     * `_meta.migration` z poprzedniego przebiegu) i vN+1 przed switch-write
+     * (zapisy strumienia z czasu przed przepięciem by go ominęły).
+     *
+     * @return bool czy indeks jest celem migracji w toku
      */
-    public function beginBackfill(string $index): bool
+    public function beginBackfill(IndexAliases $aliases, string $index): bool
     {
-        if ($this->meta($index) === []) {
+        $read = $aliases->readTarget();
+        if ($index !== $aliases->writeTarget() || $read === null || $read === $index
+            || ($this->meta($index)['source'] ?? null) !== $read) {
             return false;
         }
         $this->putMeta($index, ['reindex_task' => null, 'fill_method' => null] + self::BACKFILL_CLEARED);
@@ -392,7 +410,8 @@ final class IndexMigration
     }
 
     /**
-     * Pieczęć udanego backfillu (tylko przy 0 błędów — wołający pilnuje).
+     * Pieczęć udanego backfillu (tylko przy 0 błędów i tylko dla indeksu, dla
+     * którego beginBackfill zwrócił true — wołający pilnuje).
      * Nie dotyka indeksów bez `_meta.migration`.
      *
      * @param array{indexed: int, stale: int, notfound: int, deleted: int, errors: int} $counts
@@ -494,6 +513,32 @@ final class IndexMigration
             foreach ($node['tasks'] ?? [] as $id => $task) {
                 if (str_contains((string) ($task['description'] ?? ''), "[{$target}]")) {
                     throw new MigrationRefused("_reindex do {$target} jeszcze trwa (zadanie {$id}) — poczekaj albo go anuluj.");
+                }
+            }
+        }
+    }
+
+    /**
+     * Odmowa, gdy trwa `_update_by_query` na vN (np. `search:seller:rename`).
+     * Jego zapisy nie przechodzą przez outbox: te, które trafią do vN po
+     * switch-write, nigdy nie dotrą do vN+1, a `_reindex` mógł już skopiować
+     * dokument sprzed zmiany. Bramka, verify-convergence i nadrabianie po abort
+     * tego nie zobaczą. Opis zadania wymienia indeksy tak, jak podano je
+     * w żądaniu (`update-by-query [products-write] …`), więc sprawdzamy vN
+     * i oba aliasy — alias zapisu mógł jeszcze wskazywać vN, gdy zadanie startowało.
+     */
+    private function refuseWhileUpdateByQueryRuns(IndexAliases $aliases, string $source): void
+    {
+        $watched = [$source, $aliases->read, $aliases->write];
+        $nodes = $this->client->tasks()->list(['actions' => 'indices:data/write/update/byquery', 'detailed' => true])->asArray()['nodes'] ?? [];
+        foreach ($nodes as $node) {
+            foreach ($node['tasks'] ?? [] as $id => $task) {
+                if (preg_match('/\[([^\]]*)\]/', (string) ($task['description'] ?? ''), $m) !== 1) {
+                    continue;
+                }
+                $indices = array_map('trim', explode(',', $m[1]));
+                if (array_intersect($indices, $watched) !== []) {
+                    throw new MigrationRefused("Trwa _update_by_query na {$m[1]} (zadanie {$id}, np. search:seller:rename) — jego zapisy nie trafiłyby do nowego indeksu. Poczekaj na koniec (make es-tasks) albo go anuluj (make es-cancel) i powtórz krok.");
                 }
             }
         }

@@ -249,7 +249,7 @@ final class IndexMigrateCommandTest extends TestCase
         self::assertStringNotContainsString('TASK=', $tester->getDisplay());
     }
 
-    public function test_abort_przywraca_oba_aliasy_na_v1_i_drukuje_od_kiedy_reprojekcja(): void
+    public function test_abort_przywraca_oba_aliasy_na_v1_i_drukuje_od_kiedy_nadrabiac(): void
     {
         $this->assertStep('prepare');
         $before = new \DateTimeImmutable('-1 second');
@@ -261,8 +261,8 @@ final class IndexMigrateCommandTest extends TestCase
 
         self::assertSame($this->prefix.'1', $this->aliases->readTarget());
         self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
-        self::assertMatchesRegularExpression('/^REPROJECT_NEEDED_SINCE=(\S+)$/m', $abort->getDisplay());
-        preg_match('/^REPROJECT_NEEDED_SINCE=(\S+)$/m', $abort->getDisplay(), $m);
+        self::assertMatchesRegularExpression('/^CATCHUP_SINCE=(\S+)$/m', $abort->getDisplay());
+        preg_match('/^CATCHUP_SINCE=(\S+)$/m', $abort->getDisplay(), $m);
         $since = new \DateTimeImmutable($m[1]);
         self::assertGreaterThanOrEqual($before, $since);
         self::assertLessThanOrEqual(new \DateTimeImmutable('+1 second'), $since);
@@ -273,6 +273,7 @@ final class IndexMigrateCommandTest extends TestCase
         self::assertStringContainsString('make reindex-abort', $display);
         self::assertStringContainsString('search:index:backfill --index='.$this->aliases->write.' --since=', $display);
         self::assertStringNotContainsString('search:reproject', $display);
+        self::assertStringNotContainsString('REPROJECT_NEEDED_SINCE', $abort->getDisplay());
     }
 
     public function test_switch_read_przy_niezdanej_bramce_odmawia_i_nie_rusza_aliasu_odczytu(): void
@@ -382,6 +383,59 @@ final class IndexMigrateCommandTest extends TestCase
         }
     }
 
+    /**
+     * Zmiana nazwy sprzedawcy (`_update_by_query` przez alias zapisu) trwa na vN.
+     * Gdyby prepare/switch-write ruszyły, jej późniejsze zapisy trafiłyby tylko do
+     * vN (już bez zapisów), a `_reindex` mógł skopiować dokument sprzed zmiany —
+     * vN+1 zostałby ze starą nazwą, a outbox (abort, verify) tego nie widzi.
+     */
+    public function test_prepare_i_switch_write_odmawiaja_gdy_trwa_update_by_query_na_vn(): void
+    {
+        $taskId = $this->startThrottledUpdateByQuery($this->write);
+
+        try {
+            $prepare = $this->migrate('prepare');
+            self::assertSame(Command::FAILURE, $prepare->getStatusCode(), $prepare->getDisplay());
+            self::assertStringContainsString('_update_by_query', $this->flat($prepare));
+            self::assertStringContainsString($taskId, $this->flat($prepare));
+            self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.'2'])->asBool(), 'prepare nie może utworzyć vN+1.');
+        } finally {
+            $this->client->tasks()->cancel(['task_id' => $taskId]);
+            $this->waitUntilCompleted($taskId);
+        }
+
+        // Po zakończeniu zadania prepare przechodzi; switch-write odmawia, gdy zadanie (na nazwie indeksu) wróci.
+        $this->assertStep('prepare');
+        $taskId = $this->startThrottledUpdateByQuery($this->prefix.'1');
+        try {
+            $switch = $this->migrate('switch-write');
+            self::assertSame(Command::FAILURE, $switch->getStatusCode(), $switch->getDisplay());
+            self::assertStringContainsString('_update_by_query', $this->flat($switch));
+            self::assertSame($this->prefix.'1', $this->aliases->writeTarget());
+        } finally {
+            $this->client->tasks()->cancel(['task_id' => $taskId]);
+            $this->waitUntilCompleted($taskId);
+        }
+        $this->assertStep('switch-write');
+    }
+
+    public function test_reindex_odmawia_gdy_trwa_update_by_query_na_vn(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $taskId = $this->startThrottledUpdateByQuery($this->read);
+
+        try {
+            $reindex = $this->migrate('reindex');
+            self::assertSame(Command::FAILURE, $reindex->getStatusCode(), $reindex->getDisplay());
+            self::assertStringContainsString('_update_by_query', $this->flat($reindex));
+            self::assertStringNotContainsString('TASK=', $reindex->getDisplay());
+        } finally {
+            $this->client->tasks()->cancel(['task_id' => $taskId]);
+            $this->waitUntilCompleted($taskId);
+        }
+    }
+
     public function test_resume_po_abort_odmawia(): void
     {
         $this->assertStep('prepare');
@@ -409,11 +463,37 @@ final class IndexMigrateCommandTest extends TestCase
         $this->client->indices()->putMapping(['index' => $this->prefix.'2', 'body' => ['_meta' => $meta]]);
         $this->aliases->swap($this->read, $this->prefix.'1', $this->prefix.'2');
 
-        self::assertSame(Command::FAILURE, $this->migrate('abort')->getStatusCode());
+        $abort = $this->migrate('abort');
+        self::assertSame(Command::FAILURE, $abort->getStatusCode());
+        self::assertStringContainsString('search:index:migrate switch-read', $this->flat($abort));
 
         $this->assertStep('switch-read');
         self::assertArrayNotHasKey('gc_deletes', $this->settings($this->prefix.'2'));
         self::assertSame($this->prefix.'2', $this->aliases->readTarget());
+    }
+
+    public function test_awaria_po_znaczniku_switch_read_przed_przepieciem_abort_odmawia_a_switch_read_konczy(): void
+    {
+        $this->assertStep('prepare');
+        $this->assertStep('switch-write');
+        $this->assertStep('reindex', ['--wait' => true]);
+        $this->assertStep('finalize');
+
+        // Symulacja: proces padł po zapisaniu switch_read_started_at, przed przepięciem odczytu.
+        $mapping = $this->client->indices()->getMapping(['index' => $this->prefix.'2'])->asArray();
+        $meta = $mapping[$this->prefix.'2']['mappings']['_meta'];
+        $meta['migration']['switch_read_started_at'] = '2026-11-19T12:00:00+00:00';
+        $this->client->indices()->putMapping(['index' => $this->prefix.'2', 'body' => ['_meta' => $meta]]);
+
+        $abort = $this->migrate('abort');
+        self::assertSame(Command::FAILURE, $abort->getStatusCode());
+        self::assertStringContainsString('search:index:migrate switch-read', $this->flat($abort));
+        self::assertSame($this->prefix.'2', $this->aliases->writeTarget(), 'abort niczego nie przepiął.');
+
+        $switch = $this->assertStep('switch-read');
+        self::assertStringContainsString('GATE=PASS', $switch->getDisplay());
+        self::assertSame($this->prefix.'2', $this->aliases->readTarget());
+        self::assertArrayNotHasKey('gc_deletes', $this->settings($this->prefix.'2'));
     }
 
     public function test_alias_na_indeksie_bez_przyrostka_wersji_to_czytelna_odmowa(): void
@@ -448,6 +528,24 @@ final class IndexMigrateCommandTest extends TestCase
         preg_match('/^TASK=(\S+)$/m', $tester->getDisplay(), $m);
 
         return $m[1];
+    }
+
+    /**
+     * `_update_by_query` w tle na `$indexOrAlias`, jak `search:seller:rename`:
+     * paczki po 100 przy rps=10 — po pierwszej ~10 s przerwy, zadanie na pewno trwa.
+     */
+    private function startThrottledUpdateByQuery(string $indexOrAlias): string
+    {
+        $response = $this->client->updateByQuery([
+            'index' => $indexOrAlias,
+            'wait_for_completion' => false,
+            'requests_per_second' => 10,
+            'scroll_size' => 100,
+            'conflicts' => 'proceed',
+            'body' => ['script' => ['lang' => 'painless', 'source' => 'ctx._source.name = ctx._source.name + ""']],
+        ])->asArray();
+
+        return (string) $response['task'];
     }
 
     private function waitUntilCompleted(string $taskId): void

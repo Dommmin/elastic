@@ -41,7 +41,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * stary vN po reindex-abort (oba aliasy na nim, czyli też cel odczytu).
  * Zapis z external versioningiem do żywego indeksu jest tak bezpieczny jak
  * `search:reproject`: wygrywają tylko nowsze wersje. Pieczęć dostaje wyłącznie
- * cel migracji (`_meta.migration`).
+ * cel migracji W TOKU (cel aliasu zapisu, gdy odczyt jest jeszcze na jego
+ * źródle) — nie żywy indeks po udanej migracji, choć ma `_meta.migration`.
  *
  * Pieczęć w `_meta.migration` (decyzja kontrolera D, pełny backfill): przy
  * starcie kasowana, przy sukcesie z 0 błędów zapisywana (`fill_method:
@@ -72,6 +73,7 @@ final class IndexBackfillCommand extends Command
             ->addOption('index', null, InputOption::VALUE_REQUIRED, 'Indeks docelowy (cel migracji, stary vN po abort) albo alias zapisu')
             ->addOption('batch', null, InputOption::VALUE_REQUIRED, 'Ile produktów na partię (1..500): strona ID = jedno żądanie projekcji = jeden _bulk', (string) self::MAX_BATCH)
             ->addOption('since', null, InputOption::VALUE_REQUIRED, 'Tylko produkty zmienione od tej chwili (ISO 8601, outbox catalogu) — nadrabianie, bez pieczęci')
+            ->addOption('read-alias', null, InputOption::VALUE_REQUIRED, 'Alias odczytu (tylko testy)', IndexAliases::READ)
             ->addOption('write-alias', null, InputOption::VALUE_REQUIRED, 'Alias zapisu (tylko testy)', IndexAliases::WRITE);
     }
 
@@ -93,7 +95,9 @@ final class IndexBackfillCommand extends Command
         $since = null;
         if ($input->getOption('since') !== null) {
             try {
-                $since = (new \DateTimeImmutable((string) $input->getOption('since')))->format(\DATE_ATOM);
+                // W UTC: catalog porównuje `occurred_at` (UTC) z wartością bez strefy,
+                // więc przesunięcie (+01:00) przesunęłoby okno o godzinę.
+                $since = (new \DateTimeImmutable((string) $input->getOption('since')))->setTimezone(new \DateTimeZone('UTC'))->format(\DATE_ATOM);
             } catch (\Exception) {
                 $io->error("Nieprawidłowa data --since: {$input->getOption('since')} (oczekiwane ISO 8601).");
 
@@ -101,7 +105,7 @@ final class IndexBackfillCommand extends Command
             }
         }
 
-        $aliases = new IndexAliases($this->client, write: (string) $input->getOption('write-alias'));
+        $aliases = new IndexAliases($this->client, (string) $input->getOption('read-alias'), (string) $input->getOption('write-alias'));
         $index = $this->resolve($name, $aliases);
         if ($index === null) {
             $io->error("Nie ma indeksu ani aliasu zapisu {$name}.");
@@ -109,7 +113,7 @@ final class IndexBackfillCommand extends Command
             return Command::FAILURE;
         }
         // --since to nadrabianie okna, nie pełne wypełnienie: pieczęci nie ruszamy wcale.
-        $isMigrationTarget = $since === null && $this->migration->beginBackfill($index);
+        $isMigrationTarget = $since === null && $this->migration->beginBackfill($aliases, $index);
         if ($since !== null) {
             $output->writeln("nadrabianie {$index}: produkty zmienione od {$since} (outbox catalogu)");
         }

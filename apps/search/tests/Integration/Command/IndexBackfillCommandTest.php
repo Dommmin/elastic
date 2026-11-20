@@ -175,6 +175,17 @@ final class IndexBackfillCommandTest extends TestCase
         self::assertSame([], $this->requests);
     }
 
+    /** Przesunięcie strefy w --since nie może przesunąć okna: do catalogu idzie ta sama chwila w UTC. */
+    public function test_since_ze_strefa_inna_niz_utc_idzie_do_catalogu_w_utc(): void
+    {
+        $this->changedIds = [];
+
+        $tester = $this->backfill($this->write, ['--since' => '2026-11-20T01:35:06+01:00']);
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertSame(['/api/internal/products/changed?since=2026-11-20T00:35:06+00:00&limit=500'], array_map('urldecode', $this->requests));
+    }
+
     public function test_batch_ponad_500_odmawia(): void
     {
         $tester = $this->backfill($this->write, ['--batch' => '501']);
@@ -334,6 +345,40 @@ final class IndexBackfillCommandTest extends TestCase
         self::assertSame(Command::FAILURE, $this->migrate('finalize')->getStatusCode());
     }
 
+    /**
+     * Po udanej migracji v2 jest żywym indeksem (oba aliasy), ale ma `_meta.migration`.
+     * Pełny backfill do `products-write` w spoczynku nie może ruszać jej pieczęci —
+     * pieczętujemy tylko cel migracji w toku (alias zapisu ≠ alias odczytu).
+     */
+    public function test_pelny_backfill_do_zywego_indeksu_po_migracji_nie_rusza_pieczeci(): void
+    {
+        $this->prepareTarget();
+        $this->catalogIds = range(1, 3);
+        $this->assertBackfill($this->prefix.'2');
+        $this->assertMigrate('finalize');
+        $this->assertMigrate('switch-read');
+        $before = $this->meta();
+        self::assertSame($this->prefix.'2', $this->aliases->writeTarget());
+
+        $tester = $this->backfill($this->write);
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertSame($before, $this->meta(), 'Żywy indeks w spoczynku: pieczęć ani kasowana, ani stawiana na nowo.');
+        self::assertStringContainsString('nie jest celem migracji', $this->flat($tester));
+    }
+
+    public function test_pelny_backfill_do_przygotowanego_celu_przed_switch_write_nie_pieczetuje(): void
+    {
+        $this->assertMigrate('prepare');
+        $this->catalogIds = range(1, 3);
+
+        $tester = $this->backfill($this->prefix.'2');
+
+        self::assertSame(Command::SUCCESS, $tester->getStatusCode(), $tester->getDisplay());
+        self::assertArrayNotHasKey('backfill_completed_at', $this->meta());
+        self::assertStringContainsString('nie jest celem migracji', $this->flat($tester));
+    }
+
     public function test_reindex_po_backfillu_zeruje_pieczec_backfillu(): void
     {
         $this->prepareTarget();
@@ -367,7 +412,7 @@ final class IndexBackfillCommandTest extends TestCase
     {
         $migration = new IndexMigration($this->client, new IndexMapping($this->mappingsDir), new IndexGate($this->client, $this->catalog()), pollSeconds: 0.2);
         $tester = new CommandTester(new IndexBackfillCommand($this->client, $this->catalog(), $migration));
-        $tester->execute(['--index' => $index, '--write-alias' => $this->write] + $options);
+        $tester->execute(['--index' => $index, '--read-alias' => $this->read, '--write-alias' => $this->write] + $options);
 
         return $tester;
     }

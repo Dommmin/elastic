@@ -78,6 +78,7 @@ class ProductIdsController extends Controller
         $after = (int) ($data['after'] ?? 0);
         $limit = (int) ($data['limit'] ?? self::DEFAULT_LIMIT);
 
+        // Strefę `since` sprowadza do UTC TouchedProductIds (wspólne z verify-convergence).
         // limit + 1: dodatkowe ID mówi, czy jest kolejna strona (jak w ids()).
         $ids = $touched->since(CarbonImmutable::parse($data['since']), $after, $limit + 1);
         $page = array_slice($ids, 0, $limit);

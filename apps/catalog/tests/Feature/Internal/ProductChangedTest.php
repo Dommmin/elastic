@@ -60,6 +60,20 @@ test('since odcina starsze zdarzenia', function () {
         ->assertJsonPath('ids', [2]);
 });
 
+test('since z przesunięciem strefy nie przesuwa okna', function () {
+    changedEvent('product', '1', at: now()->subMinutes(50)->toDateTimeString());
+    changedEvent('product', '2', at: now()->subMinutes(10)->toDateTimeString());
+
+    // Ta sama chwila co now()-30 min, zapisana w +01:00 i w -05:00.
+    foreach (['+01:00', '-05:00'] as $zone) {
+        $since = now()->subMinutes(30)->setTimezone($zone)->toIso8601String();
+
+        $this->getJson('/api/internal/products/changed?since='.urlencode($since))
+            ->assertOk()
+            ->assertJsonPath('ids', [2]);
+    }
+});
+
 test('stronicuje po ID produktu bez dubli i luk', function () {
     foreach ([5, 3, 9, 1, 7] as $id) {
         changedEvent('product', (string) $id);

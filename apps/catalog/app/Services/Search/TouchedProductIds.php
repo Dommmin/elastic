@@ -3,6 +3,7 @@
 namespace App\Services\Search;
 
 use App\Models\Outbox;
+use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 
@@ -36,7 +37,9 @@ class TouchedProductIds
         $payloadProductId = $events->getGrammar()->wrap('payload->product_id');
         $events
             ->selectRaw("CAST(CASE WHEN aggregate_type = 'product' THEN aggregate_id ELSE {$payloadProductId} END AS BIGINT) AS product_id")
-            ->where('occurred_at', '>=', $since)
+            // UTC: `occurred_at` jest w UTC, a zapytanie porównuje wartości bez strefy —
+            // `since` z przesunięciem (+01:00, -05:00) przesunąłby okno o tyle godzin.
+            ->where('occurred_at', '>=', CarbonImmutable::instance($since)->utc())
             ->whereIn('aggregate_type', ['product', 'offer', 'review']);
 
         return DB::query()

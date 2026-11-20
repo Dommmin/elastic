@@ -21,7 +21,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * `tools/es/reindex.sh`; logika i warunki wstępne: IndexMigration.
  *
  * Linie dla skryptów (dokładnie w tej postaci): `TARGET=<indeks>`,
- * `TASK=<id>`, `GATE=PASS|FAIL`, `REPROJECT_NEEDED_SINCE=<ISO>`.
+ * `TASK=<id>`, `GATE=PASS|FAIL`, `CATCHUP_SINCE=<ISO>` (abort: `switch_write_at`,
+ * początek okna nadrabiania przed odjęciem marginesu).
  * Kody: 0 sukces, 1 odmowa/błąd, 130 reindeks przerwany Ctrl-C.
  */
 #[AsCommand(name: 'search:index:migrate', description: 'Krok migracji indeksu: prepare|switch-write|reindex|finalize|switch-read|abort|cleanup')]
@@ -180,7 +181,7 @@ final class IndexMigrateCommand extends Command
             ."{$result['source']} nie widział zapisów od switch-write ({$result['since']}). "
             .'make reindex-abort nadrabia je sam (krok 3/3); ręcznie: '
             ."search:index:backfill --index={$aliases->write} --since=<switch_write_at − margines, domyślnie 300 s>.");
-        $output->writeln("REPROJECT_NEEDED_SINCE={$result['since']}");
+        $output->writeln("CATCHUP_SINCE={$result['since']}");
 
         return Command::SUCCESS;
     }

@@ -14,6 +14,7 @@ use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\Process\Process;
 
 /**
  * `search:seller:rename` (spec 5.7) na prawdziwym ES, jednorazowy indeks
@@ -124,6 +125,42 @@ final class SellerRenameIndexCommandTest extends TestCase
         self::assertSame(IndexOutcome::Stale, $indexer->indexProduct(['id' => 5] + $this->withSeller(5), $v));
         self::assertSame(IndexOutcome::Indexed, $indexer->indexProduct(['id' => 5] + $this->withSeller(5, 'Z zdarzenia'), $v + 1_000));
         self::assertSame($v + 1_000, $this->client->get(['index' => $this->index, 'id' => '5'])->asArray()['_version']);
+    }
+
+    /**
+     * Konflikt wersji: dokument zmieniony między odczytem scrolla a zapisem
+     * `_update_by_query` (`conflicts: proceed` go pomija). Kod 0, ale z ostrzeżeniem
+     * „uruchom ponownie” — powtórka poprawi resztę (zapytanie jest idempotentne).
+     * Komenda w osobnym procesie, żeby test mógł zmienić dokument w trakcie:
+     * rps=100 przy paczkach po 1000 = ~10 s przerwy przed drugą paczką.
+     */
+    public function test_konflikty_wersji_koncza_sie_ostrzezeniem_a_powtorka_poprawia_reszte(): void
+    {
+        $this->seed(1500, sellerEvery: 1);
+        $process = new Process(
+            ['php', 'bin/console', 'search:seller:rename', self::SELLER, 'Nowa Nazwa', '--index='.$this->index, '--rps=100', '--read-alias='.$this->read, '--write-alias='.$this->write],
+            \dirname(__DIR__, 3),
+            ['SHELL_VERBOSITY' => '0', 'COLUMNS' => '200'],
+            timeout: 120,
+        );
+        $process->start();
+
+        // Czekamy, aż pierwsza paczka (1000) przejdzie, i zmieniamy dokument z drugiej.
+        for ($i = 0; $i < 100 && ! str_contains($process->getOutput(), 'TASK='); ++$i) {
+            usleep(100_000);
+        }
+        usleep(1_500_000);
+        $this->client->index(['index' => $this->index, 'id' => '1400', 'version' => 2_000_000, 'version_type' => 'external', 'body' => $this->withSeller(1400)]);
+        $process->wait();
+
+        $output = preg_replace('/\s+/', ' ', $process->getOutput().$process->getErrorOutput());
+        self::assertSame(Command::SUCCESS, $process->getExitCode(), $output);
+        self::assertMatchesRegularExpression('/zakończono: updated=1499 version_conflicts=1 total=1500/', $output);
+        self::assertStringContainsString('uruchom ponownie', $output);
+
+        $again = $this->rename('Nowa Nazwa');
+        self::assertStringContainsString('zakończono: updated=1 version_conflicts=0 total=1', $again->getDisplay());
+        self::assertStringNotContainsString('uruchom ponownie', preg_replace('/\s+/', ' ', $again->getDisplay()));
     }
 
     public function test_no_wait_zwraca_task_ktory_konczy_sie_w_tasks_api(): void
