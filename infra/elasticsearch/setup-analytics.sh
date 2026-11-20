@@ -41,7 +41,7 @@
 #  reguły (_find, dokładne dopasowanie): reguła istnieje → PUT nadpisuje definicję
 #  z pliku (reguły jako kod, plik jest źródłem prawdy; ręczne zmiany w Kibanie
 #  zostaną nadpisane), brak → POST. Connectory: GET po stałym ID → PUT albo POST.
-#  Uwagi: skok zero results oczekiwanie wyzwala też regułę CTR (wyszukania bez
+#  Uwagi: skok zero results zwykle wyzwala też regułę CTR (wyszukania bez
 #  wyników nie mają kliknięć) — to korelacja, nie błąd. Bazy (7 dni) nie mają
 #  minimalnego wolumenu: przy prawie pustej historii baza jest niewiarygodna
 #  (minimum dotyczy tylko okna bieżącego). Trwała anomalia daje jeden dokument
