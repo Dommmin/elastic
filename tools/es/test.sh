@@ -23,13 +23,13 @@ else
   echo "  - pomijam shellcheck (brak binarki; CI go ma)"
 fi
 
-# --- kv_get: TARGET= / TASK= / GATE= / REPROJECT_NEEDED_SINCE= -------------
+# --- kv_get: TARGET= / TASK= / GATE= / CATCHUP_SINCE= ----------------------
 prep=$'[OK] products-v2 gotowy: 0 replik.\nTARGET=products-v2\n'
 eq "TARGET=" "$(kv_get TARGET <<<"${prep}")" "products-v2"
 eq "TASK=" "$(kv_get TASK <<<$'TASK=abc123:4567\npostęp: created=1')" "abc123:4567"
 eq "GATE=PASS" "$(kv_get GATE <<<$'Bramka products-v2: zdrowie=green\nGATE=PASS')" "PASS"
 eq "GATE=FAIL" "$(kv_get GATE <<<$'NIESPEŁNIONE: liczba\nGATE=FAIL')" "FAIL"
-eq "REPROJECT_NEEDED_SINCE=" "$(kv_get REPROJECT_NEEDED_SINCE <<<$'x\nREPROJECT_NEEDED_SINCE=2026-11-19T10:00:00+00:00')" "2026-11-19T10:00:00+00:00"
+eq "CATCHUP_SINCE=" "$(kv_get CATCHUP_SINCE <<<$'x\nCATCHUP_SINCE=2026-11-19T10:00:00+00:00')" "2026-11-19T10:00:00+00:00"
 eq "brak klucza = pusto" "$(kv_get TARGET <<<'nic')" ""
 eq "klucz musi być na początku linii" "$(kv_get GATE <<<'xGATE=PASS')" ""
 
@@ -158,7 +158,13 @@ migration_source <<<'{"error":{"type":"x"},"status":500}' >/dev/null 2>&1 && bad
 # resume_decision STARY ZAPIS <_mapping celu zapisu — decyzja run przy read≠write
 m_ok='{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2"}}}}}'
 m_other='{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v1"}}}}}'
-eq "resume_decision: ten sam indeks = fresh" "$(resume_decision products-v2 products-v2 </dev/null)" "fresh"
+eq "resume_decision: ten sam indeks bez _meta = fresh" "$(resume_decision products-v2 products-v2 <<<'{"products-v2":{"mappings":{}}}')" "fresh"
+m_done='{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_read_started_at":"2026-11-20T01:00:00+00:00","switched_read_at":"2026-11-20T01:00:01+00:00"}}}}}'
+m_crash='{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_read_started_at":"2026-11-20T01:00:00+00:00"}}}}}'
+eq "resume_decision: po udanym switch-read = fresh" "$(resume_decision products-v3 products-v3 <<<"${m_done}")" "fresh"
+out="$(resume_decision products-v3 products-v3 <<<"${m_crash}")" && bad "resume_decision: padnięty switch-read (oba aliasy na v3, brak switched_read_at) powinien odmówić" \
+  || { grep -q 'uruchom search:index:migrate switch-read, żeby dokończyć' <<<"${out}" && ok "resume_decision: padnięty switch-read = odmowa z podpowiedzią switch-read" || bad "resume_decision: brak podpowiedzi switch-read ('${out}')"; }
+resume_decision products-v3 products-v3 <<<'nie json' >/dev/null && bad "resume_decision: ten sam indeks, śmieci powinny odmówić" || ok "resume_decision: ten sam indeks, nieczytelne _meta = odmowa (fail-closed)"
 eq "resume_decision: cel z prepare = resume" "$(resume_decision products-v2 products-v3 <<<"${m_ok}")" "resume"
 out="$(resume_decision products-v2 products-v3 <<<"${m_other}")" && bad "resume_decision: obce źródło powinno odmówić" \
   || { grep -q 'nie jest celem migracji z products-v2' <<<"${out}" && ok "resume_decision: obce źródło = odmowa z powodem" || bad "resume_decision: brak powodu odmowy ('${out}')"; }
@@ -203,9 +209,10 @@ case "$*" in
   *"sh -c"*" GET /_alias/products-write"*) echo "{\"${STUB_WRITE}\":{\"aliases\":{\"products-write\":{}}}}" ;;
   *"sh -c"*" GET /_alias/products-search"*) echo "{\"${STUB_WRITE}\":{\"aliases\":{\"products-search\":{}}}}" ;;
   *"sh -c"*" GET /products-v9/_mapping"*) echo '{"products-v9":{"mappings":{"_meta":{}}}}' ;;
+  *"sh -c"*" GET /products-v7/_mapping"*) echo '{"products-v7":{"mappings":{"_meta":{"migration":{"source":"products-v6","switch_write_at":"2026-11-20T00:40:06+00:00","switch_read_started_at":"2026-11-20T01:00:00+00:00"}}}}}' ;;
   *"sh -c"*" GET /products-v3/_mapping"*) echo '{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_write_at":"2026-11-20T00:40:06+00:00"}}}}}' ;;
   *"sh -c"*" GET /_tasks"*) echo '{"nodes":{}}' ;;
-  *"search:index:migrate abort"*) echo 'REPROJECT_NEEDED_SINCE=2026-11-20T00:40:06+00:00' ;;
+  *"search:index:migrate abort"*) echo 'CATCHUP_SINCE=2026-11-20T00:40:06+00:00' ;;
   *"rabbitmq rabbitmqctl list_queues"*) printf 'search.product.sync.dlq\t2\nsearch.product.sync\t4321\n' ;;
   *) echo "ok" ;;
 esac
@@ -238,7 +245,14 @@ STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v3 DC="${stub_dir}/dc" bash tools
 STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v9 DC="${stub_dir}/dc" bash tools/es/reindex.sh abort >/dev/null 2>&1 \
   && bad "abort bez switch_write_at przeszedł" || ok "abort bez switch_write_at odmawia"
 grep -q 'search:index:migrate abort' "${stub_dir}/log" && bad "abort bez switch_write_at przepiął aliasy" || ok "abort bez switch_write_at nie rusza aliasów"
-grep -q 'REPROJECT_NEEDED_SINCE' tools/es/reindex.sh && bad "reindex.sh: martwy fallback REPROJECT_NEEDED_SINCE" || ok "reindex.sh: okno tylko z _meta (bez martwego fallbacku)"
+grep -q 'CATCHUP_SINCE' tools/es/reindex.sh && bad "reindex.sh: martwy fallback CATCHUP_SINCE" || ok "reindex.sh: okno tylko z _meta (bez martwego fallbacku)"
+grep -rq 'REPROJECT_NEEDED_SINCE' tools/es/lib.sh tools/es/reindex.sh apps/search/src && bad "stara nazwa REPROJECT_NEEDED_SINCE w kodzie" || ok "abort wypisuje CATCHUP_SINCE= (bez starej nazwy REPROJECT_NEEDED_SINCE)"
+# run po padniętym switch-read (oba aliasy na v7, switch_read_started_at bez switched_read_at): odmowa, nic nie startuje
+: >"${stub_dir}/log"
+STUB_LOG="${stub_dir}/log" STUB_WRITE=products-v7 DC="${stub_dir}/dc" bash tools/es/reindex.sh run >"${stub_dir}/out" 2>&1 \
+  && bad "run po padniętym switch-read przeszedł (wystartowałby vN+2)" || ok "run po padniętym switch-read odmawia"
+grep -q 'search:index:migrate switch-read' "${stub_dir}/out" && ok "run: podpowiedź search:index:migrate switch-read" || bad "run: brak podpowiedzi switch-read: $(cat "${stub_dir}/out")"
+grep -qE 'search:eval|search:index:migrate prepare' "${stub_dir}/log" && bad "run po padniętym switch-read zaczął eval/prepare" || ok "run po padniętym switch-read niczego nie uruchamia"
 rm -rf "${stub_dir}"
 grep -qE '^reindex-abort:.*' Makefile && grep -A2 -E '^reindex-abort:' Makefile | grep -q -- '--margin=$(or $(margin),300)' \
   && ok "Makefile: reindex-abort margin= (domyślnie 300)" || bad "Makefile: reindex-abort bez margin="

@@ -47,14 +47,18 @@ cmd_run() {
   old="$(alias_target "${READ_ALIAS}")" || die "nie umiem odczytać aliasu ${READ_ALIAS}"
   write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
   [[ -n "${old}" && -n "${write}" ]] || die "brak aliasu (read='${old}', write='${write}')"
+  # _meta celu zapisu czytamy zawsze: też przy obu aliasach na jednym indeksie, bo
+  # padnięty switch-read (odczyt przepięty, kroki po nim niedokończone) wygląda jak spoczynek.
+  decision="$(es GET "/${write}/_mapping" 2>/dev/null | resume_decision "${old}" "${write}")" || die "${decision:-nie umiem odczytać _meta ${write}}"
   if [[ "${old}" != "${write}" ]]; then
     # Migracja w toku (np. po Ctrl-C w _reindex): zapis już na celu z prepare.
     # Wznawiamy od reindeksu — _reindex z version_type=external kopiuje tylko
     # brakujące, a zapisy ze strumienia w celu wygrywają. Abort to droga O(N).
-    decision="$(es GET "/${write}/_mapping" 2>/dev/null | resume_decision "${old}" "${write}")" || die "${decision:-nie umiem odczytać _meta ${write}}"
     [[ "${decision}" == resume ]] || die "nieoczekiwana decyzja wznowienia: ${decision}"
     resume=1; target="${write}"
     info "Wznawiam migrację w toku: ${old} → ${target} (zapis już na ${target}; prepare i switch-write pomijam)"
+  else
+    [[ "${decision}" == fresh ]] || die "nieoczekiwana decyzja: ${decision}"
   fi
 
   trap 'echo; echo "przerwano — jeśli _reindex trwał, anuluję"; [[ -n "${target:-}" ]] && cancel_reindex_into "${target}"; echo "Stan: make es-health; wznowienie: make reindex (ten sam source); wycofanie: make reindex-abort"; exit 130' INT TERM

@@ -54,13 +54,26 @@ if value:
 migration_source() { migration_field source; }
 
 # resume_decision STARY ZAPIS <_mapping celu zapisu — co ma zrobić `run`:
-#   STARY == ZAPIS                         → "fresh"  (kod 0, stdin nieczytany)
+#   STARY == ZAPIS, switch-read dokończony albo nie zaczęty → "fresh"  (kod 0)
+#   STARY == ZAPIS, switch_read_started_at bez switched_read_at → odmowa (kod 1): proces padł
+#     po przepięciu odczytu, przed krokami po nim; to nie spoczynek — nowa migracja vN+2
+#     wystartowałaby z gc_deletes migracji i bez znacznika końca. Naprawa: switch-read.
 #   _meta.migration.source celu == STARY   → "resume" (kod 0; migracja przerwana po switch-write)
 #   cokolwiek innego (obce źródło, brak _meta, błąd ES, nie-JSON) → powód odmowy, kod 1
 resume_decision() {
-  local old="$1" write="$2" src
-  if [[ "${old}" == "${write}" ]]; then echo fresh; return 0; fi
-  src="$(migration_source)" || { echo "nie umiem odczytać _meta ${write} — make reindex-abort"; return 1; }
+  local old="$1" write="$2" mapping src started finished
+  mapping="$(cat)"
+  if [[ "${old}" == "${write}" ]]; then
+    started="$(migration_field switch_read_started_at <<<"${mapping}")" \
+      && finished="$(migration_field switched_read_at <<<"${mapping}")" \
+      || { echo "nie umiem odczytać _meta ${write} (sprawdź make es-health)"; return 1; }
+    if [[ -n "${started}" && -z "${finished}" ]]; then
+      echo "switch-read na ${write} zaczął się (${started}), ale nie skończył — uruchom search:index:migrate switch-read, żeby dokończyć (docker compose exec search-consumer php bin/console search:index:migrate switch-read)"
+      return 1
+    fi
+    echo fresh; return 0
+  fi
+  src="$(migration_source <<<"${mapping}")" || { echo "nie umiem odczytać _meta ${write} — make reindex-abort"; return 1; }
   if [[ -n "${src}" && "${src}" == "${old}" ]]; then echo resume; return 0; fi
   echo "aliasy wskazują różne indeksy (read='${old}', write='${write}'), a ${write} nie jest celem migracji z ${old} — make reindex-abort"
   return 1
