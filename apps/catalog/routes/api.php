@@ -23,5 +23,7 @@ Route::get('/suggest', SuggestController::class);
 Route::prefix('internal')->group(function () {
     Route::get('/products/count', [ProductIdsController::class, 'count']);
     Route::get('/products/ids', [ProductIdsController::class, 'ids']);
+    Route::get('/products/changed', [ProductIdsController::class, 'changed']);
+    Route::get('/products/projections', [ProductProjectionController::class, 'index']);
     Route::get('/products/{id}/projection', [ProductProjectionController::class, 'show']);
 });

@@ -14,15 +14,41 @@ class ProductProjectionBuilder
     /** @return array<string, mixed>|null null, gdy produkt nie istnieje */
     public function build(int $id, int $projectedAtUs): ?array
     {
-        $product = Product::with(['brand', 'category', 'listedOffers' => fn ($query) => $query->withAvailable(), 'listedOffers.seller'])
-            ->withCount('reviews')
-            ->withAvg('reviews', 'rating')
-            ->find($id);
+        return $this->buildMany([$id], $projectedAtUs)[$id] ?? null;
+    }
 
-        if ($product === null) {
-            return null;
+    /**
+     * Projekcje partii produktów jednym zestawem zapytań (eager loading), nie
+     * N osobnych — wsadowy endpoint drogi B (ETAP 10, Task 12b). Wszystkie
+     * pozycje dostają ten sam `projected_at_us`, zmierzony przez wołającego
+     * PRZED odczytem (patrz ProductProjectionController).
+     *
+     * @param  list<int>  $ids
+     * @return array<int, array<string, mixed>> id => projekcja; nieistniejących brak
+     */
+    public function buildMany(array $ids, int $projectedAtUs): array
+    {
+        if ($ids === []) {
+            return [];
         }
 
+        $products = Product::with(['brand', 'category', 'listedOffers' => fn ($query) => $query->withAvailable(), 'listedOffers.seller'])
+            ->withCount('reviews')
+            ->withAvg('reviews', 'rating')
+            ->whereIn('id', $ids)
+            ->get();
+
+        $projections = [];
+        foreach ($products as $product) {
+            $projections[$product->id] = $this->project($product, $projectedAtUs);
+        }
+
+        return $projections;
+    }
+
+    /** @return array<string, mixed> */
+    private function project(Product $product, int $projectedAtUs): array
+    {
         $offers = $product->listedOffers;
 
         return [

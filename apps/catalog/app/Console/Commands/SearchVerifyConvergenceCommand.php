@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Outbox;
 use App\Services\Search\ProductProjectionBuilder;
+use App\Services\Search\TouchedProductIds;
 use Carbon\Carbon;
 use Elastic\Elasticsearch\Client;
 use Illuminate\Console\Command;
@@ -15,9 +15,8 @@ use Illuminate\Console\Command;
  * projekcja z Postgresa. Uruchamiać po opróżnieniu kolejki, inaczej dokumenty
  * "w locie" dadzą fałszywe rozjazdy.
  *
- * Id produktu wyznaczamy tak jak `ProductSyncHandler::resolveProductId` w
- * search-service: `product` → aggregate_id, `offer`/`review` → payload.product_id,
- * reszta (seller, category) to fan-out i nie wskazuje produktu.
+ * Id produktów wyznacza `TouchedProductIds` — ta sama reguła co endpoint
+ * `/api/internal/products/changed` (nadrabianie po reindex-abort).
  */
 class SearchVerifyConvergenceCommand extends Command
 {
@@ -35,6 +34,7 @@ class SearchVerifyConvergenceCommand extends Command
     public function __construct(
         private readonly Client $client,
         private readonly ProductProjectionBuilder $projections,
+        private readonly TouchedProductIds $touched,
     ) {
         parent::__construct();
     }
@@ -56,7 +56,7 @@ class SearchVerifyConvergenceCommand extends Command
             return self::INVALID;
         }
 
-        $ids = $this->touchedProductIds($sinceAt);
+        $ids = $this->touched->since($sinceAt);
         $mismatches = [];
 
         foreach (array_chunk($ids, max(1, (int) $this->option('batch'))) as $chunk) {
@@ -80,34 +80,6 @@ class SearchVerifyConvergenceCommand extends Command
         }
 
         return $mismatches === [] ? self::SUCCESS : self::FAILURE;
-    }
-
-    /** @return list<int> */
-    private function touchedProductIds(Carbon $since): array
-    {
-        $ids = [];
-
-        Outbox::query()
-            ->where('occurred_at', '>=', $since)
-            ->select(['id', 'aggregate_type', 'aggregate_id', 'payload'])
-            ->chunkById(5000, function ($events) use (&$ids) {
-                foreach ($events as $event) {
-                    $productId = match ($event->aggregate_type) {
-                        'product' => $event->aggregate_id,
-                        'offer', 'review' => $event->payload['product_id'] ?? null,
-                        default => null,
-                    };
-
-                    if ($productId !== null && ctype_digit((string) $productId)) {
-                        $ids[(int) $productId] = true;
-                    }
-                }
-            });
-
-        $ids = array_keys($ids);
-        sort($ids);
-
-        return $ids;
     }
 
     /**
