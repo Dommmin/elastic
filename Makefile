@@ -267,6 +267,11 @@ es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (
 	$(DC) --profile cluster up -d es01 es02 es03
 	@bash infra/elasticsearch/setup-snapshots.sh
 
+## Analityka operacyjna (ETAP 12)
+.PHONY: analytics-setup
+analytics-setup: ## ILM, pipeline, szablony i data streamy zdarzeń (idempotentne)
+	@bash infra/elasticsearch/setup-analytics.sh
+
 .PHONY: es-restore-drill
 es-restore-drill: ## Drill restore bez przestoju (make es-restore-drill repo=local-fs|minio-s3)
 	@bash tools/es/restore-drill.sh normal --repo=$(or $(repo),local-fs)

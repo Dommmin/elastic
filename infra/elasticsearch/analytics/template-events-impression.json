@@ -1,0 +1,29 @@
+{
+  "index_patterns": ["events-impression-*"],
+  "data_stream": {},
+  "priority": 200,
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 1,
+      "index.lifecycle.name": "events-user",
+      "index.default_pipeline": "events-ingested"
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event": { "properties": { "ingested": { "type": "date" } } },
+        "search": {
+          "properties": {
+            "id": { "type": "keyword" },
+            "query": { "type": "keyword" }
+          }
+        },
+        "session": { "properties": { "id": { "type": "keyword" } } },
+        "product": { "properties": { "id": { "type": "keyword" } } },
+        "impression": { "properties": { "position": { "type": "integer" } } }
+      }
+    }
+  }
+}
