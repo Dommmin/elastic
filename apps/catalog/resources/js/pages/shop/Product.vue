@@ -14,6 +14,7 @@ import type { ShopOffer, ShopProduct } from '@/types';
 const props = defineProps<{
     product: ShopProduct;
     offers: ShopOffer[];
+    searchId: string | null;
 }>();
 
 defineOptions({
@@ -50,6 +51,8 @@ function addToCart(offer: ShopOffer) {
             offer_id: offer.id,
             quantity: quantityOf(offer),
             unit_price_cents: offer.price_cents,
+            // Wyszukiwanie, z którego trafiono na produkt (analityka koszyka).
+            sid: props.searchId ?? undefined,
         },
         {
             preserveScroll: true,

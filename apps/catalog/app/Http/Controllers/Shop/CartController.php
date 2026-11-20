@@ -2,8 +2,11 @@
 
 namespace App\Http\Controllers\Shop;
 
+use App\Analytics\AnalyticsRecorder;
+use App\Analytics\SearchContextStore;
 use App\Http\Controllers\Controller;
 use App\Http\DomainErrorMessages;
+use App\Http\Middleware\AnalyticsSession;
 use App\Http\Requests\Shop\AddToCartRequest;
 use App\Http\Requests\Shop\CheckoutRequest;
 use App\Http\Requests\Shop\UpdateCartItemRequest;
@@ -21,6 +24,7 @@ use Ordering\Application\Order\PlaceOrdersFromCart;
 use Ordering\Application\Order\PlaceOrdersFromCartHandler;
 use Ordering\Application\Order\PriceChangedSinceCart;
 use Ordering\Domain\InvalidOrderLines;
+use Ordering\Domain\OrderId;
 use Ordering\Infrastructure\ReadModel\CartView;
 use SharedKernel\DomainException;
 
@@ -30,6 +34,11 @@ use SharedKernel\DomainException;
  */
 class CartController extends Controller
 {
+    public function __construct(
+        private readonly AnalyticsRecorder $recorder,
+        private readonly SearchContextStore $contexts,
+    ) {}
+
     public function index(Request $request, CartView $view): Response
     {
         $groups = $view->forBuyer(self::userId($request));
@@ -58,6 +67,8 @@ class CartController extends Controller
         } catch (UniqueConstraintViolationException) {
             $this->upsert($request, $offer, $max);
         }
+
+        $this->recordAddedToCart($request, $offer);
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Dodano do koszyka']);
 
@@ -169,9 +180,54 @@ class CartController extends Controller
             return back()->withErrors(['cart' => DomainErrorMessages::for($result)]);
         }
 
+        $this->recordCheckedOut($request, $result);
+
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Złożono '.self::ordersPhrase(count($result))]);
 
         return redirect()->route('orders.index');
+    }
+
+    /**
+     * `user.added_to_cart` po udanym zapisie koszyka. `search_id` i `query` tylko,
+     * gdy produkt otwarto z wyników (formularz niesie `sid`).
+     */
+    private function recordAddedToCart(AddToCartRequest $request, Offer $offer): void
+    {
+        $data = ['product_id' => $offer->product_id, 'offer_id' => $offer->id];
+
+        $searchId = $request->validated('sid');
+        if (is_string($searchId) && $searchId !== '') {
+            $data['search_id'] = $searchId;
+            $context = $this->contexts->get($searchId);
+            if ($context !== null) {
+                $data['query'] = $context['query'];
+            }
+        }
+
+        $data['user_id'] = self::userId($request);
+
+        $this->recorder->record('user.added_to_cart', AnalyticsSession::currentId($request), $data);
+    }
+
+    /**
+     * `user.checked_out` po udanym handlerze, poza transakcją Ordering: to fakt
+     * z requestu kupującego, a nie zdarzenie domenowe (spec sekcja 4). Jeden
+     * checkout = kilka zamówień (po jednym na sprzedawcę).
+     *
+     * @param  list<OrderId>  $orderIds
+     */
+    private function recordCheckedOut(CheckoutRequest $request, array $orderIds): void
+    {
+        $lines = $request->cartLines();
+        $productIds = Offer::query()->whereIn('id', array_map(fn ($line) => $line->offerId, $lines))->pluck('product_id', 'id');
+
+        $this->recorder->record('user.checked_out', AnalyticsSession::currentId($request), [
+            'order_ids' => array_map(fn (OrderId $id): int => $id->value(), $orderIds),
+            'product_ids' => $productIds->unique()->values()->map(fn ($id): int => (int) $id)->all(),
+            // Handler potwierdził ceny z formularza, więc suma z linii = suma zamówień.
+            'amount_cents' => array_sum(array_map(fn ($line): int => $line->quantity * $line->expectedUnitPriceCents, $lines)),
+            'user_id' => self::userId($request),
+        ]);
     }
 
     private static function item(Request $request, int $offer): CartItem

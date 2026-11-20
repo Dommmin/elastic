@@ -36,6 +36,8 @@ class AddToCartRequest extends FormRequest
             'offer_id' => ['required', 'integer', 'exists:offers,id'],
             'quantity' => ['required', 'integer', 'min:1', 'max:'.self::MAX_PER_LINE],
             'unit_price_cents' => ['required', 'integer', 'min:0'],
+            // Identyfikator wyszukiwania, z którego kupujący trafił na produkt (analityka).
+            'sid' => ['nullable', 'string', 'max:64'],
         ];
     }
 
