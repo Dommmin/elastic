@@ -352,3 +352,24 @@ spec:
   vhost: /
   rabbitmqClusterReference:
     name: rabbitmq-ha
+---
+# Limit kolejki analityki (ETAP 12): overlay G5 nie ma analytics-consumera, a catalog
+# dalej publikuje user.* — bez limitu search.analytics.ingest rosłaby bez końca.
+# drop-head = wyrzuć najstarsze (spec akceptuje utratę analityki). Wyrzucone trafiają
+# przez DLX do .dlq, dlatego ten sam limit obejmuje też DLQ. 1:1 z policies
+# w definitions.template.json (pilnuje tools/k3d/topology-parity.rb).
+apiVersion: rabbitmq.com/v1beta1
+kind: Policy
+metadata:
+  name: analytics-ingest-cap
+spec:
+  name: analytics-ingest-cap
+  vhost: /
+  pattern: '^search\.analytics\.ingest(\.dlq)?$'
+  applyTo: queues
+  priority: 10
+  definition:
+    max-length: 100000
+    overflow: drop-head
+  rabbitmqClusterReference:
+    name: rabbitmq-ha

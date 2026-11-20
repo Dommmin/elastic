@@ -15,17 +15,14 @@
 #  gdy stoi. Zmiana pivotu wymaga usunięcia transformu i indeksu (patrz przewodnik
 #  docs/blog/etap-12a-zdarzenia-i-lejek.md, ściąga).
 #
-#  SEKCJA 3 (Kibana): import data views i dashboardu „Wyszukiwarka — analityka”
-#  z infra/kibana/analytics-dashboard.ndjson (overwrite=true). Kibana wołana
-#  z wnętrza es01 po sieci compose (KIBANA_URL, domyślnie http://kibana:5601).
-#
-#  SEKCJA 4 (popularność, spec §7): pusty indeks `product-popularity` (gdy go
+#  SEKCJA 3 (popularność, spec §7): pusty indeks `product-popularity` (gdy go
 #  brak), polityka enrich `product-popularity-policy` (gdy jej brak), `_execute`
 #  polityki (zawsze — tworzy/odświeża indeks enrich), pipeline
 #  `products-enrich-popularity` (PUT nadpisuje). Kolejność jest wymuszona przez
 #  ES: pipeline z procesorem enrich nie powstanie bez wykonanej polityki,
 #  a products-v6 (default_pipeline) bez pipeline'u odrzuca KAŻDY zapis — więc
-#  ta sekcja musi przejść przed `make reindex` na v6.
+#  ta sekcja musi przejść przed `make reindex` na v6. Idzie PRZED sekcją
+#  Kibany, żeby niedostępna Kibana (die w sekcji 4) nie blokowała pipeline'u.
 #  Polityki enrich nie da się zmienić w miejscu ani usunąć, dopóki odwołuje się
 #  do niej pipeline (409). Skrypt tylko ostrzega o rozjeździe z plikiem.
 #  Przebudowa polityki (zapisy produktów w tym czasie przejdą bez popularności,
@@ -34,6 +31,10 @@
 #    2. DELETE _enrich/policy/product-popularity-policy
 #    3. make analytics-setup   (utworzy politykę z pliku, wykona ją, przywróci pipeline)
 #    4. search:popularity:refresh (Task 9) — dociągnie popularność do produktów
+#
+#  SEKCJA 4 (Kibana): import data views i dashboardu „Wyszukiwarka — analityka”
+#  z infra/kibana/analytics-dashboard.ndjson (overwrite=true). Kibana wołana
+#  z wnętrza es01 po sieci compose (KIBANA_URL, domyślnie http://kibana:5601).
 #
 #  SEKCJA 5 (anomalie, spec §9): indeks `alerts-analytics` (jawne mapowanie),
 #  connectory Kibany (Index → alerts-analytics, Server log) o stałych ID oraz
@@ -158,48 +159,18 @@ fi
 log "[2] OK"
 
 # ============================================================================
-#  SEKCJA 3 — Kibana: data views + dashboard (saved objects NDJSON)
-# ============================================================================
-KIBANA_URL="${KIBANA_URL:-http://kibana:5601}"
-NDJSON="$(cd "${DIR}/../../kibana" && pwd)/analytics-dashboard.ndjson"
-
-# kbn_status — kod HTTP /api/status Kibany (z es01, po sieci compose)
-kbn_status() {
-  ${DC} exec -T es01 sh -c \
-    'curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ELASTIC_PASSWORD" "$0/api/status"' "${KIBANA_URL}"
-}
-
-log "[3] Czekam na Kibanę (${KIBANA_URL})"
-for _ in $(seq 1 30); do
-  [ "$(kbn_status)" = "200" ] && break
-  sleep 5
-done
-[ "$(kbn_status)" = "200" ] || die "Kibana nie odpowiada 200 na /api/status — uruchom stos (make up)"
-
-log "[3] Import $(basename "${NDJSON}") (overwrite=true)"
-RESULT="$(${DC} exec -T es01 sh -c \
-  'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-analytics" -X POST "$0/api/saved_objects/_import?overwrite=true" -F "file=@-;filename=analytics-dashboard.ndjson"' \
-  "${KIBANA_URL}" <"${NDJSON}")"
-printf '%s' "${RESULT}" | python3 -c '
-import json, sys
-r = json.load(sys.stdin)
-if not r.get("success"):
-    print("[analytics] BŁĄD importu:", json.dumps(r.get("errors"), ensure_ascii=False), file=sys.stderr)
-    sys.exit(1)
-print("[analytics] [3] Zaimportowano obiektów: %d" % r["successCount"])'
-log "[3] OK — dashboard: http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/search-analytics"
-
-# ============================================================================
-#  SEKCJA 4 — popularność: indeks product-popularity, polityka enrich, pipeline
+#  SEKCJA 3 — popularność: indeks product-popularity, polityka enrich, pipeline
+#  PRZED Kibaną: awaria Kibany nie może zablokować pipeline'u, bez którego
+#  products-v6 odrzuca każdy zapis.
 # ============================================================================
 POP_INDEX=product-popularity
 POP_POLICY=product-popularity-policy
 POP_PIPELINE=products-enrich-popularity
 
 if esa_exists "/${POP_INDEX}"; then
-  log "[4] Indeks ${POP_INDEX} już istnieje"
+  log "[3] Indeks ${POP_INDEX} już istnieje"
 else
-  log "[4] Tworzę pusty indeks ${POP_INDEX} (replik: ${REPLICAS})"
+  log "[3] Tworzę pusty indeks ${POP_INDEX} (replik: ${REPLICAS})"
   REPLICAS="${REPLICAS}" python3 -c '
 import json, os, sys
 t = json.load(open(sys.argv[1]))
@@ -211,7 +182,7 @@ fi
 # GET nieistniejącej polityki to 200 z pustą listą — liczymy definicje.
 POLICY_JSON="$(esa GET "/_enrich/policy/${POP_POLICY}")"
 if printf '%s' "${POLICY_JSON}" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["policies"] else 1)'; then
-  log "[4] Polityka ${POP_POLICY} już istnieje (polityk nie da się aktualizować w miejscu)"
+  log "[3] Polityka ${POP_POLICY} już istnieje (polityk nie da się aktualizować w miejscu)"
   printf '%s' "${POLICY_JSON}" | python3 -c '
 import json, sys
 live = json.load(sys.stdin)["policies"][0]["config"]["match"]
@@ -219,19 +190,51 @@ want = json.load(open(sys.argv[1]))["match"]
 keys = ("indices", "match_field", "enrich_fields")
 norm = lambda m: {k: sorted(m[k]) if isinstance(m[k], list) else [m[k]] for k in keys}
 if norm(live) != norm(want):
-    print("[analytics] [4] UWAGA: polityka w klastrze różni się od pliku — przebudowa: nagłówek skryptu", file=sys.stderr)' \
+    print("[analytics] [3] UWAGA: polityka w klastrze różni się od pliku — przebudowa: nagłówek skryptu", file=sys.stderr)' \
     "${DIR}/enrich-policy-${POP_INDEX}.json"
 else
-  log "[4] Tworzę politykę enrich ${POP_POLICY}"
+  log "[3] Tworzę politykę enrich ${POP_POLICY}"
   esa PUT "/_enrich/policy/${POP_POLICY}" "${DIR}/enrich-policy-${POP_INDEX}.json" >/dev/null
 fi
 
-log "[4] _execute ${POP_POLICY} (indeks enrich z bieżącego ${POP_INDEX})"
+log "[3] _execute ${POP_POLICY} (indeks enrich z bieżącego ${POP_INDEX})"
 esa POST "/_enrich/policy/${POP_POLICY}/_execute?wait_for_completion=true" >/dev/null
 
-log "[4] Pipeline ${POP_PIPELINE} (on_failure: zapis produktu nigdy nie jest odrzucany)"
+log "[3] Pipeline ${POP_PIPELINE} (on_failure: zapis produktu nigdy nie jest odrzucany)"
 esa PUT "/_ingest/pipeline/${POP_PIPELINE}" "${DIR}/pipeline-${POP_PIPELINE}.json" >/dev/null
-log "[4] OK"
+log "[3] OK"
+
+# ============================================================================
+#  SEKCJA 4 — Kibana: data views + dashboard (saved objects NDJSON)
+# ============================================================================
+KIBANA_URL="${KIBANA_URL:-http://kibana:5601}"
+NDJSON="$(cd "${DIR}/../../kibana" && pwd)/analytics-dashboard.ndjson"
+
+# kbn_status — kod HTTP /api/status Kibany (z es01, po sieci compose)
+kbn_status() {
+  ${DC} exec -T es01 sh -c \
+    'curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ELASTIC_PASSWORD" "$0/api/status"' "${KIBANA_URL}"
+}
+
+log "[4] Czekam na Kibanę (${KIBANA_URL})"
+for _ in $(seq 1 30); do
+  [ "$(kbn_status)" = "200" ] && break
+  sleep 5
+done
+[ "$(kbn_status)" = "200" ] || die "Kibana nie odpowiada 200 na /api/status — uruchom stos (make up)"
+
+log "[4] Import $(basename "${NDJSON}") (overwrite=true)"
+RESULT="$(${DC} exec -T es01 sh -c \
+  'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-analytics" -X POST "$0/api/saved_objects/_import?overwrite=true" -F "file=@-;filename=analytics-dashboard.ndjson"' \
+  "${KIBANA_URL}" <"${NDJSON}")"
+printf '%s' "${RESULT}" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+if not r.get("success"):
+    print("[analytics] BŁĄD importu:", json.dumps(r.get("errors"), ensure_ascii=False), file=sys.stderr)
+    sys.exit(1)
+print("[analytics] [4] Zaimportowano obiektów: %d" % r["successCount"])'
+log "[4] OK — dashboard: http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/search-analytics"
 
 # ============================================================================
 #  SEKCJA 5 — anomalie: alerts-analytics, connectory i reguły Kibana Alerting

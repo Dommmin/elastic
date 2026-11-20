@@ -56,6 +56,19 @@ ok.((got_b - [STREAM_BINDING + ["queue"]]).sort == want_b.sort && got_b.include?
 names = by_kind.("Binding").map { |d| d.dig("metadata", "name") }
 ok.(names.size == names.uniq.size, "Binding: unikalne metadata.name")
 
+# --- Policy -----------------------------------------------------------------
+want_p = (defs["policies"] || []).map { |x| [x["name"], x["vhost"], x["pattern"], x["apply-to"], x["priority"], x["definition"]] }.sort_by(&:first)
+got_p = by_kind.("Policy").map { |d| s = d["spec"]; [s["name"], s["vhost"] || "/", s["pattern"], s["applyTo"], s["priority"], s["definition"]] }.sort_by(&:first)
+ok.(got_p == want_p, "Policy: nazwy, wzorce, applyTo, priorytet, definicja == definitions (#{got_p.size}/#{want_p.size})")
+# Na kolejkę działa tylko JEDNA polityka (najwyższy priorytet) — dwie pasujące do tej samej kolejki to pułapka.
+queue_names = defs["queues"].map { |q| q["name"] } + [STREAM]
+overlap = queue_names.select { |q| want_p.count { |x| Regexp.new(x[2]).match?(q) } > 1 }
+ok.(overlap.empty?, "Policy: każda kolejka pasuje do najwyżej jednej polityki#{overlap.empty? ? '' : " (#{overlap.join(', ')})"}")
+cap = want_p.find { |x| x[0] == "analytics-ingest-cap" }
+ok.(cap && %w[search.analytics.ingest search.analytics.ingest.dlq].all? { |q| Regexp.new(cap[2]).match?(q) } &&
+    (queue_names - %w[search.analytics.ingest search.analytics.ingest.dlq]).none? { |q| Regexp.new(cap[2]).match?(q) },
+    "Policy analytics-ingest-cap: obejmuje search.analytics.ingest i jej .dlq, nic więcej (stream ma własny x-max-age)")
+
 # --- User + Permission ------------------------------------------------------
 user = by_kind.("User").find { |d| d.dig("metadata", "name") == "marketplace" }
 ok.(user && user.dig("spec", "importCredentialsSecret", "name") == "rabbitmq-ha-marketplace-user",
