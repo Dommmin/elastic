@@ -41,25 +41,42 @@ cmd_run() {
   done
   [[ "${source}" == es || "${source}" == pg ]] || die "source=es|pg (podano: ${source})"
 
-  local old write target gate ndcg_old ndcg_new
+  local old write target="" gate ndcg_old ndcg_new resume=0 msrc
   old="$(alias_target "${READ_ALIAS}")" || die "nie umiem odczytać aliasu ${READ_ALIAS}"
   write="$(alias_target "${WRITE_ALIAS}")" || die "nie umiem odczytać aliasu ${WRITE_ALIAS}"
-  [[ -n "${old}" && "${old}" == "${write}" ]] || die "aliasy muszą wskazywać ten sam indeks (read='${old}', write='${write}') — migracja w toku? make reindex-abort"
+  [[ -n "${old}" && -n "${write}" ]] || die "brak aliasu (read='${old}', write='${write}')"
+  if [[ "${old}" != "${write}" ]]; then
+    # Migracja w toku (np. po Ctrl-C w _reindex): zapis już na celu z prepare.
+    # Wznawiamy od reindeksu — _reindex z version_type=external kopiuje tylko
+    # brakujące, a zapisy ze strumienia w celu wygrywają. Abort to droga O(N).
+    msrc="$(es GET "/${write}/_mapping" | migration_source)" || die "nie umiem odczytać _meta ${write}"
+    [[ "${msrc}" == "${old}" ]] || die "aliasy wskazują różne indeksy (read='${old}', write='${write}'), a ${write} nie jest celem migracji z ${old} — make reindex-abort"
+    resume=1; target="${write}"
+    info "Wznawiam migrację w toku: ${old} → ${target} (zapis już na ${target}; prepare i switch-write pomijam)"
+  fi
 
-  trap 'echo; echo "przerwano — jeśli _reindex trwał, anuluję"; [[ -n "${target:-}" ]] && cancel_reindex_into "${target}"; echo "Stan: make es-health; wycofanie: make reindex-abort"; exit 130' INT TERM
+  trap 'echo; echo "przerwano — jeśli _reindex trwał, anuluję"; [[ -n "${target:-}" ]] && cancel_reindex_into "${target}"; echo "Stan: make es-health; wznowienie: make reindex (ten sam source); wycofanie: make reindex-abort"; exit 130' INT TERM
 
   # nDCG starego indeksu mierzymy PRZED switch-write: potem ${old} już nie dostaje
   # zapisów, a oceny search:eval liczą się z bazy catalogu — produkty usunięte w
   # trakcie migracji zostają w ${old} bez oceny i strażnik remisów zgłasza fałszywy
   # „Remis z różnymi ocenami” (exit 1). Złapane na żywo w ETAPIE 10 (Task 12).
-  step "ndcg ${old}" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || die "search:eval ${old} nie przeszedł (przed migracją — nic nie zmieniono)"
-  ndcg_old="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${old}"
+  if [[ ${resume} -eq 0 ]]; then
+    step "ndcg ${old}" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || die "search:eval ${old} nie przeszedł (przed migracją — nic nie zmieniono)"
+    ndcg_old="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${old}"
 
-  step prepare sc search:index:migrate prepare || die "prepare nie przeszedł"
-  target="$(kv_get TARGET <"${OUT_FILE}")"
-  [[ -n "${target}" ]] || die "prepare nie wypisał TARGET="
+    step prepare sc search:index:migrate prepare || die "prepare nie przeszedł"
+    target="$(kv_get TARGET <"${OUT_FILE}")"
+    [[ -n "${target}" ]] || die "prepare nie wypisał TARGET="
 
-  step switch-write sc search:index:migrate switch-write || die "switch-write nie przeszedł (cel ${target}); make reindex-abort, jeśli aliasy się zmieniły"
+    step switch-write sc search:index:migrate switch-write || die "switch-write nie przeszedł (cel ${target}); make reindex-abort, jeśli aliasy się zmieniły"
+  else
+    # ${old} od switch-write nie dostaje zapisów: strażnik remisów może fałszywie
+    # odmówić (usunięte produkty bez oceny), więc kod wyjścia tu nie decyduje —
+    # bierzemy samą liczbę NDCG= jako orientacyjną. Nowy indeks oceniamy ściśle.
+    step "ndcg ${old} (zamrożony, orientacyjnie)" ${DC} exec -T catalog-app php artisan search:eval "--index=${old}" || true
+    ndcg_old="$(ndcg_value <"${OUT_FILE}")" || die "brak NDCG= dla ${old}"
+  fi
 
   if [[ "${source}" == es ]]; then
     step reindex sc search:index:migrate reindex --wait "--slices=${slices}" "--rps=${rps}" \

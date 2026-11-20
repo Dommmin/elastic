@@ -144,12 +144,18 @@ done
 # Kolejność kroków run: nDCG starego indeksu przed switch-write (potem stary indeks
 # nie dostaje zapisów i strażnik remisów fałszywie odmawia — Task 12 ETAPU 10).
 l_eval_old="$(grep -n 'search:eval "--index=${old}"' tools/es/reindex.sh | head -1 | cut -d: -f1)"
-l_switch_write="$(grep -n '^  step switch-write ' tools/es/reindex.sh | head -1 | cut -d: -f1)"
+l_switch_write="$(grep -n '^ *step switch-write ' tools/es/reindex.sh | head -1 | cut -d: -f1)"
 [[ -n "${l_eval_old}" && -n "${l_switch_write}" && ${l_eval_old} -lt ${l_switch_write} ]] \
   && ok "nDCG starego indeksu przed switch-write" || bad "nDCG starego indeksu musi być przed switch-write"
 grep -q 'sc search:index:migrate cleanup </dev/null' tools/es/reindex.sh \
   && grep -q 'preflight_live "${idx}" </dev/null' tools/es/reindex.sh \
   && ok "cleanup: podgląd i preflight nie zjadają stdin (echo tak | make reindex-cleanup)" || bad "cleanup: podgląd i preflight muszą mieć </dev/null"
+# migration_source: źródło migracji z _meta.migration celu (wznowienie po Ctrl-C)
+eq "migration_source z _meta" "$(migration_source <<<'{"products-v3":{"mappings":{"_meta":{"migration":{"source":"products-v2","switch_write_at":"x"}}}}}')" "products-v2"
+eq "migration_source bez _meta" "$(migration_source <<<'{"products-v3":{"mappings":{}}}')" ""
+migration_source <<<'nie json' >/dev/null 2>&1 && bad "migration_source: śmieci powinny odmówić" || ok "migration_source: śmieci odrzucone (fail-closed)"
+migration_source <<<'{"error":{"type":"x"},"status":500}' >/dev/null 2>&1 && bad "migration_source: błąd ES powinien odmówić" || ok "migration_source: błąd ES odrzucony"
+grep -q 'resume=1' tools/es/reindex.sh && ok "run wznawia migrację w toku (read≠write, cel z prepare)" || bad "run musi wznawiać migrację w toku"
 # Skrypt nie może wypisywać danych dostępowych.
 grep -nE 'echo[^|]*(PASSWORD|ELASTICSEARCH_USER)|printf[^|]*(PASSWORD|ELASTICSEARCH_USER)' tools/es/*.sh | grep -v '^tools/es/test.sh' \
   && bad "skrypt wypisuje dane dostępowe" || ok "brak wypisywania danych dostępowych"

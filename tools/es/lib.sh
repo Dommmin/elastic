@@ -33,6 +33,23 @@ ndcg_regressed() {
   awk -v o="$1" -v n="$2" 'BEGIN { exit !(n + 0 < o - 0.01) }'
 }
 
+# migration_source <JSON z GET /INDEKS/_mapping — `_meta.migration.source` (puste,
+# gdy indeks nie jest celem migracji). Błąd ES albo nie-JSON = kod 1 (fail-closed).
+migration_source() {
+  python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+if not isinstance(data, dict) or "error" in data or len(data) != 1:
+    sys.exit(1)
+meta = next(iter(data.values())).get("mappings", {}).get("_meta", {}).get("migration", {})
+src = meta.get("source", "")
+if src:
+    print(src)'
+}
+
 # running_reindex_ids CEL <JSON z _tasks — id zadań nadrzędnych _reindex do CEL.
 # Dzieci slice'ów (mają parent_task_id) pomijamy: anuluje się rodzica.
 running_reindex_ids() {
