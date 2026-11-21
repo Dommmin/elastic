@@ -191,7 +191,9 @@ services:
     environment:
       <<: *es-env
       node.name: es01
-      node.roles: '["master","data","ingest","remote_cluster_client"]'
+      # `transform` od ETAPU 12 (search-stats-daily) — bez tej roli _transform
+      # odpowiada „found no transform nodes” (docs/RUNBOOK.md #128).
+      node.roles: '["master","data","ingest","remote_cluster_client","transform"]'
       # Bootstrap TYLKO przez es01. Dzięki temu ta sama konfiguracja działa
       # w trybie 1-node i 3-node: es01 formuje klaster sam, a es02/es03
       # dołączają później przez discovery.seed_hosts.
@@ -214,7 +216,7 @@ services:
     environment:
       <<: *es-env
       node.name: es02
-      node.roles: '["master","data","ingest","remote_cluster_client"]'
+      node.roles: '["master","data","ingest","remote_cluster_client","transform"]'
     volumes:
       - es02-data:/usr/share/elasticsearch/data
       - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
@@ -233,7 +235,7 @@ services:
     environment:
       <<: *es-env
       node.name: es03
-      node.roles: '["master","data","ingest","remote_cluster_client"]'
+      node.roles: '["master","data","ingest","remote_cluster_client","transform"]'
     volumes:
       - es03-data:/usr/share/elasticsearch/data
       - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
@@ -387,6 +389,8 @@ services:
       ELASTICSEARCH_HOST: http://es01:9200
       ELASTICSEARCH_USER: catalog
       ELASTICSEARCH_PASSWORD: ${ES_CATALOG_PASSWORD}
+      # B = 2: środek plateau 0,5–4 z pomiaru ETAPU 12 (POMIARY §16), strażnik 13 zapytań = 1,000.
+      SEARCH_POPULARITY_BOOST: ${SEARCH_POPULARITY_BOOST:-2}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_USER: ${RABBITMQ_USER}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
@@ -689,9 +693,46 @@ services:
       # (search:index:create) czyta stąd mapowanie products-v1.json — ta sama
       # zawartość, którą montujemy też do node'ów ES (analysis/synonyms.txt).
       - ./infra/elasticsearch/mappings:/infra/elasticsearch/mappings:ro
+      # Pipeline, polityka enrich i indeks popularności (ETAP 12): czyta je
+      # PopularityPipelineTest (te same pliki co setup-analytics.sh).
+      - ./infra/elasticsearch/analytics:/infra/elasticsearch/analytics:ro
     depends_on:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
+      es01: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    mem_limit: 512m
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # ETAP 12: ingest zdarzeń user.* (kolejka search.analytics.ingest) do data streamów
+  # events-*. Osobny proces od search-consumer (inny rytm: paczki _bulk po 500, niezależny
+  # restart), ten sam obraz. Nie czyta catalogu, więc bez CATALOG_INTERNAL_BASE_URL.
+  analytics-consumer:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["php", "bin/console", "messenger:consume", "analytics", "-vv", "--time-limit=3600", "--memory-limit=256M"]
+    environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: analytics-consumer
+      # Jak w search-consumer: bez APP_ENV (rządzi apps/search/.env), serverVersion Doctrine
+      # jawnie (failure transport `doctrine://`).
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      ELASTICSEARCH_HOST: http://es01:9200
+      ELASTICSEARCH_USER: searchsvc
+      ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
+      MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+    volumes:
+      - ./apps/search:/app
+    depends_on:
+      postgres: { condition: service_healthy }
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
     mem_limit: 512m

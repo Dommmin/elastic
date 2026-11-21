@@ -1,0 +1,60 @@
+{
+  "name": "Analityka: spadek CTR",
+  "consumer": "alerts",
+  "rule_type_id": ".es-query",
+  "schedule": {
+    "interval": "1m"
+  },
+  "tags": [
+    "etap-12",
+    "analytics"
+  ],
+  "notify_when": "onActionGroupChange",
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM events-user-*\n| WHERE event.type IN (\"user.searched\", \"user.clicked_result\")\n| EVAL is_recent = CASE(@timestamp >= NOW() - 60 minutes, 1, 0), is_search = CASE(event.type == \"user.searched\", 1, 0), is_click = CASE(event.type == \"user.clicked_result\", 1, 0)\n| STATS recent_searches = SUM(is_recent * is_search), recent_clicks = SUM(is_recent * is_click), baseline_searches = SUM((1 - is_recent) * is_search), baseline_clicks = SUM((1 - is_recent) * is_click)\n| EVAL recent_ctr = TO_DOUBLE(recent_clicks) / recent_searches, baseline_ctr = TO_DOUBLE(baseline_clicks) / baseline_searches\n| WHERE recent_searches >= 30 AND recent_ctr < 0.5 * baseline_ctr\n| KEEP recent_searches, recent_clicks, recent_ctr, baseline_searches, baseline_ctr"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 7,
+    "timeWindowUnit": "d",
+    "size": 1,
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "excludeHitsFromPreviousRun": false
+  },
+  "actions": [
+    {
+      "group": "query matched",
+      "id": "analytics-alerts-index",
+      "params": {
+        "documents": [
+          {
+            "@timestamp": "{{date}}",
+            "rule": {
+              "id": "{{rule.id}}",
+              "name": "{{rule.name}}"
+            },
+            "message": "CTR ostatniej godziny spadł poniżej 50% CTR z poprzednich 7 dni",
+            "window_minutes": 60,
+            "recent_searches": "{{#context.hits}}{{_source.recent_searches}}{{/context.hits}}",
+            "recent_clicks": "{{#context.hits}}{{_source.recent_clicks}}{{/context.hits}}",
+            "recent_ctr": "{{#context.hits}}{{_source.recent_ctr}}{{/context.hits}}",
+            "baseline_searches": "{{#context.hits}}{{_source.baseline_searches}}{{/context.hits}}",
+            "baseline_ctr": "{{#context.hits}}{{_source.baseline_ctr}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "group": "query matched",
+      "id": "analytics-server-log",
+      "params": {
+        "level": "warn",
+        "message": "[{{rule.name}}] CTR ostatniej godziny spadł poniżej 50% CTR z poprzednich 7 dni"
+      }
+    }
+  ]
+}

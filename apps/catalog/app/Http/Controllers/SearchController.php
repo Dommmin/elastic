@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Analytics\SearchedEventEmitter;
 use App\Services\CategoryLabels;
 use App\Services\ProductSearchService;
 use App\Services\Search\SearchCriteria;
 use App\Services\Search\SearchResult;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\ProvidesScrollMetadata;
 use Inertia\Response;
@@ -30,7 +32,7 @@ use Inertia\Response;
  */
 class SearchController extends Controller
 {
-    public function index(Request $request, ProductSearchService $service): Response
+    public function index(Request $request, ProductSearchService $service, SearchedEventEmitter $analytics): Response
     {
         $criteria = SearchCriteria::fromRequest($request);
 
@@ -39,8 +41,20 @@ class SearchController extends Controller
         // kontroler może żyć dłużej niż jedno żądanie — stan per-request musi
         // umrzeć razem z requestem (docs/06, D-07b: wycieki stanu w worker mode).
         $result = null;
-        $search = function () use (&$result, $service, $criteria): SearchResult {
-            return $result ??= $service->search($criteria);
+        // `user.searched` (ETAP 12): emitowane RAZ, przy faktycznym wykonaniu
+        // wyszukiwania pierwszej strony (bez kursora). Partial reload samego
+        // histogramu nie woła search(), więc niczego nie emituje.
+        $searchId = $criteria->cursor === null ? (string) Str::ulid() : null;
+        $search = function () use (&$result, $service, $criteria, $analytics, $request, $searchId): SearchResult {
+            if ($result === null) {
+                $result = $service->search($criteria);
+
+                if ($searchId !== null) {
+                    $analytics->emit($request, $searchId, $criteria, $result);
+                }
+            }
+
+            return $result;
         };
 
         return Inertia::render('Search', [
@@ -60,6 +74,12 @@ class SearchController extends Controller
             )->matchOn('data.id'),
             'facets' => fn () => self::labelCategoryFacets($search()->facets),
             'filters' => $criteria->toArray(),
+            // Wymusza search(), więc searchId zawsze odpowiada wyemitowanemu zdarzeniu.
+            'searchId' => function () use ($search, $searchId): ?string {
+                $search();
+
+                return $searchId;
+            },
             'priceHistogram' => Inertia::defer(fn () => $service->priceHistogram($criteria)),
         ]);
     }

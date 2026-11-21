@@ -128,6 +128,18 @@
 | [125](#125) | Migracja startuje w trakcie `_update_by_query` (zmiana nazwy sprzedawcy): vN+1 zostaje ze starą nazwą | Elasticsearch / narzędzia | 10 |
 | [126](#126) | Padnięty `switch-read`: `abort` odmawia, a `make reindex` brał stan za spoczynek | narzędzia | 10 |
 | [127](#127) | `/api/internal/*` bez uwierzytelnienia; po wprowadzeniu tokenu 401/503 w search-consumerze | bezpieczeństwo | 10b |
+| [128](#128) | `found no transform nodes`: węzły ES bez roli `transform` | Elasticsearch / Docker | 12a |
+| [129](#129) | Lens jako kod: `/api/visualizations` odrzuca ES\|QL, `/internal/lens/visualizations` daje 500 | Kibana | 12a |
+| [130](#130) | Usunięte zdarzenie dalej liczone w `search-stats-daily`: Transform nie cofa | Elasticsearch | 12a |
+| [131](#131) | Wyjątek mappera w `AnalyticsEventHandler` zostawiał wiadomości paczki bez ack/nack | search-service | 12a |
+| [132](#132) | Powtórka dnia symulatora dawała inne ID i duplikaty: remisy w rankingu ES | narzędzia / Elasticsearch | 12a |
+| [133](#133) | `random_score` z wagą 1e-6 nie tasuje remisów `_score`: float32 połyka dodatek | Elasticsearch | 12b |
+| [134](#134) | Ten sam `_rank_eval`/`_search` daje inne top 10 przy kolejnym wywołaniu: remisy rozstrzyga kopia shardu | Elasticsearch | 12b |
+| [135](#135) | Enrich i `default_pipeline`: 500 przy tworzeniu pipeline'u, 409 przy usuwaniu polityki, 400 na każdym zapisie | Elasticsearch | 12b |
+| [136](#136) | `rank_feature` odrzuca 0, a `on_failure` pipeline'u tego nie łapie | Elasticsearch | 12b |
+| [137](#137) | `make reindex` nie skacze do `products-v6`: zawsze vN → vN+1 | narzędzia | 12b |
+| [138](#138) | `closed-loop.sh` wisi 24 min: zawieszony `rabbitmqctl` w kontenerze RabbitMQ | RabbitMQ / narzędzia | 12b |
+| [139](#139) | `search.analytics.ingest` rośnie bez końca, gdy nie ma analytics-consumera (G5) | RabbitMQ | 12 |
 
 ---
 
@@ -5449,6 +5461,422 @@ przechodzi porównanie.
 
 ---
 
+<a id="128"></a>
+## 128 — `found no transform nodes`: węzły ES bez roli `transform`
+
+> ETAP 12a, Task 6 (2026-11-20).
+
+**Objaw**
+Pierwsze wywołanie Transformu (tu `POST _transform/_preview`, tak samo `PUT _transform/…`):
+```
+"type": "status_exception",
+"reason": "Transform requires the transform node role for at least 1 node, found no transform nodes"
+```
+
+**Diagnoza**
+```bash
+curl -s -u elastic:… 'http://localhost:19200/_cat/nodes?v&h=name,node.role'
+# es01 dimr   <- d(ata) i(ngest) m(aster) r(emote_cluster_client), brak t(ransform)
+grep -n 'node.roles' compose.yaml
+# node.roles: '["master","data","ingest","remote_cluster_client"]'   (es01, es02, es03)
+```
+
+**Przyczyna**
+Od ETAPU 2 role węzłów są w `compose.yaml` wypisane jawnie. Gdy `node.roles` jest ustawione, węzeł ma **tylko** te
+role. Domyślny zestaw (bez `node.roles`) zawiera `transform`, więc k3s (ECK bez `node.roles`) problemu nie ma.
+`compose.prod.yaml` (VPS) miał go tak samo: nakładka nie ustawia `node.roles`, dziedziczy je z `compose.yaml`. Poprawka
+w `compose.yaml` naprawia więc oba (VPS po odtworzeniu węzłów z nową konfiguracją).
+
+**Naprawa**
+Dopisać `"transform"` do `node.roles` wszystkich trzech węzłów i odtworzyć je **po jednym**, czekając na zielony
+klaster z 3 węzłami (repliki 1, więc dane są cały czas dostępne):
+```bash
+for n in es02 es03 es01; do
+  docker compose --profile cluster up -d --no-deps $n
+  # czekaj aż: _cluster/health -> "status":"green","number_of_nodes":3
+done
+curl -s -u elastic:… 'http://localhost:19200/_cat/nodes?v&h=name,node.role'   # dimrt na każdym
+```
+Na tym stosie każdy węzeł wrócił w ~29 s. Uwaga na es01: aplikacje, Kibana i port 19200 na hoście łączą się
+tylko z nim, więc jego restart to krótka przerwa dla wszystkich klientów (es02/es03 przechodzą bez przerwy).
+
+**Czego się nauczyłem**
+Jawna lista ról to lista **wyłączna**: każda nowa funkcja z własną rolą (transform, ml) wymaga jej dopisania.
+`_cat/nodes` z `node.role` pokazuje to jedną literą.
+
+---
+
+<a id="129"></a>
+## 129 — Lens jako kod w Kibanie 9.5: `/api/visualizations` odrzuca ES|QL, `/internal/lens/visualizations` daje 500
+
+> ETAP 12a, Task 6 (2026-11-20). Dashboard trzymany w repo jako NDJSON.
+
+**Objaw**
+Panel Lens oparty na ES|QL (`"data_source": {"type": "esql", "query": "…"}`) wysłany do publicznego API:
+```
+POST /api/visualizations
+400: [request body.layers.0.0.data_source]: expected "type" to be one of ["data_view_reference", "data_view_spec"] but got ["esql"]
+```
+To samo do API wewnętrznego (`/internal/lens/visualizations`, `x-elastic-internal-origin: kibana`,
+`Elastic-Api-Version: 1`): `500 Internal Server Error` bez szczegółów w logu Kibany. Po zapisaniu panelu ES|QL innym
+sposobem `GET /api/visualizations/<id>` też odpowiada 500 (panele na data view czyta bez problemu).
+
+**Diagnoza**
+```bash
+docker compose exec kibana grep -n 'lensApiConfigSchema' \
+  /usr/share/kibana/node_modules/@kbn/lens-plugin/server/api/routes/visualizations/schema/create.js
+# lensCreateRequestBodySchema = lensApiConfigSchemaNoESQL
+```
+Opis endpointu w kodzie: „ES|QL visualizations cannot be created through this endpoint”. Publiczne API ma schemat
+bez ES|QL na wejściu i na wyjściu (dlatego GET daje 500 na obiekcie ES|QL).
+
+**Przyczyna**
+Lens-as-code w 9.5 obsługuje publicznie tylko warstwy na data view. Konwersja „konfiguracja API → stan Lensa”
+(`LensConfigBuilder.fromAPIFormat`) umie ES|QL, ale nie jest wystawiona publicznie.
+
+**Naprawa**
+1. Panele na data view tworzyć przez `POST /api/visualizations` (Kibana waliduje i buduje stan).
+2. Panele ES|QL: zwalidować konfigurację i zbudować stan tym samym kodem, uruchamiając node z kontenera Kibany:
+   ```bash
+   # build.js: lensApiConfigSchema.validate(cfg) -> new LensConfigBuilder(undefined, true).fromAPIFormat(cfg)
+   docker compose cp build.js kibana:/tmp/build.js
+   docker compose exec -T kibana sh -c 'cd /usr/share/kibana && NODE_ENV=production ./node/default/bin/node /tmp/build.js' < panel.json
+   ```
+   Bez `NODE_ENV=production`: `Cannot find module './cjs/react.development.js'` (obraz ma tylko produkcyjny build Reacta).
+   Node nie jest w `PATH` (`sh: node: command not found`), leży w `/usr/share/kibana/node/default/bin/node`.
+3. Wynik zapisać jako saved object `lens` (`POST /api/saved_objects/lens/<id>`). Builder wpisuje typ `string`
+   kolumnom osi X; dla pozycji poprawiłem na `number` i dodałem `timeFieldName: "@timestamp"` do ad hoc data view.
+4. Dashboard przez `PUT /api/dashboards/<id>` (panele `{"type":"vis","config":{"ref_id":…}}`), potem
+   `_export` z `includeReferencesDeep` do NDJSON.
+
+**Czego się nauczyłem**
+Schemat API w Kibanie leży w `node_modules/@kbn/*/…/schema` w kontenerze. Komunikaty walidacji `@kbn/config-schema`
+pokazują wszystkie gałęzie unii naraz, ale zwykle tylko jedna linia jest o tym, co naprawdę jest źle. Import
+NDJSON do pustej przestrzeni (`/s/<space>/api/saved_objects/_import`) to tani test „czy to wstanie na świeżej Kibanie”.
+
+---
+
+<a id="130"></a>
+## 130 — Usunięte zdarzenie dalej liczone w `search-stats-daily`: Transform nie cofa
+
+> ETAP 12a, Task 6 (2026-11-20). Test spóźnionego zdarzenia z przewodnika 12a, krok 6.
+
+**Objaw**
+Testowe wyszukanie (`search.query: __late_event_test__`, `@timestamp` 3 dni temu) trafiło do kubełka 2026-11-17 po
+103 s. Po usunięciu dokumentu źródłowego kubełek został:
+```
+FROM events-user-* METADATA _id | WHERE _id == "late-event-test-1" | STATS n = COUNT(*)      -> 0
+FROM search-stats-daily | WHERE query == "__late_event_test__" | KEEP day, query, searches   -> 2026-11-17 | 1
+```
+
+**Diagnoza**
+`_transform/search-stats-daily/_stats`: brak nowego checkpointu po usunięciu (`checkpointing.last.checkpoint`
+bez zmian, `documents_deleted: 0`).
+
+**Przyczyna**
+Transform ciągły wykrywa zmiany po polu `sync.time.field` (`event.ingested`): przelicza tylko kubełki, w których
+pojawiły się dokumenty nowsze od poprzedniego checkpointu. Usunięcie niczego nie dopisuje, więc kubełka nikt nie
+przelicza. Nawet gdyby go przeliczył, pivot nie usuwa z indeksu docelowego kubełków, które zniknęły ze źródła.
+To samo spotka dane skasowane przez ILM po 90 dniach (kubełki zostaną) i usunięcia na żądanie (RODO).
+
+**Naprawa**
+- Pojedynczy kubełek, którego źródło na pewno nie wróci: `_delete_by_query` na `search-stats-daily`
+  (tu `{"query":{"term":{"query":"__late_event_test__"}}}` → `deleted: 1`).
+- Pełne przeliczenie: `_stop`, `DELETE _transform/search-stats-daily`, `DELETE search-stats-daily`,
+  `make analytics-setup` (tworzy indeks i Transform od nowa, pierwszy checkpoint przelicza całość).
+- Okno przesuwne (np. ostatnie 30 dni) liczyć Transformem wsadowym odtwarzanym od zera (tak będzie
+  `product-popularity` w 12b), nie ciągłym.
+
+**Czego się nauczyłem**
+Transform ciągły to „dopisz i zaktualizuj”, nie widok zmaterializowany. Spóźnione **dopisania** łapie dzięki sync po
+czasie przyjęcia, **usunięć** nie łapie wcale.
+
+---
+
+<a id="131"></a>
+## 131 — Wyjątek mappera w `AnalyticsEventHandler` zostawiał wiadomości paczki bez ack/nack
+
+> ETAP 12a, Task 2 (2026-11-20). Znalezione w przeglądzie kodu, naprawione testem (commit `4176f42`).
+
+**Objaw**
+Zdarzenie z `data` w nieoczekiwanym kształcie (np. tablica tam, gdzie mapper oczekuje skalara) rzuca wyjątek
+w `AnalyticsDocumentMapper::map()`. W pierwszej wersji wyjątek wylatywał z `process()` paczki, zanim którykolwiek job
+dostał ack/nack.
+
+**Diagnoza**
+Test `test_wyjatek_mappera_psuje_tylko_ta_wiadomosc_a_reszta_jest_zapisana` (mapper rzucający dla jednego zdarzenia
+w paczce) w `apps/search/tests/Unit/MessageHandler/AnalyticsEventHandlerTest.php`.
+
+**Przyczyna**
+`BatchHandlerTrait` przed wywołaniem `process()` opróżnia swoją listę jobów, więc za rozstrzygnięcie każdego
+`Acknowledger` odpowiada wyłącznie `process()`. Nieużyty `Acknowledger` rzuca `LogicException` w destruktorze,
+a jedna zła wiadomość wywracała całą paczkę (do 500 zdarzeń).
+
+**Naprawa**
+`process()` to osłona z `$settle(i, ?Throwable)` (dokładnie jedno ack/nack na job, idempotentnie). Wyjątek mappera =
+`UnrecoverableMessageHandlingException` tylko dla tej wiadomości (od razu `failed`), reszta paczki idzie do `_bulk`.
+Każdy inny wyjątek = nack `Recoverable` (`forceRetry: false`) dla wszystkich jeszcze nierozstrzygniętych.
+
+**Czego się nauczyłem**
+W handlerze paczkowym każda ścieżka, także wyjątkowa, musi rozstrzygnąć każdy job. Błąd pojedynczej wiadomości
+izolować, a nie przerywać nim paczki.
+
+---
+
+<a id="132"></a>
+## 132 — Powtórka dnia symulatora dawała inne ID i duplikaty: remisy w rankingu ES
+
+> ETAP 12a, Task 5 (2026-11-20). Wykryte na żywo przy teście powtórki dnia.
+
+**Objaw**
+`analytics:simulate --day=N` z tym samym ziarnem miało być idempotentne (te same ID zdarzeń, ES odpowiada 409).
+Pierwsza wersja dopisywała część zdarzeń drugi raz pod nowymi ID.
+
+**Diagnoza**
+To samo zapytanie dwa razy z rzędu („lampa led zenit”): w ~1 na 10 par kolejność wyników z równym `_score` była
+inna. Symulator brał kliknięcia z prawdziwego rankingu, a liczba kliknięć przesuwała **jeden wspólny** generator
+liczb losowych dnia, więc każda następna sesja dostawała inne liczby i inne ID.
+
+**Przyczyna**
+Remisy w ES nie są stabilne między wywołaniami: kolejne żądania (i PIT) trafiają w różne kopie shardów (primary albo
+replika), które mogą mieć dokumenty w innej kolejności wewnętrznej. Pokrewne: [#096](#096) (grupy remisów
+`_score` w `search:eval`).
+
+**Naprawa**
+Generator dnia oddaje każdej sesji tylko ziarno (32 bajty). Sesja wyprowadza z niego osobne generatory: dla sesji,
+dla każdego wyszukania, dla jego kliknięć i dla zakupu; czasy wyszukań są planowane z góry. Zmiana kolejności
+remisów zmienia już tylko kliknięcia tej jednej sesji. Sprawdzone na żywo: powtórka dnia 30 nie dopisała ani
+jednego `user.searched` (same 409).
+
+**Czego się nauczyłem**
+Determinizm symulacji, która czyta z prawdziwego systemu, wymaga izolowania losowości per jednostkę (sesja,
+wyszukanie), bo wejście z systemu (ranking) nie jest w pełni deterministyczne. Powtórka dnia po zmianie rankingu
+(12b) i tak pomiesza stare `results` z nowymi kliknięciami: wtedy czyścić data streamy albo zmienić ziarno/`--as-of`.
+
+---
+
+<a id="133"></a>
+## 133 — `random_score` z wagą 1e-6 nie tasuje remisów `_score`: float32 połyka dodatek
+
+> ETAP 12b, Task 10 (2026-11-20). Plan `--tie-shuffles` w `search:eval`.
+
+**Objaw**
+Plan: owinąć zapytanie w `function_score { random_score {seed: i, field: _seq_no}, weight: 1e-6, boost_mode: sum }`,
+żeby losowy dodatek < 1e-6 rozstrzygał tylko remisy. Po owinięciu top 50 frazy „smartfony” nadal miało **jeden**
+`_score` (`distinct = 1`), a top 10 dla ziaren 1 i 2 pokrywało się w 0–2 z 10 pozycji w kolejności Lucene,
+zamiast być losową permutacją grupy.
+
+**Diagnoza** (schemat zapytania; pomiar szedł przez tinker na `products-v6`)
+```bash
+# _score i kolejność z owinięciem dla dwóch ziaren; liczba różnych _score w top 50
+curl -s -u elastic:… -H 'Content-Type: application/json' 'http://localhost:19200/products-search/_search?filter_path=hits.hits._id,hits.hits._score' \
+  -d '{"size":50,"query":{"function_score":{"query":{…zapytanie z buildSearchQuery…},
+       "functions":[{"random_score":{"seed":1,"field":"_seq_no"},"weight":0.000001}],"boost_mode":"sum"}}}'
+```
+Wynik tekstowy ~27,29. Odstęp między sąsiednimi floatami (ulp) w przedziale [16, 32) to 2^-19 ≈ 1,9e-6.
+
+**Przyczyna**
+`_score` w Lucene to float32. Dodatek `r·1e-6` mniejszy od połowy ulp (~0,95e-6, czyli dla ~95% dokumentów)
+zaokrągla się do zera, reszta dostaje +1 ulp. Powstają dwa poziomy, a w każdym dalej rozstrzyga doc id Lucene.
+Grupa ~700 dokumentów daje losowy podzbiór w kolejności Lucene, grupa < ~200 prawie się nie tasuje. Większa waga
+(1e-4) przy boost popularności zaczęłaby przestawiać dokumenty o **różnych** wynikach (`rank_feature` daje wyniki
+prawie ciągłe): nie ma wagi jednocześnie widocznej i nieszkodliwej.
+
+**Naprawa**
+Nie ruszać `query`, dołożyć drugi klucz sortowania: `sort: [{_score: desc}, {_script: SplitMix64(_seq_no,
+created_at, seed), order: asc}]` (`SearchEvalCommand::TIE_BREAK_SCRIPT`). `_score` zostaje bit w bit, zmienia się
+tylko kolejność dokumentów o identycznym wyniku. Sprawdzone na żywo: 400 przebiegów (10 fraz × 20 ziaren × B ∈ {0, 2}),
+0 przestawień między różnymi wynikami, kolejność ID zmieniona w każdym przebiegu. `_rank_eval` respektuje `sort`
+(porównanie z `_search`, POMIARY §16.1).
+
+**Czego się nauczyłem**
+„Dodaj epsilon do wyniku” trzeba policzyć w ulp przy realnej wielkości wyniku, a nie w wartościach bezwzględnych.
+Jeśli chcesz zmienić tylko kolejność remisów, zmieniaj sortowanie, nie wynik.
+
+---
+
+<a id="134"></a>
+## 134 — Ten sam `_rank_eval`/`_search` daje inne top 10 przy kolejnym wywołaniu: remisy rozstrzyga kopia shardu
+
+> ETAP 12b, Task 10 i 12 (2026-11-20). Sprawdzenie narzędzia przed dowodem popularności.
+
+**Objaw**
+Fraza „Romaguera Inc”, B = 0, ten sam `request` bez `sort` puszczony przez `_rank_eval` i przez `_search`: w jednej
+próbie top 10 identyczne, w drugiej zupełnie inne ID (wszystkie z `_score` 21,188114). Przy generowaniu ocen ta sama
+grupa remisu miała raz `_score` 8,748777, raz 8,752492.
+
+**Diagnoza**
+```bash
+# dwa razy to samo zapytanie, bez preference
+for i in 1 2; do curl -s -u elastic:… -H 'Content-Type: application/json' \
+  'http://localhost:19200/products-search/_search?filter_path=hits.hits._id,hits.hits._score' -d @query.json; done
+# z ?preference=stala -> powtarzalne; z sort [_score, hash] -> identyczne w _rank_eval i _search
+```
+
+**Przyczyna**
+Zapytanie bez `preference` trafia w primary albo replikę. Kopie mają inny układ segmentów (inna kolejność doc id
+w remisie) i minimalnie inne statystyki BM25 (usunięte, jeszcze nie scalone dokumenty liczą się do `docFreq`). Remis
+rozstrzyga więc kopia shardu. Pokrewne: [#096](#096), [#132](#132).
+
+**Naprawa**
+- Eval: drugi klucz sortowania z `_seq_no` (wspólny dla kopii), [#133](#133).
+- Generowanie ocen (`analytics:judgments`): stała `preference`.
+- Symulator (`analytics:simulate`) korzysta z `search()` bez tiebreakera, więc powtórka z tym samym ziarnem daje inne
+  kliknięcia: wyniki jednego przebiegu dowodu traktować z dokładnością ±0,03 (pętla otwarta) / ±0,05 (zamknięta).
+  Świadomie bez `dfs_query_then_fetch` w evalu, żeby mierzył to samo co żywe wyszukiwanie.
+
+**Czego się nauczyłem**
+Powtarzalny ranking w klastrze z replikami wymaga jawnego tiebreakera albo `preference`. Zanim zaufasz narzędziu
+pomiarowemu, puść ten sam pomiar dwa razy.
+
+---
+
+<a id="135"></a>
+## 135 — Enrich i `default_pipeline`: 500 przy tworzeniu pipeline'u, 409 przy usuwaniu polityki, 400 na każdym zapisie
+
+> ETAP 12b, Task 8 (2026-11-20). Pipeline `products-enrich-popularity` jako `default_pipeline` w `products-v6`.
+
+**Objaw**
+Próby z budowy (ES 9.5.1, jako `elastic`):
+```
+PUT _ingest/pipeline/<p> z enrich na niewykonaną/nieistniejącą politykę -> 500 "no enrich index exists for policy"
+DELETE _enrich/policy/<x>, gdy odwołuje się do niej pipeline            -> 409 "pipeline is referencing it"
+DELETE _ingest/pipeline/<p>, gdy jest default_pipeline indeksu          -> 400
+zapis do indeksu, którego default_pipeline nie istnieje                 -> 400 dla KAŻDEGO zapisu
+GET .enrich-<polityka>-*                                                -> 403 (indeks zastrzeżony)
+```
+
+**Diagnoza**
+```bash
+curl -s -u elastic:… 'http://localhost:19200/_enrich/policy/product-popularity-policy'
+curl -s -u elastic:… 'http://localhost:19200/_ingest/pipeline/products-enrich-popularity?filter_path=*.processors'
+curl -s -u elastic:… 'http://localhost:19200/products-v6/_settings/index.default_pipeline'
+```
+
+**Przyczyna**
+Procesor `enrich` przy tworzeniu pipeline'u wymaga istniejącego indeksu enrich (powstaje dopiero przez `_execute`).
+ES chroni zależności: polityki używanej przez pipeline nie usunie, pipeline'u używanego jako `default_pipeline` też
+nie. W drugą stronę ochrony nie ma: indeks może wskazywać pipeline, którego nie ma, i wtedy odrzuca zapisy.
+
+**Naprawa**
+Kolejność (sekcja popularności `setup-analytics.sh`): pusty indeks źródłowy → polityka → `_execute` → pipeline →
+dopiero potem indeks z `default_pipeline` (`make reindex` na v6). Na świeżym klastrze i na k3s/VPS ta sekcja musi
+przejść przed migracją. Zmiana polityki: pusty pipeline (`{"processors":[]}`) → `DELETE` polityki →
+`make analytics-setup` → `search:popularity:refresh`.
+
+Poprawione w końcowej fali ETAPU 12:
+- **Strażnik w kodzie.** `IndexMigration::prepare` i `search:index:create` czytają `index.default_pipeline` z pliku
+  mapowania (`settings.index.default_pipeline`, płaskie `settings.default_pipeline`, `_none` pomijane), wołają
+  `GET _ingest/pipeline/<id>` i przy 404 odmawiają (`MigrationRefused` / błąd komendy) z podpowiedzią
+  `make analytics-setup`, zanim cokolwiek utworzą (`search:index:create --force` — jeszcze przed usunięciem
+  starego indeksu). Klasa `App\Service\DefaultPipeline`, testy: `DefaultPipelineTest` (jednostkowy) oraz
+  integracyjne w `IndexMigrateCommandTest` i `CreateSearchIndexCommandTest`.
+- **Kolejność skryptu.** Sekcja popularności to teraz sekcja 3, import do Kibany sekcja 4 — niedziałająca Kibana
+  nie blokuje już pipeline'u.
+- **Rola w k8s.** `deploy/k8s/es-roles.yml` ma `manage_transform`, `manage_enrich` i `product-popularity*` jak
+  `setup-security.sh` (bez tego refresh popularności na k3s dostałby 403).
+
+**Czego się nauczyłem**
+Enrich to trzy obiekty z zależnościami (indeks źródłowy, polityka z jej indeksem `.enrich-*`, pipeline), a ES pilnuje
+tylko części z nich. `default_pipeline` to zależność, której przy tworzeniu indeksu nikt nie sprawdza.
+
+---
+
+<a id="136"></a>
+## 136 — `rank_feature` odrzuca 0, a `on_failure` pipeline'u tego nie łapie
+
+> ETAP 12b, Task 8 (2026-11-20). Test mutacyjny pipeline'u `products-enrich-popularity`.
+
+**Objaw**
+Po usunięciu z pipeline'u warunku `ctx._pop.popularity > 0` zapis produktu z popularnością 0 w indeksie enrich był
+**odrzucony** przez ES (błąd mapowania pola `popularity`), mimo że pipeline ma `on_failure`, który miał
+przepuszczać dokument przy każdej awarii. Padły `PopularityPipelineTest` dla zera i dla awarii.
+
+**Diagnoza**
+```bash
+docker compose exec search-consumer php bin/phpunit tests/Integration/PopularityPipelineTest.php
+```
+
+**Przyczyna**
+`rank_feature` przyjmuje tylko wartości dodatnie. Walidacja wartości to etap **mapowania** (parsowanie dokumentu
+przy indeksowaniu), który dzieje się po zakończeniu pipeline'u. `on_failure` obejmuje tylko wyjątki procesorów
+ingest, więc błąd mapowania przechodzi obok niego.
+
+**Naprawa**
+Warunek w procesorze `set`: `if: ctx._pop?.popularity != null && ctx._pop.popularity > 0` (0 albo brak = pole
+nieustawione, zero wkładu w wynik). Formuła popularności daje zawsze > 0 (prior i α > 0, `PopularityFormula` rzuca
+wyjątek przy c̄ ≤ 0), więc warunek to druga linia obrony.
+
+**Czego się nauczyłem**
+„Pipeline nigdy nie odrzuca” to obietnica tylko dla procesorów. Wszystko, co mapowanie może odrzucić (typy, zakresy,
+`dynamic: strict`), trzeba odfiltrować w samym pipeline, zanim dokument z niego wyjdzie.
+
+---
+
+<a id="137"></a>
+## 137 — `make reindex` nie skacze do `products-v6`: zawsze vN → vN+1
+
+> ETAP 12b, Task 8 (2026-11-20).
+
+**Objaw**
+Aliasy wskazywały `products-v4`, plik `products-v6.json` gotowy, a `make reindex` budował `products-v5`.
+
+**Diagnoza**
+```bash
+curl -s -u elastic:… 'http://localhost:19200/_cat/aliases/products-*?v'    # products-v4
+curl -s -u elastic:… 'http://localhost:19200/_cat/indices/products-*?v&h=index,docs.count'   # brak products-v5
+ls infra/elasticsearch/mappings/                                             # v1 … v6
+```
+
+**Przyczyna**
+`IndexMigration::prepare` zawsze bierze `nextIndex(cel aliasu)`, opcji celu nie ma. `products-v5.json` istniał
+(przebudowa bez zmian mapowania z ETAPU 10, pilnuje go `MappingRebuildTest`), ale fizyczny indeks nie powstał.
+
+**Naprawa**
+Dwa przebiegi zamiast dopisywania `--to=`: v4 → v5 jako czysta przebudowa (69 s, bramka PASS, nDCG 1,000), potem
+v5 → v6 (79 s, PASS, 1,000). Przed drugim przebiegiem pipeline `products-enrich-popularity` musi istnieć
+([#135](#135)). Na świeżym klastrze (`CURRENT_VERSION = 2`) do v6 prowadzą cztery przebiegi.
+
+**Czego się nauczyłem**
+Narzędzie, które zna tylko „następną wersję”, wymusza historię mapowań bez dziur. Tańszy był dodatkowy przebieg
+(~70 s) niż nowa opcja w narzędziu migracji.
+
+---
+
+<a id="138"></a>
+## 138 — `closed-loop.sh` wisi 24 min: zawieszony `rabbitmqctl` w kontenerze RabbitMQ
+
+> ETAP 12b, Task 12 (2026-11-20). Pierwszy przebieg pętli zamkniętej (wariant raw).
+
+**Objaw**
+`make closed-loop variant=raw days=30 boost=2 yes=1` stanął w dniu 17 na czekaniu na pustą kolejkę. 24 min bez
+żadnej linii, mimo `DRAIN_TIMEOUT=600`.
+
+**Diagnoza**
+```bash
+docker compose exec rabbitmq ps -ef      # szukaj rabbitmqctl i rabbitmq-diagnostics
+# było: zawieszony rabbitmqctl list_queues + ~10 procesów rabbitmq-diagnostics (healthcheck), najstarszy sprzed 2:53 h
+```
+
+**Przyczyna**
+Dwie naraz. CLI RabbitMQ (escript Erlanga) co jakiś czas zawiesza się w tym kontenerze; to samo widać po wiszących
+healthcheckach. A `wait_drain` sprawdzał `DRAIN_TIMEOUT` dopiero po powrocie z `rabbitmqctl`, więc zawieszony odczyt
+blokował pętlę bez limitu. Busybox `timeout` w kontenerze nie pomaga: zabija wrapper `sh`, escript zostaje i dalej
+drukuje.
+
+**Naprawa**
+`queue_busy()` woła `rabbitmqctl` przez `with_timeout` na hoście (perl: proces we własnej grupie, po czasie `kill`
+całej grupy, domyślnie 20 s, `RMQCTL_TIMEOUT`). Zawieszony odczyt = „kolejka zajęta” i kolejna próba. Sprawdzone
+ręcznie: pusta kolejka → wolna w 0,5 s; atrapa `sleep 30` przy `RMQCTL_TIMEOUT=2` → „zajęta” po 2,0 s, bez
+pozostawionych procesów (commit `b8c325b`). Własny zawieszony `rabbitmqctl` zabity ręcznie; healthchecków nie
+ruszałem. Przyczyna zawieszania się CLI jest nadal niezbadana.
+
+**Czego się nauczyłem**
+Limit czasu sprawdzany po wywołaniu nie jest limitem. Zewnętrzny proces trzeba ubijać razem z całą grupą procesów,
+a `docker compose exec` z `timeout` w kontenerze zabija tylko to, co jest najbliżej.
+
+---
+
 ## Szablon nowego wpisu
 
 ```markdown
@@ -5470,3 +5898,53 @@ przechodzi porównanie.
 **Czego się nauczyłem**
 <zasada ogólna, która przyda się przy innym problemie>
 ```
+
+---
+
+<a id="139"></a>
+## 139 — `search.analytics.ingest` rośnie bez końca, gdy nie ma analytics-consumera (G5)
+
+> ETAP 12, końcowa recenzja gałęzi (2026-11-20). Znalezione w przeglądzie, nie w działaniu.
+
+**Objaw**
+Overlay G5 (`deploy/overlays/g5-base/delete-unneeded.yaml`) usuwa analytics-consumera, a catalog dalej zapisuje `user.*` do outboxu
+i `outbox-publisher` publikuje je do `marketplace.events`. Kolejka `search.analytics.ingest` (quorum, bez limitu)
+zbiera wszystko — pamięć i dysk brokera rosną, aż zadziała alarm pamięci i RabbitMQ zablokuje publikację **całemu**
+sklepowi (także `product.*`).
+
+**Diagnoza**
+```bash
+# API zarządzania (CLI w kontenerze potrafi wisieć, RUNBOOK #138); hasło z .env, nie wypisywać
+curl -s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "http://127.0.0.1:${RABBITMQ_UI_PORT}/api/queues/%2F/search.analytics.ingest" \
+  | python3 -c 'import json,sys;q=json.load(sys.stdin);print(q["messages"],q.get("policy"),q.get("effective_policy_definition"))'
+curl -s -u "$RABBITMQ_USER:$RABBITMQ_PASSWORD" "http://127.0.0.1:${RABBITMQ_UI_PORT}/api/policies/%2F"
+```
+
+**Przyczyna**
+Kolejka bez konsumenta i bez `max-length`. Analityka może ginąć (spec), więc brak konsumenta nie powinien zagrażać
+reszcie brokera.
+
+**Naprawa**
+Polityka `analytics-ingest-cap`: wzorzec `^search\.analytics\.ingest(\.dlq)?$`, `max-length: 100000`,
+`overflow: drop-head` (wyrzuca najstarsze). Jako kod w dwóch miejscach, pilnowanych przez
+`tools/k3d/topology-parity.rb` (woła je `tools/k3d/g5-check.sh`):
+- `infra/rabbitmq/definitions.template.json` → `policies` (Compose i baza k8s: `load_definitions` przy starcie brokera),
+- `deploy/k8s/rabbitmq-cluster/topology.yaml` → CR `Policy` (klaster operatora w G5).
+
+Nieoczywiste:
+- **`drop-head` + DLX.** Kolejka ma `x-dead-letter-exchange`, więc wyrzucone wiadomości nie znikają, tylko idą
+  do `search.analytics.ingest.dlq` (powód `maxlen`). Dlatego ten sam limit obejmuje `.dlq` — tam DLX-a nie ma, więc
+  `drop-head` naprawdę kasuje. Razem najwyżej ~200 tys. wiadomości. Skutek uboczny: przy zalewie DLQ też traci
+  najstarsze wpisy (dla analityki akceptowalne).
+- **Jedna polityka na kolejkę.** RabbitMQ stosuje tylko politykę o najwyższym priorytecie, nie łączy ich. Nowa
+  polityka pasująca do tych kolejek musi zawierać też ten limit; `topology-parity.rb` sprawdza, że każda kolejka
+  pasuje do najwyżej jednej polityki.
+- **Definicje ładują się tylko przy starcie.** Na działającym brokerze politykę wgrałem przez API
+  (`PUT /api/policies/%2F/analytics-ingest-cap`, ciało z pliku szablonu) i odświeżyłem lokalny `definitions.json`
+  (`python3 tools/render-rabbitmq-definitions.py`), żeby przetrwała restart. Kolejki quorum przyjmują politykę
+  z kilkusekundowym opóźnieniem (`effective_policy_definition` puste tuż po PUT).
+- **Stream w G5** (`search.analytics.stream`) ma własny `x-max-age: 7D`, polityka go nie dotyczy.
+
+**Czego się nauczyłem**
+Kolejka bez konsumenta to bomba z opóźnionym zapłonem dla całego brokera. Limit długości jest tani, ale przy DLX
+trzeba policzyć, dokąd trafiają wyrzucone wiadomości.

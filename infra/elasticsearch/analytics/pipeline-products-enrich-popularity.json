@@ -1,0 +1,65 @@
+{
+  "description": "Popularność produktu z indeksu enrich (ETAP 12, spec §7): default_pipeline products-v6. Enrich po _id (mapowanie nie ma product_id), wynik w tymczasowym _pop. NIGDY nie odrzuca zapisu produktu: on_failure kasuje pola popularności i przepuszcza dokument.",
+  "processors": [
+    {
+      "remove": {
+        "tag": "pop-reset",
+        "description": "Źródłem prawdy jest indeks enrich: pola niesione w _source (_reindex, _update_by_query) znikają, jeśli produkt wypadł z product-popularity",
+        "field": ["popularity", "popularity_raw", "popularity_ips"],
+        "ignore_missing": true
+      }
+    },
+    {
+      "enrich": {
+        "tag": "pop-enrich",
+        "policy_name": "product-popularity-policy",
+        "field": "_id",
+        "target_field": "_pop",
+        "max_matches": 1,
+        "ignore_missing": true
+      }
+    },
+    {
+      "set": {
+        "tag": "pop-rank-feature",
+        "description": "rank_feature przyjmuje tylko > 0 — 0 albo brak = pole nieustawione (zero wkładu w wynik)",
+        "if": "ctx._pop?.popularity != null && ctx._pop.popularity > 0",
+        "field": "popularity",
+        "copy_from": "_pop.popularity"
+      }
+    },
+    {
+      "set": {
+        "tag": "pop-raw",
+        "if": "ctx._pop?.popularity_raw != null",
+        "field": "popularity_raw",
+        "copy_from": "_pop.popularity_raw"
+      }
+    },
+    {
+      "set": {
+        "tag": "pop-ips",
+        "if": "ctx._pop?.popularity_ips != null",
+        "field": "popularity_ips",
+        "copy_from": "_pop.popularity_ips"
+      }
+    },
+    {
+      "remove": {
+        "tag": "pop-cleanup",
+        "field": "_pop",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "remove": {
+        "tag": "pop-on-failure",
+        "description": "Awaria enrich (brak indeksu enrich, zepsuty wpis) — dokument przechodzi bez popularności",
+        "field": ["_pop", "popularity", "popularity_raw", "popularity_ips"],
+        "ignore_missing": true
+      }
+    }
+  ]
+}

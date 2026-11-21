@@ -1,0 +1,5 @@
+{
+  "name": "Analityka: log serwera",
+  "connector_type_id": ".server-log",
+  "config": {}
+}

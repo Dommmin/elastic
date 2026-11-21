@@ -1,0 +1,60 @@
+{
+  "name": "Analityka: skok zero results",
+  "consumer": "alerts",
+  "rule_type_id": ".es-query",
+  "schedule": {
+    "interval": "1m"
+  },
+  "tags": [
+    "etap-12",
+    "analytics"
+  ],
+  "notify_when": "onActionGroupChange",
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM events-user-*\n| WHERE event.type == \"user.searched\"\n| EVAL is_recent = CASE(@timestamp >= NOW() - 15 minutes, 1, 0), is_zero = CASE(search.total_hits == 0, 1, 0)\n| STATS recent_searches = SUM(is_recent), recent_zero_results = SUM(is_recent * is_zero), baseline_searches = SUM(1 - is_recent), baseline_zero = SUM((1 - is_recent) * is_zero)\n| EVAL recent_ratio = TO_DOUBLE(recent_zero_results) / recent_searches, baseline_ratio = TO_DOUBLE(baseline_zero) / baseline_searches\n| WHERE recent_searches >= 20 AND recent_zero_results >= 5 AND recent_ratio > 3 * baseline_ratio\n| KEEP recent_searches, recent_zero_results, recent_ratio, baseline_searches, baseline_ratio"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 7,
+    "timeWindowUnit": "d",
+    "size": 1,
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "excludeHitsFromPreviousRun": false
+  },
+  "actions": [
+    {
+      "group": "query matched",
+      "id": "analytics-alerts-index",
+      "params": {
+        "documents": [
+          {
+            "@timestamp": "{{date}}",
+            "rule": {
+              "id": "{{rule.id}}",
+              "name": "{{rule.name}}"
+            },
+            "message": "Udział wyszukań bez wyników w ostatnich 15 min przekroczył 3x udział z poprzednich 7 dni",
+            "window_minutes": 15,
+            "recent_searches": "{{#context.hits}}{{_source.recent_searches}}{{/context.hits}}",
+            "recent_zero_results": "{{#context.hits}}{{_source.recent_zero_results}}{{/context.hits}}",
+            "recent_ratio": "{{#context.hits}}{{_source.recent_ratio}}{{/context.hits}}",
+            "baseline_searches": "{{#context.hits}}{{_source.baseline_searches}}{{/context.hits}}",
+            "baseline_ratio": "{{#context.hits}}{{_source.baseline_ratio}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "group": "query matched",
+      "id": "analytics-server-log",
+      "params": {
+        "level": "warn",
+        "message": "[{{rule.name}}] Udział wyszukań bez wyników w ostatnich 15 min przekroczył 3x udział z poprzednich 7 dni"
+      }
+    }
+  ]
+}

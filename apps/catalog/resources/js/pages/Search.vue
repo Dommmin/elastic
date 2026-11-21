@@ -27,6 +27,7 @@ const props = defineProps<{
     facets: Facets;
     filters: SearchFilters;
     priceHistogram?: PriceHistogramBucket[];
+    searchId?: string | null;
 }>();
 
 /**
@@ -75,6 +76,9 @@ function toQuery(filters: SearchFilters): Record<string, FormDataConvertible> {
 }
 
 /**
+ * `searchId` (ETAP 12) idzie w KAŻDYM `only`: każde nowe wyszukiwanie to nowe
+ * zdarzenie `user.searched`, a linki w kartach niosą jego ID (`?sid=&pos=`).
+ *
  * `only` domyślnie ogranicza się do results+facets — DoD ETAP 7: kliknięcie
  * facetu NIE ma prawa odpytać ES o `priceHistogram` (patrz SearchController).
  * Zmiana frazy (`refreshHistogram: true`) jest jedynym wyjątkiem: nowy tekst
@@ -98,8 +102,8 @@ function applyFilters(
 ) {
     const next: SearchFilters = { ...props.filters, ...partial };
     const only = options.refreshHistogram
-        ? ['results', 'facets', 'priceHistogram', 'filters']
-        : ['results', 'facets', 'filters'];
+        ? ['results', 'facets', 'priceHistogram', 'filters', 'searchId']
+        : ['results', 'facets', 'filters', 'searchId'];
 
     router.get(search.url(), toQuery(next), {
         preserveState: true,
@@ -154,7 +158,10 @@ function onSortChange(sort: SortOption) {
                     <PriceHistogram :buckets="priceHistogram ?? []" />
                 </Deferred>
 
-                <SearchResults :results="results" />
+                <SearchResults
+                    :results="results"
+                    :search-id="searchId ?? null"
+                />
             </div>
         </div>
     </div>

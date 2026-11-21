@@ -231,6 +231,11 @@ admin: ## Konto do panelu /panel lokalnie (make admin email=ty@example.com); has
 eval: ## nDCG@10 na zapytaniach kontrolnych (tests/relevance/queries.yaml)
 	$(DC) exec catalog-app php artisan search:eval
 
+.PHONY: popularity-judgments
+popularity-judgments: ## Zestaw ocen tests/relevance/popularity-queries.yaml z prawdy symulatora (seed=1 n=10)
+	$(DC) exec catalog-app php artisan analytics:judgments --seed=$(or $(seed),1) --queries=$(or $(n),10)
+	cp apps/catalog/storage/app/private/popularity-queries.yaml tests/relevance/popularity-queries.yaml
+
 .PHONY: reproject
 reproject: ## Przelicz wszystkie dokumenty products-search z projekcji (jednorazowo po Panel [2/8])
 	$(DC) exec search-consumer php bin/console search:reproject
@@ -266,6 +271,23 @@ es-snapshots-setup: ## MinIO + keystore ES + repo minio-s3 + SLM local-nightly (
 	$(DC) --profile snapshots up --no-deps minio-init
 	$(DC) --profile cluster up -d es01 es02 es03
 	@bash infra/elasticsearch/setup-snapshots.sh
+
+## Analityka operacyjna (ETAP 12)
+.PHONY: closed-loop
+closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dniu → CSV w docs/data/etap-12 (variant=raw|ips days=30 boost=2 [seed= sessions= flat=1 yes=1]); CZYŚCI streamy events-*
+	@bash tools/analytics/closed-loop.sh variant=$(or $(variant),ips) days=$(or $(days),30) boost=$(or $(boost),2) seed=$(or $(seed),1) sessions=$(or $(sessions),300) $(if $(flat),--flat) $(if $(yes),--yes)
+
+.PHONY: analytics-setup
+analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
+	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
+
+.PHONY: simulate
+simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
+	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)
+
+.PHONY: popularity-refresh
+popularity-refresh: ## Przelicz popularność produktów i doklej do indeksu (make popularity-refresh [variant=ips|raw as_of=2026-11-20 days=30 alpha=20 rps=-1])
+	$(DC) exec search-consumer php bin/console search:popularity:refresh --variant=$(or $(variant),ips) $(if $(as_of),--as-of=$(as_of)) --window-days=$(or $(days),30) --alpha=$(or $(alpha),20) --rps=$(or $(rps),-1)
 
 .PHONY: es-restore-drill
 es-restore-drill: ## Drill restore bez przestoju (make es-restore-drill repo=local-fs|minio-s3)

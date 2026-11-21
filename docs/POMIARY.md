@@ -887,3 +887,237 @@ Liczby czytane tuż po końcu zadania spóźniają się o ~1 s (`refresh_interva
 
 Wszystkie: liczba zgodna, próbka 100 dokumentów (`_source` + `_version`) zgodna. `make es-slm-run` (`local-nightly`): SUCCESS
 w 6,8 s. Restore z replikami 0. Przy jednym shardzie i lokalnym dysku MinIO nie jest wolniejszy od `fs`.
+
+## 16. ETAP 12 — analityka operacyjna (2026-11-20)
+
+> Część 12a: zdarzenia z sesji, data streamy, Transform `search-stats-daily`, dashboard. Przewodnik:
+> [`blog/etap-12a-zdarzenia-i-lejek.md`](blog/etap-12a-zdarzenia-i-lejek.md). Część 12b (popularność w rankingu, dowód,
+> §16.1–16.6): [`blog/etap-12b-popularnosc-w-rankingu.md`](blog/etap-12b-popularnosc-w-rankingu.md).
+> Maszyna współdzielona z innymi projektami: czasy **orientacyjne**.
+
+**Konfiguracja:** 3 węzły ES 9.5.1 (`es01–03`, role `dimrt` po dodaniu `transform`, RUNBOOK #128), data streamy
+1 shard + 1 replika, jeden backing index na stream (rollover 1d/1GB jeszcze nie zadziałał: wszystko przyszło
+2026-11-20). Kibana 9.5.1.
+
+### Symulator (`make simulate days=30`, seed 1, 300 sesji/dzień, as-of 2026-11-20)
+
+| sesje | wyszukania | zero wyników | kliknięcia | koszyk | zakupy | opublikowane | czas komendy |
+|---|---|---|---|---|---|---|---|
+| 9000 | 17 972 | 925 (5,1%) | 17 175 | 1937 | 496 | 37 580 | **19,3 s** (19,7 s wall) |
+
+Ingest przez `analytics-consumer` (kolejka do zera): ~50–60 s na 37,6 tys. zdarzeń + 340,9 tys. impressions.
+DLQ = 0. Liczniki w ES zgodne z podsumowaniem komendy co do sztuki (plus pojedyncze zdarzenia z UI).
+
+### Miejsce na dysku (`_stats/store,docs`, 2026-11-20 ~15:30 UTC)
+
+| Indeks | dokumenty | primary | z repliką | B/dok. (primary) | segmenty (primary) |
+|---|---|---|---|---|---|
+| `events-user-default` | 37 583 | 12,1 MB (12 733 947 B) | 32,6 MB | 339 | 6 |
+| `events-impression-default` | 341 000 | 25,3 MB (26 587 453 B) | 67,9 MB | 78 | 5 |
+| `search-stats-daily` | 4941 | 543 KB (556 435 B) | 1,1 MB | 113 | 4 |
+
+Fakt: impressions to 9× więcej dokumentów niż zdarzenia, ale tylko 2× więcej miejsca (dokument to 4 krótkie pola
+keyword/integer + `@timestamp` + `event.ingested`). Zdarzenie `user.searched` niesie tablicę 20 ID wyników
+i `query_raw` jako `text`, stąd 339 B/dok. Hipoteza (niesprawdzona): po `_forcemerge` liczby spadną, bo segmenty
+są świeże; „z repliką” jest więcej niż 2× primary z tego samego powodu (repliki mają inne, niescalone segmenty).
+
+`_data_stream/events-*/_stats`: `total_store_size` 100,5 MB (105 425 202 B), 2 streamy, 2 backing indices.
+
+### Transform `search-stats-daily` (ciągły, sync `event.ingested`, delay 60 s, frequency 1m)
+
+| Moment | checkpoint | documents_processed | documents_indexed | uwagi |
+|---|---|---|---|---|
+| pierwszy checkpoint (historia 30 dni) | 1 | 35 148 | 4940 | `exponential_avg_checkpoint_duration_ms` 1308, `search_total` 6, `index_total` 5, 0 błędów |
+| po teście spóźnionego zdarzenia | 3 | 35 151 | 4942 | `trigger_count` 12, średni checkpoint ~940 ms |
+
+35 148 = 17 973 wyszukania + 17 175 kliknięć (koszyk i zakupy odfiltrowane w `source.query`). 4941 kubełków
+= pary (dzień, fraza) z 31 dni i 417 fraz (plus kubełek `null`, przeglądanie bez frazy).
+
+**Spóźnione zdarzenie:** dokument z `@timestamp` 3 dni wstecz, zapisany 15:22:23 UTC, widoczny w kubełku
+2026-11-17 po **103 s** (górna granica: frequency 60 s + delay 60 s).
+
+### Kibana
+
+`make analytics-setup` sekcja 3: import 9 obiektów (3 data views, 5 Lens, dashboard) w ~1 s. Import do pustej
+przestrzeni: `successCount: 9`, 0 błędów.
+
+### Rolling restart węzłów ES (dodanie roli `transform`)
+
+`docker compose --profile cluster up -d --no-deps esNN` po kolei es02 → es03 → es01: każdy węzeł z powrotem
+w klastrze i klaster zielony po **~28–29 s**. Przy es02 i es03 dane były cały czas dostępne (repliki 1). Restart
+es01 to krótka przerwa dla wszystkich klientów: aplikacje (`ELASTICSEARCH_HOST=http://es01:9200`), Kibana i port
+19200 na hoście łączą się tylko z es01.
+
+### 16.1 Dowód popularności — środowisko i protokół (Task 12, 2026-11-20 16:20–17:35 UTC)
+
+**Środowisko:** jak wyżej (3 węzły ES 9.5.1), indeks `products-v6` (300 tys. produktów, 1 shard primary + replika),
+`analytics:simulate` seed 1, 300 sesji/dzień, η = 1, szum 5%, as-of 2026-11-20, okno popularności 30 dni, α = 20.
+Zestaw ocen `tests/relevance/popularity-queries.yaml` (10 fraz z dużymi grupami remisu, oceny = `min(3, ⌊a·4⌋)`
+z ukrytej atrakcyjności symulatora). Każdy eval: `search:eval --tie-shuffles=20` (średnia, min i max z 20 przebiegów,
+remisy `_score` rozstrzyga seedowany hash jako drugi klucz sortowania).
+
+**Sprawdzenie narzędzia przed pomiarem (czy `_rank_eval` respektuje `sort`):** dla pierwszej frazy zestawu
+(„Romaguera Inc”, B = 0) ten sam `request` z `toRankEvalRequest()` puszczony przez `_rank_eval` i przez `_search`:
+
+| wariant | `_rank_eval` top 4 | `_search` top 4 | identyczne top 10 | nDCG@10 |
+|---|---|---|---|---|
+| bez `sort` | 170351, 170406, 171553, 172086 | (inna kopia shardu) | **nie** w 1 z 2 prób | 0,167 |
+| `sort` ziarno 1 | 252309, 288251, 165637, 266240 | to samo | tak | 0,158 |
+| `sort` ziarno 7 | 211471, 121367, 37228, 72958 | to samo | tak | 0,219 |
+
+Wszystkie 10 wyników ma ten sam `_score` 21,12292. Wniosek: `_rank_eval` respektuje `sort` (inna kolejność niż bez
+sortowania, zgodna co do sztuki z `_search`). Przy okazji widać, po co jest drugi klucz: bez niego kolejność remisu
+zależy od tego, którą kopię shardu trafi zapytanie (dwie próby, dwa różne wyniki porównania).
+
+**Protokół pętli otwartej:** czyszczenie `events-*` (`_delete_by_query`, po opróżnieniu kolejki) →
+`search:popularity:refresh --reset` → `analytics:simulate --days=30` przy B = 0 (ranking stały) → czekanie na pustą
+kolejkę → `refresh --variant=raw` → eval dla B ∈ {0, 0,5, 1, 2, 4, 8, 16} → `refresh --variant=ips` → ten sam eval.
+B = 8 i 16 to dodatek spoza planu (sprawdzenie, gdzie zaczyna się szkoda). Czasy: symulacja 21 s, ingest 78–85 s
+(38,3 tys. zdarzeń + 340,9 tys. impressions), refresh 4 s (transform 1,2 s, enrich 0,4 s, UBQ 2,0 s na 7373 produktach),
+eval 20 przebiegów ~1 s.
+
+**Kryterium falsyfikacji — zapisane przed uruchomieniem kontroli (16:30 UTC):** w kontroli `--flat-attractiveness`
+(stała atrakcyjność 0,3, kliknięcia zależą tylko od pozycji) dla IPS przy każdym B ∈ {0,5, 1, 2, 4}
+|średnie nDCG(B) − średnie nDCG(B = 0)| < (max − min) linii bazowej kontroli. Przekroczenie = dowód wadliwy. Surowa
+w kontroli może się ruszyć (utrwala ekspozycję) — notujemy i tłumaczymy.
+
+### 16.2 Pętla otwarta — wyniki
+
+Linia bazowa B = 0 jest mierzona po każdym refreshu osobno (UBQ zmienia `_seq_no`, więc tasowania są inne).
+
+| wariant | B | nDCG@10 średnio | min | max | nieocenione w top 10 (maks.) |
+|---|---|---|---|---|---|
+| — | 0 (po refresh raw) | 0,1563 | 0,1139 | 0,2047 | 0 |
+| raw | 0,5 / 1 / 2 | **0,2453** | 0,2401 | 0,2524 | 0 |
+| raw | 4 | 0,2452 | 0,2400 | 0,2523 | 1 |
+| — | 0 (po refresh ips) | 0,1579 | 0,1074 | 0,2029 | 0 |
+| ips | 0,5 / 1 / 2 / 4 | **0,2593** | 0,2553 | 0,2640 | 0 |
+| ips | 8 | 0,2581 | 0,2540 | 0,2628 | 1 |
+| ips | 16 | 0,2485 | 0,2444 | 0,2532 | 4 |
+
+**Powtórka** (ten sam protokół, 17:29 UTC, to jest stan zostawiony na żywo): B = 0 0,1512 / 0,1507; raw B 0,5–4
+**0,2131** (0,2059–0,2281); ips B 0,5–4 **0,2214** (0,2136–0,2296); raw B 8 0,2028, B 16 0,1955; ips B 8 0,2208,
+B 16 0,2101. Symulacja z tym samym ziarnem dała inną liczbę kliknięć (18 465 vs 17 861): ranking przy B = 0 ma remisy,
+a ich kolejność zależy od kopii shardu (patrz sprawdzenie wyżej), więc symulator nie jest deterministyczny co do
+sztuki, choć jest co do rozkładu.
+
+Fakty:
+- Popularność podnosi nDCG@10 z ~0,15 do 0,21–0,26 w obu przebiegach (+0,06…+0,10, czyli +40…+65%).
+- IPS jest wyżej niż surowa w obu przebiegach (+0,014 i +0,008). W pierwszym przedziały min–max się nie nakładają,
+  w powtórce się nakładają — przewaga IPS jest stała co do znaku, ale mała.
+- B od 0,5 do 4 daje **identyczną** kolejność. `rank_feature` z `saturation` dodaje B·s(p), gdzie s ∈ (0, 1). W grupie
+  remisu każde B > 0 porządkuje produkty po popularności tak samo; B ma znaczenie dopiero, gdy B·s przeskakuje różnicę
+  wyniku tekstowego między grupami. Od B = 4 (raw) / 8 (ips) zaczynają się takie przeskoki: do top 10 wchodzą produkty
+  spoza ocenianego zbioru (kolumna „nieocenione”), a nDCG spada.
+- Rozrzut min–max maleje z ~0,09 do ~0,01: produkty z popularnością przestają remisować, tasują się już tylko te bez
+  kliknięć.
+
+### 16.3 Kontrola (`--flat-attractiveness`, pętla otwarta, 16:33–16:36 UTC)
+
+Linia bazowa kontroli (B = 0 po refresh ips): 0,1540, min 0,1070, max 0,1973 → **próg = 0,0903**.
+
+| wariant | B | nDCG@10 średnio | min | max | Δ vs B = 0 | nieocenione (maks.) |
+|---|---|---|---|---|---|---|
+| raw | 0 | 0,1570 | 0,1187 | 0,2071 | — | 0 |
+| raw | 0,5 / 1 / 2 | 0,1558 | 0,1462 | 0,1650 | −0,0012 | 0 |
+| raw | 4 | 0,1546 | 0,1450 | 0,1637 | −0,0024 | 2 |
+| raw | 8 | 0,1399 | 0,1312 | 0,1466 | −0,0171 | 8 |
+| raw | 16 | 0,1339 | 0,1250 | 0,1413 | −0,0231 | 10 |
+| ips | 0 | 0,1540 | 0,1070 | 0,1973 | — | 0 |
+| ips | 0,5 / 1 / 2 / 4 | 0,1557 | 0,1521 | 0,1608 | **+0,0017** | 0 |
+| ips | 8 | 0,1545 | 0,1509 | 0,1595 | +0,0005 | 1 |
+| ips | 16 | 0,1401 | 0,1365 | 0,1452 | −0,0139 | 6 |
+
+**Werdykt: kryterium spełnione, dowód nie został sfalsyfikowany.** IPS w kontroli: |Δ| = 0,0017 przy progu 0,0903
+(i przy efekcie 0,10 w pętli otwartej z sygnałem — 60× więcej). Surowa w kontroli też się nie poprawia (−0,001):
+ranking przy B = 0 pokazuje w top 20 ciągle te same produkty, surowa nagradza je za pozycję, ale ta kolejność jest
+przypadkowa względem prawdy, więc nDCG stoi. Spadek przy dużym B (obie wersje) to przeskakiwanie grup tekstowych:
+do top 10 trafiają produkty nieocenione (liczone jako 0).
+
+Uczciwie o progu: próg (rozrzut tasowań ~0,09) jest tego samego rzędu co efekt w pętli otwartej, więc kryterium jest
+łagodne. Do tego porównuje średnią z 20 tasowań z rozrzutem min–max pojedynczych tasowań, a szum średniej to mniej
+więcej rozrzut/√20 (~0,02). Mocniejszym argumentem jest sama wielkość Δ w kontroli (0,002 vs 0,06–0,10).
+
+### 16.4 Pętla zamknięta (`make closed-loop days=30 boost=2 yes=1`)
+
+B* = 2: w pętli otwartej IPS ma ten sam wynik dla B 0,5–4, wybrany środek plateau (ten sam B dla raw i ips).
+Eval co dzień z `--tie-shuffles=10` (tak ma skrypt). CSV: `docs/data/etap-12/closed-loop-raw-20261120T171920Z.csv`
+(9 min 48 s) i `closed-loop-ips-20261120T170658Z.csv` (10 min 26 s). Wykres PNG pominięty: na maszynie nie ma
+matplotlib ani gnuplot, a zadanie zabrania nowych zależności.
+
+| dzień | raw średnio (min–max) | ips średnio (min–max) |
+|---|---|---|
+| 1 | 0,1608 (0,1474–0,1787) | 0,1746 (0,1512–0,1878) |
+| 5 | 0,1550 (0,1378–0,1647) | 0,1944 (0,1823–0,2120) |
+| 10 | 0,1934 (0,1841–0,2013) | 0,2171 (0,2076–0,2241) |
+| 15 | 0,2056 (0,1947–0,2148) | 0,2499 (0,2452–0,2594) |
+| 20 | 0,2110 (0,2054–0,2158) | 0,2382 (0,2324–0,2464) |
+| 30 | **0,2283** (0,2245–0,2341) | **0,2304** (0,2275–0,2335) |
+| średnia dni 21–30 | 0,2161 | 0,2321 |
+| maksimum | 0,2283 (dzień 30) | 0,2537 (dzień 17) |
+| odniesienie: pętla otwarta, B = 2 | 0,2453 / 0,2131 | 0,2593 / 0,2214 |
+
+**Pierwszy przebieg raw przerwany** w dniu 17 (zawieszony `rabbitmqctl list_queues` w kontenerze RabbitMQ, 24 min
+bez odpowiedzi; poprawka niżej). Jego dni 1–16 (0,1986, 0,1939, 0,1997, 0,1971, 0,1974 … 0,2068 w dniu 10, 0,2125
+w dniu 16) różnią się od powtórki o do 0,05 we wczesnych dniach przy tym samym ziarnie — to jest miara szumu jednego
+przebiegu pętli zamkniętej (remisy rozstrzygane przez kopię shardu zmieniają, co klienci widzą).
+
+Fakty:
+- Obie trajektorie rosną od ~0,16–0,17 do ~0,23. Klasycznego „bogaci się bogacą” (surowa zjeżdża w dół) **nie widać**.
+- IPS jest wyżej niż surowa w powtórce przez prawie cały miesiąc (dni 11–17 o ~0,05), ale w dniu 30 obie są równe,
+  a przerwany przebieg raw był we wczesnych dniach wyżej niż IPS. Na jednym przebiegu na wariant różnica jest na
+  granicy szumu.
+- IPS osiąga maksimum w dniu 17 i potem spada w stronę surowej. Hipoteza (niesprawdzona): przy włączonym boost lepsze
+  produkty stoją wyżej, więc CTR wg pozycji miesza pozycję z atrakcyjnością, oszacowane p(k) jest za strome i IPS
+  przestaje poprawnie zdejmować bias.
+- Pętla zamknięta kończy w zakresie przebiegów pętli otwartej (dzień 30: raw 0,2283, ips 0,2304; pętla otwarta raw
+  0,2131–0,2453, ips 0,2214–0,2593). To przebiegi niesparowane, a szum jednego przebiegu to ~±0,03, więc **na tych
+  danych nie widać mierzalnego kosztu sprzężenia zwrotnego**. Hipoteza (niesprawdzona): przy dłuższym horyzoncie
+  boost skupi wyświetlenia na produktach już popularnych i mniej produktów dostanie sygnał (utrata eksploracji).
+
+### 16.5 Strażnik i wybór B
+
+`make eval` (13 zapytań z `queries.yaml`) z popularnością IPS z pętli otwartej:
+
+| B | 0 | 0,5 | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|---|---|
+| nDCG@10 | 1,000 | 1,000 | 1,000 | 1,000 | 1,000 | 1,000 | **0,914** |
+
+Po ustawieniu domyślnego B = 2 i odtworzeniu `catalog-app`: `make eval` = **1,000** (13/13, 0 nieocenionych),
+`popularity-queries` = 0,2214 (0,2136–0,2296).
+
+**Wybór: `SEARCH_POPULARITY_BOOST=2`** (`compose.yaml` `${SEARCH_POPULARITY_BOOST:-2}`, `.env.example`).
+- Zysk: w zakresie 0,5–4 kolejność jest identyczna (pełny zysk, w obu przebiegach).
+- Ryzyko „nieocenione w top-k”: 0 dla B ≤ 2 we wszystkich pomiarach; pierwsze przeskoki grup tekstowych przy B = 4
+  (raw, 1 dokument) i 8 (ips).
+- Strażnik: 1,000 do B = 8, regresja przy 16.
+- 2 to środek plateau: zapas w dół (inne skale wyniku tekstowego, inne frazy) i w górę (do pierwszych przeskoków).
+  Ten zestaw nie pozwala rozróżnić B wewnątrz 0,5–4, więc to wybór asekuracyjny, a nie optimum.
+
+k3s celowo zostaje przy B = 0: `deploy/k8s` nie ustawia `SEARCH_POPULARITY_BOOST`, a `config/services.php` ma
+domyślnie 0. Zmienimy to, gdy na k3s będą `products-v6` i refresh popularności.
+
+### 16.6 Interpretacja i zastrzeżenia
+
+- Wynik główny jest pozytywny i przeszedł test falsyfikujący: popularność z zaszumionych, przesuniętych przez pozycję
+  kliknięć odzyskuje część ukrytej prawdy (+0,06…+0,10 nDCG@10), a przy kliknięciach bez sygnału nie „poprawia”
+  niczego. IPS > surowa w 2 z 2 sparowanych przebiegów pętli otwartej (raw i ips liczone z tych samych zdarzeń, więc
+  różnica jest mniej zaszumiona niż poziomy bezwzględne), ale przewaga jest mała (0,008–0,014) i nie jest potwierdzona
+  statystycznie. W pętli zamkniętej jest na granicy szumu.
+- **Prawda jest syntetyczna.** Atrakcyjność to Beta z hasha ID, a oceny to jej zaokrąglenie. Mierzymy, czy pętla
+  odzyskuje model symulatora, a nie, czy ludzie uznaliby wyniki za trafniejsze.
+- **Bezwzględne nDCG jest niskie (~0,26).** Ideał to cała oceniona grupa ułożona po `a`, a sygnał dostają tylko
+  produkty, które ranking przy B = 0 w ogóle pokazał (top 20). Reszta grupy remisu nie ma kliknięć i dalej się tasuje.
+- **Frazy dowodu nie są frazami najczęstszymi.** Symulator losuje zapytania z rozkładu Zipfa, a zestaw ocen wybiera
+  frazy z dużymi grupami remisu. Rzadsza fraza = mniej kliknięć, więc wynik zależy od tego, ile ruchu dostała.
+- **Szum z replik.** Kolejność remisów zależy od kopii shardu, więc symulacja z tym samym ziarnem daje inne kliknięcia
+  (powtórka: 0,213/0,221 zamiast 0,245/0,259). Liczby z jednego przebiegu traktować z dokładnością ~±0,03 (pętla
+  otwarta) i ~±0,05 (pętla zamknięta, wczesne dni).
+- **Nieocenione dokumenty działają przeciw boostowi.** Produkt wciągnięty do top 10 spoza ocenianego zbioru liczy się
+  jako 0, nawet jeśli jest atrakcyjny. Dotyczy to dopiero B ≥ 4: przy wybranym B ≤ 2 w top 10 było 0 nieocenionych,
+  więc tam zysk jest zmierzony wprost. Spadki przy B ≥ 8 są częściowo artefaktem, a wyniki przy B ≥ 4 są dolnym
+  oszacowaniem.
+- **Poprawka narzędzia w trakcie:** `closed-loop.sh` `queue_busy()` czekał bez limitu na `rabbitmqctl` (DRAIN_TIMEOUT
+  sprawdzany dopiero po powrocie). Teraz odczyt idzie przez `with_timeout` (perl, własna grupa procesów, domyślnie
+  20 s, `RMQCTL_TIMEOUT`). Zawieszony odczyt = „kolejka zajęta” i kolejna próba. Busybox `timeout` w kontenerze nie
+  wystarcza: zabija wrapper `sh`, a escript `rabbitmqctl` zostaje.

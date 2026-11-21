@@ -1,0 +1,6 @@
+{
+  "description": "Zdarzenia analityczne: czas przyjęcia przez ES (event.ingested), obok czasu zdarzenia (@timestamp)",
+  "processors": [
+    { "set": { "field": "event.ingested", "value": "{{_ingest.timestamp}}" } }
+  ]
+}

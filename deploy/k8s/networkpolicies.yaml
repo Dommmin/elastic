@@ -88,6 +88,7 @@ spec:
                   - catalog-scheduler
                   - migrate
                   - search-consumer
+                  - analytics-consumer # failure transport Messengera
                   - search-metrics     # failure transport Messengera (doctrine://)
                   - glitchtip
                   - glitchtip-db-setup
@@ -136,7 +137,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, search-consumer]
+                values: [catalog-app, outbox-publisher, search-consumer, analytics-consumer]
       ports:
         - port: 5672
     # 15692 = wtyczka rabbitmq_prometheus. UI zarządzania (15672) celowo bez
@@ -169,7 +170,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, migrate, search-consumer]
+                values: [catalog-app, outbox-publisher, migrate, search-consumer, analytics-consumer]
         - podSelector:
             matchLabels: { kibana.k8s.elastic.co/name: marketplace }
         # Operator ECK sprawdza zdrowie klastra, ustawia hasła i role przez HTTP API.
@@ -264,7 +265,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler, search-consumer, search-metrics]
+                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler, search-consumer, analytics-consumer, search-metrics]
       ports:
         - port: 8000
     - from:

@@ -187,6 +187,20 @@ final class IndexMigrateCommandTest extends TestCase
         self::assertStringNotContainsString('TARGET=', $tester->getDisplay());
     }
 
+    public function test_prepare_odmawia_gdy_default_pipeline_celu_nie_istnieje(): void
+    {
+        $body = json_decode(file_get_contents($this->mappingsDir.'/products-v2.json'), true);
+        $body['settings']['index']['default_pipeline'] = 'brak-pipeline-'.uniqid();
+        file_put_contents($this->mappingsDir.'/products-v2.json', json_encode($body));
+
+        $tester = $this->migrate('prepare');
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString($body['settings']['index']['default_pipeline'], $this->flat($tester));
+        self::assertStringContainsString('make analytics-setup', $this->flat($tester));
+        self::assertFalse($this->client->indices()->exists(['index' => $this->prefix.'2'])->asBool());
+    }
+
     public function test_prepare_odmawia_bez_pliku_mapowania_celu(): void
     {
         unlink($this->mappingsDir.'/products-v2.json');

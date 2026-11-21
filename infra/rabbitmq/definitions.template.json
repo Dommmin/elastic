@@ -10,7 +10,19 @@
 
   "parameters": [],
   "global_parameters": [],
-  "policies": [],
+  "policies": [
+    {
+      "name": "analytics-ingest-cap",
+      "vhost": "/",
+      "pattern": "^search\\.analytics\\.ingest(\\.dlq)?$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "max-length": 100000,
+        "overflow": "drop-head"
+      }
+    }
+  ],
 
   "exchanges": [
     {

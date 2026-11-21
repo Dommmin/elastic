@@ -4,6 +4,10 @@ use App\Services\ProductSearchService;
 use App\Services\Search\SearchCriteria;
 use Elastic\Elasticsearch\ClientBuilder;
 use Illuminate\Http\Request;
+use Tests\TestCase;
+
+// buildScoringQuery() czyta config(), więc potrzebna jest aplikacja (bez bazy).
+uses(TestCase::class);
 
 /**
  * Testuje WYŁĄCZNIE budowanie DSL (metody `buildSearchQuery`/`buildFilters`/

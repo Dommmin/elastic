@@ -1,0 +1,7 @@
+{
+  "match": {
+    "indices": "product-popularity",
+    "match_field": "product_id",
+    "enrich_fields": ["popularity", "popularity_raw", "popularity_ips"]
+  }
+}

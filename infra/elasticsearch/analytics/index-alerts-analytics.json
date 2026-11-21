@@ -1,0 +1,28 @@
+{
+  "settings": {
+    "index.number_of_shards": 1,
+    "index.number_of_replicas": 1
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "@timestamp": { "type": "date" },
+      "rule": {
+        "properties": {
+          "id": { "type": "keyword" },
+          "name": { "type": "keyword" }
+        }
+      },
+      "message": { "type": "text" },
+      "window_minutes": { "type": "integer" },
+      "recent_searches": { "type": "long" },
+      "recent_zero_results": { "type": "long" },
+      "recent_clicks": { "type": "long" },
+      "recent_ratio": { "type": "double" },
+      "recent_ctr": { "type": "double" },
+      "baseline_searches": { "type": "long" },
+      "baseline_ratio": { "type": "double" },
+      "baseline_ctr": { "type": "double" }
+    }
+  }
+}

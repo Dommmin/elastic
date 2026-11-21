@@ -72,5 +72,12 @@
         <env name="SENTRY_DSN" value="(null)" force="true"/>
         <server name="SENTRY_LARAVEL_DSN" value="(null)"/>
         <server name="SENTRY_DSN" value="(null)"/>
+        <!--
+            Boost popularności (ETAP 12b): compose ustawia catalog-app SEARCH_POPULARITY_BOOST=2,
+            a testy DSL zakładają domyślne 0. Testy, które potrzebują boostu, ustawiają
+            config('services.search.popularity_boost') same.
+        -->
+        <env name="SEARCH_POPULARITY_BOOST" value="0" force="true"/>
+        <server name="SEARCH_POPULARITY_BOOST" value="0"/>
     </php>
 </phpunit>

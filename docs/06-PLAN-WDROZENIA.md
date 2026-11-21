@@ -403,6 +403,25 @@ Session Replay, monity cron i uptime GlitchTipa (to robi Prometheus).
 **DoD:** dashboard z lejkiem i CTR; popularność z kliknięć realnie zmienia ranking;
 mierzysz `_rank_eval` przed i po i **udowadniasz** poprawę.
 
+**Stan (2026-11-20): zrobione lokalnie** na gałęzi `etap-12-analityka`, DoD sprawdzone na żywym stacku
+(3 węzły ES 9.5.1, Kibana 9.5.1, symulator klientów z ukrytą atrakcyjnością):
+- **12a:** zdarzenia `user.*` z sesji `mp_sid` przez outbox, `analytics-consumer` → data streamy
+  `events-user-default` i `events-impression-default` (ILM, `event.ingested`), Transform ciągły
+  `search-stats-daily`, dashboard z lejkiem i CTR jako NDJSON, ES|QL. Przewodnik:
+  [`blog/etap-12a-zdarzenia-i-lejek.md`](blog/etap-12a-zdarzenia-i-lejek.md).
+- **12b:** `products-v6` z `rank_feature` i pipeline'em enrich (nigdy nie odrzuca zapisu), `product-popularity`
+  (surowa i IPS z `p(k)` szacowanym z danych) i `search:popularity:refresh`, `--tie-shuffles` w `search:eval`,
+  zestaw ocen z prawdy symulatora, pętla zamknięta, reguły anomalii ES|QL w Kibana Alerting. Przewodnik:
+  [`blog/etap-12b-popularnosc-w-rankingu.md`](blog/etap-12b-popularnosc-w-rankingu.md).
+- **Dowód:** nDCG@10 na zestawie dowodowym ~0,15 → 0,21–0,26 (surowa i IPS, pętla otwarta), w kontroli bez sygnału
+  Δ +0,002 przy progu 0,09; strażnik `make eval` 1,000; wybrane `SEARCH_POPULARITY_BOOST=2` (plateau 0,5–4).
+  Pomiary w [POMIARY §16](POMIARY.md) (16.1–16.6).
+
+Spec: [`superpowers/specs/2026-11-20-etap-12-analityka-operacyjna-design.md`](superpowers/specs/2026-11-20-etap-12-analityka-operacyjna-design.md),
+plan: [`superpowers/plans/2026-11-20-etap-12-analityka-operacyjna.md`](superpowers/plans/2026-11-20-etap-12-analityka-operacyjna.md),
+RUNBOOK #128–#138. Nie wdrożone na k3s (brak serwera); k3s celowo zostaje przy B = 0 do czasu `products-v6`,
+sekcji 4 setupu (przed migracją) i refreshu popularności tam.
+
 ### ETAP 13 — Tor agregatu „Seller 360" (4–5 dni) → **moduł 11a**
 - indeks `seller-360` scalany z 5 źródeł, partial updates (`doc_as_upsert`)
 - `enrich` processor, fan-out, wersjonowanie per sekcja, metryka świeżości per sekcja

@@ -1,15 +1,28 @@
 <script setup lang="ts">
 import { Link } from '@inertiajs/vue3';
 import { Star } from '@lucide/vue';
+import { computed } from 'vue';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatPriceCents } from '@/lib/currency';
 import { show } from '@/routes/products';
 import type { ProductHit } from '@/types/search';
 
-defineProps<{
+const props = defineProps<{
     product: ProductHit;
+    position: number;
+    searchId: string | null;
 }>();
+
+// Kliknięcie rejestruje serwer przy wejściu na stronę produktu (ETAP 12):
+// `sid` + `pos` mówią, z którego wyszukiwania i z której pozycji przyszedł użytkownik.
+const href = computed(() =>
+    props.searchId
+        ? show(Number(props.product.id), {
+              query: { sid: props.searchId, pos: props.position },
+          })
+        : show(Number(props.product.id)),
+);
 </script>
 
 <template>
@@ -29,10 +42,7 @@ defineProps<{
             </div>
 
             <h3 class="line-clamp-2 leading-snug font-semibold">
-                <Link
-                    :href="show(product.id)"
-                    class="underline-offset-4 hover:underline"
-                >
+                <Link :href="href" class="underline-offset-4 hover:underline">
                     {{ product.name }}
                 </Link>
             </h3>

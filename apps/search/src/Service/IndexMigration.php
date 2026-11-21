@@ -90,6 +90,9 @@ final class IndexMigration
         }
 
         $body = $this->mappings->load($version);
+        if (($pipeline = DefaultPipeline::missing($this->client, $body)) !== null) {
+            throw new MigrationRefused("Mapowanie {$target} ma index.default_pipeline \"{$pipeline}\", którego nie ma w klastrze — każdy zapis do {$target} (_reindex, strumień) dostałby 400. ".DefaultPipeline::SETUP_HINT);
+        }
         $settings = $body['settings'] ?? [];
         $meta = [
             'source' => $source,

@@ -292,6 +292,28 @@ Rozdzielenie konsumentów na osobne kontenery to wzorzec produkcyjny: różne ko
 różny SLA i różną skalę. Przećwiczysz `docker compose up --scale search-consumer-sync=4`
 i zobaczysz w RabbitMQ, jak rozkłada się ruch (i co robi prefetch).
 
+### 3.8a Tor analityki operacyjnej (ETAP 12, zrobione lokalnie)
+
+Zdarzenia z sesji klienta (wyszukanie, kliknięcie, koszyk, zakup) → data streamy → Transforms → dashboard, a z kliknięć
+popularność produktu w rankingu. Przewodniki: [`blog/etap-12a-zdarzenia-i-lejek.md`](blog/etap-12a-zdarzenia-i-lejek.md)
+(zdarzenia, lejek) i [`blog/etap-12b-popularnosc-w-rankingu.md`](blog/etap-12b-popularnosc-w-rankingu.md) (popularność,
+dowód, anomalie). Wszystko poza konsumentem zakłada idempotentny `make analytics-setup`
+(`infra/elasticsearch/setup-analytics.sh`, sekcje 1–5, jako `elastic` z wnętrza `es01`).
+
+| Element | Rodzaj | Co robi | Zasoby / uwagi |
+|---|---|---|---|
+| `analytics-consumer` | kontener (profil `apps`), obraz search | `messenger:consume analytics`: kolejka `search.analytics.ingest` → `_bulk create` do data streamów, paczki po 500, 409 = duplikat | `mem_limit: 512m`, użytkownik ES `searchsvc`; na k3s `deploy/k8s/analytics-consumer.yaml` |
+| `events-user-default`, `events-impression-default` | data streamy | zdarzenia `user.*` i wyświetlenia (produkt × pozycja 1–20); szablony `dynamic: strict`, pipeline `events-ingested` (`event.ingested`) | ILM `events-user`: rollover 1d/1 GB, delete po 90 dniach |
+| `search-stats-daily` | Transform ciągły + indeks | dzień × fraza: wyszukania, zero results, sesje, kliknięcia, CTR; sync po `event.ingested`, delay 60 s | węzły ES muszą mieć rolę `transform` (RUNBOOK #128) |
+| `product-popularity` | Transform wsadowy + indeks | popularność produktów (surowa i IPS) z okna 30 dni; odtwarzany przez `make popularity-refresh` (`search:popularity:refresh`) | ~1,3 s na 30 dni symulacji |
+| `product-popularity-policy` + `products-enrich-popularity` | polityka enrich + pipeline ingest | `default_pipeline` w `products-v6`: dokleja `popularity` (`rank_feature`) przy każdym zapisie produktu, nigdy nie odrzuca | pipeline musi istnieć przed `products-v6` (RUNBOOK #135) |
+| Kibana: dashboard „Wyszukiwarka — analityka” | saved objects (NDJSON) | lejek, CTR w czasie i wg pozycji, zero results, top frazy | `infra/kibana/analytics-dashboard.ndjson` |
+| Kibana Alerting: 2 reguły `.es-query` (ES\|QL) | reguły jako kod | skok zero results (15 min vs 7 dni), spadek CTR (60 min vs 7 dni); connector Index → `alerts-analytics`, connector Server log | licencja basic; `infra/kibana/rules/` |
+
+Ranking: `SEARCH_POPULARITY_BOOST` w `catalog-app` (lokalnie domyślnie 2, w `config/services.php` 0). Na k3s nie
+ustawiony, więc B = 0 i brak `products-v6`/setupu analityki (nie wdrożone, brak serwera). Pomiary miejsca i czasów:
+[POMIARY §16](POMIARY.md).
+
 ### 3.9 Profil `obs` — obserwowalność (ETAP 11, zrobione)
 
 Podział sygnałów według [ADR-0005](adr/0005-metryki-w-prometheusie-logi-w-es.md):
@@ -411,6 +433,10 @@ make seed n=5000000  # generuj dane testowe (domyślnie 5 mln produktów)
 make reindex         # migracja vN → vN+1 z zerowym downtime (source=es|pg), dwa aliasy, bramka (ETAP 10)
 make reindex-abort   # wycofanie migracji po switch-write + nadrobienie okna z outboxu
 make reindex-cleanup # usuń stare indeksy bez aliasu
+make analytics-setup # tor analityki: data streamy, Transforms, dashboard, enrich, reguły (ETAP 12)
+make simulate days=30           # symulator klientów -> zdarzenia user.*
+make popularity-refresh         # przelicz popularność i doklej do produktów (variant=ips|raw)
+make closed-loop variant=ips    # pętla zamknięta symulacja -> refresh -> eval (KASUJE streamy events-*)
 make consume         # podgląd konsumentów
 make bench q=laptop  # test obciążeniowy zapytania
 ```

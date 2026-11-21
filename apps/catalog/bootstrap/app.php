@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ErrorTunnelController;
 use App\Http\DomainErrorMessages;
+use App\Http\Middleware\AnalyticsSession;
 use App\Http\Middleware\AssignTraceId;
 use App\Http\Middleware\EnsureHasSeller;
 use App\Http\Middleware\EnsureSellerApproved;
@@ -60,9 +61,13 @@ return Application::configure(basePath: dirname(__DIR__))
             );
         }
 
-        $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
+        $middleware->encryptCookies(except: ['appearance', 'sidebar_state', AnalyticsSession::COOKIE]);
+
+        // Sesja analityczna (ETAP 12): także w API, bo `GET /api/search` emituje `user.searched`.
+        $middleware->api(append: [AnalyticsSession::class]);
 
         $middleware->web(append: [
+            AnalyticsSession::class,
             HandleAppearance::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
