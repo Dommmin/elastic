@@ -901,6 +901,9 @@ services:
       ERROR_TRACKING_PROCESS: metrics
       DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
       MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+      # ETAP 13: metryki seller-360 (lag, liczniki, bezpiecznik) czytane z Redisa.
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     volumes:
       - ./apps/search:/app
     # Healthcheck z obrazu bazowego sprawdza proces `messenger:consume`, którego

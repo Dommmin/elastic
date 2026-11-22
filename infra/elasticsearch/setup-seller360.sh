@@ -11,6 +11,10 @@
 #  Reklamacje (Task 9): szablony complaints (default_pipeline) i complaints-unmatched (bez niego),
 #  polityka enrich seller-by-nip (tworzona raz, _execute przy każdym uruchomieniu), pipeline
 #  complaints-resolve-seller. Polityki nie da się zmienić w miejscu — przebudowa: nagłówek setup-analytics.sh.
+#  Świeżość (Task 10): pola p99 w mapowaniu alerts-analytics (dynamic: strict), import dashboardu
+#  infra/kibana/seller360-dashboard.ndjson (overwrite=true) i reguła infra/kibana/rules/seller360-lag.json
+#  (idempotentnie po nazwie: jest → PUT, brak → POST). Wymaga wcześniejszego `make analytics-setup`
+#  (indeks alerts-analytics i connectory Kibany o stałych ID).
 #  Aliasy: seller-360 (odczyt) + seller-360-write (is_write_index) → seller-360-v1,
 #          seller-360-public + seller-360-public-write → seller-360-public-v1.
 #
@@ -119,5 +123,61 @@ for idx in complaints complaints-unmatched; do
     esa PUT "/${idx}" >/dev/null
   fi
 done
+
+# --- Świeżość (Task 10): dashboard i reguła w Kibanie ------------------------
+KIBANA_URL="${KIBANA_URL:-http://kibana:5601}"
+KIBANA_DIR="$(cd "${DIR}/../../kibana" && pwd)"
+die() { printf '[seller360] BŁĄD: %s\n' "$*" >&2; exit 1; }
+
+kba() {
+  local method="$1" path="$2" file="${3:-}"
+  if [ -n "${file}" ]; then
+    ${DC} exec -T es01 sh -c \
+      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -H "Content-Type: application/json" -X "$0" "$1$2" --data-binary @-' \
+      "${method}" "${KIBANA_URL}" "${path}" <"${file}"
+  else
+    ${DC} exec -T es01 sh -c \
+      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -X "$0" "$1$2"' \
+      "${method}" "${KIBANA_URL}" "${path}"
+  fi
+}
+
+esa_exists "/alerts-analytics" || die "brak indeksu alerts-analytics — uruchom najpierw make analytics-setup"
+
+log "Mapowanie alerts-analytics: pola p99 lagu (idempotentne)"
+printf '{"properties":{"profile_p99":{"type":"double"},"billing_p99":{"type":"double"},"offers_p99":{"type":"double"}}}' >"${TMP}"
+esa PUT /alerts-analytics/_mapping "${TMP}" >/dev/null
+
+log "Import seller360-dashboard.ndjson (overwrite=true)"
+RESULT="$(${DC} exec -T es01 sh -c \
+  'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -X POST "$0/api/saved_objects/_import?overwrite=true" -F "file=@-;filename=seller360-dashboard.ndjson"' \
+  "${KIBANA_URL}" <"${KIBANA_DIR}/seller360-dashboard.ndjson")"
+printf '%s' "${RESULT}" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+if not r.get("success"):
+    print("[seller360] BŁĄD importu:", json.dumps(r.get("errors"), ensure_ascii=False), file=sys.stderr)
+    sys.exit(1)
+print("[seller360] Zaimportowano obiektów: %d" % r["successCount"])'
+
+RULE="${KIBANA_DIR}/rules/seller360-lag.json"
+NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "${RULE}")"
+RID="$(kba GET "/api/alerting/rules/_find?per_page=100" | python3 -c '
+import json, sys
+name = sys.argv[1]
+ids = [r["id"] for r in json.load(sys.stdin)["data"] if r["name"] == name]
+print(ids[0] if ids else "")' "${NAME}")"
+if [ -n "${RID}" ]; then
+  log "Reguła „${NAME}”: aktualizuję (${RID})"
+  python3 -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+print(json.dumps({k: r[k] for k in ("name", "tags", "schedule", "params", "actions", "notify_when")}))' "${RULE}" >"${TMP}"
+  kba PUT "/api/alerting/rule/${RID}" "${TMP}" >/dev/null
+else
+  log "Reguła „${NAME}”: tworzę"
+  kba POST "/api/alerting/rule" "${RULE}" >/dev/null
+fi
+log "Dashboard: http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/seller360-freshness"
 
 log "Gotowe."
