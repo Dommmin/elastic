@@ -12,6 +12,8 @@ parameters:
     # ETAP 13 (seller-360): Redis i plik miast; w kontenerze montowane przez compose.yaml.
     env(REDIS_HOST): 'redis'
     env(REDIS_PASSWORD): ''
+    # ETAP 13: mock rejestru firm i kurierów (compose: usługa registry-mock).
+    env(REGISTRY_BASE_URL): 'http://registry-mock:8080'
     env(REGION_CSV_PATH): '/infra/reference/miasta-wojewodztwa.csv'
 
 services:
@@ -71,6 +73,11 @@ services:
     App\Seller360\Seller360Scheduler:
         arguments:
             $jobs: !tagged_iterator app.seller360_job
+
+    # Klient rejestru ma własny adres (`$baseUrl` jest zbindowany na catalog).
+    App\Seller360\Registry\RegistryClient:
+        arguments:
+            $registryBaseUrl: '%env(REGISTRY_BASE_URL)%'
 
     App\Seller360\RegionResolver:
         arguments:

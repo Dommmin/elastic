@@ -816,6 +816,63 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # ETAP 13: mock zewnętrznego rejestru firm i kurierów (tools/registry-mock, opis w README tamże).
+  # Wbudowany serwer PHP z 4 workerami: awaria (`outage`) trzyma żądanie 3 s, a /_chaos musi się
+  # przez nią przebić. Bez `ports:` — dostępny tylko w sieci Compose jako registry-mock:8080.
+  registry-mock:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["php", "-S", "0.0.0.0:8080", "/srv/registry-mock/index.php"]
+    environment:
+      PHP_CLI_SERVER_WORKERS: "4"
+    volumes:
+      - ./tools/registry-mock:/srv/registry-mock:ro
+    mem_limit: 128m
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # ETAP 13: synchronizacja sekcji `registry` w osobnym procesie, żeby awaria rejestru nie
+  # zatrzymała kolejki search.seller360. Pętla co --pause s, najwyżej 20 żądań/s do rejestru,
+  # timeout 2 s, ponowienia, bezpiecznik w Redisie, cache 24 h (sekcja stale zamiast dziury).
+  seller360-registry:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["php", "bin/console", "seller360:registry:sync", "--loop", "-vv"]
+    environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: seller360-registry
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      ELASTICSEARCH_HOST: http://es01:9200
+      ELASTICSEARCH_USER: searchsvc
+      ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
+      REGISTRY_BASE_URL: http://registry-mock:8080
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - ./apps/search:/app
+    depends_on:
+      es01: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      registry-mock: { condition: service_started }
+    mem_limit: 256m
+    stop_grace_period: 30s
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
   # ==========================================================================
   #  Profil `obs` (ETAP 11)
   #  Obserwowalność: logi (Filebeat -> ES), metryki (Prometheus, Grafana),
