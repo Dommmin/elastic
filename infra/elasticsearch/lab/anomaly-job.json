@@ -1,0 +1,22 @@
+{
+  "description": "ETAP 14b: liczba zdarzeń user.* na godzinę, osobny model dla każdego event.type (low_count: szukamy ciszy)",
+  "analysis_config": {
+    "bucket_span": "1h",
+    "detectors": [
+      {
+        "detector_description": "niska liczba zdarzeń na typ zdarzenia",
+        "function": "low_count",
+        "partition_field_name": "event.type"
+      }
+    ],
+    "influencers": ["event.type"]
+  },
+  "analysis_limits": {
+    "model_memory_limit": "32mb"
+  },
+  "data_description": {
+    "time_field": "@timestamp",
+    "time_format": "epoch_ms"
+  },
+  "results_index_name": "lab-user-activity"
+}

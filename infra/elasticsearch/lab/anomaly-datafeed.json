@@ -1,0 +1,6 @@
+{
+  "job_id": "lab-user-activity",
+  "indices": ["lab-events-user"],
+  "query": { "match_all": {} },
+  "scroll_size": 1000
+}

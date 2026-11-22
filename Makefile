@@ -325,6 +325,14 @@ lab-costs: ## Koszt wektorów: dysk per pole, pamięć kNN, czas ładowania bez 
 lab-filter-demo: ## Filtrowany kNN: filtr w knn kontra post_filter (oznacza co trzeci dokument próbki jako in_stock=false; es-lab)
 	@bash tools/lab/filter-demo.sh
 
+.PHONY: lab-export-events
+lab-export-events: ## ETAP 14b: eksportuje events-user-default do NDJSON (tylko odczyt, główny klaster; najpierw make lab-mode-off)
+	@bash tools/lab/export-events.sh
+
+.PHONY: lab-anomaly
+lab-anomaly: ## ETAP 14b: ładuje zdarzenia do es-lab, uruchamia job ML lab-user-activity i sprawdza, że awaria jest wykryta (args="--no-assert" przed awarią)
+	@bash tools/lab/anomaly.sh $(args)
+
 .PHONY: lab-export
 lab-export: ## Eksportuje próbkę produktów (id % 15 = 0) do apps/catalog/storage/app/private/lab/products.ndjson (tryb normalny, główny ES)
 	$(DC) exec catalog-app php artisan search:lab:export
