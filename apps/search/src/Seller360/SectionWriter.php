@@ -73,7 +73,7 @@ class SectionWriter
             $main = $this->update($pair['main'], $sellerId, $section, $data, $meta, $docFields, $updatedAt);
             $result ??= $main;
             if ($public !== null) {
-                $this->update($pair['public'], $sellerId, $section, $public, $meta, $docFields, $updatedAt);
+                $this->update($pair['public'], $sellerId, $section, $public, $meta, PublicProjection::filterDoc($docFields), $updatedAt);
             }
         }
 
@@ -112,7 +112,7 @@ class SectionWriter
                 array_push($body, ...$this->action($pair['main'], $item['sellerId'], $item['section'], $item['data'], $item['meta'], $docFields, $updatedAt));
                 if ($public !== null) {
                     $publicPositions[$i][] = intdiv(\count($body), 2);
-                    array_push($body, ...$this->action($pair['public'], $item['sellerId'], $item['section'], $public, $item['meta'], $docFields, $updatedAt));
+                    array_push($body, ...$this->action($pair['public'], $item['sellerId'], $item['section'], $public, $item['meta'], PublicProjection::filterDoc($docFields), $updatedAt));
                 }
             }
         }

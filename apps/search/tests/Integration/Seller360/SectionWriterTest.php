@@ -102,6 +102,26 @@ final class SectionWriterTest extends TestCase
         self::assertSame('łódzkie', $this->source($this->private, 5)['region']);
     }
 
+    /** Ruling R8: kopia publiczna bez `nip` i `profile.status_reason` (pojedynczy zapis i `_bulk`); prywatna z nimi. */
+    public function testPublicDocHasNoNipNorStatusReason(): void
+    {
+        $profile = ['name' => 'Sklep', 'city' => 'Łódź', 'status' => 'blocked', 'status_reason' => 'Notatka moderacji'];
+        $doc = ['nip' => '1234563218', 'region' => 'łódzkie', 'synthetic' => true];
+        $this->writer->apply(5, 'profile', $profile, $this->meta(1), $doc);
+        $this->writer->applyMany([['sellerId' => 6, 'section' => 'profile', 'data' => $profile, 'meta' => $this->meta(1), 'docFields' => $doc]]);
+
+        foreach ([5, 6] as $id) {
+            $public = $this->source($this->public, $id);
+            self::assertArrayNotHasKey('nip', $public, "public {$id}");
+            self::assertArrayNotHasKey('status_reason', $public['profile'], "public {$id}");
+            self::assertSame('łódzkie', $public['region']);
+            self::assertTrue($public['synthetic']);
+            $private = $this->source($this->private, $id);
+            self::assertSame('1234563218', $private['nip']);
+            self::assertSame('Notatka moderacji', $private['profile']['status_reason']);
+        }
+    }
+
     public function testSectionsAreIndependent(): void
     {
         $this->writer->apply(5, 'billing', ['balance_cents' => 100], $this->meta(9));

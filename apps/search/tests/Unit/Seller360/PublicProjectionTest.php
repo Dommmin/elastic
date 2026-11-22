@@ -50,4 +50,23 @@ final class PublicProjectionTest extends TestCase
     {
         self::assertSame([], PublicProjection::filter('registry', ['vat_status' => 'Czynny']));
     }
+
+    /** Ruling R8: powód blokady to wewnętrzna notatka moderacji, nie dla kupującego. */
+    public function test_profile_bez_status_reason(): void
+    {
+        self::assertSame(
+            ['name' => 'Sklep', 'city' => 'Łódź', 'status' => 'blocked'],
+            PublicProjection::filter('profile', ['name' => 'Sklep', 'city' => 'Łódź', 'status' => 'blocked', 'status_reason' => 'Oszustwo w zgłoszeniu']),
+        );
+    }
+
+    /** Pola dokumentu: biała lista `region` i `synthetic` (purge kasuje kopię publiczną po `synthetic:true`), bez `nip`. */
+    public function test_pola_dokumentu_bez_nip(): void
+    {
+        self::assertSame(
+            ['region' => 'łódzkie', 'synthetic' => true],
+            PublicProjection::filterDoc(['nip' => '1234563218', 'region' => 'łódzkie', 'synthetic' => true, 'cokolwiek' => 1]),
+        );
+        self::assertSame([], PublicProjection::filterDoc(['nip' => '1234563218']));
+    }
 }
