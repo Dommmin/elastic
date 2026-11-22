@@ -278,7 +278,7 @@ services:
     environment:
       cluster.name: marketplace-lab
       discovery.type: single-node
-      ELASTIC_PASSWORD: ${ES_LAB_PASSWORD:?ES_LAB_PASSWORD musi być ustawione dla profilu ml}
+      ELASTIC_PASSWORD: ${ES_LAB_PASSWORD:-}
       ES_JAVA_OPTS: -Xms1g -Xmx1g
       xpack.security.enabled: "true"
       xpack.security.http.ssl.enabled: "false"
@@ -299,7 +299,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          curl -fsS -u elastic:${ES_LAB_PASSWORD} http://localhost:9200/_cluster/health
+          curl -fsS -u elastic:${ES_LAB_PASSWORD:-} http://localhost:9200/_cluster/health
           | grep -qE '"status":"(green|yellow)"'
       interval: 10s
       timeout: 5s
