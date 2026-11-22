@@ -177,8 +177,13 @@ Do ETAPU 13 `SqlSellerRepository` celowo nie publikował zdarzeń sprzedawcy. Te
 
 ```json
 {"seller_id": 5008159, "name": "Hurtownia Kasztan 8160", "city": "Mińsk Mazowiecki", "nip": "1500815906",
- "status": "active", "status_reason": null, "synthetic": true, "version": 2, "occurred_at": "2026-11-22T01:47:27Z"}
+ "status": "active", "status_reason": null, "synthetic": true, "version": 2, "occurred_at": "2026-11-22T01:47:27.123456+00:00"}
 ```
+
+`occurred_at` w ładunku `seller.*` i `billing.*` to ISO 8601 z offsetem i mikrosekundami (`SqlTimestamp::iso()`).
+Pierwsza wersja miała postać SQL `2026-11-22 01:47:27.123456` bez strefy: konsument z inną strefą domyślną odczytałby
+inny moment, a `source_ts` sekcji i lag razem z nim. Projektor przyjmuje oba formaty (wiadomości sprzed zmiany
+w kolejce czy DLQ dalej się parsują; obie postacie dają ten sam moment przy strefie UTC kontenerów).
 
 Pełny stan zamiast „co się zmieniło” jest kluczowy: projektor nie musi niczego łączyć ani znać poprzedniego stanu.
 Najnowsze zdarzenie po prostu zastępuje sekcję. Zgubione zdarzenie pośrodku nie zostawia dziury, bo następne niesie
@@ -361,6 +366,11 @@ Rejestr to zewnętrzne HTTP, więc musi umieć paść, nie zabierając ze sobą 
   ze `status: error`.
 - Pętla: sprzedawcy od najstarszej synchronizacji, najwyżej 20 żądań/s (2 na sprzedawcę). Przy otwartym
   bezpieczniku nie hamuje, tylko przepisuje sekcje jako `stale` z cache.
+- Wyjątek przy jednym sprzedawcy (np. ES odrzucił zapis) nie zabija pętli: ostrzeżenie z `seller_id` w logu, próba
+  zapisu pustej sekcji ze `status: error` (świeże `updated_at` przesuwa go na koniec kolejności) i następny sprzedawca.
+  Bez tego jeden zepsuty dokument na początku kolejki zatrzymywałby całą synchronizację.
+- Zapis `stale` z cache bierze ocenę kuriera z `courier-ratings` (lokalny ES działa mimo awarii rejestru). Wersja
+  zapisu to „teraz”, więc kurier z cache sprzed fan-outu (13b) cofnąłby nowszą ocenę.
 
 Mock (`tools/registry-mock`, `php -S` z 4 workerami) ma `/_chaos`:
 
@@ -377,7 +387,7 @@ pełne przejście przy 10 sprzedawcach/s, czyli ~30 min dla 20 tys. Karta pokazu
 
 ## Krok 10 — lag: co właściwie mierzymy
 
-Spec mówił: lag sekcji = `now − source_ts`. Po wdrożeniu okazało się, że to mierzy coś innego niż chcemy (ruling R6):
+Spec mówił: lag sekcji = `now − source_ts`. Po wdrożeniu okazało się, że to mierzy coś innego niż chcemy (świadoma zmiana względem specyfikacji):
 
 - `profile` sprzedawcy, który niczego nie zmienił od tygodnia, ma `source_ts` sprzed tygodnia. `now − source_ts`
   = tydzień, choć sekcja jest idealnie aktualna. Alert „p99 > 300 s” wisiałby zawsze.
@@ -437,6 +447,13 @@ make seller360-simulate args="--sellers=20000 --billing --sales --complaints=sto
   daje te same `_id` (409, bez duplikatów).
 - **Backpressure**: przed każdą paczką generator sprawdza głębokość `search.seller360` (i outbox w drodze)
   i czeka poniżej 50 tys. (`--max-wait=900`). Bez tego kolejki się przepełniły.
+- **Purge**: `seller360:simulate --purge` czyści bazę catalogu, a `seller360:purge-synthetic` po stronie search
+  najpierw zbiera id syntetycznych z `seller-360` (`synthetic:true`), potem kasuje ich wiersze w `seller-sales-daily`
+  i zdarzenia w `events-seller-default` (`_delete_by_query` na nazwie strumienia), a dopiero na końcu dokumenty
+  w obu indeksach seller-360. Kolejność ma znaczenie: same dokumenty wróciłyby po 5 minutach, bo `sales:refresh`
+  robi `scripted_upsert` dla każdego `seller_id` z wierszy sprzedaży — ~20 tys. dokumentów z samą sekcją `sales`
+  i bez pola `synthetic`, których kolejny purge już by nie znalazł. Transform ciągły nie przelicza kubełków po
+  usunięciu zdarzeń, więc wiersze sprzedaży nie odrastają. Purge uruchamiać po opróżnieniu kolejki projektora.
 
 ```json
 {"planted": [5008159, 5011866, 5012886, 5014882, 5017067],
@@ -478,12 +495,15 @@ zapytania:
 Karta (`Seller360Card`) ma sześć niezależnych bloków. Każdy pokazuje „zapisano 3 minuty temu · źródło 5 minut temu”
 z `_meta.updated_at` i `source_ts`, a przy `stale` albo `error` czerwoną odznakę z `_meta.error` w podpowiedzi.
 Brak sekcji to napis „brak danych z <źródło>” (`catalog`, `oferty`, `analityka`, `billing`, `reklamacje`, `rejestr`).
-Przycisk „Zapytanie z DoD” ustawia filtry z `Seller360Query::dodPreset()` i od razu szuka. Gdy ES leży, lista mówi to
-komunikatem, a nie 500.
+Przycisk „Zapytanie z DoD” ustawia filtry z `Seller360Query::dodPreset()` i od razu szuka. Gdy ES leży (transport
+albo 5xx), lista i karta mówią to komunikatem, a nie 500. Odrzucone zapytanie (4xx) ma osobny komunikat „ES odrzucił
+zapytanie”: ES działa, to zapytanie jest złe, więc „niedostępny” wprowadzałby w błąd. Numer strony jest przycięty do
+400 (`from + size ≤ 10 000`, domyślne `index.max_result_window`); dalsza strona dawałaby 400 z ES.
 
 Testy: `tests/Unit/Seller360/Seller360QueryTest.php` (preset: bool z czterema filtrami i sortem po
 `sales.gmv_30d_cents`) i `tests/Feature/Panel/Seller360ControllerTest.php` (karta z samym `profile` renderuje się
-z „brak danych”, 403 bez `is_admin`, 404 dla nieznanego, lista bez ES).
+z „brak danych”, 403 bez `is_admin`, 404 dla nieznanego, lista i karta bez ES, 4xx jako błąd zapytania, przycięta
+strona).
 
 ## Krok 13 — dowód zapytania z DoD
 
@@ -617,7 +637,8 @@ Więcej: [`POMIARY.md` §17](../POMIARY.md).
 - **Duplikat NIP w `seller-360` → dowolny sprzedawca.** Enrich bierze pierwsze dopasowanie. Unikalność w catalogu
   chroni przed tym w normalnym ruchu, ale nie przed dokumentami-sierotami w ES.
 - **Syntetyczne koszyki i checkouty zaburzają lejek ETAPU 12** (zdarzenia bez wyszukania w `events-user-default`).
-  Czyszczenie danych analityki z syntetyków jest poza zakresem.
+  Purge kasuje zdarzenia syntetyków tylko z `events-seller-default`; czyszczenie `events-user-default` jest poza
+  zakresem.
 - **Prawdziwi sprzedawcy mają rzadkie karty** (brak historycznych zdarzeń `seller.*`, więc bez `profile` i `nip`).
   Uzupełni ich przebudowa z backfillem w [13b](etap-13b-skala-i-bezpieczenstwo.md#krok-7--backfill-i-weryfikacja).
 - **Awaria rejestru wzmacnia zapisy**: przy otwartym bezpieczniku pętla przepisuje wszystkich jako `stale` (~140/s),

@@ -147,10 +147,11 @@
 | [144](#144) | `AnalyticsEventHandler` uruchamiany na każdym transporcie | Symfony | 13a |
 | [145](#145) | `make seller360-setup` pada bez `make analytics-setup` | narzędzia | 13a |
 | [146](#146) | Fan-out kuriera z resztkowymi konfliktami, `seller360:courier:since` stoi | Elasticsearch | 13b |
-| [147](#147) | Podwójny zapis nie wyłączył się po nieudanym przełączeniu aliasów | Elasticsearch / Redis | 13b |
+| [147](#147) | Podwójny zapis nie wyłączył się po przerwanej przebudowie (zabity proces, dawniej błąd `_aliases`) | Elasticsearch / Redis | 13b |
 | [148](#148) | Pulpit sprzedawcy: „Statystyki chwilowo niedostępne” | Elasticsearch / Laravel | 13b |
 | [149](#149) | `make seller360-fls-demo` odmawia (pamięć) albo zostaje kontener `seller360-trial-*` | narzędzia | 13b |
-| [150](#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu | k8s / Elasticsearch | 13b |
+| [150](#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu (zapobiegnięte: `require_alias`) | k8s / Elasticsearch | 13b |
+| [151](#151) | Wiadomości projektora `seller-360` w `failed` po długiej awarii ES | Symfony / Elasticsearch | 13b |
 
 ---
 
@@ -6255,11 +6256,15 @@ lista dokumentów, których nie zaktualizowano. Kursor (`since`) wolno przesuną
 <a id="147"></a>
 ## 147 — Podwójny zapis nie wyłączył się po nieudanym przełączeniu aliasów
 
-> ETAP 13b, Task 14 (2026-11-22). Znane ryzyko z przeglądu (faza switch poza blokiem sprzątającym), nie
-> wystąpiło na żywo. Procedura na wypadek.
+> ETAP 13b, Task 14 (2026-11-22). Znane ryzyko z przeglądu, nie wystąpiło na żywo. Po przeglądzie gałęzi faza
+> switch jest w bloku sprzątającym, więc błąd `_aliases` już sam wyłącza podwójny zapis. Wpis zostaje na drugi
+> scenariusz: proces przebudowy zabity z zewnątrz (k3s: rollout `Recreate` albo eviction poda harmonogramu).
 
 **Objaw**
-`make seller360-rebuild` kończy się błędem w fazie 5 (`POST _aliases`, np. timeout albo 400), a kolejna próba:
+Przebudowa nie dochodzi do końca, bo proces zginął z zewnątrz (`kill -9`, OOM, restart kontenera). Na k3s typowo:
+`seller360:rebuild` uruchomione `kubectl exec` w podzie `seller360-scheduler`, a w trakcie `make k3s-deploy` —
+strategia `Recreate` zabija stary pod razem z procesem `exec`. Przed poprawką także: błąd w fazie 5
+(`POST _aliases`, np. timeout albo 400). Kolejna próba:
 ```
 Podwójny zapis już trwa (przebudowa w toku albo przerwana): [{"main":"seller-360-write",...},{"main":"seller-360-v3",...}]. Sprawdź i wyczyść seller360:write-targets.
 ```
@@ -6274,9 +6279,9 @@ Klucz z dwiema parami `{main, public}` i aliasy wskazujące jeszcze stary indeks
 a padło coś po nim — już nowy).
 
 **Przyczyna**
-Wyjątek w fazach 2–4 wyłącza podwójny zapis (`finish`), ale faza switch jest poza tym blokiem. Klucz
-`seller360:write-targets` zostaje z dwiema parami, a `Seller360Rebuilder` odmawia startu, gdy lista ma więcej niż
-jedną parę.
+Wyjątek w fazach 2–5 wyłącza podwójny zapis (`finish` w bloku sprzątającym; do poprawki po przeglądzie gałęzi
+faza 5 była poza nim). Zabity proces nie wykonuje już żadnego kodu, więc klucz `seller360:write-targets` zostaje
+z dwiema parami, a `Seller360Rebuilder` odmawia startu, gdy lista ma więcej niż jedną parę.
 
 **Naprawa**
 1. Sprawdzić, na co wskazują aliasy (`_cat/aliases` wyżej).
@@ -6288,9 +6293,13 @@ jedną parę.
 3. Aliasy już na **nowym** indeksie: także usunąć klucz (brak klucza = aliasy, a te wskazują nowy indeks), potem
    `_enrich/policy/seller-by-nip/_execute`.
 
+Zapobieganie na k3s: nie wdrażać w trakcie przebudowy; przebudowę puszczać po rolloucie i sprawdzić klucz po
+każdym przerwanym `exec` (komunikat odmowy wyżej to sygnał, żeby wykonać kroki 1–3).
+
 **Czego się nauczyłem**
 Każdy krok, który zmienia stan współdzielony z innymi procesami (tu: lista celów w Redisie), potrzebuje sprzątania
-na każdej ścieżce błędu, także po ostatnim kroku. Strażnik „odmawiam, gdy już trwa” chroni przed dwiema
+na każdej ścieżce błędu, także po ostatnim kroku. Na zabicie procesu `finally` nie pomoże: wtedy zostaje strażnik
+„odmawiam, gdy już trwa” i procedura ręczna. Strażnik „odmawiam, gdy już trwa” chroni przed dwiema
 przebudowami naraz, ale po awarii sam staje się blokadą do ręcznego zdjęcia.
 
 ---
@@ -6379,7 +6388,8 @@ każdej ścieżce. „Zrób miejsce” to decyzja człowieka, nie skryptu.
 ## 150 — k3s: zwykły indeks `seller-360-write` zamiast aliasu
 
 > ETAP 13b, Task 17 (2026-11-22). Ryzyko wdrożeniowe znalezione przy pisaniu manifestów; **nie wystąpiło** (k3s
-> nie wdrożony). Procedura na wypadek.
+> nie wdrożony). **Zapobiegnięte w kodzie** po przeglądzie gałęzi: zapisy do aliasów idą z `require_alias=true`.
+> Procedura niżej dotyczy już tylko obrazu sprzed tej poprawki; objaw w nowym kodzie opisuje sekcja „Po poprawce”.
 
 **Objaw**
 Po pierwszym wdrożeniu ETAPU 13 na k3s `setup-seller360` (albo jego odpowiednik) pada przy zakładaniu aliasów:
@@ -6411,11 +6421,59 @@ Procesy seller-360 ruszyły przed setupem ES. Piszą do aliasów zapisu, a rola 
 3. Setup (`analytics-setup`, potem `seller360-setup`) — przewodnik 13b, krok 15.
 4. `replicas: 1`, potem `seller360:rebuild` w podzie harmonogramu (backfill).
 
-Zapobieganie: kolejność z przewodnika 13b (setup przed procesami; przy pierwszym wdrożeniu `replicas: 0`). Trwała
-poprawka w kodzie: `require_alias=true` w zapisach `SectionWriter`/fan-outu — ES odpowie wtedy błędem zamiast tworzyć
-indeks.
+Zapobieganie: kolejność z przewodnika 13b (setup przed procesami; przy pierwszym wdrożeniu `replicas: 0`).
+
+**Po poprawce (`require_alias`)**
+`SectionWriter` wysyła `require_alias=true` przy każdym zapisie do celu o nazwie `*-write` (pojedynczy `_update`
+i metadane akcji `_bulk`); konkretne indeksy `-vN` podwójnego zapisu idą bez flagi. Fan-out (`_update_by_query`)
+i purge (`_delete_by_query`) indeksów nie tworzą w ogóle. Procesy przed setupem dają więc zamiast przypadkowego
+indeksu:
+- `seller360-consumer`: 404 `index_not_found_exception` → `RecoverableMessageHandlingException`, wiadomość wraca
+  do retry co 30 s **bez limitu prób** (nie trafia do `failed`); w logach powtarzające się
+  `Brak aliasu zapisu seller-360 (setup ES?), ponowię`, a `search.seller360` rośnie;
+- `seller360-scheduler` / `seller360-registry`: błąd zadania w logu co przebieg (pętla rejestru oznacza sprzedawcę
+  jako `error` i idzie dalej).
+Naprawa: setup (krok 3 wyżej); kolejka spływa sama, bez ręcznego retry.
 
 **Czego się nauczyłem**
 Alias zapisu wygląda jak indeks dla każdego klienta, także wtedy, gdy go nie ma. Uprawnienie `all` na wzorcu razem
 z `auto_create_index` zamienia literówkę albo złą kolejność wdrożenia w cichy, nowy indeks. Pisarz, który zakłada
 istnienie aliasu, powinien to powiedzieć ES-owi (`require_alias`).
+
+---
+
+<a id="151"></a>
+## 151 — Wiadomości projektora `seller-360` w transporcie `failed` po długiej awarii ES
+
+> ETAP 13b, przegląd gałęzi (2026-11-22). Procedura na wypadek; na żywo nie wystąpiło.
+
+**Objaw**
+Po awarii ES dłuższej niż okno ponowień (3 próby z mnożnikiem 2) karty sprzedawców mają nieaktualne `profile`
+albo `billing`, a `messenger:failed:show` pokazuje `App\Message\IntegrationEvent` z typami `seller.*` / `billing.*`
+i błędem transportu ES (`No alive nodes`, 5xx, timeout).
+
+**Diagnoza**
+```bash
+docker compose exec -T seller360-consumer php bin/console messenger:failed:show --stats
+docker compose exec -T seller360-consumer php bin/console messenger:failed:show --max=20   # typy i błędy
+make es-health
+```
+
+**Przyczyna**
+5xx i błędy transportu są zwykłym błędem obsługi: po wyczerpaniu ponowień wiadomość idzie do `failed` (Doctrine,
+wspólny dla transportów search). Ponawiany bez limitu jest tylko 404 `index_not_found_exception` (brak aliasu,
+#150) — awaria całego klastra do tej klasy nie należy.
+
+**Naprawa**
+Gdy ES jest zielony:
+```bash
+docker compose exec -T seller360-consumer php bin/console messenger:failed:retry --force
+```
+Uruchamiać w `seller360-consumer` (ma `REDIS_*`; `search-consumer` nie ma i zdarzenia `offer.*` padłyby na
+`NOAUTH`). Retry jest bezpieczny niezależnie od kolejności i duplikatów: strażnik wersji w skrypcie
+`seller360-apply-section` zamienia starszą albo powtórzoną wersję w `noop`, a ładunek niesie pełny stan sekcji.
+Gdy wiadomości jest bardzo dużo albo nie wiadomo, ile przepadło: `make seller360-rebuild` (backfill z catalogu).
+
+**Czego się nauczyłem**
+Idempotencja po stronie zapisu (wersja w dokumencie) sprawia, że „ponów wszystko” jest poprawną procedurą
+odzyskiwania, a nie ryzykiem. Bez niej retry `failed` po awarii wymagałby ręcznego sortowania wiadomości.

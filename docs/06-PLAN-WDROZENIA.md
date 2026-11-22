@@ -449,11 +449,11 @@ fraza w reklamacjach); opóźnienie jednego źródła nie psuje pozostałych sek
   [`blog/etap-13b-skala-i-bezpieczenstwo.md`](blog/etap-13b-skala-i-bezpieczenstwo.md).
 - **Dowód 13b:** fan-out ~5 055 dokumentów w ~1,0 s (2,3 s z ponowieniami, 0 resztkowych konfliktów), p99 DoD w trakcie
   5 ms; przebudowa pod ruchem w 23 s, 0 rozjazdów w próbce 500 i w billingu (20 000 kont); demo trial 17/17 w 26 s.
-  Pomiary w [POMIARY §17.4–17.6](POMIARY.md), RUNBOOK #146–#150.
+  Pomiary w [POMIARY §17.4–17.6](POMIARY.md), RUNBOOK #146–#151.
 
 Spec: [`superpowers/specs/2026-11-21-etap-13-seller-360-design.md`](superpowers/specs/2026-11-21-etap-13-seller-360-design.md),
 plan: [`superpowers/plans/2026-11-21-etap-13-seller-360.md`](superpowers/plans/2026-11-21-etap-13-seller-360.md),
-RUNBOOK #140–#150. **Nie wdrożone na k3s** (brak serwera): manifesty przechodzą `make k3s-manifests-check`
+RUNBOOK #140–#151. **Nie wdrożone na k3s** (brak serwera): manifesty przechodzą `make k3s-manifests-check`
 i `make g5-check`, ale setup ES (`analytics-setup`, `seller360-setup`) działa tylko na Compose i musi poprzedzić
 procesy seller-360 (przewodnik 13b, krok 15; RUNBOOK #150).
 

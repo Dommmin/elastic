@@ -15,7 +15,7 @@ dla nowych procesów i plan wdrożenia.*
 > demo DLS/FLS na jednorazowym węźle z trialem 17/17 asercji w 26 s.
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-21-etap-13-seller-360-design.md),
 > [plan](../superpowers/plans/2026-11-21-etap-13-seller-360.md).
-> Pomiary: [`POMIARY.md` §17.4–17.6](../POMIARY.md). Błędy i procedury: RUNBOOK [#146–#150](../RUNBOOK.md#146).
+> Pomiary: [`POMIARY.md` §17.4–17.6](../POMIARY.md). Błędy i procedury: RUNBOOK [#146–#151](../RUNBOOK.md#146).
 > **Nie wdrożone na k3s** (brak serwera): manifesty i sekrety są w repo i przechodzą kontrole bez klastra,
 > plan wdrożenia jest [niżej](#krok-15--wdrożenie-na-k3s-na-papierze).
 
@@ -163,7 +163,7 @@ Porównanie idzie w milisekundach, więc format strefy (`Z` czy `+00:00`) i kole
 udawać świeżej synchronizacji (lag `registry` liczy się dalej od pętli).
 
 Strażnik działa też na `seller-360-public`, bo publiczny dokument trzyma `registry.courier.{id, on_time_rate,
-rated_at}` (ruling R2 w ledgerze: bez `rated_at` strażnik nie miałby czego porównać, a znacznik czasu nie jest
+rated_at}` (decyzja projektowa: bez `rated_at` strażnik nie miałby czego porównać, a znacznik czasu nie jest
 wrażliwy).
 
 Cele zapisu to nie twarde aliasy, tylko `WriteTargets::indices()` (krok 6). W trakcie przebudowy fan-out pisze więc
@@ -221,7 +221,7 @@ Jak czytać:
   kurierów).
 - **Po poprawce `updated + noops` > liczba dokumentów**, bo liczniki sumują się po próbach: w drugiej próbie
   dokumenty poprawione w pierwszej liczą się jako `noop`. Rozbicia na „naprawdę bez zmian” i „poprawione wcześniej”
-  te liczniki nie dają (odroczona drobnostka w ledgerze). Ważne jest `conflicts 0`: konflikt się zdarzył i został
+  te liczniki nie dają (zob. [Ograniczenia](#ograniczenia)). Ważne jest `conflicts 0`: konflikt się zdarzył i został
   ponowiony.
 - **Czas 2,3 s zamiast ~1,0 s** to koszt odświeżenia i pauzy przed ponowieniem.
 - **p99 w trakcie** waha się między przebiegami (18 ms i 2 ms w pierwszej wersji), bo zależy od tego, ile zapytań
@@ -237,7 +237,7 @@ W ETAPIE 10 migracja `products` szła przez `_reindex` z bramką i nadrabianiem 
 wystarcza z trzech powodów:
 
 1. **Źródłem prawdy nie jest stary indeks.** Prawdziwi sprzedawcy nie mają `profile` i `nip`, bo nie mieli
-   historycznych zdarzeń `seller.*` (ruling R5). `_reindex` skopiowałby tę dziurę. Przebudowa ma **dociągnąć** stan
+   historycznych zdarzeń `seller.*` (13a, ograniczenia). `_reindex` skopiowałby tę dziurę. Przebudowa ma **dociągnąć** stan
    z catalogu (`/api/internal/sellers`, `/api/internal/billing/accounts`).
 2. **Pisarzy jest czterech i nie wszyscy idą przez outbox.** Pętla rejestru, fan-out kuriera i odświeżanie sprzedaży
    piszą z własnego rytmu. Nadrabianie z outboxu (jak w ETAPIE 10) nie zobaczyłoby ich zapisów.
@@ -280,9 +280,10 @@ dokładnie te konta, które zdążył już zapisać podwójny zapis.
 Awaria Redisa nie może po cichu wyłączyć podwójnego zapisu: zostaje ostatnia znana lista, a gdy listy jeszcze nie
 było — wyjątek (wiadomość wraca do ponowienia). Uszkodzony JSON w kluczu to też wyjątek.
 
-**Ryzyko, które zostało:** faza switch jest poza blokiem, który przy błędzie wyłącza podwójny zapis. Jeśli
-`POST _aliases` padnie, klucz `seller360:write-targets` zostaje z dwiema parami, a następna przebudowa odmówi
-(„podwójny zapis już trwa”). Ręczne sprzątanie: RUNBOOK [#147](../RUNBOOK.md#147).
+**Ryzyko, które zostało:** blok sprzątający obejmuje wszystkie fazy od włączenia podwójnego zapisu do przełączenia
+aliasów (pierwsza wersja zostawiała fazę switch poza nim, więc błąd `POST _aliases` zostawiał dwie pary; poprawione
+po przeglądzie gałęzi). Nie obroni się przed zabiciem procesu: wtedy klucz `seller360:write-targets` zostaje z dwiema
+parami, a następna przebudowa odmówi („podwójny zapis już trwa”). Ręczne sprzątanie: RUNBOOK [#147](../RUNBOOK.md#147).
 
 ## Krok 7 — backfill i weryfikacja
 
@@ -290,7 +291,7 @@ Backfill per sekcja i to, co weryfikacja z niego porównuje:
 
 | Sekcja | Skąd backfill | `version` / `source_ts` | Weryfikacja próbki |
 |---|---|---|---|
-| profile | `/api/internal/sellers` (strony po 2000) | wersja z catalogu / chwila backfillu | w starym ⇒ w nowym i wersje **równe** (sekcja tylko w nowym = OK, R5) |
+| profile | `/api/internal/sellers` (strony po 2000) | wersja z catalogu / chwila backfillu | w starym ⇒ w nowym i wersje **równe** (sekcja tylko w nowym = OK: prawdziwi sprzedawcy bez profilu w starym) |
 | billing | `/api/internal/billing/accounts` | wersja konta / — (`last_invoice_id` = null) | jak profile |
 | registry | cache rejestru w Redisie (`fetched_at` → wersja w ms, `ok` gdy < 3600 s, inaczej `stale`), kurier z `courier-ratings`; bez cache sekcja przeniesiona ze starego indeksu z jej `_meta` | j.w. | obecna i `source_ts` równe albo wersja nowego ≥ starej |
 | offers | przeliczenie dla sprzedawców ze starego indeksu z `offers` ∪ prawdziwych z catalogu | chwila przeliczenia | **tylko obecność** |
@@ -397,7 +398,7 @@ Testy negatywne:
 | Sprzedawca widzi tylko własny dokument | **aplikacja**: `GET _doc/<id>` z id z sesji, bez wyszukiwania; konto ES widzi publiczne dane **wszystkich** sprzedawców | **ES**: DLS, szablon `{"term": {"seller_id": "{{_user.metadata.seller_id}}"}}`; cudzy `_doc` daje 404 |
 | Zapytanie po ukrytym polu (`range billing.overdue_cents > 0`) | nie ma pola, więc 0 trafień | 0 trafień (FLS działa też w zapytaniach) |
 | Agregacja po ukrytym polu (`sum billing.overdue_cents`) | brak pola | 0 albo `null` |
-| Pola dokumentu (`nip`, `region`, `synthetic`, `profile.status_reason`) | są w publicznym dokumencie; odcina je dopiero **aplikacja** (biała lista czytnika) | odcina rola, jeśli dopiszesz je do `except` |
+| Pola dokumentu (`nip`, `profile.status_reason`) | nie trafiają do publicznego dokumentu (`PublicProjection::filterDoc` i filtr `profile`); `region` i `synthetic` są w nim, a odcina je **aplikacja** (biała lista czytnika) | odcina rola, jeśli dopiszesz je do `except` |
 | Skutek błędu w catalogu (np. id z żądania) | wyciek publicznych statystyk innych sprzedawców, nadal **bez** billingu | ES dalej odmawia |
 | Koszt | drugi indeks i drugi zapis każdej sekcji, `PublicProjection`, osobna rola i użytkownik, testy | licencja; jeden indeks; użytkownik ES (albo token) z `metadata.seller_id` per sprzedawca |
 
@@ -545,24 +546,26 @@ Niczego tu nie uruchamiałem na klastrze (serwera nie ma). Kolejność wynika z 
 2. **Obraz z CI** z nowym `search.Dockerfile` (plik miast i mock w obrazie) i obraz `rabbitmq` z kolejką
    `search.seller360`, DLQ i polityką `seller360-cap` w `definitions.template.json` (na `rabbitmq-ha` to samo jest
    w `deploy/k8s/rabbitmq-cluster/topology.yaml`).
-3. **Setup ES przed procesami seller-360 — to jest warunek, nie zalecenie.** Pisarze piszą do aliasów
-   `seller-360-write` / `seller-360-public-write`, a rola `search_service` ma `all` na `seller-360*`. Zapis do
-   nieistniejącego aliasu **utworzy zwykły indeks o tej nazwie** z mapowaniem dynamicznym, a późniejszy setup nie
-   założy aliasu o nazwie zajętej przez indeks (RUNBOOK [#150](../RUNBOOK.md#150)). Kolejność:
+3. **Setup ES przed procesami seller-360.** Pisarze piszą do aliasów `seller-360-write` / `seller-360-public-write`
+   z `require_alias=true`, więc zapis przed setupem dostaje 404 `index_not_found_exception` zamiast **utworzyć zwykły
+   indeks o nazwie aliasu** (tak było przed poprawką, RUNBOOK [#150](../RUNBOOK.md#150)). Projektor traktuje ten 404
+   jako przejściowy: wiadomość wraca do retry co 30 s bez limitu prób i czeka na setup, zamiast trafić do `failed`.
+   Harmonogram i pętla rejestru logują błąd i próbują w kolejnym przebiegu. Kolejność:
    `analytics-setup` (indeks `alerts-analytics`, connectory Kibany) → `seller360-setup` (szablony, skrypty
    `seller360-apply-section` i `seller360-courier-rating`, indeksy z aliasami, `courier-ratings`, enrich
    `seller-by-nip`, pipeline reklamacji, dashboard i reguły Kibany).
    **Otwarta praca:** oba skrypty działają dziś tylko na Compose (`docker compose exec es01 curl …`). Na k3s trzeba
-   je uruchomić przez tunel do `marketplace-es-http:9200` i Kibany albo przerobić na Job. Do tego czasu bezpieczny
-   wariant pierwszego wdrożenia: `replicas: 0` w czterech plikach `seller360-*.yaml` / `registry-mock.yaml`, setup,
-   potem `replicas: 1` i ponowny `make k3s-deploy`. Zdarzenia `seller.*`/`billing.*`/`offer.*` czekają w tym czasie
+   je uruchomić przez tunel do `marketplace-es-http:9200` i Kibany albo przerobić na Job. Najczystszy wariant
+   pierwszego wdrożenia dalej: `replicas: 0` w czterech plikach `seller360-*.yaml` / `registry-mock.yaml`, setup,
+   potem `replicas: 1` i ponowny `make k3s-deploy` (bez tego procesy kręcą się w retry i zaśmiecają logi). Zdarzenia `seller.*`/`billing.*`/`offer.*` czekają w tym czasie
    w `search.seller360` (limit 100 tys. z `drop-head`, więc nie w nieskończoność — #139, #143).
 4. **`make k3s-deploy tag=<SHA>`.** Krok 1/3 nakłada role (`es-app-roles`) i nowy Secret w `fileRealm` (ECK, potem
    `deploy.sh` czeka na `observedGeneration` i green); krok 2/3 to Job `migrate` — **migracje catalogu przed nowym
    kodem**, w tym kolumna `outbox.version` i tabele Billing (nowy kod publikuje z wersją); krok 3/3 wdraża catalog
    i, tym samym selektorem `component=app,app!=search-consumer`, cztery nowe Deploymenty (jak `analytics-consumer`).
 5. **Backfill.** Istniejący sprzedawcy nie mają historycznych zdarzeń, więc read model trzeba zasilić przebudową
-   w podzie harmonogramu:
+   w podzie harmonogramu (nie w trakcie rolloutu: `seller360-scheduler` ma strategię `Recreate`, więc przebudowa
+   przerwana restartem poda zostawia podwójny zapis — RUNBOOK [#147](../RUNBOOK.md#147)):
    ```bash
    make k3s k="-n marketplace exec deploy/seller360-scheduler -- php bin/console seller360:rebuild"
    make k3s k="-n marketplace exec deploy/seller360-scheduler -- php bin/console seller360:billing:parity"
@@ -593,14 +596,14 @@ Fan-out:
 - **Bezczynny przebieg nie jest darmowy.** Przez cofnięcie `since` o 1 s najnowsza ocena wraca co 60 s, więc każdy
   przebieg to `_update_by_query` z samymi noopami na ~5 tys. dokumentów i odświeżenie indeksów.
 - **`noops` zawyżone przez ponowienia** (dokumenty poprawione we wcześniejszej próbie liczą się znowu).
-- **Pole `failures` zadania jest ignorowane**; sprawdzane są tylko konflikty wersji. Błąd skryptu na części shardów
-  przesunąłby `since` (do poprawy: traktować `failures` jak konflikty).
 - **`--once` w `seller360:courier:poll` nic nie zmienia** (komenda i tak robi jeden przebieg).
 
 Przebudowa:
 
-- **Faza switch poza blokiem sprzątającym:** błąd `POST _aliases` zostawia podwójny zapis włączony (RUNBOOK
-  [#147](../RUNBOOK.md#147)).
+- **Przebudowa uruchomiona `exec` w podzie harmonogramu ginie razem z podem** (rollout `Recreate`, eviction).
+  Zabity proces nie dochodzi do sprzątania, więc `seller360:write-targets` zostaje z dwiema parami, a następna
+  przebudowa odmawia startu (RUNBOOK [#147](../RUNBOOK.md#147)). Błąd `POST _aliases` sam w sobie już wyłącza
+  podwójny zapis (faza switch jest w bloku sprzątającym).
 - **Ścieżka registry bez cache nie nadpisuje kuriera z `courier-ratings`** (przenosi sekcję ze starego indeksu
   z jej oceną).
 - **Sekcja registry z cache dostaje `ok`, gdy cache jest młodszy niż 3600 s**, także jeśli trwa awaria rejestru
@@ -618,8 +621,12 @@ Widok sprzedawcy:
 - **401 (brak hasła lub roli) jest raportowany przy każdym wejściu na pulpit** — głośno w logach i GlitchTipie.
 - **„Statystyki chwilowo niedostępne” także przy 404** (sprzedawca bez dokumentu): komunikat nie odróżnia „nie ma
   danych” od „ES nie działa”.
-- **Publiczny dokument ma pola dokumentu** (`nip`, `region`, `synthetic`) i `profile.status_reason`; odcina je
-  dopiero biała lista czytnika. Obrona w głąb wymagałaby białej listy także w `PublicProjection`.
+- **`nip` i `profile.status_reason` wypadły z publicznego dokumentu dopiero po przeglądzie gałęzi**
+  (`PublicProjection::filterDoc`, filtr `profile`). Dokumenty zapisane wcześniej trzymają stare wartości, dopóki
+  zapis tej samej sekcji ich nie nadpisze: skrypt nadpisuje sekcję w całości, więc nowy zapis `profile` usuwa
+  `status_reason`, ale pole dokumentu `nip` zostaje, bo zapis publiczny go już nie wysyła. Czyści je dopiero
+  przebudowa (`make seller360-rebuild`: nowy indeks z backfillu). `region` i `synthetic` zostają celowo (purge kasuje
+  kopię publiczną po `synthetic:true`); odcina je biała lista czytnika.
 - **Brak testu 403 na bezpośredni odczyt `seller-360-public-v1`** (rola jest na nazwę aliasu; indeks pod nim jest
   niedostępny, ale test tego nie przypina).
 
@@ -629,18 +636,20 @@ asertowane (błąd tworzenia roli wyszedłby dopiero jako FAIL asercji).
 k3s:
 
 - **Nie wdrożone**; setup ES (`analytics-setup`, `seller360-setup`) działa tylko na Compose (krok 15).
-- **Pisarze nie używają `require_alias=true`.** Zapis przed setupem zakłada indeks zamiast aliasu (RUNBOOK
-  [#150](../RUNBOOK.md#150)). Parametr `require_alias` w `_bulk`/`_update` zamieniłby to w czytelny błąd.
+- **Zapis przed setupem nie tworzy już indeksu, ale też niczego nie zapisuje.** `require_alias=true` (alias
+  poznajemy po sufiksie `-write`) daje 404, projektor czeka w retry, a harmonogram i pętla rejestru logują błąd co
+  przebieg, aż setup założy aliasy (RUNBOOK [#150](../RUNBOOK.md#150)).
 
 ## Co wybuchło po drodze
 
 | RUNBOOK | Objaw |
 |---|---|
 | [#146](../RUNBOOK.md#146) | fan-out z resztkowymi konfliktami, `seller360:courier:since` stoi |
-| [#147](../RUNBOOK.md#147) | podwójny zapis nie wyłączył się po nieudanym przełączeniu aliasów (`seller360:write-targets`) |
+| [#147](../RUNBOOK.md#147) | podwójny zapis nie wyłączył się po przerwanej przebudowie (`seller360:write-targets`) |
 | [#148](../RUNBOOK.md#148) | pulpit sprzedawcy: „Statystyki chwilowo niedostępne” (konto `catalog_seller_view`, 401) |
 | [#149](../RUNBOOK.md#149) | `make seller360-fls-demo` odmawia (pamięć) albo zostaje kontener `seller360-trial-*` |
-| [#150](../RUNBOOK.md#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu (procesy przed setupem) |
+| [#150](../RUNBOOK.md#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu (procesy przed setupem; zapobiegnięte `require_alias`) |
+| [#151](../RUNBOOK.md#151) | wiadomości projektora w `failed` po długiej awarii ES (`messenger:failed:retry`) |
 
 ## Ściąga
 
