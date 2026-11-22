@@ -294,6 +294,14 @@ seller360-complaints-import: ## Import CSV reklamacji z catalogu do search (domy
 	$(DC) cp $(or $(csv),apps/catalog/storage/app/seller360/complaints.csv) seller360-consumer:/tmp/seller360-complaints.csv
 	$(DC) exec seller360-consumer php bin/console seller360:complaints:import /tmp/seller360-complaints.csv
 
+.PHONY: seller360-verify
+seller360-verify: ## Dowód zapytania z DoD seller-360 vs planted.json: precyzja, czułość, bliskie pudła, p50/p99 took (ETAP 13)
+	$(DC) exec catalog-app php artisan seller360:query:verify $(args)
+
+.PHONY: seller360-stale-source
+seller360-stale-source: ## Awaria rejestru: billing i profile dalej świeże, registry stale z rosnącym lagiem, potem powrót do ok (ETAP 13)
+	@bash tools/seller360/stale-source.sh
+
 .PHONY: simulate
 simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
 	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)
