@@ -3,6 +3,7 @@
 use App\Analytics\Simulation\SimulatedEventPublisher;
 use App\Models\Seller;
 use App\Models\User;
+use App\Seller360\Simulation\QueueBackpressure;
 use Illuminate\Support\Facades\DB;
 use SellerPortal\Domain\Seller\TaxId;
 
@@ -33,6 +34,21 @@ beforeEach(function () {
         }
     };
     app()->instance(SimulatedEventPublisher::class, $this->publisher);
+
+    // Hamulec bez RabbitMQ: kolejki zawsze puste, zapamiętuje, o które pytano.
+    $this->backpressure = new class extends QueueBackpressure
+    {
+        /** @var list<string> */
+        public array $queues = [];
+
+        protected function depth(string $queue): int
+        {
+            $this->queues[] = $queue;
+
+            return 0;
+        }
+    };
+    app()->instance(QueueBackpressure::class, $this->backpressure);
 });
 
 afterEach(function () {
@@ -287,4 +303,13 @@ test('--purge usuwa syntetycznych sprzedawców, użytkowników i faktury, prawdz
 test('za mało sprzedawców na zasadzonych i bliskie pudła → błąd', function () {
     $this->artisan('seller360:simulate', ['--sellers' => 5, '--plant' => 2, '--complaints' => $this->csv])->assertFailed();
     expect(Seller::query()->where('synthetic', true)->count())->toBe(0);
+});
+
+test('hamulec: przed każdą paczką sprawdza kolejkę projektora, przed sprzedażą kolejkę analityki', function () {
+    $this->artisan('seller360:simulate', ['--sellers' => 20, '--sales' => true, '--plant' => 1, '--seed' => 3, '--complaints' => $this->csv])
+        ->assertSuccessful();
+
+    expect($this->backpressure->queues)->toContain('search.seller360', 'search.analytics.ingest')
+        ->and(array_search('search.seller360', $this->backpressure->queues))
+        ->toBeLessThan(array_search('search.analytics.ingest', $this->backpressure->queues));
 });
