@@ -24,6 +24,7 @@ defineOptions({
 const form = useForm({
     name: '',
     city: '',
+    nip: '',
 });
 
 function submit() {
@@ -40,7 +41,7 @@ function submit() {
                 <CardHeader>
                     <CardTitle>Zostań sprzedawcą</CardTitle>
                     <CardDescription>
-                        Podaj nazwę sklepu i miasto. Moderator sprawdzi
+                        Podaj nazwę sklepu, miasto i NIP. Moderator sprawdzi
                         zgłoszenie, a po akceptacji dodasz pierwsze oferty.
                     </CardDescription>
                 </CardHeader>
@@ -71,6 +72,20 @@ function submit() {
                             :aria-invalid="!!form.errors.city"
                         />
                         <InputError :message="form.errors.city" />
+                    </div>
+
+                    <div class="grid gap-2">
+                        <Label for="nip">NIP</Label>
+                        <Input
+                            id="nip"
+                            v-model="form.nip"
+                            required
+                            maxlength="13"
+                            inputmode="numeric"
+                            placeholder="526-104-08-28"
+                            :aria-invalid="!!form.errors.nip"
+                        />
+                        <InputError :message="form.errors.nip" />
                     </div>
 
                     <InputError

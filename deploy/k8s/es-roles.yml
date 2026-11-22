@@ -17,8 +17,21 @@ catalog_app:
 # `search:index:migrate reindex --wait` anuluje zadanie _reindex (ETAP 10).
 # manage_transform, manage_enrich, product-popularity*: popularność (ETAP 12) —
 # `search:popularity:refresh` przebudowuje transform i wykonuje politykę enrich.
+# ETAP 13: complaints* — import reklamacji (complaints, complaints-unmatched, _reindex, delete-by-query);
+# manage_enrich wykonuje też politykę seller-by-nip.
+# ETAP 13b: courier-ratings (jawna nazwa) — oceny kurierów; fan-out `_update_by_query` na seller-360* mieści się w "all".
 search_service:
   cluster: ["monitor", "manage_index_templates", "manage_ilm", "manage_pipeline", "cancel_task", "manage_transform", "manage_enrich"]
   indices:
-    - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "logs-app-*", "product-popularity*"]
+    - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*", "product-popularity*", "complaints*"]
       privileges: ["all"]
+    - names: ["courier-ratings"]
+      privileges: ["read", "write", "view_index_metadata"]
+
+# ETAP 13 (Task 15): widok sprzedawcy. Basic nie ma FLS/DLS, więc izolacja to osobny alias
+# `seller-360-public` (bez billing i complaints) i rola z `read` tylko na nim.
+seller_stats_view:
+  cluster: []
+  indices:
+    - names: ["seller-360-public"]
+      privileges: ["read"]

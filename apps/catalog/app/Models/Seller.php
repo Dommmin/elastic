@@ -21,6 +21,8 @@ class Seller extends Model
         'lat',
         'lon',
         'user_id',
+        'nip',
+        'synthetic',
         'status',
         'status_reason',
         'status_changed_at',
@@ -34,6 +36,7 @@ class Seller extends Model
             'lon' => 'decimal:6',
             'version' => 'integer',
             'user_id' => 'integer',
+            'synthetic' => 'boolean',
             'status_changed_at' => 'datetime',
         ];
     }

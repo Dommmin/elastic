@@ -80,6 +80,8 @@ CATALOG_APP_KEY="$(keep $M CATALOG_APP_KEY "base64:$(openssl rand -base64 32)")"
 SEARCH_APP_SECRET="$(keep $M SEARCH_APP_SECRET "$(rand)")"
 FAKE_GATEWAY_WEBHOOK_SECRET="$(keep $M FAKE_GATEWAY_WEBHOOK_SECRET "$(rand)")"
 INTERNAL_API_TOKEN="$(keep $M INTERNAL_API_TOKEN "$(rand)")"
+# ETAP 13: konto ES catalog_seller_view (widok sprzedawcy) — catalog-app ma je jako nieopcjonalny klucz.
+ES_CATALOG_SELLER_VIEW_PASSWORD="$(keep $M ES_CATALOG_SELLER_VIEW_PASSWORD "$(rand)")"
 ELASTIC_PASSWORD="$(keep marketplace-es-elastic-user elastic "$(rand)")"
 # Hasło użytkownika `marketplace` na nowym klastrze RabbitMQ (rabbitmq-ha).
 HA_PASSWORD="$(keep rabbitmq-ha-marketplace-user password "$(rand)")"
@@ -97,6 +99,7 @@ apply_secret $M \
   SEARCH_APP_SECRET="$SEARCH_APP_SECRET" \
   FAKE_GATEWAY_WEBHOOK_SECRET="$FAKE_GATEWAY_WEBHOOK_SECRET" \
   INTERNAL_API_TOKEN="$INTERNAL_API_TOKEN" \
+  ES_CATALOG_SELLER_VIEW_PASSWORD="$ES_CATALOG_SELLER_VIEW_PASSWORD" \
   DATABASE_URL="postgresql://searchsvc:${SEARCHSVC_DB_PASSWORD}@postgres:5432/searchsvc?serverVersion=18.4&charset=utf8" \
   MESSENGER_TRANSPORT_DSN="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   MESSENGER_TRANSPORT_DSN_HA="amqp://${RABBITMQ_USER}:${HA_PASSWORD}@rabbitmq-ha:5672/%2f"
@@ -104,6 +107,7 @@ apply_secret $M \
 apply_secret marketplace-es-elastic-user elastic="$ELASTIC_PASSWORD"
 apply_secret es-user-catalog --type=kubernetes.io/basic-auth username=catalog password="$ES_CATALOG_PASSWORD" roles=catalog_app
 apply_secret es-user-searchsvc --type=kubernetes.io/basic-auth username=searchsvc password="$ES_SEARCHSVC_PASSWORD" roles=search_service
+apply_secret es-user-catalog-seller-view --type=kubernetes.io/basic-auth username=catalog_seller_view password="$ES_CATALOG_SELLER_VIEW_PASSWORD" roles=seller_stats_view
 apply_secret rabbitmq-ha-marketplace-user username="$RABBITMQ_USER" password="$HA_PASSWORD"
 # Webhook Topology Operatora odrzuca Secret bez tej etykiety (User CR: importCredentialsSecret).
 kk label secret rabbitmq-ha-marketplace-user rabbitmq.com/topology-operator=true --overwrite >/dev/null \
@@ -120,4 +124,4 @@ apply_secret rabbitmq-shovel-uris \
 kk label secret rabbitmq-shovel-uris rabbitmq.com/topology-operator=true --overwrite >/dev/null \
   || die "etykieta topology-operator na rabbitmq-shovel-uris nie weszła"
 
-log "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc, rabbitmq-ha-marketplace-user, rabbitmq-ha-perftest-user, rabbitmq-shovel-uris)"
+log "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc, es-user-catalog-seller-view, rabbitmq-ha-marketplace-user, rabbitmq-ha-perftest-user, rabbitmq-shovel-uris)"

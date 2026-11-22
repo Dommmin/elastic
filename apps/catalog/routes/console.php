@@ -11,3 +11,6 @@ Artisan::command('inspire', function () {
 // Bez tego wpisu (i procesu `schedule:work`, kontener catalog-scheduler)
 // zamówienia nie wygasają, a towar zostaje zarezerwowany.
 Schedule::command('orders:expire-overdue')->everyMinute()->withoutOverlapping();
+
+// Sweep zaległości faktur (ETAP 13): zdarzenie billing.invoice_overdue per faktura.
+Schedule::command('billing:mark-overdue')->everyFiveMinutes()->withoutOverlapping();

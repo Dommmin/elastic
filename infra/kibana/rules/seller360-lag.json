@@ -1,0 +1,58 @@
+{
+  "name": "Seller 360: lag sekcji ponad SLO",
+  "consumer": "alerts",
+  "rule_type_id": ".es-query",
+  "schedule": {
+    "interval": "1m"
+  },
+  "tags": [
+    "etap-13",
+    "seller360"
+  ],
+  "notify_when": "onActionGroupChange",
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM seller-360\n| EVAL profile_lag = CASE(`profile._meta.updated_at` >= NOW() - 10 minutes, DATE_DIFF(\"seconds\", `profile._meta.source_ts`, `profile._meta.updated_at`), null), billing_lag = CASE(`billing._meta.updated_at` >= NOW() - 10 minutes, DATE_DIFF(\"seconds\", `billing._meta.source_ts`, `billing._meta.updated_at`), null), offers_lag = CASE(`offers._meta.updated_at` >= NOW() - 10 minutes, DATE_DIFF(\"seconds\", `offers._meta.source_ts`, `offers._meta.updated_at`), null)\n| STATS profile_p99 = PERCENTILE(profile_lag, 99), billing_p99 = PERCENTILE(billing_lag, 99), offers_p99 = PERCENTILE(offers_lag, 99)\n| WHERE profile_p99 > 300 OR billing_p99 > 300 OR offers_p99 > 300"
+    },
+    "timeField": "doc_updated_at",
+    "timeWindowSize": 10,
+    "timeWindowUnit": "m",
+    "size": 1,
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "excludeHitsFromPreviousRun": false
+  },
+  "actions": [
+    {
+      "group": "query matched",
+      "id": "analytics-alerts-index",
+      "params": {
+        "documents": [
+          {
+            "@timestamp": "{{date}}",
+            "rule": {
+              "id": "{{rule.id}}",
+              "name": "{{rule.name}}"
+            },
+            "message": "Lag sekcji seller-360 (profile, billing lub offers) przekroczył SLO 300 s (p99 w oknie 10 min)",
+            "window_minutes": 10,
+            "profile_p99": "{{#context.hits}}{{_source.profile_p99}}{{/context.hits}}",
+            "billing_p99": "{{#context.hits}}{{_source.billing_p99}}{{/context.hits}}",
+            "offers_p99": "{{#context.hits}}{{_source.offers_p99}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "group": "query matched",
+      "id": "analytics-server-log",
+      "params": {
+        "level": "warn",
+        "message": "[{{rule.name}}] Lag sekcji seller-360 (profile, billing lub offers) przekroczył SLO 300 s (p99 w oknie 10 min)"
+      }
+    }
+  ]
+}

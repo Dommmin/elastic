@@ -1,0 +1,10 @@
+{
+  "match": {
+    "indices": "seller-360",
+    "match_field": "nip",
+    "enrich_fields": [
+      "seller_id",
+      "region"
+    ]
+  }
+}

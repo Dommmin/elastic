@@ -205,8 +205,10 @@ class CartController extends Controller
         }
 
         $data['user_id'] = self::userId($request);
+        // v2 (ETAP 13): sprzedawca oferty, dla wiersza `events-seller-default` (kind=cart).
+        $data['seller_id'] = (int) $offer->seller_id;
 
-        $this->recorder->record('user.added_to_cart', AnalyticsSession::currentId($request), $data);
+        $this->recorder->record('user.added_to_cart', AnalyticsSession::currentId($request), $data, version: 2);
     }
 
     /**
@@ -222,7 +224,21 @@ class CartController extends Controller
         // składanie danych, recorder) nie może zamienić udanego zakupu w 500.
         try {
             $lines = $request->cartLines();
-            $productIds = Offer::query()->whereIn('id', array_map(fn ($line) => $line->offerId, $lines))->pluck('product_id', 'id');
+            $offers = Offer::query()->whereIn('id', array_map(fn ($line) => $line->offerId, $lines))->get(['id', 'product_id', 'seller_id'])->keyBy('id');
+            $productIds = $offers->pluck('product_id');
+
+            // Kwota per sprzedawca z linii koszyka (cena × ilość); klucze to id sprzedawców jako napisy.
+            // Linia bez oferty w odczycie (nie powinno się zdarzyć, oferty nie są kasowane) wypada z atrybucji,
+            // zamiast wywrócić całe zdarzenie.
+            $sellerAmounts = [];
+            foreach ($lines as $line) {
+                $sellerId = $offers->get($line->offerId)?->seller_id;
+                if ($sellerId === null) {
+                    continue;
+                }
+                $key = (string) $sellerId;
+                $sellerAmounts[$key] = ($sellerAmounts[$key] ?? 0) + $line->quantity * $line->expectedUnitPriceCents;
+            }
 
             $this->recorder->record('user.checked_out', AnalyticsSession::currentId($request), [
                 'order_ids' => array_map(fn (OrderId $id): int => $id->value(), $orderIds),
@@ -230,7 +246,8 @@ class CartController extends Controller
                 // Handler potwierdził ceny z formularza, więc suma z linii = suma zamówień.
                 'amount_cents' => array_sum(array_map(fn ($line): int => $line->quantity * $line->expectedUnitPriceCents, $lines)),
                 'user_id' => self::userId($request),
-            ]);
+                'seller_amounts' => $sellerAmounts,
+            ], version: 2);
         } catch (Throwable $e) {
             report($e);
         }

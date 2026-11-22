@@ -10,6 +10,7 @@ use Ordering\Domain\InvalidOrderTransition;
 use Ordering\Domain\OrderStatus;
 use SellerPortal\Application\Offer\OfferNotOwned;
 use SellerPortal\Application\SellerAlreadyRegistered;
+use SellerPortal\Application\TaxIdAlreadyTaken;
 use SellerPortal\Domain\Offer\LiveOfferAlreadyExists;
 use SellerPortal\Domain\Offer\NoPendingPriceChange;
 use SellerPortal\Domain\Offer\OfferCannotBePublishedWithoutStock;
@@ -32,6 +33,7 @@ test('każdy zmapowany CODE daje dokładny polski komunikat', function (DomainEx
     'offer_without_stock' => [fn () => new OfferCannotBePublishedWithoutStock, 'Nie można opublikować oferty bez towaru'],
     'seller_cannot_sell' => [fn () => new SellerCannotSell, 'Konto sprzedawcy nie jest aktywne'],
     'seller_already_registered' => [fn () => new SellerAlreadyRegistered, 'To konto ma już profil sprzedawcy'],
+    'tax_id_already_taken' => [fn () => new TaxIdAlreadyTaken, 'Ten NIP jest już zarejestrowany'],
     'no_pending_price_change' => [fn () => new NoPendingPriceChange, 'Ta oferta nie ma już zgłoszonej zmiany ceny'],
     'pending_price_changed' => [fn () => new PendingPriceChangeMismatch, 'Sprzedawca zmienił zgłoszoną cenę — odśwież kolejkę'],
     'stock_below_reserved' => [fn () => new StockBelowReserved, 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk'],
@@ -60,6 +62,6 @@ test('mapa nie ma kodów spoza testu powyżej', function () {
         'price_change_limit', 'price_change_pending', 'concurrency_conflict', 'live_offer_exists',
         'offer_without_stock', 'seller_cannot_sell', 'seller_already_registered', 'no_pending_price_change',
         'pending_price_changed', 'stock_below_reserved', 'price_changed_since_cart', 'offer_no_longer_available',
-        'cannot_buy_own_offer', 'invalid_order_transition', 'cart_empty', 'invalid_order_lines',
+        'cannot_buy_own_offer', 'invalid_order_transition', 'cart_empty', 'invalid_order_lines', 'tax_id_already_taken',
     ]);
 });

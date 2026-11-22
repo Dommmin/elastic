@@ -1,0 +1,81 @@
+# ============================================================================
+#  registry-mock — ETAP 13
+#  Mock zewnętrznego rejestru firm i kurierów (tools/registry-mock, opis w
+#  README tamże). Kod jest w obrazie search (/srv/registry-mock, wyjątek w
+#  .dockerignore) — ta sama ścieżka, pod którą compose montuje go z repo.
+#  Wbudowany serwer PHP z 4 workerami: awaria (`outage`) trzyma żądanie 3 s,
+#  a POST /_chaos musi się przez nią przebić. Stan chaosu w pliku w /tmp
+#  (emptyDir) — restart poda go czyści, tak jak `{"reset":true}`.
+#  Service tylko ClusterIP: klientami są seller360-registry i seller360-scheduler
+#  (NetworkPolicy registry-mock-ingress), z zewnątrz tylko port-forward.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-mock
+  labels:
+    app.kubernetes.io/component: app
+    app: registry-mock
+spec:
+  type: ClusterIP
+  selector:
+    app: registry-mock
+  ports:
+    - name: http
+      port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-mock
+  labels:
+    app.kubernetes.io/component: app
+    app: registry-mock
+spec:
+  replicas: 1          # stan chaosu jest w pliku jednego poda
+  selector:
+    matchLabels:
+      app: registry-mock
+  template:
+    metadata:
+      labels:
+        app: registry-mock
+    spec:
+      serviceAccountName: registry-mock
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP); port 8080 nie wymaga uprawnień
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mock
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["php", "-S", "0.0.0.0:8080", "/srv/registry-mock/index.php"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          env:
+            - name: PHP_CLI_SERVER_WORKERS
+              value: "4"
+          ports:
+            - name: http
+              containerPort: 8080
+          # TCP, nie HTTP: przy symulowanej awarii (`outage`) każde GET czeka 3 s i kończy się 503,
+          # a sonda HTTP zabiłaby poda, którego awaria jest zamierzona.
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            requests: { memory: 32Mi, cpu: 20m }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

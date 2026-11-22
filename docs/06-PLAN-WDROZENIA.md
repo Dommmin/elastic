@@ -430,6 +430,33 @@ sekcji 4 setupu (przed migracją) i refreshu popularności tam.
 **DoD:** działa zapytanie z sekcji 5 dokumentu `04` (spadek konwersji + zaległość +
 fraza w reklamacjach); opóźnienie jednego źródła nie psuje pozostałych sekcji dokumentu.
 
+**Stan (2026-11-22): zrobione lokalnie (13a i 13b)** na gałęzi `etap-13-seller-360`, DoD sprawdzone na żywym stacku:
+- **13a:** NIP w SellerPortal, `seller.*` i nowy kontekst Billing (`billing.*`) przez outbox, `user.*` v2
+  z `events-seller-default` i Transformem `seller-sales-daily`, projektor `seller360-consumer` ze strażnikiem wersji
+  sekcji, koalescencja ofert, import reklamacji z enrich `seller-by-nip`, rejestr z bezpiecznikiem i `stale`, lag per
+  sekcja z regułami Kibany, generator z prawdą podstawową, ekran konsultanta `/panel/sellers-360`. Przewodnik:
+  [`blog/etap-13a-agregat-seller-360.md`](blog/etap-13a-agregat-seller-360.md).
+- **Dowód:** `make seller360-verify` — zapytanie z DoD zwraca dokładnie 5 zasadzonych z 20 061 (precyzja i czułość
+  1,0, 0 bliskich pudeł, p50 1 ms / p99 6 ms); `make seller360-stale-source` — przy awarii rejestru `billing`
+  i `profile` w ES po 4 s, `registry` `stale` z rosnącym lagiem, powrót do `ok`. Pomiary w [POMIARY §17](POMIARY.md),
+  RUNBOOK #140–#145.
+- **13b:** fan-out oceny kuriera przez `_update_by_query` ze strażnikiem `rated_at` i ponowieniem konfliktów,
+  przebudowa `seller-360` bez przestoju (podwójny zapis przez `seller360:write-targets`, backfill z catalogu,
+  weryfikacja, atomowe przepięcie aliasów), widok sprzedawcy „Twoje statystyki” na licencji basic (`seller-360-public`,
+  rola `seller_stats_view` na dokładną nazwę, biała lista w `SellerStatsReader`), demo DLS/FLS na jednorazowym węźle
+  z trialem, manifesty k3s (`seller360-consumer`, `-scheduler`, `-registry`, `registry-mock`) i sekret
+  `ES_CATALOG_SELLER_VIEW_PASSWORD`. Przewodnik:
+  [`blog/etap-13b-skala-i-bezpieczenstwo.md`](blog/etap-13b-skala-i-bezpieczenstwo.md).
+- **Dowód 13b:** fan-out ~5 055 dokumentów w ~1,0 s (2,3 s z ponowieniami, 0 resztkowych konfliktów), p99 DoD w trakcie
+  5 ms; przebudowa pod ruchem w 23 s, 0 rozjazdów w próbce 500 i w billingu (20 000 kont); demo trial 17/17 w 26 s.
+  Pomiary w [POMIARY §17.4–17.6](POMIARY.md), RUNBOOK #146–#151.
+
+Spec: [`superpowers/specs/2026-11-21-etap-13-seller-360-design.md`](superpowers/specs/2026-11-21-etap-13-seller-360-design.md),
+plan: [`superpowers/plans/2026-11-21-etap-13-seller-360.md`](superpowers/plans/2026-11-21-etap-13-seller-360.md),
+RUNBOOK #140–#151. **Nie wdrożone na k3s** (brak serwera): manifesty przechodzą `make k3s-manifests-check`
+i `make g5-check`, ale setup ES (`analytics-setup`, `seller360-setup`) działa tylko na Compose i musi poprzedzić
+procesy seller-360 (przewodnik 13b, krok 15; RUNBOOK #150).
+
 ### ETAP 14 (opcjonalny) — Semantyka i ML (2–3 dni) → **moduł 13**
 - `dense_vector`, kNN, hybryda z RRF, porównanie z BM25 na tym samym `_rank_eval`
 - profil `ml` na trialu: ELSER / anomaly detection

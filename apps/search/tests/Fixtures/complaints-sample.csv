@@ -1,0 +1,6 @@
+ticket_id,nip,created_at,category,status,body
+T9TEST-001,9990000001,2026-11-20T10:00:00Z,uszkodzenie,open,"Paczka przyszła uszkodzona, w środku rozbity kubek."
+T9TEST-002,9990000001,2026-11-19T08:30:00Z,opóźnienie,closed,"Przesyłka szła dwa tygodnie, ""express"" to żart,
+a obsługa nie odpowiada."
+T9TEST-003,9990000002,2026-11-18T12:00:00Z,zwrot,in_progress,Sprzedawca odmawia przyjęcia zwrotu.
+T9TEST-004,9990000003,2026-11-17T09:15:00Z,opis,new,"Towar niezgodny z opisem, kolor inny niż na zdjęciu."

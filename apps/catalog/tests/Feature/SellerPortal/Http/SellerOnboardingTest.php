@@ -14,13 +14,15 @@ test('zalogowany bez sprzedawcy składa zgłoszenie i widzi status oczekuje', fu
         ->assertInertia(fn (Assert $page) => $page->component('seller/Apply'));
 
     $this->actingAs($user)
-        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków'])
+        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków', 'nip' => '526-104-08-28'])
         ->assertRedirect(route('seller.status'));
 
     $row = DB::table('sellers')->where('user_id', $user->id)->first();
     expect($row)->not->toBeNull()
         ->and($row->status)->toBe('pending')
-        ->and($row->name)->toBe('Sklep Testowy');
+        ->and($row->name)->toBe('Sklep Testowy')
+        ->and($row->nip)->toBe('5261040828')
+        ->and((bool) $row->synthetic)->toBeFalse();
 
     $this->actingAs($user)
         ->get('/seller/status')
@@ -33,11 +35,21 @@ test('zalogowany bez sprzedawcy składa zgłoszenie i widzi status oczekuje', fu
 test('nazwa krótsza niż 3 znaki → błąd walidacji name', function () {
     $this->actingAs(User::factory()->create())
         ->from('/seller/apply')
-        ->post('/seller/apply', ['name' => 'ab', 'city' => 'Kraków'])
+        ->post('/seller/apply', ['name' => 'ab', 'city' => 'Kraków', 'nip' => '5261040828'])
         ->assertRedirect('/seller/apply')
         ->assertSessionHasErrors('name');
 
     expect(DB::table('sellers')->count())->toBe(0);
+});
+
+test('NIP nie-napis → jeden błąd walidacji, bez wołania value objectu', function () {
+    $this->actingAs(User::factory()->create())
+        ->from('/seller/apply')
+        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków', 'nip' => ['5261040828']])
+        ->assertRedirect('/seller/apply')
+        ->assertSessionHasErrors('nip');
+
+    expect(session('errors')->get('nip'))->toHaveCount(1);
 });
 
 test('drugie zgłoszenie → przekierowanie na status, bez nowego wiersza', function () {
@@ -49,7 +61,7 @@ test('drugie zgłoszenie → przekierowanie na status, bez nowego wiersza', func
         ->assertRedirect(route('seller.status'));
 
     $this->actingAs($user)
-        ->post('/seller/apply', ['name' => 'Drugi Sklep', 'city' => 'Gdańsk'])
+        ->post('/seller/apply', ['name' => 'Drugi Sklep', 'city' => 'Gdańsk', 'nip' => '5261040828'])
         ->assertRedirect(route('seller.status'));
 
     expect(DB::table('sellers')->where('user_id', $user->id)->count())->toBe(1);
@@ -200,3 +212,31 @@ test('seller.approved wpuszcza aktywnego i zablokowanego, oczekującego odsyła 
     'pending' => ['pending', false],
     'rejected' => ['rejected', false],
 ]);
+
+test('NIP z błędną sumą kontrolną → błąd walidacji nip', function () {
+    $this->actingAs(User::factory()->create())
+        ->from('/seller/apply')
+        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków', 'nip' => '5261040827'])
+        ->assertRedirect('/seller/apply')
+        ->assertSessionHasErrors('nip');
+
+    expect(DB::table('sellers')->count())->toBe(0);
+});
+
+test('brak NIP → błąd walidacji nip', function () {
+    $this->actingAs(User::factory()->create())
+        ->from('/seller/apply')
+        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków'])
+        ->assertSessionHasErrors('nip');
+});
+
+test('NIP zajęty przez innego sprzedawcę → błąd walidacji nip', function () {
+    Seller::factory()->create(['nip' => '5261040828']);
+
+    $this->actingAs(User::factory()->create())
+        ->from('/seller/apply')
+        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków', 'nip' => '526-104-08-28'])
+        ->assertSessionHasErrors('nip');
+
+    expect(DB::table('sellers')->count())->toBe(1);
+});

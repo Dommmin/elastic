@@ -1,0 +1,88 @@
+# ============================================================================
+#  seller360-consumer (Symfony Messenger) — ETAP 13
+#  Projektor read modelu seller-360: transport `seller360` (kolejka
+#  search.seller360: seller.#, billing.#, offer.#) -> sekcje w seller-360 i
+#  seller-360-public. Kopia analytics-consumer: ten sam obraz, osobny proces.
+#  Dodatkowo Redis (zbiór seller360:dirty:offers, liczniki, seller360:write-targets
+#  przy przebudowie) i plik miast (RegionResolver) — ten jest W OBRAZIE
+#  (/infra/reference, infra/php/search.Dockerfile), jak mapowania indeksów.
+#  Nie woła catalogu (pełny stan sekcji jest w zdarzeniu), więc bez
+#  INTERNAL_API_TOKEN i bez trasy do catalog-app.
+#
+#  KOLEJNOŚĆ WDROŻENIA (RUNBOOK #150, przewodnik 13b): indeksy i aliasy z
+#  setup-seller360.sh MUSZĄ istnieć przed pierwszym startem tego poda. Zapis do
+#  nieistniejącego aliasu seller-360-write założyłby zwykły indeks o tej nazwie
+#  (auto_create_index), z mapowaniem dynamicznym, i zablokował późniejszy setup.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seller360-consumer
+  labels:
+    app.kubernetes.io/component: app
+    app: seller360-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: seller360-consumer
+  template:
+    metadata:
+      labels:
+        app: seller360-consumer
+    spec:
+      serviceAccountName: search
+      automountServiceAccountToken: false
+      # stop_grace_period z compose nie jest ustawiony: domyślne 30 s wystarcza,
+      # messenger:consume kończy bieżącą wiadomość po SIGTERM.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP)
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: consumer
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["php", "bin/console", "messenger:consume", "seller360", "--time-limit=3600", "--memory-limit=256M"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            - name: ERROR_TRACKING_PROCESS
+              value: seller360-consumer
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_SEARCH, optional: true } }
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            # Failure transport Messengera (doctrine://), jak w search-consumer.
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            - name: MESSENGER_TRANSPORT_DSN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: MESSENGER_TRANSPORT_DSN } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+            # REDIS_HOST=redis przychodzi z marketplace-config.
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -f messenger:consume"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

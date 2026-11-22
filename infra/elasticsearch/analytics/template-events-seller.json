@@ -1,0 +1,30 @@
+{
+  "index_patterns": ["events-seller-*"],
+  "data_stream": {},
+  "priority": 200,
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 1,
+      "index.lifecycle.name": "events-user",
+      "index.default_pipeline": "events-ingested"
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event": {
+          "properties": {
+            "id": { "type": "keyword" },
+            "type": { "type": "keyword" },
+            "ingested": { "type": "date" }
+          }
+        },
+        "session": { "properties": { "id": { "type": "keyword" } } },
+        "seller": { "properties": { "id": { "type": "keyword" } } },
+        "kind": { "type": "keyword" },
+        "amount_cents": { "type": "long" }
+      }
+    }
+  }
+}

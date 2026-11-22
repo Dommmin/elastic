@@ -25,6 +25,7 @@ use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
@@ -37,7 +38,7 @@ function offerLifecycleNow(): DateTimeImmutable
 
 function offerLifecycleSeller(SellerStatus $status = SellerStatus::Active): Seller
 {
-    return Seller::reconstitute(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), $status, null, 1);
+    return Seller::reconstitute(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), TaxId::fromString('5261040828'), false, $status, null, 1);
 }
 
 function offerLifecycleOffer(

@@ -25,7 +25,7 @@ use Tests\Unit\SellerPortal\InMemory\PortalWorld;
 function sellerHandlersRegister(PortalWorld $w, int $userId = 7): SellerId
 {
     return (new RegisterSellerHandler($w->transactions, $w->clock, $w->dispatcher, $w->sellers))
-        ->handle(new RegisterSeller($userId, 'Sklep Testowy', 'Poznań'));
+        ->handle(new RegisterSeller($userId, 'Sklep Testowy', 'Poznań', '5261040828'));
 }
 
 test('rejestracja zapisuje sprzedawcę jako Pending i dispatchuje SellerRegistered', function () {

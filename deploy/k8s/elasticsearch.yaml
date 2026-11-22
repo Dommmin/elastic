@@ -32,6 +32,8 @@ spec:
     fileRealm:
       - secretName: es-user-catalog
       - secretName: es-user-searchsvc
+      # ETAP 13: catalog_seller_view (rola seller_stats_view) — tools/k3s/secrets.sh, tools/k3d/secrets.sh
+      - secretName: es-user-catalog-seller-view
 
   nodeSets:
     - name: default

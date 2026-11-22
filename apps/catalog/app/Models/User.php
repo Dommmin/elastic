@@ -24,6 +24,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property string|null $two_factor_recovery_codes
  * @property Carbon|null $two_factor_confirmed_at
  * @property bool $is_admin
+ * @property bool $synthetic
  * @property string|null $remember_token
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
@@ -51,6 +52,8 @@ class User extends Authenticatable implements PasskeyUser
             'password' => 'hashed',
             // Poza #[Fillable] celowo: flagi nie wolno ustawić z formularza rejestracji ani profilu.
             'is_admin' => 'boolean',
+            // Konto właściciela syntetycznego sprzedawcy (`seller360:simulate`, ETAP 13).
+            'synthetic' => 'boolean',
             'two_factor_confirmed_at' => 'datetime',
         ];
     }

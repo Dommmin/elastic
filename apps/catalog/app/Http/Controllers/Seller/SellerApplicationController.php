@@ -13,6 +13,7 @@ use Inertia\Response;
 use SellerPortal\Application\Seller\RegisterSeller;
 use SellerPortal\Application\Seller\RegisterSellerHandler;
 use SellerPortal\Application\SellerAlreadyRegistered;
+use SellerPortal\Application\TaxIdAlreadyTaken;
 
 /**
  * Zgłoszenie użytkownika jako sprzedawcy i podgląd stanu zgłoszenia.
@@ -40,9 +41,13 @@ class SellerApplicationController extends Controller
                 userId: (int) $request->user()->getAuthIdentifier(),
                 name: $request->validated('name'),
                 city: $request->validated('city'),
+                nip: $request->validated('nip'),
             ));
         } catch (SellerAlreadyRegistered $e) {
             return redirect()->route('seller.status')->withErrors(['domain' => DomainErrorMessages::for($e)]);
+        } catch (TaxIdAlreadyTaken $e) {
+            // Wyścig dwóch zgłoszeń z tym samym NIP-em: request przepuścił oba, zatrzymał dopiero indeks.
+            return back()->withErrors(['nip' => DomainErrorMessages::for($e)])->withInput();
         }
 
         Inertia::flash('toast', ['type' => 'success', 'message' => 'Zgłoszenie wysłane — czeka na akceptację moderatora']);

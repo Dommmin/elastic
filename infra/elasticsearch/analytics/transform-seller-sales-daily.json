@@ -1,0 +1,65 @@
+{
+  "description": "ETAP 13: dzienna sprzedaż per sprzedawca (sesje z koszykiem, sesje z zamówieniem, GMV) z events-seller-*; źródło sekcji `sales` w seller-360",
+  "source": {
+    "index": [
+      "events-seller-*"
+    ]
+  },
+  "dest": {
+    "index": "seller-sales-daily"
+  },
+  "frequency": "1m",
+  "sync": {
+    "time": {
+      "field": "event.ingested",
+      "delay": "60s"
+    }
+  },
+  "pivot": {
+    "group_by": {
+      "day": {
+        "date_histogram": {
+          "field": "@timestamp",
+          "calendar_interval": "1d"
+        }
+      },
+      "seller_id": {
+        "terms": {
+          "field": "seller.id"
+        }
+      }
+    },
+    "aggregations": {
+      "cart_sessions": {
+        "cardinality": {
+          "script": {
+            "lang": "painless",
+            "source": "doc['kind'].size() > 0 && doc['kind'].value == params.kind ? doc['session.id'].value : null",
+            "params": {
+              "kind": "cart"
+            }
+          }
+        }
+      },
+      "order_sessions": {
+        "cardinality": {
+          "script": {
+            "lang": "painless",
+            "source": "doc['kind'].size() > 0 && doc['kind'].value == params.kind ? doc['session.id'].value : null",
+            "params": {
+              "kind": "order"
+            }
+          }
+        }
+      },
+      "gmv_cents": {
+        "sum": {
+          "field": "amount_cents"
+        }
+      }
+    }
+  },
+  "settings": {
+    "max_page_search_size": 1000
+  }
+}

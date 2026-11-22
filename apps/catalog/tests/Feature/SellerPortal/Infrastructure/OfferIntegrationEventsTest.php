@@ -17,6 +17,7 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Infrastructure\Persistence\SqlOfferRepository;
@@ -39,7 +40,7 @@ function outboxEventsRepo(): SqlOfferRepository
 
 function outboxEventsActiveSeller(int $sellerId): Seller
 {
-    return Seller::reconstitute(SellerId::fromInt($sellerId), null, SellerName::fromString('Sklep testowy'), City::fromString('Poznań'), SellerStatus::Active, null, 1);
+    return Seller::reconstitute(SellerId::fromInt($sellerId), null, SellerName::fromString('Sklep testowy'), City::fromString('Poznań'), TaxId::fromString('5261040828'), false, SellerStatus::Active, null, 1);
 }
 
 /**

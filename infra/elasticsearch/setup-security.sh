@@ -70,6 +70,10 @@ log "  OK"
 # `_tasks/<id>/_cancel` — bez tego przywileju ES odpowiada 403.
 # ETAP 12: manage_transform (transformy lejka i popularności), manage_enrich
 # (polityki enrich) oraz indeks product-popularity* (wynik transformu).
+# ETAP 13: complaints* — import reklamacji (complaints, complaints-unmatched, _reindex, delete-by-query);
+# manage_enrich wykonuje też politykę seller-by-nip.
+# ETAP 13b: courier-ratings (jawna nazwa, bez wzorca) — oceny kurierów z rejestru; `_update_by_query` fan-outu
+# na seller-360* mieści się w "all", a odczyt `_tasks/<id>` w `monitor`.
 log "Tworzę rolę search_service (write + manage)..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
   -H 'Content-Type: application/json' -d '{
@@ -86,10 +90,31 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
     {
       "names": [
         "products-*", "offers-*", "seller-360*",
-        "alerts-*", "events-*", "search-stats-*", "logs-app-*",
-        "product-popularity*"
+        "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*",
+        "product-popularity*", "complaints*"
       ],
       "privileges": ["all"]
+    },
+    {
+      "names": ["courier-ratings"],
+      "privileges": ["read", "write", "view_index_metadata"]
+    }
+  ]
+}' >/dev/null
+log "  OK"
+
+# --- 3b. rola widoku sprzedawcy (ETAP 13, Task 15) — TYLKO ODCZYT seller-360-public -------
+# Licencja basic nie ma FLS/DLS, więc izolację robi osobny alias `seller-360-public`
+# (bez billing i complaints), a ta rola widzi tylko jego. Brak `monitor` i brak
+# view_index_metadata: konto nie wie nawet, że istnieje `seller-360`.
+log "Tworzę rolę seller_stats_view (read seller-360-public)..."
+curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/seller_stats_view" \
+  -H 'Content-Type: application/json' -d '{
+  "cluster": [],
+  "indices": [
+    {
+      "names": ["seller-360-public"],
+      "privileges": ["read"]
     }
   ]
 }' >/dev/null
@@ -107,6 +132,18 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/user/searchsvc" \
   -H 'Content-Type: application/json' \
   -d "{\"password\":\"${ES_SEARCHSVC_PASSWORD}\",\"roles\":[\"search_service\"],\"full_name\":\"Search service (Symfony)\"}" >/dev/null
 log "  OK"
+
+# Hasło bywa puste na świeżym checkoucie bez wpisu w .env: wtedy konta nie tworzymy
+# (blok statystyk pokaże „chwilowo niedostępne”), a reszta skryptu działa dalej.
+if [ -n "${ES_CATALOG_SELLER_VIEW_PASSWORD:-}" ]; then
+  log "Tworzę użytkownika catalog_seller_view..."
+  curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/user/catalog_seller_view" \
+    -H 'Content-Type: application/json' \
+    -d "{\"password\":\"${ES_CATALOG_SELLER_VIEW_PASSWORD}\",\"roles\":[\"seller_stats_view\"],\"full_name\":\"Catalog: widok sprzedawcy\"}" >/dev/null
+  log "  OK"
+else
+  log "Pomijam catalog_seller_view: brak ES_CATALOG_SELLER_VIEW_PASSWORD."
+fi
 
 # --- 5. rejestracja repozytorium snapshotów (przyda się w ETAPIE 10) --------
 log "Rejestruję repozytorium snapshotów 'local-fs'..."

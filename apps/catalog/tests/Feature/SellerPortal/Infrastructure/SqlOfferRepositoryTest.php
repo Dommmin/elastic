@@ -23,6 +23,7 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Infrastructure\Persistence\SqlOfferRepository;
@@ -81,6 +82,8 @@ test('zapis i odczyt oferty zachowuje wszystkie pola', function () {
             null,
             SellerName::fromString('Sklep testowy'),
             City::fromString('Poznań'),
+            TaxId::fromString('5261040828'),
+            false,
             SellerStatus::Active,
             null,
             1,
@@ -141,6 +144,8 @@ test('kolejny zapis nie dubluje wierszy historii cen', function () {
         $offer->sellerId(), null,
         SellerName::fromString('Sklep testowy'),
         City::fromString('Poznań'),
+        TaxId::fromString('5261040828'),
+        false,
         SellerStatus::Active, null, 1,
     ), offerRepoNow());
     $offer->changePrice(Money::fromCents(10500), offerRepoNow('+1 minute'));
@@ -262,7 +267,7 @@ function offerRepoRawRow(int $sellerId, array $overrides = []): array
 
 function offerRepoActiveSeller(Offer $offer): Seller
 {
-    return Seller::reconstitute($offer->sellerId(), null, SellerName::fromString('Sklep testowy'), City::fromString('Poznań'), SellerStatus::Active, null, 1);
+    return Seller::reconstitute($offer->sellerId(), null, SellerName::fromString('Sklep testowy'), City::fromString('Poznań'), TaxId::fromString('5261040828'), false, SellerStatus::Active, null, 1);
 }
 
 /**

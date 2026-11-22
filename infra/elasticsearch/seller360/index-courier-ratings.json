@@ -1,0 +1,14 @@
+{
+  "settings": {
+    "index.number_of_shards": 1,
+    "index.number_of_replicas": 0
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "courier_id": { "type": "keyword" },
+      "on_time_rate": { "type": "float" },
+      "rated_at": { "type": "date" }
+    }
+  }
+}

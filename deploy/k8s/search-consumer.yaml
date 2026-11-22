@@ -167,6 +167,10 @@ spec:
               valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
             - name: ELASTICSEARCH_PASSWORD
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+            # ETAP 13: gauge'e lagu seller-360 (seller360_lag_*) czyta z Redisa (klucz seller360:lag,
+            # pisze go seller360-scheduler). Bez Redisa /metrics dalej odpowiada 200, bez tych gauge'y.
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
           ports:
             - name: metrics
               containerPort: 80

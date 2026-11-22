@@ -1,0 +1,84 @@
+{
+  "index_patterns": [
+    "complaints"
+  ],
+  "priority": 200,
+  "_meta": {
+    "description": "Reklamacje z importu CSV (ETAP 13). default_pipeline rozwiązuje NIP na sprzedawcę; wiersze bez dopasowania lecą reroute do complaints-unmatched. Szablon complaints-unmatched skrypt buduje z tego pliku bez default_pipeline."
+  },
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 1,
+      "index.default_pipeline": "complaints-resolve-seller",
+      "analysis": {
+        "filter": {
+          "pl_stem": {
+            "type": "polish_stem"
+          },
+          "pl_stop": {
+            "type": "stop",
+            "stopwords": "_polish_"
+          },
+          "synonyms_pl": {
+            "type": "synonym_graph",
+            "synonyms_path": "analysis/synonyms.txt",
+            "updateable": true
+          }
+        },
+        "analyzer": {
+          "pl_index": {
+            "tokenizer": "standard",
+            "filter": [
+              "lowercase",
+              "asciifolding",
+              "pl_stop",
+              "pl_stem"
+            ]
+          },
+          "pl_search": {
+            "tokenizer": "standard",
+            "filter": [
+              "lowercase",
+              "asciifolding",
+              "synonyms_pl",
+              "pl_stop",
+              "pl_stem"
+            ]
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "ticket_id": {
+          "type": "keyword"
+        },
+        "nip": {
+          "type": "keyword"
+        },
+        "seller_id": {
+          "type": "long"
+        },
+        "region": {
+          "type": "keyword"
+        },
+        "created_at": {
+          "type": "date"
+        },
+        "category": {
+          "type": "keyword"
+        },
+        "status": {
+          "type": "keyword"
+        },
+        "body": {
+          "type": "text",
+          "analyzer": "pl_index",
+          "search_analyzer": "pl_search"
+        }
+      }
+    }
+  }
+}

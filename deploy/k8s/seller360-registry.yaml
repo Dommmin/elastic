@@ -1,0 +1,81 @@
+# ============================================================================
+#  seller360-registry — ETAP 13
+#  Synchronizacja sekcji `registry` (`seller360:registry:sync --loop`) w osobnym
+#  procesie, żeby awaria rejestru nie zatrzymała kolejki search.seller360.
+#  Timeout 2 s, ponowienia, bezpiecznik w Redisie (5 błędów, przerwa 30 s),
+#  cache 24 h (sekcja `stale` zamiast dziury), najwyżej 20 żądań/s do rejestru.
+#  Bez catalogu i bez RabbitMQ. Kolejność wdrożenia jak przy seller360-consumer
+#  (RUNBOOK #150).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seller360-registry
+  labels:
+    app.kubernetes.io/component: app
+    app: seller360-registry
+spec:
+  replicas: 1          # jedna pętla: dwie dzieliłyby limit 20 żądań/s i bezpiecznik bez koordynacji
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: seller360-registry
+  template:
+    metadata:
+      labels:
+        app: seller360-registry
+    spec:
+      serviceAccountName: search
+      automountServiceAccountToken: false
+      # stop_grace_period: 30s z compose.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP)
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: registry
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["php", "bin/console", "seller360:registry:sync", "--loop"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            - name: ERROR_TRACKING_PROCESS
+              value: seller360-registry
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_SEARCH, optional: true } }
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            # Jak w compose: kontener Symfony dostaje DATABASE_URL (konfiguracja Doctrine).
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
+            - name: REGISTRY_BASE_URL
+              value: http://registry-mock:8080
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -f seller360:registry:sync"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

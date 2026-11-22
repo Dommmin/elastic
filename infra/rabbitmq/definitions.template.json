@@ -21,6 +21,17 @@
         "max-length": 100000,
         "overflow": "drop-head"
       }
+    },
+    {
+      "name": "seller360-cap",
+      "vhost": "/",
+      "pattern": "^search\\.seller360(\\.dlq)?$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "max-length": 100000,
+        "overflow": "drop-head"
+      }
     }
   ],
 
@@ -78,6 +89,18 @@
       }
     },
     {
+      "name": "search.seller360",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "marketplace.dlx",
+        "x-dead-letter-routing-key": "search.seller360",
+        "x-delivery-limit": 5
+      }
+    },
+    {
       "name": "notifications.alerts",
       "vhost": "/",
       "durable": true,
@@ -98,6 +121,13 @@
     },
     {
       "name": "search.analytics.ingest.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "search.seller360.dlq",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
@@ -127,6 +157,13 @@
     { "source": "marketplace.events", "vhost": "/", "destination": "search.analytics.ingest",
       "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
 
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.seller360",
+      "destination_type": "queue", "routing_key": "seller.#", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.seller360",
+      "destination_type": "queue", "routing_key": "billing.#", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.seller360",
+      "destination_type": "queue", "routing_key": "offer.#", "arguments": {} },
+
     { "source": "marketplace.events", "vhost": "/", "destination": "notifications.alerts",
       "destination_type": "queue", "routing_key": "alert.#", "arguments": {} },
 
@@ -143,6 +180,9 @@
 
     { "source": "marketplace.dlx", "vhost": "/", "destination": "search.analytics.ingest.dlq",
       "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
+
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.seller360.dlq",
+      "destination_type": "queue", "routing_key": "search.seller360", "arguments": {} },
 
     { "source": "marketplace.dlx", "vhost": "/", "destination": "notifications.alerts.dlq",
       "destination_type": "queue", "routing_key": "alert.#", "arguments": {} }

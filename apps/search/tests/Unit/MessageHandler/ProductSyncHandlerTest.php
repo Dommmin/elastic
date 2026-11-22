@@ -13,6 +13,7 @@ use App\Service\ProductSynchronizer;
 use App\Service\ProjectionUnavailableException;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 
@@ -26,18 +27,24 @@ final class ProductSyncHandlerTest extends TestCase
     private CatalogProjectionClient&MockObject $catalogClient;
     private ElasticsearchIndexer&MockObject $indexer;
     private ProductSyncHandler $handler;
+    private ProcessedEventRepository $processedEvents;
 
     protected function setUp(): void
     {
-        $processedEvents = $this->createStub(ProcessedEventRepository::class);
-        $processedEvents->method('tryMarkProcessed')->willReturn(true);
+        $this->processedEvents = $this->createStub(ProcessedEventRepository::class);
+        $this->processedEvents->method('tryMarkProcessed')->willReturn(true);
 
         $this->catalogClient = $this->createMock(CatalogProjectionClient::class);
         $this->indexer = $this->createMock(ElasticsearchIndexer::class);
-        $this->handler = new ProductSyncHandler(
-            $processedEvents,
+        $this->handler = $this->handlerWith(new NullLogger());
+    }
+
+    private function handlerWith(LoggerInterface $logger): ProductSyncHandler
+    {
+        return new ProductSyncHandler(
+            $this->processedEvents,
             new ProductSynchronizer($this->catalogClient, $this->indexer),
-            new NullLogger(),
+            $logger,
         );
     }
 
@@ -74,6 +81,40 @@ final class ProductSyncHandlerTest extends TestCase
         $this->expectException(RecoverableMessageHandlingException::class);
 
         ($this->handler)($this->event('offer.price_changed', 'offer', '4', ['product_id' => 7]));
+    }
+
+    /** @return array<string, array{string}> */
+    public static function zdarzeniaSprzedawcy(): array
+    {
+        return array_map(
+            static fn (string $t): array => [$t],
+            array_combine(
+                $t = ['seller.registered', 'seller.approved', 'seller.rejected', 'seller.blocked', 'seller.unblocked', 'seller.renamed', 'seller.relocated'],
+                $t,
+            ),
+        );
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('zdarzeniaSprzedawcy')]
+    public function test_zdarzenie_sprzedawcy_jest_swiadomie_ignorowane_na_poziomie_debug(string $type): void
+    {
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())->method('debug');
+        $logger->expects(self::never())->method('warning');
+        $this->catalogClient->expects(self::never())->method('fetchProductProjection');
+        $this->indexer->expects(self::never())->method('indexProduct');
+
+        $this->handlerWith($logger)($this->event($type, 'seller', '9'));
+    }
+
+    public function test_nieznany_typ_dalej_daje_ostrzezenie(): void
+    {
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())->method('warning');
+        $this->catalogClient->expects(self::never())->method('fetchProductProjection');
+        $this->indexer->expects(self::never())->method('indexProduct');
+
+        $this->handlerWith($logger)($this->event('foo.bar', 'foo', '1'));
     }
 
     /** @param array<string, mixed> $data */

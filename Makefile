@@ -281,6 +281,35 @@ closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dni
 analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
+.PHONY: seller360-setup
+seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
+	@bash infra/elasticsearch/setup-seller360.sh
+
+.PHONY: seller360-simulate
+seller360-simulate: ## Generator seller-360 (ETAP 13): make seller360-simulate args="--sellers=20000 --billing --sales --plant=5" (--purge czyści)
+	$(DC) exec catalog-app php artisan seller360:simulate $(args)
+
+.PHONY: seller360-complaints-import
+seller360-complaints-import: ## Import CSV reklamacji z catalogu do search (domyślnie apps/catalog/storage/app/seller360/complaints.csv; csv=...)
+	$(DC) cp $(or $(csv),apps/catalog/storage/app/seller360/complaints.csv) seller360-consumer:/tmp/seller360-complaints.csv
+	$(DC) exec seller360-consumer php bin/console seller360:complaints:import /tmp/seller360-complaints.csv
+
+.PHONY: seller360-verify
+seller360-verify: ## Dowód zapytania z DoD seller-360 vs planted.json: precyzja, czułość, bliskie pudła, p50/p99 took (ETAP 13)
+	$(DC) exec catalog-app php artisan seller360:query:verify $(args)
+
+.PHONY: seller360-rebuild
+seller360-rebuild: ## Przebudowa seller-360 do -v<N+1> bez przestoju: podwójny zapis, backfill, weryfikacja, aliasy (args="--delete-old")
+	$(DC) exec seller360-scheduler php bin/console seller360:rebuild $(args)
+
+.PHONY: seller360-rebuild-under-load
+seller360-rebuild-under-load: ## Przebudowa pod ruchem (churn + billing:churn) i zgodność billingu z catalogiem: 0 rozjazdów (ETAP 13)
+	@bash tools/seller360/rebuild-under-load.sh
+
+.PHONY: seller360-stale-source
+seller360-stale-source: ## Awaria rejestru: billing i profile dalej świeże, registry stale z rosnącym lagiem, potem powrót do ok (ETAP 13)
+	@bash tools/seller360/stale-source.sh
+
 .PHONY: simulate
 simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
 	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)
@@ -667,3 +696,7 @@ g5-verify: ## Weryfikacja G5 na k3d: klaster, topologia, liczby, failover lidera
 
 g5-measure: ## Pomiary G5 na k3d: make g5-measure m=queues|failover|prefetch (3 przebiegi, mediana; kilka–kilkanaście minut)
 	@bash tools/k3d/measure.sh $(or $(m),$(error podaj m=queues|failover|prefetch))
+
+.PHONY: seller360-fls-demo
+seller360-fls-demo: ## Demo DLS/FLS seller-360 na jednorazowym węźle z trialem (-Xmx768m, 200 dokumentów, sprząta po sobie; ETAP 13)
+	@bash tools/seller360/fls-demo.sh

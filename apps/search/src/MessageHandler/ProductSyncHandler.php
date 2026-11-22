@@ -23,6 +23,16 @@ use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 #[AsMessageHandler(fromTransport: 'product_sync')]
 final class ProductSyncHandler
 {
+    /**
+     * Zdarzenia `seller.*` z ETAPU 13 buduje projekcja `seller-360`, nie produkty.
+     * `seller.renamed` też tu pomijamy: nazwę w produktach poprawia komenda
+     * `search:seller:rename`. Świadome pominięcie to debug, nie ostrzeżenie.
+     */
+    private const IGNORED_SELLER_TYPES = [
+        'seller.registered', 'seller.approved', 'seller.rejected', 'seller.blocked',
+        'seller.unblocked', 'seller.renamed', 'seller.relocated',
+    ];
+
     public function __construct(
         private readonly ProcessedEventRepository $processedEvents,
         private readonly ProductSynchronizer $synchronizer,
@@ -37,6 +47,12 @@ final class ProductSyncHandler
         // procesu w połowie przetwarzania jest pewnością, nie ryzykiem.
         if (! $this->processedEvents->tryMarkProcessed($event->id, self::class)) {
             $this->logger->debug('Duplikat zdarzenia, pomijam.', ['event_id' => $event->id, 'type' => $event->type]);
+
+            return;
+        }
+
+        if (in_array($event->type, self::IGNORED_SELLER_TYPES, true)) {
+            $this->logger->debug('Zdarzenie sprzedawcy nie dotyczy produktów, pomijam.', ['event_id' => $event->id, 'type' => $event->type]);
 
             return;
         }

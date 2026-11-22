@@ -463,6 +463,14 @@ procedury nie przećwiczyłem na żywo po `switch-read`; `--from` sprawdzałem t
 Scenariusz: sprzedawca zmienia nazwę. Projekcja czyta nazwę sprzedawcy na żywo z bazy, więc zamiast 98 tys. zdarzeń
 w outboxie wystarczy zmiana w Postgresie i `_update_by_query` w ES.
 
+> **Dopisek z ETAPU 13 (2026-11-22).** Zmiana w bazie nie jest już gołym `UPDATE`: `marketplace:seller-rename`
+> (wołany przez `make seller-rename`) idzie przez domenę — `RenameSellerHandler` wczytuje agregat, woła
+> `Seller::rename`, podnosi wersję i zapisuje w outboxie zdarzenie `seller.renamed` (pełny profil + `version`).
+> To zdarzenie zasila tylko read model `seller-360` (sekcja `profile`, strażnik wersji). Produkty dalej poprawia
+> `search:seller:rename` (`_update_by_query` opisany niżej): `ProductSyncHandler` świadomie pomija `seller.renamed`,
+> żeby nie zamieniać jednej zmiany nazwy w ~100 tys. reprojekcji. Przewodnik
+> [13a, krok 2](etap-13a-agregat-seller-360.md#krok-2--zdarzenia-z-catalogu-seller-i-billing-przez-outbox).
+
 ```bash
 make seller-rename id=61 name="Megasklep Plus" rps=200
 make es-tasks                                  # postęp w Tasks API

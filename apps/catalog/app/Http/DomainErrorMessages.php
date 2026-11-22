@@ -29,6 +29,7 @@ final class DomainErrorMessages
         'seller_cannot_sell' => 'Konto sprzedawcy nie jest aktywne',
         'stock_below_reserved' => 'Nie możesz zejść poniżej liczby zarezerwowanych sztuk',
         'seller_already_registered' => 'To konto ma już profil sprzedawcy',
+        'tax_id_already_taken' => 'Ten NIP jest już zarejestrowany',
         'price_changed_since_cart' => 'Ceny w koszyku się zmieniły — sprawdź i złóż zamówienie ponownie',
         'offer_no_longer_available' => 'Część ofert w koszyku nie jest już dostępna',
         'cannot_buy_own_offer' => 'Nie możesz kupić własnej oferty',

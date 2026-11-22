@@ -11,6 +11,7 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerRepository;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\UserId;
 
 /**
@@ -35,7 +36,7 @@ final readonly class RegisterSellerHandler
                 throw new SellerAlreadyRegistered;
             }
 
-            $seller = Seller::register($this->sellers->nextIdentity(), $userId, SellerName::fromString($command->name), City::fromString($command->city), $this->clock->now());
+            $seller = Seller::register($this->sellers->nextIdentity(), $userId, SellerName::fromString($command->name), City::fromString($command->city), TaxId::fromString($command->nip), $command->synthetic, $this->clock->now());
             $this->sellers->save($seller);
             $this->events->dispatch($seller->releaseEvents());
 

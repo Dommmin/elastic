@@ -143,9 +143,17 @@ spec:
             # Wspólny sekret /api/internal/* (X-Internal-Token): catalog-app sprawdza,
             # search-consumer wysyła. Bez optional: brak klucza = pod nie wstaje, zamiast
             # po cichu odpowiadać 503 na każdą projekcję (RUNBOOK #127).
-            # Na KOŃCU listy: overlay g5-local-ha łata env po indeksie (env/10).
+            # Za RABBITMQ_PASSWORD (env/10): overlay g5-local-ha łata env po indeksie, więc nowe
+            # zmienne dopisujemy tylko na końcu listy.
             - name: INTERNAL_API_TOKEN
               valueFrom: { secretKeyRef: { name: marketplace-secrets, key: INTERNAL_API_TOKEN } }
+            # ETAP 13: osobny klient ES dla bloku „Twoje statystyki” (konto catalog_seller_view, read tylko
+            # na seller-360-public). Bez optional, jak INTERNAL_API_TOKEN: brak klucza = pod nie wstaje,
+            # zamiast pokazywać „Statystyki chwilowo niedostępne” po 401 z ES (RUNBOOK #148).
+            - name: ELASTICSEARCH_SELLER_VIEW_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_CATALOG_SELLER_VIEW_USER } }
+            - name: ELASTICSEARCH_SELLER_VIEW_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_CATALOG_SELLER_VIEW_PASSWORD } }
           ports:
             - name: http
               containerPort: 80

@@ -8,9 +8,10 @@
 #
 #  SEKCJA 1 (zdarzenia): polityka ILM `events-user`, pipeline `events-ingested`
 #  (event.ingested = czas przyjęcia), szablony data streamów, data streamy
-#  `events-user-default` i `events-impression-default`.
+#  `events-user-default`, `events-impression-default` i (ETAP 13)
+#  `events-seller-default` (wiersz na parę zdarzenie × sprzedawca).
 #
-#  SEKCJA 2 (search-stats-daily): indeks docelowy z jawnym mapowaniem i transform
+#  SEKCJA 2 (search-stats-daily, seller-sales-daily): indeks docelowy z jawnym mapowaniem i transform
 #  ciągły (sync po event.ingested, delay 60s). Tworzony, gdy go brak; startowany,
 #  gdy stoi. Zmiana pivotu wymaga usunięcia transformu i indeksu (patrz przewodnik
 #  docs/blog/etap-12a-zdarzenia-i-lejek.md, ściąga).
@@ -110,7 +111,7 @@ log "[1] Pipeline events-ingested (event.ingested)"
 esa PUT /_ingest/pipeline/events-ingested "${DIR}/pipeline-events-ingested.json" >/dev/null
 
 TMP="$(mktemp)"; trap 'rm -f "${TMP}"' EXIT
-for name in events-user events-impression; do
+for name in events-user events-impression events-seller; do
   log "[1] Szablon ${name} (dynamic: strict)"
   template_with_replicas "${DIR}/template-${name}.json" >"${TMP}"
   esa PUT "/_index_template/${name}" "${TMP}" >/dev/null
@@ -122,40 +123,57 @@ for name in events-user events-impression; do
     log "[1] Tworzę data stream ${ds}"
     esa PUT "/_data_stream/${ds}" >/dev/null
   fi
+
+  # Szablon dotyczy tylko NOWYCH indeksów; backing indeksy istniejącego data streamu
+  # (PUT _mapping na nazwie streamu obejmuje wszystkie) trzeba doprowadzić do mapowania
+  # z pliku (np. `seller.id` w events-user, ETAP 13): przy `dynamic: strict` dokument z nowym
+  # polem inaczej zostałby odrzucony. Idempotentne.
+  python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["template"]["mappings"]))' \
+    "${DIR}/template-${name}.json" >"${TMP}"
+  esa PUT "/${ds}/_mapping" "${TMP}" >/dev/null
 done
 log "[1] OK"
 
 # ============================================================================
 #  SEKCJA 2 — transform search-stats-daily (dzień × fraza)
 # ============================================================================
-TRANSFORM=search-stats-daily
-if esa_exists "/${TRANSFORM}"; then
-  log "[2] Indeks ${TRANSFORM} już istnieje"
-else
-  log "[2] Tworzę indeks ${TRANSFORM} (jawne mapowanie, replik: ${REPLICAS})"
-  REPLICAS="${REPLICAS}" python3 -c '
+# ensure_transform NAZWA — indeks docelowy (gdy brak), transform (gdy brak), start (gdy stoi)
+ensure_transform() {
+  local transform="$1"
+  if esa_exists "/${transform}"; then
+    log "[2] Indeks ${transform} już istnieje"
+  else
+    log "[2] Tworzę indeks ${transform} (jawne mapowanie, replik: ${REPLICAS})"
+    REPLICAS="${REPLICAS}" python3 -c '
 import json, os, sys
 t = json.load(open(sys.argv[1]))
 t["settings"]["index.number_of_replicas"] = int(os.environ["REPLICAS"])
-print(json.dumps(t))' "${DIR}/index-${TRANSFORM}.json" >"${TMP}"
-  esa PUT "/${TRANSFORM}" "${TMP}" >/dev/null
-fi
+print(json.dumps(t))' "${DIR}/index-${transform}.json" >"${TMP}"
+    esa PUT "/${transform}" "${TMP}" >/dev/null
+  fi
 
-if esa_exists "/_transform/${TRANSFORM}"; then
-  log "[2] Transform ${TRANSFORM} już istnieje (definicji nie nadpisuję)"
-else
-  log "[2] Tworzę transform ${TRANSFORM}"
-  esa PUT "/_transform/${TRANSFORM}" "${DIR}/transform-${TRANSFORM}.json" >/dev/null
-fi
+  if esa_exists "/_transform/${transform}"; then
+    log "[2] Transform ${transform} już istnieje (definicji nie nadpisuję)"
+  else
+    log "[2] Tworzę transform ${transform}"
+    esa PUT "/_transform/${transform}" "${DIR}/transform-${transform}.json" >/dev/null
+  fi
 
-STATE="$(esa GET "/_transform/${TRANSFORM}/_stats?filter_path=transforms.state" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["transforms"][0]["state"])')"
-if [ "${STATE}" = "stopped" ]; then
-  log "[2] Startuję transform ${TRANSFORM}"
-  esa POST "/_transform/${TRANSFORM}/_start" >/dev/null
-else
-  log "[2] Transform ${TRANSFORM} w stanie: ${STATE}"
-fi
+  local state
+  state="$(esa GET "/_transform/${transform}/_stats?filter_path=transforms.state" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["transforms"][0]["state"])')"
+  if [ "${state}" = "stopped" ]; then
+    log "[2] Startuję transform ${transform}"
+    esa POST "/_transform/${transform}/_start" >/dev/null
+  else
+    log "[2] Transform ${transform} w stanie: ${state}"
+  fi
+}
+
+ensure_transform search-stats-daily
+# ETAP 13: sprzedaż per sprzedawca z events-seller-* (źródło sekcji `sales` w seller-360).
+# Szablon events-seller powstaje w sekcji 1; transform czyta data stream, więc musi być po niej.
+ensure_transform seller-sales-daily
 log "[2] OK"
 
 # ============================================================================

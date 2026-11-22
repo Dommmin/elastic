@@ -14,13 +14,17 @@ use Illuminate\Support\Facades\DB;
 final class SellerDirectory
 {
     /**
+     * Syntetyczni sprzedawcy (do 20 000 z `seller360:simulate`) zasłoniliby prawdziwych, więc
+     * domyślnie są ukryci; `$includeSynthetic` pokazuje wszystkich.
+     *
      * @return LengthAwarePaginator<int, array{id: int, name: string, city: string, status: string, status_reason: string|null, status_changed_at: string|null, has_account: bool, email: string|null}>
      */
-    public function paginate(?string $status, int $perPage = 25): LengthAwarePaginator
+    public function paginate(?string $status, int $perPage = 25, bool $includeSynthetic = false): LengthAwarePaginator
     {
         return DB::table('sellers')
             ->leftJoin('users', 'users.id', '=', 'sellers.user_id')
             ->when($status !== null, fn ($query) => $query->where('sellers.status', $status))
+            ->when(! $includeSynthetic, fn ($query) => $query->where('sellers.synthetic', false))
             ->orderBy('sellers.id')
             ->select(['sellers.id', 'sellers.name', 'sellers.city', 'sellers.status', 'sellers.status_reason', 'sellers.status_changed_at', 'sellers.user_id', 'users.email'])
             ->paginate($perPage)

@@ -1,28 +1,34 @@
 <?php
 
 use App\Models\User;
+use App\Support\TaxIdGenerator;
 use Illuminate\Support\Facades\DB;
 use SellerPortal\Application\SellerAlreadyRegistered;
+use SellerPortal\Application\TaxIdAlreadyTaken;
 use SellerPortal\Domain\Seller\City;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerNotFound;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
 use SellerPortal\Infrastructure\Persistence\SqlSellerRepository;
 use SharedKernel\ConcurrencyConflict;
 
-function sellerRepoRegister(SqlSellerRepository $repo, ?User $user = null, string $name = 'Sklep Śródmieście', ?DateTimeImmutable $at = null): Seller
+function sellerRepoRegister(SqlSellerRepository $repo, ?User $user = null, string $name = 'Sklep Śródmieście', ?DateTimeImmutable $at = null, ?string $nip = null, bool $synthetic = false): Seller
 {
     $user ??= User::factory()->create();
+    $id = $repo->nextIdentity();
     $seller = Seller::register(
-        $repo->nextIdentity(),
+        $id,
         UserId::fromInt($user->id),
         SellerName::fromString($name),
         City::fromString('Poznań'),
+        TaxId::fromString($nip ?? TaxIdGenerator::forSeed($id->value())),
+        $synthetic,
         $at ?? new DateTimeImmutable('2026-10-15 12:00:00'),
     );
     $repo->save($seller);
@@ -59,16 +65,6 @@ test('slug sprzedawcy = slug nazwy + id', function () {
         ->and((int) $row->rating)->toBe(0)
         ->and($row->lat)->toBeNull()
         ->and($row->lon)->toBeNull();
-});
-
-test('zapis sprzedawcy nie tworzy wiersza outboxu', function () {
-    $repo = new SqlSellerRepository;
-    $registered = sellerRepoRegister($repo);
-    $seller = $repo->get($registered->id());
-    $seller->approve(ModeratorId::fromInt(1), new DateTimeImmutable('2026-10-15 13:00:00'));
-    $repo->save($seller);
-
-    expect(DB::table('outbox')->count())->toBe(0);
 });
 
 test('status_changed_at to czas ostatniego zdarzenia, a status i powód się zapisują', function () {
@@ -112,4 +108,40 @@ test('druga rejestracja tego samego użytkownika rzuca SellerAlreadyRegistered, 
     expect(fn () => sellerRepoRegister($repo, $user, name: 'Drugi Sklep'))
         ->toThrow(SellerAlreadyRegistered::class)
         ->and(DB::table('sellers')->where('user_id', $user->id)->count())->toBe(1);
+});
+
+test('NIP i flaga synthetic przechodzą przez zapis i odczyt', function () {
+    $repo = new SqlSellerRepository;
+    $seller = sellerRepoRegister($repo, nip: '526-104-08-28', synthetic: true);
+
+    $loaded = $repo->get($seller->id());
+    $row = DB::table('sellers')->where('id', $seller->id()->value())->first();
+
+    expect($loaded->taxId()->value())->toBe('5261040828')
+        ->and($loaded->isSynthetic())->toBeTrue()
+        ->and($row->nip)->toBe('5261040828')
+        ->and((bool) $row->synthetic)->toBeTrue();
+});
+
+test('zmiana nazwy i miasta zapisuje się w bazie i podnosi wersję', function () {
+    $repo = new SqlSellerRepository;
+    $registered = sellerRepoRegister($repo);
+
+    $seller = $repo->get($registered->id());
+    $seller->rename(SellerName::fromString('Nowa Nazwa'), new DateTimeImmutable('2026-10-15 13:00:00'));
+    $seller->relocate(City::fromString('Gdańsk'), new DateTimeImmutable('2026-10-15 13:00:01'));
+    $repo->save($seller);
+
+    $reloaded = $repo->get($registered->id());
+
+    expect($reloaded->name()->value())->toBe('Nowa Nazwa')
+        ->and($reloaded->city()->value())->toBe('Gdańsk')
+        ->and($reloaded->version())->toBe(2);
+});
+
+test('ten sam NIP u drugiego sprzedawcy rzuca TaxIdAlreadyTaken, nie surowy QueryException', function () {
+    $repo = new SqlSellerRepository;
+    sellerRepoRegister($repo, nip: '5261040828');
+
+    expect(fn () => sellerRepoRegister($repo, nip: '5261040828'))->toThrow(TaxIdAlreadyTaken::class);
 });

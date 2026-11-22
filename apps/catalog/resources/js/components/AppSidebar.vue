@@ -32,6 +32,7 @@ import { index as ordersIndex } from '@/routes/orders';
 import { priceChanges as panelPriceChanges } from '@/routes/panel/moderation';
 import { index as panelProducts } from '@/routes/panel/products';
 import { index as panelSellers } from '@/routes/panel/sellers';
+import { index as panelSellers360 } from '@/routes/panel/sellers360';
 import {
     apply as sellerApply,
     dashboard as sellerDashboard,
@@ -91,6 +92,11 @@ const mainNavItems = computed<NavItem[]>(() => [
         ? [
               { title: 'Panel', href: panelProducts(), icon: PackageSearch },
               { title: 'Sprzedawcy', href: panelSellers(), icon: Users },
+              {
+                  title: 'Seller 360',
+                  href: panelSellers360(),
+                  icon: Users,
+              },
               {
                   title: 'Zmiany cen',
                   href: panelPriceChanges(),

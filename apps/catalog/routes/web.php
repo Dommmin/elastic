@@ -5,6 +5,7 @@ use App\Http\Controllers\Panel\Moderation\OfferModerationController;
 use App\Http\Controllers\Panel\Moderation\PriceChangeModerationController;
 use App\Http\Controllers\Panel\Moderation\SellerModerationController;
 use App\Http\Controllers\Panel\ProductController;
+use App\Http\Controllers\Panel\Seller360Controller;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\Seller\ProductLookupController;
 use App\Http\Controllers\Seller\SellerApplicationController;
@@ -103,6 +104,10 @@ Route::middleware(['auth', 'can:panel'])->prefix('panel')->name('panel.')->group
     Route::post('offers/{offer}/price-change/reject', [PriceChangeModerationController::class, 'reject'])->whereNumber('offer')->name('offers.price-change.reject');
     Route::post('offers/{offer}/suspend', [OfferModerationController::class, 'suspend'])->whereNumber('offer')->name('offers.suspend');
     Route::post('offers/{offer}/reinstate', [OfferModerationController::class, 'reinstate'])->whereNumber('offer')->name('offers.reinstate');
+
+    // ETAP 13: ekran konsultanta nad read modelem seller-360.
+    Route::get('sellers-360', [Seller360Controller::class, 'index'])->name('sellers360.index');
+    Route::get('sellers-360/{seller}', [Seller360Controller::class, 'show'])->whereNumber('seller')->name('sellers360.show');
 });
 
 // Symulowana bramka płatności: „zewnętrzny” serwis, więc bez `auth`. Kupujący

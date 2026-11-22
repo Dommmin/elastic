@@ -60,6 +60,8 @@ final class InMemorySellerRepository implements SellerRepository
             $seller->userId(),
             $seller->name(),
             $seller->city(),
+            $seller->taxId(),
+            $seller->isSynthetic(),
             $seller->status(),
             $seller->statusReason(),
             $version ?? $seller->version(),

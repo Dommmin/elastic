@@ -6,13 +6,17 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use SellerPortal\Application\SellerAlreadyRegistered;
+use SellerPortal\Application\TaxIdAlreadyTaken;
 use SellerPortal\Domain\Seller\City;
+use SellerPortal\Domain\Seller\Event\SellerRelocated;
+use SellerPortal\Domain\Seller\Event\SellerRenamed;
 use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerNotFound;
 use SellerPortal\Domain\Seller\SellerRepository;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
 use SharedKernel\ConcurrencyConflict;
@@ -23,14 +27,17 @@ use UnexpectedValueException;
 /**
  * Repozytorium sprzedawców na Query Builderze (bez Eloquenta, ADR-0002).
  *
- * Bez outboxu: zdarzenia sprzedawcy nie wychodzą poza kontekst (reakcję
- * na blokadę realizuje polityka w procesie, a search dowiaduje się o skutkach
- * z `offer.suspended`). Optymistyczna blokada jak w `SqlOfferRepository`;
+ * Z outboxem (ETAP 13): zdarzenia sprzedawcy wychodzą jako `seller.*` przez
+ * `SellerIntegrationEvents`, zapisane w tej samej transakcji co stan, bo
+ * search buduje z nich projekcję `seller-360`. Reakcję na blokadę nadal
+ * realizuje polityka w procesie. Optymistyczna blokada jak w `SqlOfferRepository`;
  * `save()` nie zmienia obiektu w pamięci, wołający przeładowuje agregat.
  */
 final class SqlSellerRepository implements SellerRepository
 {
     private const string USER_ID_INDEX = 'sellers_user_id_unique';
+
+    private const string NIP_INDEX = 'sellers_nip_unique';
 
     public function nextIdentity(): SellerId
     {
@@ -71,6 +78,10 @@ final class SqlSellerRepository implements SellerRepository
                 throw new SellerAlreadyRegistered;
             }
 
+            if ($this->violatesNipIndex($e)) {
+                throw new TaxIdAlreadyTaken;
+            }
+
             throw $e;
         }
     }
@@ -83,6 +94,14 @@ final class SqlSellerRepository implements SellerRepository
             || str_contains($message, 'UNIQUE constraint failed: sellers.user_id');
     }
 
+    private function violatesNipIndex(QueryException $e): bool
+    {
+        $message = $e->getMessage();
+
+        return str_contains($message, self::NIP_INDEX)
+            || str_contains($message, 'UNIQUE constraint failed: sellers.nip');
+    }
+
     private function persist(Seller $seller): void
     {
         DB::transaction(function () use ($seller): void {
@@ -91,7 +110,11 @@ final class SqlSellerRepository implements SellerRepository
 
             // DLACZEGO czas ostatniego zdarzenia, a nie zegar: zmiana statusu
             // i jej data pochodzą z tego samego momentu, który zna domena.
-            $events = $seller->pendingEvents();
+            // Zmiana nazwy lub miasta statusu nie rusza, więc ich zdarzenia pomijamy.
+            $events = array_values(array_filter(
+                $seller->pendingEvents(),
+                static fn ($event): bool => ! $event instanceof SellerRenamed && ! $event instanceof SellerRelocated,
+            ));
             $statusChangedAt = $events === [] ? null : SqlTimestamp::format($events[array_key_last($events)]->occurredAt());
 
             $state = [
@@ -109,6 +132,8 @@ final class SqlSellerRepository implements SellerRepository
                 DB::table('sellers')->insert($state + [
                     'id' => $id,
                     'user_id' => $seller->userId()?->value(),
+                    'nip' => $seller->taxId()->value(),
+                    'synthetic' => $seller->isSynthetic(),
                     // Slug z samej nazwy nie jest unikalny; sufiks z ID jest.
                     'slug' => Str::slug($seller->name()->value()).'-'.$id,
                     'rating' => 0,
@@ -117,6 +142,8 @@ final class SqlSellerRepository implements SellerRepository
                     'status_changed_at' => $statusChangedAt,
                     'created_at' => $now,
                 ]);
+
+                SellerIntegrationEvents::record($seller, $seller->pendingEvents(), $newVersion);
 
                 return;
             }
@@ -133,6 +160,8 @@ final class SqlSellerRepository implements SellerRepository
             if ($updated === 0) {
                 throw new ConcurrencyConflict;
             }
+
+            SellerIntegrationEvents::record($seller, $seller->pendingEvents(), $newVersion);
         });
     }
 
@@ -146,6 +175,8 @@ final class SqlSellerRepository implements SellerRepository
                 $row->user_id === null ? null : UserId::fromInt((int) $row->user_id),
                 SellerName::fromString((string) $row->name),
                 City::fromString((string) $row->city),
+                TaxId::fromString((string) $row->nip),
+                (bool) $row->synthetic,
                 SellerStatus::tryFrom((string) $row->status) ?? throw new UnexpectedValueException("nieznany status '{$row->status}'"),
                 $row->status_reason === null ? null : Reason::fromString($row->status_reason),
                 (int) $row->version,

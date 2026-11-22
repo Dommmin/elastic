@@ -11,6 +11,8 @@ use SellerPortal\Domain\Seller\Event\SellerApproved;
 use SellerPortal\Domain\Seller\Event\SellerBlocked;
 use SellerPortal\Domain\Seller\Event\SellerRegistered;
 use SellerPortal\Domain\Seller\Event\SellerRejected;
+use SellerPortal\Domain\Seller\Event\SellerRelocated;
+use SellerPortal\Domain\Seller\Event\SellerRenamed;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
 use SellerPortal\Domain\Seller\InvalidSellerTransition;
 use SellerPortal\Domain\Seller\Seller;
@@ -18,6 +20,7 @@ use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
 use SellerPortal\Domain\Shared\UserId;
@@ -31,7 +34,7 @@ function sellerTestNow(): DateTimeImmutable
 
 function pendingSellerFixture(): Seller
 {
-    $seller = Seller::register(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), sellerTestNow());
+    $seller = Seller::register(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), TaxId::fromString('5261040828'), false, sellerTestNow());
     $seller->releaseEvents();
 
     return $seller;
@@ -44,6 +47,8 @@ function sellerFixtureIn(SellerStatus $status): Seller
         UserId::fromInt(7),
         SellerName::fromString('Sklep Testowy'),
         City::fromString('Kraków'),
+        TaxId::fromString('5261040828'),
+        false,
         $status,
         null,
         3,
@@ -61,7 +66,7 @@ test('SellerName i City przycinają i pilnują zakresów', function () {
 });
 
 test('rejestracja daje Pending i SellerRegistered', function () {
-    $seller = Seller::register(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), sellerTestNow());
+    $seller = Seller::register(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), TaxId::fromString('5261040828'), false, sellerTestNow());
 
     expect($seller->status())->toBe(SellerStatus::Pending)
         ->and($seller->version())->toBe(0)
@@ -155,4 +160,39 @@ test('draftOffer rzuca SellerCannotSell dla nieaktywnego', function () {
         OfferId::fromInt(10), ProductId::fromInt(99), Money::fromCents(10000), Stock::fromInt(5),
         Condition::New, ShippingTime::fromInt(2), sellerTestNow(),
     ))->toThrow(SellerCannotSell::class);
+});
+
+test('rejestracja zachowuje NIP i flagę synthetic', function () {
+    $seller = Seller::register(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), TaxId::fromString('526-104-08-28'), true, sellerTestNow());
+
+    expect($seller->taxId()->value())->toBe('5261040828')
+        ->and($seller->isSynthetic())->toBeTrue();
+});
+
+test('rename z inną nazwą zapisuje jedno SellerRenamed, z tą samą nic', function () {
+    $seller = pendingSellerFixture();
+
+    $seller->rename(SellerName::fromString('Sklep Testowy'), sellerTestNow());
+    expect($seller->pendingEvents())->toBeEmpty();
+
+    $seller->rename(SellerName::fromString('Nowa Nazwa'), sellerTestNow());
+
+    expect($seller->name()->value())->toBe('Nowa Nazwa')
+        ->and($seller->pendingEvents())->toHaveCount(1)
+        ->and($seller->pendingEvents()[0])->toBeInstanceOf(SellerRenamed::class)
+        ->and($seller->pendingEvents()[0]->name->value())->toBe('Nowa Nazwa');
+});
+
+test('relocate z innym miastem zapisuje jedno SellerRelocated, z tym samym nic', function () {
+    $seller = pendingSellerFixture();
+
+    $seller->relocate(City::fromString('Kraków'), sellerTestNow());
+    expect($seller->pendingEvents())->toBeEmpty();
+
+    $seller->relocate(City::fromString('Gdańsk'), sellerTestNow());
+
+    expect($seller->city()->value())->toBe('Gdańsk')
+        ->and($seller->pendingEvents())->toHaveCount(1)
+        ->and($seller->pendingEvents()[0])->toBeInstanceOf(SellerRelocated::class)
+        ->and($seller->pendingEvents()[0]->city->value())->toBe('Gdańsk');
 });

@@ -29,6 +29,7 @@ use SellerPortal\Domain\Seller\SellerCannotSell;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Domain\Shared\UserId;
 use SharedKernel\InvalidValue;
 use SharedKernel\Money;
@@ -40,7 +41,7 @@ function offerReservationNow(): DateTimeImmutable
 
 function offerReservationSeller(SellerStatus $status = SellerStatus::Active): Seller
 {
-    return Seller::reconstitute(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), $status, null, 1);
+    return Seller::reconstitute(SellerId::fromInt(1), UserId::fromInt(7), SellerName::fromString('Sklep Testowy'), City::fromString('Kraków'), TaxId::fromString('5261040828'), false, $status, null, 1);
 }
 
 /**

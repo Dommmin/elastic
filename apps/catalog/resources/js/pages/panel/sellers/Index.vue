@@ -21,14 +21,14 @@ import type { DirectorySeller, PendingSeller, SellerStatus } from '@/types';
 
 type PaginatorLink = { url: string | null; label: string; active: boolean };
 
-defineProps<{
+const props = defineProps<{
     pending: PendingSeller[];
     sellers: {
         data: DirectorySeller[];
         links: PaginatorLink[];
         total: number;
     };
-    filters: { status: SellerStatus | null };
+    filters: { status: SellerStatus | null; synthetic: boolean };
 }>();
 
 defineOptions({
@@ -49,8 +49,22 @@ const statusFilters: { value: SellerStatus | null; label: string }[] = [
     { value: 'blocked', label: 'Zablokowani' },
 ];
 
-function filterUrl(status: SellerStatus | null): string {
-    return index(status ? { query: { status } } : undefined).url;
+// Syntetyczni sprzedawcy (generator ETAPU 13) domyślnie ukryci; `synthetic=1` pokazuje wszystkich.
+function filterUrl(
+    status: SellerStatus | null,
+    synthetic: boolean = props.filters.synthetic,
+): string {
+    const query: Record<string, string> = {};
+
+    if (status) {
+        query.status = status;
+    }
+
+    if (synthetic) {
+        query.synthetic = '1';
+    }
+
+    return index(Object.keys(query).length ? { query } : undefined).url;
 }
 
 function pageLabel(label: string): string {
@@ -235,6 +249,22 @@ function submitReason() {
                     "
                 >
                     {{ filter.label }}
+                </Link>
+                <Link
+                    :href="filterUrl(filters.status, !filters.synthetic)"
+                    preserve-scroll
+                    class="rounded border px-3 py-1 text-sm"
+                    :class="
+                        filters.synthetic
+                            ? 'bg-primary text-primary-foreground'
+                            : ''
+                    "
+                >
+                    {{
+                        filters.synthetic
+                            ? 'Ukryj syntetycznych'
+                            : 'Pokaż syntetycznych'
+                    }}
                 </Link>
             </nav>
 

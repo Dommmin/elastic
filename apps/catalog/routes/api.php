@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\SuggestController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\Internal\ProductIdsController;
 use App\Http\Controllers\Internal\ProductProjectionController;
+use App\Http\Controllers\Internal\SellerExportController;
 use App\Http\Middleware\RequireInternalToken;
 use Illuminate\Support\Facades\Route;
 
@@ -28,4 +29,9 @@ Route::prefix('internal')->middleware(RequireInternalToken::class)->group(functi
     Route::get('/products/changed', [ProductIdsController::class, 'changed']);
     Route::get('/products/projections', [ProductProjectionController::class, 'index']);
     Route::get('/products/{id}/projection', [ProductProjectionController::class, 'show']);
+
+    // ETAP 13: eksport dla projektora seller-360 (backfill i naprawa).
+    Route::get('/sellers', [SellerExportController::class, 'sellers']);
+    Route::get('/sellers/{id}/offer-stats', [SellerExportController::class, 'offerStats'])->whereNumber('id');
+    Route::get('/billing/accounts', [SellerExportController::class, 'billingAccounts']);
 });

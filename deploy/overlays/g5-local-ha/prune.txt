@@ -4,9 +4,11 @@
 # deploy.sh odmawia skasowania statefulset/rabbitmq, póki jego kolejki nie są puste.
 shovel.rabbitmq.com/migrate-search-product-sync
 shovel.rabbitmq.com/migrate-search-analytics-ingest
+shovel.rabbitmq.com/migrate-search-seller360
 shovel.rabbitmq.com/migrate-notifications-alerts
 shovel.rabbitmq.com/migrate-search-product-sync-dlq
 shovel.rabbitmq.com/migrate-search-analytics-ingest-dlq
+shovel.rabbitmq.com/migrate-search-seller360-dlq
 shovel.rabbitmq.com/migrate-notifications-alerts-dlq
 networkpolicy/rabbitmq-from-ha
 networkpolicy/rabbitmq-ingress

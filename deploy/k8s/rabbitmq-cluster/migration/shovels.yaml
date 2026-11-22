@@ -53,6 +53,21 @@ spec:
   destQueue: search.analytics.ingest
   rabbitmqClusterReference: { name: rabbitmq-ha }
 ---
+# ETAP 13: projektor seller-360 (seller.#, billing.#, offer.#).
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-seller360
+spec:
+  name: migrate-search-seller360
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.seller360
+  destQueue: search.seller360
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
 apiVersion: rabbitmq.com/v1beta1
 kind: Shovel
 metadata:
@@ -107,4 +122,18 @@ spec:
   srcDeleteAfter: queue-length
   srcQueue: notifications.alerts.dlq
   destQueue: notifications.alerts.dlq
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-seller360-dlq
+spec:
+  name: migrate-search-seller360-dlq
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.seller360.dlq
+  destQueue: search.seller360.dlq
   rabbitmqClusterReference: { name: rabbitmq-ha }

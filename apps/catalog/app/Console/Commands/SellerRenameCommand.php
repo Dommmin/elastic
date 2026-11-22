@@ -4,15 +4,18 @@ namespace App\Console\Commands;
 
 use App\Models\Seller;
 use Illuminate\Console\Command;
+use SellerPortal\Application\Seller\RenameSeller;
+use SellerPortal\Application\Seller\RenameSellerHandler;
+use SharedKernel\InvalidValue;
 
 /**
- * Zmiana nazwy sprzedawcy — TYLKO w Postgresie, bez zdarzeń w outboxie (ETAP 10, spec 5.7).
+ * Zmiana nazwy sprzedawcy ścieżką domenową (ETAP 13): `RenameSellerHandler` wczytuje agregat,
+ * woła `Seller::rename`, zapisuje (wersja rośnie o 1) i rozsyła `SellerRenamed`.
  *
  * Projekcja czyta nazwę sprzedawcy na żywo (`offers[].seller`), więc każda przyszła
  * projekcja już ją ma. Dokumenty, które w ES są teraz, poprawia osobno
  * `search:seller:rename` (`_update_by_query`) — zamiast 100 tys. zdarzeń product.updated.
- * Dlatego zapis jest zwykłym UPDATE-em, nie `updateWithOutbox`; `version` agregatu
- * zostaje nietknięta (nie ma zdarzenia, któremu miałaby nadać numer).
+ * Ta sama nazwa co dotychczasowa to brak zmiany: bez zdarzenia i bez podniesienia wersji.
  */
 class SellerRenameCommand extends Command
 {
@@ -20,9 +23,9 @@ class SellerRenameCommand extends Command
         {seller_id : ID sprzedawcy}
         {name : Nowa nazwa}';
 
-    protected $description = 'Zmienia nazwę sprzedawcy w bazie (bez outboxu); ES poprawia search:seller:rename';
+    protected $description = 'Zmienia nazwę sprzedawcy przez agregat (SellerRenamed); ES poprawia search:seller:rename';
 
-    public function handle(): int
+    public function handle(RenameSellerHandler $handler): int
     {
         $name = trim((string) $this->argument('name'));
         if ($name === '') {
@@ -39,9 +42,16 @@ class SellerRenameCommand extends Command
         }
 
         $old = $seller->name;
-        Seller::query()->whereKey($seller->id)->update(['name' => $name, 'updated_at' => now()]);
 
-        $this->info("Sprzedawca {$seller->id}: „{$old}” → „{$name}” (tylko baza; outbox bez zmian).");
+        try {
+            $handler->handle(new RenameSeller($seller->id, $name));
+        } catch (InvalidValue $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info("Sprzedawca {$seller->id}: „{$old}” → „{$name}” (przez agregat; ES poprawia search:seller:rename).");
 
         return self::SUCCESS;
     }

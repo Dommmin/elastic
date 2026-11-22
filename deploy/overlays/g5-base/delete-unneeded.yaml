@@ -27,6 +27,45 @@ kind: Deployment
 metadata:
   name: analytics-consumer
 ---
+# ETAP 13: seller-360 (projektor, harmonogram, pętla rejestru, mock rejestru) też leży poza tą ścieżką
+# i potrzebuje Redisa, którego overlay nie ma. Kolejka search.seller360 ma limit seller360-cap
+# (rabbitmq-cluster/topology.yaml), więc publikowane seller.*/billing.*/offer.* nie rosną bez końca.
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seller360-consumer
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seller360-scheduler
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seller360-registry
+---
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-mock
+---
+$patch: delete
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-mock
+---
+$patch: delete
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registry-mock
+---
 $patch: delete
 apiVersion: apps/v1
 kind: Deployment

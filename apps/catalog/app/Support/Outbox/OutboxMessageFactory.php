@@ -51,6 +51,7 @@ final class OutboxMessageFactory
             aggregateId: (string) $row->aggregate_id,
             sequence: (int) $row->sequence,
             data: $row->payload,
+            version: (int) ($row->version ?? 1),
         );
     }
 }

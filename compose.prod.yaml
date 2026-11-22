@@ -201,6 +201,50 @@ services:
       DEFAULT_URI: http://localhost
     volumes: !reset []
 
+  # --- ETAP 13: seller-360 -------------------------------------------------------
+  # Ten sam obraz search z CI. Plik miast (/infra/reference) i mock rejestru
+  # (/srv/registry-mock) są w obrazie (infra/php/search.Dockerfile), więc bind-mounty
+  # z compose.yaml odpadają. Produkcją jest k3s (deploy/k8s/seller360-*.yaml); te wpisy
+  # trzymają tylko parytet i `compose-prod-check.sh` na zielono.
+  seller360-consumer:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
+      APP_ENV: prod
+      APP_SECRET: ${SEARCH_APP_SECRET:?}
+      MAILER_DSN: null://null
+      DEFAULT_URI: http://localhost
+    volumes: !reset []
+
+  seller360-scheduler:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
+      APP_ENV: prod
+      APP_SECRET: ${SEARCH_APP_SECRET:?}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?ustaw INTERNAL_API_TOKEN w .env}
+      MAILER_DSN: null://null
+      DEFAULT_URI: http://localhost
+    volumes: !reset []
+
+  seller360-registry:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    environment:
+      SENTRY_RELEASE: ${IMAGE_TAG:?ustaw IMAGE_TAG}
+      APP_ENV: prod
+      APP_SECRET: ${SEARCH_APP_SECRET:?}
+      MAILER_DSN: null://null
+      DEFAULT_URI: http://localhost
+    volumes: !reset []
+
+  registry-mock:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dommmin}/elastic-search:${IMAGE_TAG:?ustaw IMAGE_TAG}
+    build: !reset null
+    volumes: !reset []
+
   # --- GlitchTip (ETAP 11b, ADR-0009) ------------------------------------------
   # Obraz z CI (infra/glitchtip/Dockerfile): oficjalny GlitchTip + skrypty w środku, bo na
   # serwerze nie ma repo. Kolejność z compose.yaml: db-setup -> glitchtip -> setup.
