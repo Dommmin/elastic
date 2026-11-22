@@ -11,6 +11,7 @@ use App\Seller360\Seller360Metrics;
 use Elastic\Elasticsearch\Exception\ClientResponseException;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 
 /**
@@ -24,12 +25,18 @@ use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
  *
  * Idempotencja siedzi w strażniku wersji skryptu ES (stara lub powtórzona wersja to `noop`),
  * więc nie ma tu tabeli processed_events. Błąd 4xx z ES (np. mapowanie strict) ponowienie
- * nie naprawi: wiadomość od razu idzie do `failed`. Reszta błędów wraca do retry Messengera.
+ * nie naprawi: wiadomość od razu idzie do `failed`. Wyjątek: 404 `index_not_found_exception` — writer pisze
+ * do aliasów z `require_alias`, więc tak wygląda brak aliasu przed setupem ES; to stan przejściowy, wiadomość
+ * wraca do retry co {@see self::MISSING_ALIAS_RETRY_MS} ms bez limitu prób (czeka na setup, nie idzie do `failed`).
+ * Reszta błędów wraca do zwykłego retry Messengera.
  */
 #[AsMessageHandler(fromTransport: 'seller360')]
 final class Seller360EventHandler
 {
     public const DIRTY_OFFERS_KEY = 'seller360:dirty:offers';
+
+    /** Przerwa między próbami, gdy alias zapisu jeszcze nie istnieje (setup ES w toku). */
+    public const MISSING_ALIAS_RETRY_MS = 30_000;
 
     public function __construct(
         private readonly SectionWriter $writer,
@@ -113,6 +120,9 @@ final class Seller360EventHandler
             $status = $e->getResponse()->getStatusCode();
             if ($status === 429 || $status === 409) {
                 throw $e;
+            }
+            if ($status === 404 && str_contains((string) $e->getResponse()->getBody(), 'index_not_found_exception')) {
+                throw new RecoverableMessageHandlingException('Brak aliasu zapisu seller-360 (setup ES?), ponowię: '.$e->getMessage(), previous: $e, retryDelay: self::MISSING_ALIAS_RETRY_MS);
             }
             throw new UnrecoverableMessageHandlingException('Elasticsearch odrzucił zapis sekcji seller-360: '.$e->getMessage(), previous: $e);
         }

@@ -9,7 +9,10 @@ use App\Seller360\SectionMeta;
 use App\Seller360\SectionWriter;
 use App\Seller360\Seller360Metrics;
 use PHPUnit\Framework\TestCase;
+use Elastic\Elasticsearch\Exception\ClientResponseException;
+use GuzzleHttp\Psr7\Response;
 use Psr\Log\NullLogger;
+use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 
 final class Seller360EventHandlerTest extends TestCase
@@ -108,5 +111,46 @@ final class Seller360EventHandlerTest extends TestCase
         $this->handler($this->createStub(SectionWriter::class), $this->createStub(\Redis::class))(
             $this->event('billing.payment_received', 'billing_account', ['version' => 1]),
         );
+    }
+
+    private function esError(int $status, string $type): ClientResponseException
+    {
+        $e = new ClientResponseException("{$status} {$type}", $status);
+        $e->setResponse(new Response($status, ['Content-Type' => 'application/json'], json_encode(['error' => ['type' => $type, 'reason' => $type], 'status' => $status])));
+
+        return $e;
+    }
+
+    /** @return array<string, mixed> */
+    private function billingData(): array
+    {
+        return ['seller_id' => 7, 'balance_cents' => 0, 'overdue_cents' => 0, 'overdue_since' => null, 'open_invoices' => 0, 'invoice_id' => 'inv-1', 'version' => 2, 'occurred_at' => '2026-11-21T09:59:00+00:00'];
+    }
+
+    /**
+     * Brak aliasu zapisu (procesy przed setupem ES): `require_alias` daje 404 `index_not_found_exception`.
+     * To stan przejściowy — wiadomość ma czekać w retry na setup, a nie trafić do `failed`.
+     */
+    public function test_404_index_not_found_jest_ponawialny(): void
+    {
+        $writer = $this->createStub(SectionWriter::class);
+        $writer->method('apply')->willThrowException($this->esError(404, 'index_not_found_exception'));
+
+        try {
+            $this->handler($writer, $this->createStub(\Redis::class))($this->event('billing.payment_received', 'billing_account', $this->billingData()));
+            self::fail('Oczekiwany wyjątek');
+        } catch (RecoverableMessageHandlingException $e) {
+            self::assertGreaterThan(0, $e->getRetryDelay());
+            self::assertInstanceOf(ClientResponseException::class, $e->getPrevious());
+        }
+    }
+
+    public function test_400_mapowania_dalej_jest_nieodwracalny(): void
+    {
+        $writer = $this->createStub(SectionWriter::class);
+        $writer->method('apply')->willThrowException($this->esError(400, 'strict_dynamic_mapping_exception'));
+
+        $this->expectException(UnrecoverableMessageHandlingException::class);
+        $this->handler($writer, $this->createStub(\Redis::class))($this->event('billing.payment_received', 'billing_account', $this->billingData()));
     }
 }

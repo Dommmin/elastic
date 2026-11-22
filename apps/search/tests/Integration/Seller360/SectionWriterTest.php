@@ -8,6 +8,7 @@ use App\Seller360\SectionWriter;
 use App\Seller360\Seller360Metrics;
 use App\Tests\Support\RealElasticsearch;
 use Elastic\Elasticsearch\Client;
+use Elastic\Elasticsearch\Exception\ClientResponseException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
@@ -180,6 +181,28 @@ final class SectionWriterTest extends TestCase
         } finally {
             $this->client->indices()->delete(['index' => $closed, 'ignore_unavailable' => true]);
         }
+    }
+
+    /**
+     * Brak aliasu zapisu: `require_alias` daje 404 `index_not_found_exception` (projektor ponawia), a nie
+     * auto-utworzony zwykły indeks o nazwie aliasu z mapowaniem dynamicznym (RUNBOOK #150). Dotyczy zapisu
+     * pojedynczego i `_bulk`.
+     */
+    public function testMissingWriteAliasIs404AndCreatesNoIndex(): void
+    {
+        $missing = 'seller-360-test-'.uniqid().'-write';
+        $writer = (new SectionWriter($this->client, new Seller360Metrics($this->createStub(\Redis::class), new NullLogger), refresh: true))
+            ->forPairs([['main' => $missing, 'public' => $missing.'-public-write']]);
+
+        try {
+            $writer->apply(5, 'profile', ['name' => 'Sklep'], $this->meta(1));
+            self::fail('Oczekiwany 404');
+        } catch (ClientResponseException $e) {
+            self::assertSame(404, $e->getCode());
+            self::assertStringContainsString('index_not_found_exception', (string) $e->getResponse()->getBody());
+        }
+        self::assertSame(['error'], $writer->applyMany([['sellerId' => 5, 'section' => 'offers', 'data' => ['active' => 1], 'meta' => $this->meta(1)]]));
+        self::assertFalse($this->client->indices()->exists(['index' => $missing])->asBool(), 'ES nie może auto-utworzyć indeksu o nazwie aliasu');
     }
 
     private function targets(): WriteTargets

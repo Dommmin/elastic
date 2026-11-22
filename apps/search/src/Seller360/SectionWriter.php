@@ -174,6 +174,9 @@ class SectionWriter
     private function update(string $index, int $sellerId, string $section, array $data, SectionMeta $meta, array $docFields, \DateTimeImmutable $updatedAt): string
     {
         $params = ['index' => $index, 'id' => (string) $sellerId, 'retry_on_conflict' => 3, 'body' => $this->script($section, $data, $meta, $docFields, $updatedAt)];
+        if (self::isAlias($index)) {
+            $params['require_alias'] = 'true';
+        }
         if ($this->refresh) {
             $params['refresh'] = 'true';
         }
@@ -188,10 +191,24 @@ class SectionWriter
      */
     private function action(string $index, int $sellerId, string $section, array $data, SectionMeta $meta, array $docFields, \DateTimeImmutable $updatedAt): array
     {
-        return [
-            ['update' => ['_index' => $index, '_id' => (string) $sellerId, 'retry_on_conflict' => 3]],
-            $this->script($section, $data, $meta, $docFields, $updatedAt),
-        ];
+        $metadata = ['_index' => $index, '_id' => (string) $sellerId, 'retry_on_conflict' => 3];
+        if (self::isAlias($index)) {
+            $metadata['require_alias'] = true;
+        }
+
+        return [['update' => $metadata], $this->script($section, $data, $meta, $docFields, $updatedAt)];
+    }
+
+    /**
+     * Alias zapisu (`seller-360-write`, `seller-360-public-write`, w testach `<ns>-write`) poznajemy po sufiksie.
+     * Zapis do niego idzie z `require_alias`: gdy aliasu jeszcze nie ma (procesy ruszyły przed setupem ES), ES
+     * odpowiada 404 `index_not_found_exception`, a nie auto-tworzy zwykłego indeksu o nazwie aliasu z mapowaniem
+     * dynamicznym (RUNBOOK #150). Konkretny indeks `-vN` (podwójny zapis przebudowy) idzie bez flagi — dla
+     * indeksu `require_alias` to błąd.
+     */
+    public static function isAlias(string $index): bool
+    {
+        return str_ends_with($index, '-write');
     }
 
     /**
