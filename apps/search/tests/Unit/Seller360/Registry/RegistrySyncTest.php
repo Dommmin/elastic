@@ -127,6 +127,33 @@ final class RegistrySyncTest extends TestCase
         self::assertGreaterThan($this->writes[0]['meta']->version, $this->writes[1]['meta']->version);
     }
 
+    /**
+     * Lag sekcji to `updated_at − source_ts` (ruling R6): zapis `stale` z cache musi nieść czas
+     * ostatniego udanego pobrania, inaczej lag rejestru w trakcie awarii stałby na zerze.
+     */
+    public function test_stale_z_cache_zachowuje_source_ts_ostatniego_udanego_pobrania(): void
+    {
+        $this->now = 1_700_000_000.0;
+        $this->sync($this->healthyClient())->syncSeller(7, '5260250274');
+
+        $this->now += 120.0;
+        $this->sync($this->downClient())->syncSeller(7, '5260250274');
+
+        self::assertSame('stale', $this->writes[1]['meta']->status);
+        self::assertEquals($this->writes[0]['meta']->sourceTs, $this->writes[1]['meta']->sourceTs);
+        self::assertGreaterThan($this->writes[0]['meta']->version, $this->writes[1]['meta']->version);
+    }
+
+    public function test_stary_format_cache_bez_czasu_pobrania_dalej_daje_stale(): void
+    {
+        $this->store->data['seller360:registry:5260250274'] = json_encode(['legal_name' => 'Acme', 'vat_status' => 'active', 'registered_at' => null, 'courier' => ['id' => 'courier-1', 'on_time_rate' => null, 'rated_at' => null]]);
+
+        $this->sync($this->downClient())->syncSeller(7, '5260250274');
+
+        self::assertSame('stale', $this->writes[0]['meta']->status);
+        self::assertSame('Acme', $this->writes[0]['data']['legal_name']);
+    }
+
     public function test_porazka_bez_cache_zapisuje_tylko_meta_ze_statusem_error(): void
     {
         $this->sync($this->downClient())->syncSeller(7, '5260250274');

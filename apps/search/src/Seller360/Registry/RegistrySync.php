@@ -13,7 +13,9 @@ use Psr\Log\LoggerInterface;
  * Źródło może paść, a kolejka zdarzeń nie może na tym stać: ten kod żyje w osobnym procesie
  * (`seller360:registry:sync --loop`), a porażka kończy się zapisem, nie wyjątkiem:
  *   - sukces: pełna sekcja ze `status: ok`, kopia w Redisie `seller360:registry:<nip>` na 24 h;
- *   - porażka z cache: dane z cache ze `status: stale` i `error`;
+ *   - porażka z cache: dane z cache ze `status: stale` i `error`, a `source_ts` to chwila ostatniego udanego
+ *     pobrania (lag `updated_at − source_ts` rośnie przez całą awarię, ruling R6); cache sprzed tej zmiany
+ *     (same dane, bez `fetched_at`) dostaje `source_ts` = teraz i wygasa w ciągu 24 h;
  *   - porażka bez cache: pusta sekcja, same `_meta` ze `status: error`.
  * Wersja to czas w ms także dla stale/error, żeby nie zostały zignorowane jako starsze od wcześniejszego ok.
  * Ocena kuriera pochodzi z indeksu `courier-ratings` (dokument o `_id` = courier_id; powstaje w Task 13),
@@ -53,7 +55,7 @@ class RegistrySync
             try {
                 $data = $this->fetch($nip);
                 $this->breaker->success();
-                $this->cacheSet($nip, $data);
+                $this->cacheSet($nip, $data, (int) $now);
                 $this->writer->apply($sellerId, 'registry', $data, new SectionMeta($version, $sourceTs), ['nip' => $nip]);
 
                 return;
@@ -68,7 +70,9 @@ class RegistrySync
 
         $cached = $this->cacheGet($nip);
         if ($cached !== null) {
-            $this->writer->apply($sellerId, 'registry', $cached, new SectionMeta($version, $sourceTs, 'stale', $error), ['nip' => $nip]);
+            [$data, $fetchedAt] = $cached;
+            $staleTs = $fetchedAt !== null ? (new \DateTimeImmutable)->setTimestamp($fetchedAt) : $sourceTs;
+            $this->writer->apply($sellerId, 'registry', $data, new SectionMeta($version, $staleTs, 'stale', $error), ['nip' => $nip]);
 
             return;
         }
@@ -111,16 +115,17 @@ class RegistrySync
     }
 
     /** @param array<string, mixed> $data */
-    private function cacheSet(string $nip, array $data): void
+    private function cacheSet(string $nip, array $data, int $fetchedAt): void
     {
         try {
-            $this->redis->set($this->cacheKey($nip), json_encode($data, \JSON_THROW_ON_ERROR), ['EX' => self::CACHE_TTL_SECONDS]);
+            $entry = ['fetched_at' => $fetchedAt, 'data' => $data];
+            $this->redis->set($this->cacheKey($nip), json_encode($entry, \JSON_THROW_ON_ERROR), ['EX' => self::CACHE_TTL_SECONDS]);
         } catch (\Throwable $e) {
             $this->logger->warning('Nie udało się zapisać cache rejestru.', ['error' => $e->getMessage()]);
         }
     }
 
-    /** @return array<string, mixed>|null */
+    /** @return array{0: array<string, mixed>, 1: ?int}|null dane i chwila pobrania (null w starym formacie) */
     private function cacheGet(string $nip): ?array
     {
         try {
@@ -133,9 +138,15 @@ class RegistrySync
         if (! \is_string($raw)) {
             return null;
         }
-        $data = json_decode($raw, associative: true);
+        $entry = json_decode($raw, associative: true);
+        if (! \is_array($entry)) {
+            return null;
+        }
+        if (isset($entry['fetched_at'], $entry['data']) && \is_int($entry['fetched_at']) && \is_array($entry['data'])) {
+            return [$entry['data'], $entry['fetched_at']];
+        }
 
-        return \is_array($data) ? $data : null;
+        return [$entry, null];
     }
 
     private function cacheKey(string $nip): string
