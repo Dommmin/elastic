@@ -1286,7 +1286,7 @@ eksportami haseł dał po poprawce 15 FAIL zamiast fałszywej zieleni.
 
 | Co | Wartość |
 |---|---|
-| Węzeł | `es-lab` (profil Compose `ml`), ES 9.5.1, jeden węzeł, licencja trial, heap 1,5 GB, `mem_limit` 4 GB, `xpack.ml.max_machine_memory_percent: 60` |
+| Węzeł | `es-lab` (profil Compose `ml`), ES 9.5.1, jeden węzeł, licencja trial, heap 1,5 GB, `mem_limit` 4 GB, `xpack.ml.max_machine_memory_percent: 60` (od ETAPU 14b persistent 90% na `es-lab`, patrz §18.6) |
 | Pierwsza wersja | heap 1 GB / limit 3 GB: OOM-kill (`exit 137`) przy imporcie E5 |
 | Model | `.multilingual-e5-small`, 384 wymiary, endpoint `lab-e5` (1 alokacja, 1 wątek); 470 MB, `required_native_memory_bytes` ~1,5 GB; kontener po wdrożeniu ~3 GB |
 | Tryb lab | główny klaster (3 węzły) i `es-lab` nie mieszczą się w Docker VM 15,6 GB; `make lab-mode-on` zatrzymuje własne es01–es03, Kibanę i 10 procesów zależnych; zapas po nim ~9,8 GB |

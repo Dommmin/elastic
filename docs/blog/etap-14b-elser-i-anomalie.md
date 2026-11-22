@@ -138,12 +138,15 @@ dokumenty trafiają pod tymi samymi `_id` z `op_type: create`, więc przerwany p
 
 E5 z 14a zamienia tekst w **gęsty** wektor: 384 liczby, wszystkie niezerowe, bez interpretacji pojedynczych wymiarów.
 Szuka się go grafem HNSW. ELSER robi coś innego. Zamienia tekst w **rzadki** wektor: listę par (token, waga) ze
-słownika angielskiego BERT (~30 tys. kawałków słów, tzw. WordPiece). Niezerowych jest kilkadziesiąt do stu kilkudziesięciu
-tokenów (`winter jacket`: 44, nazwa lampy z kategorią: 152), reszta słownika to zero. Taki wektor zapisuje się w polu `sparse_vector` w zwykłym indeksie odwróconym, jak
+słownika angielskiego BERT (~30 tys. kawałków słów, tzw. WordPiece). Niezerowych są dziesiątki do kilkuset
+tokenów (sprawdzone na `lab-elser`: `winter jacket` 44, `komórka` 33, `Lampa ogrodowa solarna Zenit. Oświetlenie,
+Dom i ogród` 171, ta sama nazwa z marką na początku 250–303), reszta słownika to zero. Taki wektor zapisuje się w polu `sparse_vector` w zwykłym indeksie odwróconym, jak
 słowa dla BM25, a wynik dokumentu to suma iloczynów wag tokenów wspólnych dla zapytania i dokumentu.
 
 Sztuczka nazywa się **rozwinięciem (term expansion)**. Model dokłada tokeny, których w tekście nie ma, ale które
-„powinny” pasować. Zobacz sam (`lab_es` z `tools/lab/lib.sh`, top-10 tokenów po wadze, sprawdzone na żywo):
+„powinny” pasować. Zobacz sam (`lab_es` z `tools/lab/lib.sh`, top-10 tokenów po wadze, sprawdzone na żywo).
+Uruchamiaj z katalogu głównego repo; `lib.sh` jest pisane pod bash, a jego `die` (np. brak `.env`) wczytane przez
+`source` w interaktywnej powłoce zamknie ją, więc bezpieczniej opakować całość w `bash -c '…'`:
 
 ```bash
 source tools/lab/lib.sh
@@ -283,14 +286,17 @@ Zapytania, na których ELSER różni się od reszty (nDCG@10, `eval-14b.json`):
 
 **Dwa „sukcesy” to zbieg kawałków słów, nie rozumienie.** „ogrodu” tnie się na `og` + `##rod`, a „ogrodowa”
 w nazwie lampy zawiera te same kawałki. „deszczem” daje `##zcz`, które jest też w „przeciwdeszczowa”. To działa jak
-bardzo luźny stemmer, a nie jak model znaczenia. Sprawdź rozwinięcia sam (kod z kroku 1): w obu zapytaniach poza
-kawałkami słów są tylko *polish*, *poland*, *warsaw*.
+bardzo luźny stemmer, a nie jak model znaczenia. Sprawdź rozwinięcia sam (kod z kroku 1, top-15 tokenów): w obu
+zapytaniach poza kawałkami słów są tylko nazwy krajów i miast regionu (*polish*, *poland*, *warsaw*, *czech*,
+*slovakia*, *krakow*, *prague*), żadnego tokenu o świetle, ogrodzie czy deszczu.
 
-**Porażki mają ten sam mechanizm w drugą stronę.** `komórka` → `ko` + `##rka` + `##ka` pasuje do „**Ko**szul**ka**”,
-więc top-10 to koszulki sportowe; BM25 trafia dzięki synonimowi „telefon, smartfon, komórka”, którego ELSER nie
-używa (zapytanie `semantic` nie przechodzi przez polski analizator). `Nova 256GB` to porażka rozwinięcia, nie
-tokenizacji: ELSER rozwija „256” w *128*, *32*, *memory*, *storage*, więc „Smartfon Nova 128GB” dostaje prawie ten
-sam wynik i wygrywa. Rozwinięcie pomaga przy luźnych zapytaniach i szkodzi tam, gdzie liczy się dokładna wartość
+**Porażki mają ten sam mechanizm w drugą stronę.** `komórka` daje głównie kawałki `##rka`, `##mo`, `ko`, `##rk`, `##ka`; `ko` i `##ka`
+są też w „Koszulka sportowa” (`ko`, `##sz`, `##ul`, `##ka`), więc top-10 to koszulki sportowe. BM25 trafia dzięki
+synonimowi „telefon, smartfon, komórka” z analizatora `products-lab-v1`. ELSER go nie widzi: zapytanie `semantic`
+oddaje surowy tekst endpointowi inference, a w rozwinięciu `komórka` (33 tokeny) nie ma ani *phone*, ani *telefon*,
+ani *smartfon*. `Nova 256GB` to porażka rozwinięcia, nie tokenizacji: ELSER rozwija „256” m.in. w *memory* (1,23),
+*32* (0,99), *storage* (0,96) i *128* (0,91), więc „Smartfon Nova 128GB” wychodzi na górę (wynik ~16,4, cała pierwsza
+szóstka to wersje 128GB). Rozwinięcie pomaga przy luźnych zapytaniach i szkodzi tam, gdzie liczy się dokładna wartość
 (pojemność, model, kod).
 
 **Wniosek.** Dla polskiego katalogu wielojęzyczny model gęsty (E5) wygrywa z ELSER bez dyskusji. ELSER v2 ma sens
@@ -318,7 +324,7 @@ zwykłego stronicowania:
 3. `trap` zamyka PIT (`DELETE _pit`) także po błędzie; inaczej trzymałby segmenty do wygaśnięcia.
 
 Wynik: **158 710** zdarzeń w **16 s**, od 2026-09-26T00:01:32Z do 2026-11-20T00:07:28Z, w tym 18 465
-`user.clicked_result`. Pierwsza linia pliku to nagłówek z liczbą i zakresem. Hasło `elastic` idzie przez
+`user.clicked_result`. Pierwsza linia pliku to nagłówek z liczbą i zakresem. Hasło użytkownika `elastic` idzie przez
 `curl -K <(…)`, nie przez argumenty.
 
 Kolejność trybów ma znaczenie: eksport wymaga głównego klastra (`make lab-mode-off`), a ML wymaga `es-lab`
@@ -387,7 +393,10 @@ GET _ml/anomaly_detectors/lab-user-activity/results/records
 
 **Pamięć.** Job zajmuje ~25 MB, więc otworzył się obok obu wdrożonych modeli (E5 i ELSER) bez zatrzymywania
 któregokolwiek. Gdyby się nie otworzył, skrypt podpowiada zatrzymanie ELSER
-(`POST _ml/trained_models/.elser_model_2/deployment/_stop`); `make lab-setup-elser` uruchomi go ponownie.
+(`POST _ml/trained_models/lab-elser/deployment/_stop?force=true`); `make lab-setup-elser` uruchomi go ponownie
+(z 1 alokacją, bo indeks `products-lab-elser` jest kompletny). Sprawdzone na ES 9.5.1: identyfikatorem musi być
+**deployment** (`lab-elser`), a nie model. `_stop` bez `force` odpowiada 409 („created by inference endpoint”),
+a `.elser_model_2/deployment/_stop`, z `force` i bez, zwraca `{"stopped":true}`, ale niczego nie zatrzymuje.
 
 ## Krok 10 — prawdziwa luka w danych i kalendarz
 
@@ -448,8 +457,9 @@ Skrypt ma trzy bezpieczniki, bo kasowanie danych na złym klastrze byłoby nieod
 to nie `LAB_URL`, gdy port to 19200 (główny klaster), i gdy pod adresem istnieje `events-user-default`. Działa tylko
 na `lab-events-user`.
 
-`make lab-anomaly` (indeks istnieje, więc skrypt go nie ładuje ponownie, żeby nie wskrzesić skasowanych kliknięć;
-przywrócenie danych to `--reload`). Kubełki okna awarii dla `user.clicked_result`:
+`make lab-anomaly` (indeks ma znacznik `_meta.lab_loaded`, zapisywany dopiero po udanym ładowaniu, więc skrypt go nie
+ładuje ponownie, żeby nie wskrzesić skasowanych kliknięć; przywrócenie danych to `--reload`. Indeks z dokumentami, ale
+bez znacznika, to przerwane ładowanie: skrypt odmawia i podpowiada `--reload`). Kubełki okna awarii dla `user.clicked_result`:
 
 | Kubełek (UTC) | actual | typical | `record_score` | ≥ 50 |
 |---|---|---|---|---|
@@ -588,6 +598,7 @@ make lab-setup-elser                                       # endpoint lab-elser 
 make lab-eval args="--variant=elser --variant=bm25 --variant=knn"
 make lab-eval args="--variant=bm25 --variant=knn --variant=hybrid-bool --variant=rrf-client --variant=rrf-native --variant=elser --check-rank-eval --json=lab/eval-14b.json"
 
+# z katalogu głównego repo; `die` z lib.sh zamyka interaktywną powłokę, więc najlepiej w bash -c '…' (krok 1)
 source tools/lab/lib.sh
 lab_es -H 'Content-Type: application/json' "${LAB_URL}/_inference/sparse_embedding/lab-elser" \
   -d '{"input":"kurtka zimowa"}' | jq -c '.sparse_embedding[0].embedding | to_entries | sort_by(-.value) | .[:10]'

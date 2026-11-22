@@ -6673,8 +6673,10 @@ z 6 alokacjami na czas `_reindex` zwiększa szacunek dodatkowo.
   je przywróci (`restore_e5`).
 - Jeśli ELSER został na 6 alokacjach (przerwany `_reindex`):
   `PUT _inference/sparse_embedding/lab-elser/_update {"service_settings":{"num_allocations":1}}`.
-- Gdy ELSER nie jest potrzebny (np. praca nad anomaliami): `POST _ml/trained_models/.elser_model_2/deployment/_stop`;
-  `make lab-setup-elser` uruchomi go ponownie.
+- Gdy ELSER nie jest potrzebny (np. praca nad anomaliami): `POST _ml/trained_models/lab-elser/deployment/_stop?force=true`;
+  `make lab-setup-elser` uruchomi go ponownie, z 1 alokacją (indeks kompletny, `_reindex` pominięty). Identyfikatorem
+  jest deployment `lab-elser`, nie model: bez `force` ES odpowiada 409 (wdrożenie należy do endpointu), a
+  `.elser_model_2/deployment/_stop` zwraca `{"stopped":true}`, nic nie zatrzymując (sprawdzone na 9.5.1).
 - Powrót do bramki 60%: `PUT _cluster/settings {"persistent":{"xpack.ml.max_machine_memory_percent":null}}`
   (obowiązuje znów wartość z `compose.yaml`); wtedy oba modele naraz się nie wdrożą.
 
@@ -6728,8 +6730,9 @@ lab_es -H 'Content-Type: application/json' "${LAB_URL}/lab-events-user/_search" 
    `by_field_name` zamiast partycji i dłuższe okno awarii nie pomogły (maksimum ~44).
 
 **Naprawa**
-1. Zatrzymać ELSER (`POST _ml/trained_models/.elser_model_2/deployment/_stop`), ponowić `make lab-anomaly`.
-2. Sprawdzić `_count` indeksu i zakres `@timestamp`; ponownie załadować dane: `bash tools/lab/anomaly.sh --reload --no-assert`
+1. Zatrzymać ELSER (`POST _ml/trained_models/lab-elser/deployment/_stop?force=true`, patrz [#156](#156)), ponowić `make lab-anomaly`.
+2. Sprawdzić `_count` indeksu, znacznik `_meta.lab_loaded` (`GET lab-events-user/_mapping`; bez niego `anomaly.sh`
+   odmawia, bo ładowanie zostało przerwane) i zakres `@timestamp`; ponownie załadować dane: `bash tools/lab/anomaly.sh --reload --no-assert`
    (kasuje `lab-events-user` i ładuje z `events.ndjson`; potem awaria jeszcze raz). Brak pliku:
    `make lab-mode-off && make lab-export-events && make lab-mode-on && make lab-up`.
 3. Oznaczyć znaną lukę **kalendarzem** (robi to `anomaly.sh`): zdarzenie z `skip_result: true` (bez rekordów)

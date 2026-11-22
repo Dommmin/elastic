@@ -117,7 +117,7 @@ Potem kolejno:
 
 ```bash
 # 1. eksport próbki: tryb NORMALNY (główny ES + baza katalogu), ~20 s
-make lab-export                       # → storage/app/private/lab/products.ndjson, 19 824 linie
+make lab-export                       # → storage/app/private/lab/products.ndjson: nagłówek + 19 824 produkty (19 825 linii)
 
 # 2. przełączenie na laboratorium
 make lab-mode-on                      # zatrzymuje własne es01–es03, Kibanę i procesy zależne od ES
@@ -762,7 +762,9 @@ make lab-eval args="--latency=50 --json=lab/latency-14a.json"
 make lab-costs
 make lab-filter-demo
 
-# zapytania ręcznie (hasło z .env przez curl -K, nie pojawia się na ekranie)
+# zapytania ręcznie (hasło z .env przez curl -K, nie pojawia się na ekranie). Uruchamiaj z katalogu głównego repo.
+# lib.sh jest pisane pod bash; wczytane przez `source` w interaktywnej powłoce `die` (np. brak .env) zamknie tę
+# powłokę. Bezpieczniej w podpowłoce: bash -c 'source tools/lab/lib.sh; lab_es "${LAB_URL}/_license" | jq .license.type'
 source tools/lab/lib.sh
 lab_es "${LAB_URL}/_license" | jq .license.type
 lab_es "${LAB_URL}/products-lab-v1/_count"
