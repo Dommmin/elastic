@@ -310,7 +310,7 @@ lab-setup: ## Trial, endpoint E5, pipeline i indeks products-lab-v1 na es-lab (i
 	@bash infra/elasticsearch/lab/setup-lab.sh
 
 .PHONY: lab-export
-lab-export: ## Eksportuje próbkę produktów (id % 58 = 0) do apps/catalog/storage/app/private/lab/products.ndjson (tryb normalny, główny ES)
+lab-export: ## Eksportuje próbkę produktów (id % 15 = 0) do apps/catalog/storage/app/private/lab/products.ndjson (tryb normalny, główny ES)
 	$(DC) exec catalog-app php artisan search:lab:export
 
 .PHONY: seller360-setup

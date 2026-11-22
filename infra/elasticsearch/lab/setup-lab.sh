@@ -97,7 +97,7 @@ phase_schema() {
 }
 
 SAMPLE=apps/catalog/storage/app/private/lab/products.ndjson
-SAMPLE_MODULO=58   # musi równać się LabExportCommand::MODULO
+SAMPLE_MODULO=15   # musi równać się LabExportCommand::MODULO
 BULK_CHUNK=500
 BULK_TIMEOUT_S=1800   # każdy dokument jest embeddowany dwa razy (pipeline + semantic_text), na CPU to potrwa
 
@@ -111,6 +111,13 @@ phase_load() {
   [ -n "${expected}" ] || die "nagłówek próbki bez count; uruchom make lab-export"
   [ "$(es_code "${LAB_URL}/products-lab-v1")" = 200 ] || die "brak indeksu products-lab-v1; najpierw make lab-setup (faza schema)"
   echo "  dokumentów w próbce: ${expected}"
+  # indeks z innej próbki zostawiłby obce dokumenty (stałe _id nie wystarczą); modulo zapisujemy w _meta indeksu
+  local idx_modulo idx_count
+  idx_modulo="$(lab_es "${LAB_URL}/products-lab-v1/_mapping" | jq -r '.["products-lab-v1"].mappings._meta.lab_modulo // empty')"
+  idx_count="$(lab_es "${LAB_URL}/products-lab-v1/_count" | jq -r .count)"
+  if [ "${idx_modulo}" != "${modulo}" ] && { [ -n "${idx_modulo}" ] || [ "${idx_count}" != 0 ]; }; then
+    die "indeks products-lab-v1 pochodzi z innej próbki (_meta.lab_modulo='${idx_modulo}', dokumentów: ${idx_count}); usuń indeks (DELETE products-lab-v1 na es-lab) albo make lab-reset i powtórz make lab-setup"
+  fi
 
   local work started sent=0 n
   work="$(mktemp -d)"
@@ -134,6 +141,9 @@ phase_load() {
   step "Refresh i forcemerge do 1 segmentu"
   lab_es -X POST "${LAB_URL}/products-lab-v1/_refresh" | jq -c ._shards
   lab_es --max-time 1800 -X POST "${LAB_URL}/products-lab-v1/_forcemerge?max_num_segments=1" | jq -c ._shards
+
+  lab_es -X PUT "${LAB_URL}/products-lab-v1/_mapping" -H 'Content-Type: application/json' \
+    -d '{"_meta":{"lab_modulo":'"${modulo}"'}}' | jq -c .
 
   step "Kontrola liczby dokumentów"
   local count

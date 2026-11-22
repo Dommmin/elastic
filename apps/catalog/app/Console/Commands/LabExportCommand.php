@@ -9,7 +9,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * `php artisan search:lab:export` — próbka katalogu dla es-lab (ETAP 14): co 58. produkt
+ * `php artisan search:lab:export` — próbka katalogu dla es-lab (ETAP 14): co 15. produkt
  * (`id % MODULO = 0`) jako NDJSON w kształcie mapowania `products-lab-v1`.
  *
  * DLACZEGO `in_stock` i `price_min` z indeksu, a nie z bazy: dostępność to wynik
@@ -20,13 +20,13 @@ use Illuminate\Support\Facades\Storage;
 class LabExportCommand extends Command
 {
     /** Jedyne źródło M próbki; ewaluacja (search:lab:eval) i setup-lab.sh czytają je stąd/z nagłówka pliku. */
-    public const MODULO = 58;
+    public const MODULO = 15;
 
     private const ALIAS = 'products-search';
 
     private const CHUNK = 1000;
 
-    protected $signature = 'search:lab:export {--modulo=58 : Co który produkt (id % M = 0)} {--out=lab/products.ndjson : Ścieżka na dysku local (storage/app/private)}';
+    protected $signature = 'search:lab:export {--modulo=15 : Co który produkt (id % M = 0)} {--out=lab/products.ndjson : Ścieżka na dysku local (storage/app/private)}';
 
     protected $description = 'Eksportuje próbkę produktów (id % M = 0) do NDJSON dla indeksu products-lab-v1';
 

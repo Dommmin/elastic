@@ -66,20 +66,20 @@ function labProduct(int $id, array $attrs = []): Product
 }
 
 test('exports only products with id divisible by modulo', function () {
-    foreach ([58, 59, 116, 117, 174, 175] as $id) {
+    foreach ([15, 16, 30, 31, 45, 46] as $id) {
         labProduct($id);
     }
 
     $this->artisan('search:lab:export', ['--out' => 'lab-test/products.ndjson'])->assertSuccessful();
 
     $ids = array_column(array_slice(labExportLines(), 1), 'id');
-    expect(array_map('intval', $ids))->toBe([58, 116, 174]);
+    expect(array_map('intval', $ids))->toBe([15, 30, 45]);
 });
 
 test('builds lab_text from name and category names', function () {
     $root = Category::factory()->create(['name' => 'Odzież']);
     $leaf = Category::factory()->create(['name' => 'Kurtki', 'parent_id' => $root->id, 'path' => 'odziez/kurtki']);
-    labProduct(58, ['name' => 'Kurtka zimowa Alpha', 'category_id' => $leaf->id]);
+    labProduct(15, ['name' => 'Kurtka zimowa Alpha', 'category_id' => $leaf->id]);
 
     $this->artisan('search:lab:export', ['--out' => 'lab-test/products.ndjson'])->assertSuccessful();
 
@@ -92,9 +92,9 @@ test('builds lab_text from name and category names', function () {
 });
 
 test('takes in_stock and price_min from the search index, not the database', function () {
-    labProduct(58);
+    labProduct(15);
     $docs = $this->docs;
-    $docs['58'] = ['in_stock' => false, 'price_min' => 4242];
+    $docs['15'] = ['in_stock' => false, 'price_min' => 4242];
     $this->docs = $docs;
 
     $this->artisan('search:lab:export', ['--out' => 'lab-test/products.ndjson'])->assertSuccessful();
@@ -104,24 +104,24 @@ test('takes in_stock and price_min from the search index, not the database', fun
 });
 
 test('fails loudly when a sampled product is missing from the index', function () {
-    labProduct(58);
+    labProduct(15);
     $docs = $this->docs;
-    unset($docs['58']);
+    unset($docs['15']);
     $this->docs = $docs;
 
     $this->artisan('search:lab:export', ['--out' => 'lab-test/products.ndjson'])
-        ->expectsOutputToContain('58')
+        ->expectsOutputToContain('15')
         ->assertExitCode(1);
 });
 
 test('writes the header line with modulo and count', function () {
-    labProduct(58);
-    labProduct(116);
+    labProduct(15);
+    labProduct(30);
 
     $this->artisan('search:lab:export', ['--out' => 'lab-test/products.ndjson'])->assertSuccessful();
 
     $header = labExportLines()[0]['_lab_export'];
-    expect($header['modulo'])->toBe(LabExportCommand::MODULO)->toBe(58)
+    expect($header['modulo'])->toBe(LabExportCommand::MODULO)->toBe(15)
         ->and($header['count'])->toBe(2)
         ->and($header['exported_at'])->toBeString();
 });
