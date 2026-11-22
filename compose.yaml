@@ -423,6 +423,8 @@ services:
       # search-consumer i infra/elasticsearch/mappings, patrz tamten
       # komentarz). `search:eval` (ETAP 7) czyta stąd zapytania kontrolne.
       - ./tests/relevance:/tests/relevance:ro
+      # ETAP 13: `seller360:simulate` losuje miasta z tej samej listy, z której search wylicza region.
+      - ./infra/reference:/infra/reference:ro
     ports:
       - "127.0.0.1:${CATALOG_HTTP_PORT}:80"
       - "127.0.0.1:${CATALOG_HTTPS_PORT}:443"
@@ -570,6 +572,7 @@ services:
       FAKE_GATEWAY_FAIL_FIRST_REFUND: ${FAKE_GATEWAY_FAIL_FIRST_REFUND:-false}
     volumes:
       - ./apps/catalog:/app
+      - ./infra/reference:/infra/reference:ro
     # Jak w outbox-publisher: HEALTHCHECK z obrazu pyta Caddy'ego, którego tu
     # nie ma. Proces artisan jest PID 1; --max-time kończy go co godzinę,
     # a `restart: unless-stopped` podnosi z nowym kodem.

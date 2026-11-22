@@ -14,13 +14,16 @@ use Illuminate\Support\Facades\DB;
 final class PendingSellers
 {
     /**
+     * Syntetycznych sprzedawców (generator ETAPU 13) pokazujemy tylko na żądanie.
+     *
      * @return list<array{id: int, name: string, city: string, email: string|null, created_at: string|null}>
      */
-    public function all(): array
+    public function all(bool $includeSynthetic = false): array
     {
         return DB::table('sellers')
             ->leftJoin('users', 'users.id', '=', 'sellers.user_id')
             ->where('sellers.status', 'pending')
+            ->when(! $includeSynthetic, fn ($query) => $query->where('sellers.synthetic', false))
             ->orderBy('sellers.created_at')
             ->orderBy('sellers.id')
             ->get(['sellers.id', 'sellers.name', 'sellers.city', 'users.email', 'sellers.created_at'])

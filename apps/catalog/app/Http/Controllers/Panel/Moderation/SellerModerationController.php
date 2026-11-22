@@ -31,11 +31,13 @@ class SellerModerationController extends Controller
     {
         // Nieznany status traktujemy jak brak filtra zamiast 422 — to tylko widok listy.
         $status = SellerStatus::tryFrom((string) $request->query('status', ''))?->value;
+        // Syntetyczni sprzedawcy (ETAP 13) domyślnie ukryci; `?synthetic=1` pokazuje wszystkich.
+        $synthetic = $request->boolean('synthetic');
 
         return Inertia::render('panel/sellers/Index', [
-            'pending' => $pending->all(),
-            'sellers' => $directory->paginate($status),
-            'filters' => ['status' => $status],
+            'pending' => $pending->all($synthetic),
+            'sellers' => $directory->paginate($status, includeSynthetic: $synthetic),
+            'filters' => ['status' => $status, 'synthetic' => $synthetic],
         ]);
     }
 

@@ -285,6 +285,15 @@ analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, d
 seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
 	@bash infra/elasticsearch/setup-seller360.sh
 
+.PHONY: seller360-simulate
+seller360-simulate: ## Generator seller-360 (ETAP 13): make seller360-simulate args="--sellers=20000 --billing --sales --plant=5" (--purge czyści)
+	$(DC) exec catalog-app php artisan seller360:simulate $(args)
+
+.PHONY: seller360-complaints-import
+seller360-complaints-import: ## Import CSV reklamacji z catalogu do search (domyślnie apps/catalog/storage/app/seller360/complaints.csv; csv=...)
+	$(DC) cp $(or $(csv),apps/catalog/storage/app/seller360/complaints.csv) seller360-consumer:/tmp/seller360-complaints.csv
+	$(DC) exec seller360-consumer php bin/console seller360:complaints:import /tmp/seller360-complaints.csv
+
 .PHONY: simulate
 simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
 	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)
