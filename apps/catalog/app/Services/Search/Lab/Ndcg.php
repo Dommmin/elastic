@@ -1,0 +1,51 @@
+<?php
+
+namespace App\Services\Search\Lab;
+
+/**
+ * nDCG@k liczone po stronie PHP z tym samym wzorem co `_rank_eval` metryki
+ * `dcg` z `normalize: true`: zysk `2^ocena - 1`, dyskonto `log2(pozycja + 1)`
+ * (pozycje od 1). Ideał to posortowane malejąco WSZYSTKIE oceny zapytania
+ * (nie tylko te, które wróciły) — oceniony dokument spoza wyników obniża wynik.
+ *
+ * Po co własny licznik: tryb hybrydowy (RRF) i `semantic_text` zwracają wyniki
+ * z `_search`, których `_rank_eval` nie obsługuje tak samo dla każdego
+ * retrievera; jeden licznik dla wszystkich podejść daje porównywalne liczby.
+ */
+final class Ndcg
+{
+    /**
+     * @param  array<int, int|string>  $rankedIds  id dokumentów w kolejności wyników
+     * @param  array<int|string, int>  $ratings  id => ocena
+     */
+    public static function atK(array $rankedIds, array $ratings, int $k): float
+    {
+        $ideal = array_values($ratings);
+        rsort($ideal);
+        $idealDcg = self::dcg(array_slice($ideal, 0, $k));
+
+        if ($idealDcg <= 0.0) {
+            return 0.0;
+        }
+
+        $gains = [];
+        foreach (array_slice(array_values($rankedIds), 0, $k) as $id) {
+            $gains[] = $ratings[$id] ?? 0;
+        }
+
+        return self::dcg($gains) / $idealDcg;
+    }
+
+    /**
+     * @param  array<int, int>  $grades
+     */
+    private static function dcg(array $grades): float
+    {
+        $sum = 0.0;
+        foreach (array_values($grades) as $i => $grade) {
+            $sum += (2 ** $grade - 1) / log($i + 2, 2);
+        }
+
+        return $sum;
+    }
+}
