@@ -10,7 +10,7 @@
 #    consultant — rola consultant: pełny odczyt.
 #  Wybór obrazu: domyślnie obraz projektu (marketplace/elasticsearch:${ES_VERSION}), bo ma plugin analysis-stempel
 #  i synonimy, których wymaga szablon; zwykły obraz Elastica nie przyjąłby analizatorów pl_*. Nadpisanie: DEMO_IMAGE.
-#  Zawsze sprząta (trap EXIT). Hasła demo są losowane w locie i nigdzie nie zapisywane ani wypisywane.
+#  Zawsze sprząta (trap EXIT). Hasła demo są losowane w locie, nie trafiają do plików ani na wyjście, ani do argumentów procesów (docker -e z eksportu, jq env, curl -K).
 #  Kod wyjścia 0 tylko, gdy wszystkie asercje przeszły.
 # ============================================================================
 set -euo pipefail
@@ -35,6 +35,7 @@ ES_VERSION="$(envval ES_VERSION)"
 IMAGE="${DEMO_IMAGE:-marketplace/elasticsearch:${ES_VERSION}}"
 MAIN_URL="http://localhost:$(envval ES_PORT)"
 MAIN_PW="$(envval ELASTIC_PASSWORD)"
+case "${MAIN_PW}" in *\"*|*\\*) die "hasło głównego klastra zawiera cudzysłów lub ukośnik: nieobsługiwane w konfiguracji curl -K";; esac
 
 # --- 1. pamięć: ta maszyna jest współdzielona z innymi projektami, nie ruszamy cudzych kontenerów ---
 step "Kontrola pamięci (zapas minimum ${MIN_FREE_MB} MB)"
@@ -53,14 +54,16 @@ fi
 ELASTIC_PW="$(openssl rand -hex 16)"
 SELLER_PW="$(openssl rand -hex 16)"
 CONSULT_PW="$(openssl rand -hex 16)"
-trap 'docker rm -f "'"${NAME}"'" >/dev/null 2>&1 || true' EXIT
+SAMPLE_FILE=""
+trap '[ -z "${SAMPLE_FILE}" ] || rm -f "${SAMPLE_FILE}"; docker rm -f "${NAME}" >/dev/null 2>&1 || true' EXIT
+export ELASTIC_PASSWORD="${ELASTIC_PW}" SELLER_PW CONSULT_PW
 
 step "Start węzła ${NAME} (${IMAGE}, -Xmx768m)"
 docker image inspect "${IMAGE}" >/dev/null 2>&1 || die "brak obrazu ${IMAGE} (make build albo ustaw DEMO_IMAGE)"
 docker run -d --rm --name "${NAME}" \
   -e discovery.type=single-node \
   -e ES_JAVA_OPTS="-Xms768m -Xmx768m" \
-  -e ELASTIC_PASSWORD="${ELASTIC_PW}" \
+  -e ELASTIC_PASSWORD \
   -e xpack.security.enabled=true \
   -e xpack.security.http.ssl.enabled=false \
   -e xpack.security.transport.ssl.enabled=false \
@@ -93,15 +96,14 @@ jq '.template.settings["index.number_of_replicas"]=0' "${TEMPLATE}" \
 tr_el -X PUT "${TRIAL}/seller-360-v1" -d '{"aliases":{"seller-360":{}}}' | jq -c .
 
 # próbka: pierwsze 200 dokumentów (rosnąco po seller_id) z sekcją billing; _id nie nadaje się do sortowania (fielddata wyłączone)
-main "${MAIN_URL}/seller-360/_search?size=${SAMPLE}&sort=seller_id:asc" -d '{"query":{"exists":{"field":"billing.overdue_cents"}}}' > "${TMPDIR:-/tmp}/s360-sample.$$" \
+SAMPLE_FILE="$(mktemp "${TMPDIR:-/tmp}/s360-sample.XXXXXX")"
+main "${MAIN_URL}/seller-360/_search?size=${SAMPLE}&sort=seller_id:asc" -d '{"query":{"exists":{"field":"billing.overdue_cents"}}}' > "${SAMPLE_FILE}" \
   || die "nie udało się pobrać próbki z ${MAIN_URL}"
-SAMPLE_FILE="${TMPDIR:-/tmp}/s360-sample.$$"
-trap 'rm -f "'"${SAMPLE_FILE}"'"; docker rm -f "'"${NAME}"'" >/dev/null 2>&1 || true' EXIT
 GOT="$(jq '.hits.hits | length' "${SAMPLE_FILE}")"
 [ "${GOT}" -eq "${SAMPLE}" ] || die "próbka ma ${GOT} dokumentów, oczekiwano ${SAMPLE}"
-# A: pierwszy w próbce z zaległością > 0 (inaczej asercje o ukrytym billing byłyby trywialne), B: pierwszy inny
-A="$(jq -r '[.hits.hits[] | select(._source.billing.overdue_cents > 0)][0]._id' "${SAMPLE_FILE}")"
-[ -n "${A}" ] && [ "${A}" != "null" ] || die "w próbce nie ma sprzedawcy z billing.overdue_cents > 0"
+# A: pierwszy w próbce z zaległością > 0 i z recent_texts (inaczej asercje o ukrytych polach byłyby trywialne), B: pierwszy inny
+A="$(jq -r '[.hits.hits[] | select(._source.billing.overdue_cents > 0 and ((._source.complaints.recent_texts // []) | length > 0))][0]._id' "${SAMPLE_FILE}")"
+[ -n "${A}" ] && [ "${A}" != "null" ] || die "w próbce nie ma sprzedawcy z billing.overdue_cents > 0 i complaints.recent_texts"
 B="$(jq -r --arg a "${A}" '[.hits.hits[] | select(._id != $a)][0]._id' "${SAMPLE_FILE}")"
 jq -c '.hits.hits[] | {index:{_index:"seller-360-v1",_id:._id}}, ._source' "${SAMPLE_FILE}" \
   | tr_el -X POST "${TRIAL}/_bulk?refresh=true" --data-binary @- | jq -c '{errors, items: (.items|length)}'
@@ -113,9 +115,9 @@ step "Role i użytkownicy"
 for role in $(jq -r 'keys[]' "${ROLES}"); do
   jq -c ".${role}" "${ROLES}" | tr_el -X PUT "${TRIAL}/_security/role/${role}" --data-binary @- | jq -c "{role: \"${role}\", result: .role}"
 done
-jq -nc --arg p "${SELLER_PW}" --arg a "${A}" '{password:$p, roles:["seller_self"], metadata:{seller_id:$a}}' \
+jq -nc --arg a "${A}" '{password:env.SELLER_PW, roles:["seller_self"], metadata:{seller_id:$a}}' \
   | tr_el -X PUT "${TRIAL}/_security/user/seller_a" --data-binary @- | jq -c '{user: "seller_a", created}'
-jq -nc --arg p "${CONSULT_PW}" '{password:$p, roles:["consultant"]}' \
+jq -nc '{password:env.CONSULT_PW, roles:["consultant"]}' \
   | tr_el -X PUT "${TRIAL}/_security/user/consultant" --data-binary @- | jq -c '{user: "consultant", created}'
 
 sa() { es "seller_a:${SELLER_PW}" "$@"; }
@@ -128,19 +130,24 @@ check() {  # check OPIS WARTOŚĆ_FAKTYCZNA WARTOŚĆ_OCZEKIWANA
   if [ "$2" = "$3" ]; then printf '  OK    %s\n' "$1"; else printf '  FAIL  %s (jest: %s, oczekiwano: %s)\n' "$1" "$2" "$3"; FAILS=$((FAILS+1)); fi
 }
 
+resp_ok() { jq -r '(has("error") | not) and ((._shards.failed // 0) == 0) and (._shards.successful // 0) >= 1' <<<"$1"; }
+
 R="$(sa "${TRIAL}/seller-360/_search" -d '{"query":{"match_all":{}},"size":10}')"
+check "seller_a: odpowiedź _search bez błędu" "$(resp_ok "${R}")" "true"
 check "seller_a: match_all daje 1 trafienie" "$(jq '.hits.total.value' <<<"${R}")" "1"
 check "seller_a: jedyny _id to A (${A})" "$(jq -r '.hits.hits[0]._id' <<<"${R}")" "${A}"
+check "seller_a: dokument ma _source" "$(jq '(.hits.hits | length == 1) and (.hits.hits[0]._source != null)' <<<"${R}")" "true"
 check "seller_a: dokument bez klucza billing" "$(jq '.hits.hits[0]._source | has("billing")' <<<"${R}")" "false"
-check "seller_a: dokument bez complaints.recent_texts" "$(jq '.hits.hits[0]._source.complaints | has("recent_texts")' <<<"${R}")" "false"
+check "seller_a: complaints widoczne, ale bez recent_texts" "$(jq '.hits.hits[0]._source.complaints | (type == "object") and (has("recent_texts") | not)' <<<"${R}")" "true"
 check "seller_a: profile widoczne (FLS nie ucina reszty)" "$(jq '.hits.hits[0]._source | has("profile")' <<<"${R}")" "true"
 
-R="$(sa "${TRIAL}/seller-360/_search" -d '{"size":0,"query":{"range":{"billing.overdue_cents":{"gt":0}}}}')"
+R="$(sa "${TRIAL}/seller-360/_search" -d '{"size":0,"track_total_hits":true,"query":{"range":{"billing.overdue_cents":{"gt":0}}}}')"
+check "seller_a: range billing.overdue_cents > 0, odpowiedź bez błędu" "$(resp_ok "${R}")" "true"
 check "seller_a: range billing.overdue_cents > 0 daje 0 trafień" "$(jq '.hits.total.value' <<<"${R}")" "0"
 
 R="$(sa "${TRIAL}/seller-360/_search" -d '{"size":0,"aggs":{"s":{"sum":{"field":"billing.overdue_cents"}}}}')"
-V="$(jq -r '.aggregations.s.value // "null"' <<<"${R}")"
-if [ "${V}" = "0" ] || [ "${V}" = "0.0" ] || [ "${V}" = "null" ]; then check "seller_a: sum billing.overdue_cents to 0 albo null" "ok" "ok"; else check "seller_a: sum billing.overdue_cents to 0 albo null" "${V}" "0|null"; fi
+check "seller_a: agregacja sum, odpowiedź bez błędu i z wynikiem" "$(jq -r '(has("error") | not) and ((._shards.failed // 0) == 0) and (.aggregations.s | type == "object" and has("value"))' <<<"${R}")" "true"
+check "seller_a: sum billing.overdue_cents to 0 albo null" "$(jq -r '.aggregations.s.value | (. == null or . == 0)' <<<"${R}")" "true"
 
 CODE="$(sa -o /dev/null -w '%{http_code}' "${TRIAL}/seller-360/_doc/${B}")"
 check "seller_a: _doc/${B} (cudzy sprzedawca) daje 404" "${CODE}" "404"
@@ -151,6 +158,7 @@ R="$(co "${TRIAL}/seller-360/_search" -d '{"size":0,"track_total_hits":true,"que
 check "consultant: widzi ${SAMPLE} dokumentów z billing" "$(jq '.hits.total.value' <<<"${R}")" "${SAMPLE}"
 R="$(co "${TRIAL}/seller-360/_search" -d '{"size":1,"query":{"term":{"_id":"'"${B}"'"}}}')"
 check "consultant: dokument A ma billing.overdue_cents > 0 (dane do ukrycia istnieją)" "$(co "${TRIAL}/seller-360/_doc/${A}" | jq '._source.billing.overdue_cents > 0')" "true"
+check "consultant: dokument A ma complaints.recent_texts (dane do ukrycia istnieją)" "$(co "${TRIAL}/seller-360/_doc/${A}" | jq '(._source.complaints.recent_texts // []) | length > 0')" "true"
 check "consultant: dokument B zawiera klucz billing" "$(jq '.hits.hits[0]._source | has("billing")' <<<"${R}")" "true"
 
 ELAPSED=$(( $(date +%s) - START ))
