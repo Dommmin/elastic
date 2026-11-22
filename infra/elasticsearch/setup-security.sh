@@ -97,7 +97,7 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
     },
     {
       "names": ["courier-ratings"],
-      "privileges": ["read", "write", "create_index", "view_index_metadata"]
+      "privileges": ["read", "write", "view_index_metadata"]
     }
   ]
 }' >/dev/null

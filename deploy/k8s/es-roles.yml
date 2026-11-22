@@ -26,4 +26,4 @@ search_service:
     - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*", "product-popularity*", "complaints*"]
       privileges: ["all"]
     - names: ["courier-ratings"]
-      privileges: ["read", "write", "create_index", "view_index_metadata"]
+      privileges: ["read", "write", "view_index_metadata"]

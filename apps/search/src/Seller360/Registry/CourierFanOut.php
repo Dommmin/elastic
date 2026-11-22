@@ -18,12 +18,17 @@ use Psr\Log\LoggerInterface;
  *      w ms, więc kolejność nadejścia i format strefy nie mają znaczenia), inaczej ustawia `on_time_rate` i `rated_at`;
  *      `_meta` sekcji zostaje nietknięte (fan-out to nie synchronizacja rejestru);
  *   4. `slices: auto`, `conflicts: proceed`, `wait_for_completion: false` i odpytywanie `GET _tasks/<id>` co 1 s.
- * `conflicts: proceed` jest bezpieczne: konflikt oznacza, że dokument właśnie zapisał inny pisarz (np. RegistrySync
- * z własną, nie starszą oceną z `courier-ratings`), a kolejny przebieg i tak zastosuje strażnika.
+ * `conflicts: proceed` samo w sobie gubi aktualizację: dokument zmieniony przez innego pisarza między snapshotem
+ * zapytania a zapisem zostaje ze starą oceną, a `since` poszłoby dalej i nikt by go już nie poprawił. Dlatego każde
+ * zadanie z `version_conflicts > 0` jest powtarzane (do 3 prób, po odświeżeniu indeksu i z pauzą): skrypt jest
+ * idempotentny, więc dokumenty już poprawione stają się noopami, a liczby `updated` i `noops` sumują się po próbach.
+ * `conflicts` w wyniku to konflikty RESZTKOWE po ostatniej próbie.
  *
  * Jako zadanie harmonogramu (`courier:poll`, 60 s) trzyma `since` w Redisie `seller360:courier:since` i przesuwa
- * je na największe `rated_at` dopiero po udanym fan-oucie; wyjątek zostawia `since` bez zmian, więc następny
- * przebieg powtarza pracę (skrypt jest idempotentny).
+ * je na największe `rated_at` TYLKO po czystym fan-oucie (bez resztkowych konfliktów); wyjątek lub konflikty
+ * zostawiają `since` bez zmian, więc następny przebieg powtarza pracę. Do rejestru idzie `since` cofnięte o 1 s:
+ * `GET /couriers/ratings?since=` jest wyłączne (`rated_at > since`), a oceny dwóch kurierów z tej samej sekundy
+ * mogłyby inaczej zginąć (powtórzone oceny to tanie noopy).
  */
 class CourierFanOut implements Seller360Job
 {
@@ -34,6 +39,11 @@ class CourierFanOut implements Seller360Job
     private const MAX_WAIT_SECONDS = 300;
 
     private const TASK_POLL_MS = 1000;
+
+    /** Próby `_update_by_query` na parę (kurier, indeks), gdy zostają konflikty wersji. */
+    private const MAX_ATTEMPTS = 3;
+
+    private const RETRY_BACKOFF_MS = 200;
 
     /** @var \Closure(int): void */
     private readonly \Closure $sleepMs;
@@ -76,11 +86,13 @@ class CourierFanOut implements Seller360Job
     {
         $stored = $this->redis->get(self::SINCE_KEY);
         $since = \is_string($stored) && $stored !== ''
-            ? new \DateTimeImmutable($stored)
+            ? (new \DateTimeImmutable($stored))->modify('-1 second')
             : new \DateTimeImmutable('@0');
 
         $result = $this->poll($since);
-        if ($result->maxRatedAt !== null) {
+        if ($result->conflicts > 0) {
+            $this->logger->warning('Fan-out ocen kuriera z resztkowymi konfliktami, since bez zmian (następny przebieg powtórzy).', ['conflicts' => $result->conflicts, 'couriers' => $result->couriers]);
+        } elseif ($result->maxRatedAt !== null) {
             $this->redis->set(self::SINCE_KEY, $result->maxRatedAt);
             $this->logger->info('Fan-out ocen kuriera.', ['couriers' => $result->couriers, 'updated' => $result->updated, 'noops' => $result->noops, 'conflicts' => $result->conflicts, 'took_ms' => $result->tookMs]);
         }
@@ -98,7 +110,8 @@ class CourierFanOut implements Seller360Job
         $started = hrtime(true);
         $maxRatedAt = null;
         $maxMs = null;
-        $tasks = [];
+        /** @var list<array{target: string, rating: array{courier_id: string, on_time_rate: float, rated_at: string}, ms: int}> $pending */
+        $pending = [];
         foreach ($ratings as $rating) {
             $ratedMs = (int) (new \DateTimeImmutable($rating['rated_at']))->format('Uv');
             if ($maxMs === null || $ratedMs > $maxMs) {
@@ -111,19 +124,49 @@ class CourierFanOut implements Seller360Job
                 'body' => ['courier_id' => $rating['courier_id'], 'on_time_rate' => $rating['on_time_rate'], 'rated_at' => $rating['rated_at']],
             ]);
             foreach ($this->writeTargets() as $target) {
-                $tasks[] = $this->start($target, $rating, $ratedMs);
+                $pending[] = ['target' => $target, 'rating' => $rating, 'ms' => $ratedMs];
             }
         }
 
         $updated = $noops = $conflicts = 0;
-        foreach ($tasks as $taskId) {
-            $response = $this->await($taskId);
-            $updated += (int) ($response['updated'] ?? 0);
-            $noops += (int) ($response['noops'] ?? 0);
-            $conflicts += (int) ($response['version_conflicts'] ?? 0);
+        for ($attempt = 1; $pending !== [] && $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+            if ($attempt > 1) {
+                // ponowienie musi widzieć wersje, które wygrały konflikt
+                $this->refresh($pending);
+                ($this->sleepMs)(self::RETRY_BACKOFF_MS * ($attempt - 1));
+            }
+            $tasks = [];
+            foreach ($pending as $i => $item) {
+                $tasks[$i] = $this->start($item['target'], $item['rating'], $item['ms']);
+            }
+            $conflicts = 0;
+            $retry = [];
+            foreach ($tasks as $i => $taskId) {
+                $response = $this->await($taskId);
+                $updated += (int) ($response['updated'] ?? 0);
+                $noops += (int) ($response['noops'] ?? 0);
+                $left = (int) ($response['version_conflicts'] ?? 0);
+                if ($left > 0) {
+                    $conflicts += $left;
+                    $retry[] = $pending[$i];
+                }
+            }
+            $pending = $retry;
         }
+        if ($pending === []) {
+            $conflicts = 0;
+        }
+        $this->refresh(array_map(static fn (string $t): array => ['target' => $t], $this->writeTargets()));
 
         return new FanOutResult(\count($ratings), $updated, $noops, $conflicts, (int) round((hrtime(true) - $started) / 1_000_000), $maxRatedAt);
+    }
+
+    /** @param list<array{target: string}> $items */
+    private function refresh(array $items): void
+    {
+        foreach (array_unique(array_column($items, 'target')) as $target) {
+            $this->es->indices()->refresh(['index' => $target]);
+        }
     }
 
     /** Jedyne miejsce z listą celów (Task 14: iteracja po WriteTargets). */
@@ -142,7 +185,6 @@ class CourierFanOut implements Seller360Job
             'slices' => 'auto',
             'conflicts' => 'proceed',
             'wait_for_completion' => 'false',
-            'refresh' => 'true',
             'body' => [
                 'query' => ['term' => ['registry.courier.id' => $rating['courier_id']]],
                 'script' => [
@@ -161,7 +203,7 @@ class CourierFanOut implements Seller360Job
     }
 
     /** @return array<string, mixed> `response` ukończonego zadania */
-    private function await(string $taskId): array
+    protected function await(string $taskId): array
     {
         $deadline = hrtime(true) + self::MAX_WAIT_SECONDS * 1_000_000_000;
         while (true) {

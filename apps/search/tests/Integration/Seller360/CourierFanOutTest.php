@@ -131,21 +131,126 @@ final class CourierFanOutTest extends TestCase
         self::assertEqualsWithDelta(0.91, $this->source('1')['registry']['courier']['on_time_rate'], 0.0001);
     }
 
-    private function fanOut(): CourierFanOut
+    public function test_konflikt_jest_ponawiany_i_sumuje_wyniki_prob(): void
+    {
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.91, 'rated_at' => '2026-11-22T08:00:00Z']];
+        // pierwsza próba "traci" 2 dokumenty przez konflikt wersji, druga (prawdziwa) je domyka
+        $fanOut = $this->fanOut(conflictsOnAttempts: [1 => 2]);
+
+        $result = $fanOut->poll(new \DateTimeImmutable('2026-11-22T00:00:00Z'));
+
+        self::assertSame(0, $result->conflicts, 'po udanym ponowieniu brak resztkowych konfliktów');
+        self::assertSame(10, $result->updated);
+        self::assertSame(10, $result->noops, 'druga próba widzi już zaktualizowane dokumenty jako noopy');
+        self::assertSame(2, $fanOut->attempts);
+    }
+
+    public function test_resztkowe_konflikty_po_trzech_probach_trafiaja_do_wyniku(): void
+    {
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.91, 'rated_at' => '2026-11-22T08:00:00Z']];
+        $fanOut = $this->fanOut(conflictsOnAttempts: [1 => 3, 2 => 2, 3 => 1]);
+
+        $result = $fanOut->poll(new \DateTimeImmutable('2026-11-22T00:00:00Z'));
+
+        self::assertSame(1, $result->conflicts);
+        self::assertSame(3, $fanOut->attempts);
+    }
+
+    public function test_since_przesuwa_sie_tylko_po_czystym_przebiegu(): void
+    {
+        $redis = $this->memoryRedis();
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.91, 'rated_at' => '2026-11-22T08:00:00Z']];
+
+        $this->fanOut(redis: $redis)->pollFromRedis();
+
+        self::assertSame('2026-11-22T08:00:00Z', $redis->store[CourierFanOut::SINCE_KEY], 'czysty przebieg przesuwa since');
+
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.95, 'rated_at' => '2026-11-22T09:00:00Z']];
+        $dirty = $this->fanOut(redis: $redis, conflictsOnAttempts: [1 => 1, 2 => 1, 3 => 1])->pollFromRedis();
+
+        self::assertSame(1, $dirty->conflicts);
+        self::assertSame('2026-11-22T08:00:00Z', $redis->store[CourierFanOut::SINCE_KEY], 'resztkowe konflikty nie przesuwają since');
+    }
+
+    public function test_since_nie_przesuwa_sie_po_wyjatku(): void
+    {
+        $redis = $this->memoryRedis();
+        $redis->store[CourierFanOut::SINCE_KEY] = '2026-11-22T08:00:00Z';
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.95, 'rated_at' => '2026-11-22T09:00:00Z']];
+
+        try {
+            $this->fanOut(redis: $redis, targets: ['seller-360-test-nie-ma-takiego'])->pollFromRedis();
+            self::fail('Oczekiwano wyjątku Elasticsearcha.');
+        } catch (\Throwable) {
+            self::assertSame('2026-11-22T08:00:00Z', $redis->store[CourierFanOut::SINCE_KEY]);
+        }
+    }
+
+    public function test_since_do_rejestru_jest_cofniete_o_sekunde_bo_oceny_z_tej_samej_sekundy_nie_moga_zginac(): void
+    {
+        $redis = $this->memoryRedis();
+        $redis->store[CourierFanOut::SINCE_KEY] = '2026-11-22T08:00:00Z';
+        $queries = [];
+        $http = new MockHttpClient(function (string $method, string $url) use (&$queries): MockResponse {
+            $queries[] = $url;
+
+            return new MockResponse('[]', ['response_headers' => ['content-type: application/json']]);
+        });
+        $fanOut = new CourierFanOut(new RegistryClient('http://registry.invalid', $http, static function (int $ms): void {}), $this->client, $redis, new NullLogger, targets: [$this->index]);
+
+        $fanOut->pollFromRedis();
+
+        self::assertStringContainsString('since=2026-11-22T07:59:59Z', $queries[0]);
+    }
+
+    private function memoryRedis(): object
+    {
+        return new class extends \Redis {
+            /** @var array<string, string> */
+            public array $store = [];
+
+            public function __construct() {}
+
+            public function get(string $key): mixed
+            {
+                return $this->store[$key] ?? false;
+            }
+
+            public function set(string $key, mixed $value, mixed $options = null): \Redis|string|bool
+            {
+                $this->store[$key] = $value;
+
+                return true;
+            }
+        };
+    }
+
+    /**
+     * @param  array<int, int>  $conflictsOnAttempts  numer próby (od 1) => liczba konfliktów dopisana do odpowiedzi zadania
+     * @param  list<string>|null  $targets
+     */
+    private function fanOut(?\Redis $redis = null, array $conflictsOnAttempts = [], ?array $targets = null): CourierFanOut
     {
         $http = new MockHttpClient(fn (): MockResponse => new MockResponse(json_encode($this->ratings), ['response_headers' => ['content-type: application/json']]));
-        $redis = new class extends \Redis {
-            public function __construct() {}
-        };
 
-        return new CourierFanOut(
-            new RegistryClient('http://registry.invalid', $http, static function (int $ms): void {}),
-            $this->client,
-            $redis,
-            new NullLogger,
-            sleepMs: static function (int $ms): void {},
-            targets: [$this->index],
-        );
+        return new class(new RegistryClient('http://registry.invalid', $http, static function (int $ms): void {}), $this->client, $redis ?? $this->memoryRedis(), new NullLogger, $conflictsOnAttempts, $targets ?? [$this->index]) extends CourierFanOut {
+            public int $attempts = 0;
+
+            /** @param array<int, int> $conflictsOnAttempts */
+            public function __construct(RegistryClient $registry, Client $es, \Redis $redis, NullLogger $logger, private array $conflictsOnAttempts, array $targets)
+            {
+                parent::__construct($registry, $es, $redis, $logger, static function (int $ms): void {}, targets: $targets);
+            }
+
+            protected function await(string $taskId): array
+            {
+                $response = parent::await($taskId);
+                $this->attempts++;
+                $response['version_conflicts'] = ($response['version_conflicts'] ?? 0) + ($this->conflictsOnAttempts[$this->attempts] ?? 0);
+
+                return $response;
+            }
+        };
     }
 
     /** @return array<string, mixed> */
