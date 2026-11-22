@@ -9,10 +9,11 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * Druga połowa `seller360:simulate --purge` (catalog czyści bazę, ta komenda indeksy seller-360).
+ * Druga połowa `seller360:simulate --purge` (catalog czyści bazę, ta komenda ES): wiersze sprzedaży i zdarzenia
+ * syntetycznych sprzedawców, potem ich dokumenty w seller-360 i seller-360-public ({@see SyntheticPurger}).
  * Uruchamiać po opróżnieniu kolejki projektora, inaczej zaległe zdarzenia `seller.*` odtworzą dokumenty.
  */
-#[AsCommand(name: 'seller360:purge-synthetic', description: 'Usuwa syntetycznych sprzedawców z seller-360 i seller-360-public')]
+#[AsCommand(name: 'seller360:purge-synthetic', description: 'Usuwa syntetycznych sprzedawców z seller-360, seller-360-public i danych sprzedaży')]
 final class Seller360PurgeSyntheticCommand extends Command
 {
     public function __construct(private readonly SyntheticPurger $purger)
