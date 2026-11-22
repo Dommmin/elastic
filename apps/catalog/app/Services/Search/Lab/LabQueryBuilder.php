@@ -46,7 +46,19 @@ class LabQueryBuilder
 
     public const FILTER_MODES = [self::FILTER_NONE, self::FILTER_IN_KNN, self::FILTER_POST];
 
+    private int $numCandidates = self::NUM_CANDIDATES;
+
     public function __construct(private readonly ProductSearchService $search) {}
+
+    /** `num_candidates` wszystkich zapytań knn (domyślnie 100); nie mniej niż k. */
+    public function useNumCandidates(int $numCandidates): void
+    {
+        if ($numCandidates < self::K) {
+            throw new InvalidArgumentException('num_candidates nie może być mniejsze niż k='.self::K.'.');
+        }
+
+        $this->numCandidates = $numCandidates;
+    }
 
     /**
      * @return array<string, mixed> pełne ciało `_search` (`query` albo `retriever`)
@@ -91,7 +103,7 @@ class LabQueryBuilder
         return ['knn' => [
             'field' => self::SEMANTIC_FIELD,
             'k' => self::K,
-            'num_candidates' => self::NUM_CANDIDATES,
+            'num_candidates' => $this->numCandidates,
             'query_vector_builder' => ['text_embedding' => ['model_id' => self::INFERENCE_ID, 'model_text' => $q]],
         ]];
     }
@@ -156,7 +168,7 @@ class LabQueryBuilder
             'query' => ['knn' => [
                 'field' => 'vec_float',
                 'k' => self::K,
-                'num_candidates' => self::NUM_CANDIDATES,
+                'num_candidates' => $this->numCandidates,
                 'query_vector' => $vector,
             ]],
             'size' => $size,

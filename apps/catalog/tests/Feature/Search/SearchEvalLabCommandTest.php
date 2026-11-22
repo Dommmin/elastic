@@ -222,3 +222,8 @@ test('--index is accepted', function () {
     $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--index' => 'products-lab-filter', '--queries' => $this->queriesFile])
         ->assertSuccessful();
 });
+
+test('--num-candidates is accepted and values below k are refused', function () {
+    $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--num-candidates' => 500, '--queries' => $this->queriesFile])->assertSuccessful();
+    $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--num-candidates' => 5, '--queries' => $this->queriesFile])->assertFailed();
+});

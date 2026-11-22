@@ -56,6 +56,20 @@ test('knnBody na polu wektorowym używa knnOn', function () {
     expect($this->builder->knnBody('q', field: 'vec_bbq')['query'])->toBe($this->builder->knnOn('vec_bbq', 'q'));
 });
 
+test('numCandidates zmienia knn we wszystkich wariantach i polach', function () {
+    $this->builder->useNumCandidates(500);
+
+    expect($this->builder->body(LabVariant::Knn, 'q')['query']['knn']['num_candidates'])->toBe(500)
+        ->and($this->builder->body(LabVariant::HybridBool, 'q')['query']['bool']['should'][1]['knn']['num_candidates'])->toBe(500)
+        ->and($this->builder->body(LabVariant::RrfNative, 'q')['retriever']['rrf']['retrievers'][1]['standard']['query']['knn']['num_candidates'])->toBe(500)
+        ->and($this->builder->knnOn('vec_bbq', 'q')['knn']['num_candidates'])->toBe(500)
+        ->and($this->builder->knnBody('q')['query']['knn']['k'])->toBe(10);
+});
+
+test('numCandidates nie może być mniejsze niż k', function () {
+    $this->builder->useNumCandidates(5);
+})->throws(InvalidArgumentException::class);
+
 test('hybrid-bool ma oba człony w should', function () {
     $should = $this->builder->body(LabVariant::HybridBool, 'ciepła kurtka')['query']['bool']['should'];
 

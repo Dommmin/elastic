@@ -39,6 +39,11 @@ class LabEvalRunner
         $this->knnFilter = $filter;
     }
 
+    public function useNumCandidates(int $numCandidates): void
+    {
+        $this->builder->useNumCandidates($numCandidates);
+    }
+
     public function useIndex(string $index): void
     {
         $this->index = $index;

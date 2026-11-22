@@ -11,6 +11,7 @@ use Elastic\Elasticsearch\Exception\ServerResponseException;
 use Elastic\Transport\Exception\NoNodeAvailableException;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Storage;
+use InvalidArgumentException;
 
 /**
  * `php artisan search:eval:lab` (`make lab-eval`) — nDCG@k wariantów wyszukiwania
@@ -39,6 +40,7 @@ class SearchEvalLabCommand extends Command
         {--latency=0 : Liczba przebiegów po wszystkich zapytaniach do pomiaru p50/p99 (0 = bez pomiaru)}
         {--vector-field=semantic_e5 : Pole wariantu knn: semantic_e5 (domyślnie) albo jawne vec_float, vec_int8, vec_bbq}
         {--knn-filter=none : Filtr dostępności (in_stock) w wariancie knn: none, in-knn (filter w knn), post (post_filter)}
+        {--num-candidates=100 : num_candidates zapytań knn (warianty knn, hybrid-bool, rrf-*; nie mniej niż k=10)}
         {--index= : Indeks zamiast products-lab-v1 (tylko _search; np. jednorazowy indeks demo filtra)}
         {--recall : recall@k HNSW (knn na vec_float) względem knn-exact (brute force na vec_float)}';
 
@@ -79,6 +81,14 @@ class SearchEvalLabCommand extends Command
         $filter = (string) $this->option('knn-filter');
         if (! in_array($filter, LabQueryBuilder::FILTER_MODES, true)) {
             $this->error("Nieznany tryb filtra „{$filter}” (dozwolone: ".implode(', ', LabQueryBuilder::FILTER_MODES).').');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $this->runner->useNumCandidates((int) $this->option('num-candidates'));
+        } catch (InvalidArgumentException $e) {
+            $this->error($e->getMessage());
 
             return self::FAILURE;
         }
@@ -146,6 +156,7 @@ class SearchEvalLabCommand extends Command
             'queries' => (string) $this->option('queries'),
             'variants' => array_map(static fn (LabVariant $v): string => $v->value, $variants),
             'groups' => $groups,
+            'num_candidates' => (int) $this->option('num-candidates'),
             'knn' => ['field' => (string) $this->option('vector-field'), 'filter' => (string) $this->option('knn-filter')],
             'table' => $result['table'],
             'per_query' => $result['per_query'],
