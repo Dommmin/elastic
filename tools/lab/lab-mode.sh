@@ -16,7 +16,7 @@ die()  { printf 'BŁĄD: %s\n' "$*" >&2; exit 1; }
 
 ES_NODES=(es01 es02 es03)
 # procesy zależne od głównego ES (kolejność startu; stop w odwrotnej)
-STATE=apps/catalog/storage/app/private/lab/lab-mode.state   # katalog w .gitignore
+STATE="${LAB_MODE_STATE:-apps/catalog/storage/app/private/lab/lab-mode.state}"   # domyślnie katalog w .gitignore
 DEPENDENTS=(kibana search-consumer analytics-consumer seller360-consumer seller360-scheduler seller360-registry search-metrics outbox-publisher catalog-scheduler catalog-worker)
 
 free_mb() {
@@ -29,11 +29,14 @@ free_mb() {
   echo "  Docker: ${total} MB, użyte: ${used} MB, zapas: $(( total - used )) MB"
 }
 
+# hasło głównego ES sprawdzamy raz, w głównej powłoce (die w $(…) nie przerywa skryptu)
+load_es_pw() {
+  ES_PW="$(grep -E '^ELASTIC_PASSWORD=' .env | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' || true)"
+  [ -n "${ES_PW}" ] || die "brak ELASTIC_PASSWORD w .env"
+}
+
 main_health() {
-  local pw
-  pw="$(grep -E '^ELASTIC_PASSWORD=' .env | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' || true)"
-  [ -n "${pw}" ] || die "brak ELASTIC_PASSWORD w .env"
-  curl -sS -K <(printf 'user = "elastic:%s"\n' "${pw}") "http://localhost:19200/_cluster/health?wait_for_status=yellow&timeout=1s" 2>/dev/null \
+  curl -sS -K <(printf 'user = "elastic:%s"\n' "${ES_PW}") "http://localhost:19200/_cluster/health?wait_for_status=yellow&timeout=1s" 2>/dev/null \
     | grep -oE '"status":"[a-z]+"' || true
 }
 
@@ -50,10 +53,11 @@ case "${1:-}" in
     for n in "${ES_NODES[@]}"; do
       if grep -qx "${n}" <<<"${running}"; then todo+=("${n}"); fi
     done
+    mkdir -p "$(dirname "${STATE}")"
     if [ "${#todo[@]}" -eq 0 ]; then
-      echo "  nic z listy nie działa (tryb lab już włączony?); plik stanu zostaje bez zmian"
+      : > "${STATE}"
+      echo "  nic z listy nie działa (tryb lab już włączony?); zapisano pusty plik stanu: off nic nie przywróci"
     else
-      mkdir -p "$(dirname "${STATE}")"
       printf '%s\n' "${todo[@]}" > "${STATE}"
       step "Zatrzymuję (zapisane w ${STATE}): ${todo[*]}"
       docker compose stop "${todo[@]}"
@@ -63,6 +67,7 @@ case "${1:-}" in
     ;;
   off)
     [ -f .env ] || die "brak .env"
+    load_es_pw
     step "Zatrzymuję es-lab"
     docker compose --profile ml stop es-lab
     if [ -f "${STATE}" ]; then
@@ -76,7 +81,11 @@ case "${1:-}" in
         if grep -qx "${n}" <<<"${existing}"; then restore+=("${n}"); fi
       done
     fi
-    [ "${#restore[@]}" -gt 0 ] || die "nie ma czego przywracać"
+    if [ "${#restore[@]}" -eq 0 ]; then
+      echo "  plik stanu jest pusty (przed trybem lab nic z listy nie działało): nic nie przywracam, es-lab zatrzymany"
+      rm -f "${STATE}"
+      exit 0
+    fi
     failed=()
     start_one() { docker compose start "$1" || { echo "BŁĄD: nie udało się uruchomić $1" >&2; failed+=("$1"); }; }
     es_started=0
@@ -95,7 +104,7 @@ case "${1:-}" in
     for n in "${DEPENDENTS[@]}"; do
       if in_list "${n}" "${restore[@]}"; then step "Start ${n}"; start_one "${n}"; fi
     done
-    rm -f "${STATE}"
+    if [ "${#failed[@]}" -eq 0 ]; then rm -f "${STATE}"; else echo "OSTRZEŻENIE: zostawiam ${STATE} (były błędy)" >&2; fi
     step "Stan końcowy"
     echo "  przywrócone: ${restore[*]}"
     echo "  główny klaster: $(main_health)"
