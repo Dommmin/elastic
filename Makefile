@@ -309,6 +309,10 @@ lab-reset: ## Zatrzymuje es-lab i KASUJE wolumen es-lab-data (wymaga CONFIRM=1)
 lab-setup: ## Trial, endpoint E5, pipeline i indeks products-lab-v1 na es-lab (idempotentne; wymaga lab-up)
 	@bash infra/elasticsearch/lab/setup-lab.sh
 
+.PHONY: lab-setup-elser
+lab-setup-elser: ## ETAP 14b: endpoint lab-elser (ELSER v2) i indeks products-lab-elser z _reindex (idempotentne; products-lab-v1 bez zmian)
+	@bash infra/elasticsearch/lab/setup-lab.sh elser
+
 .PHONY: lab-eval
 lab-eval: ## nDCG@10 wariantów bm25/knn/hybrid-bool/rrf-client/rrf-native na es-lab (np. args="--check-rank-eval --check-rrf")
 	$(DC) exec catalog-app php artisan search:eval:lab $(args)

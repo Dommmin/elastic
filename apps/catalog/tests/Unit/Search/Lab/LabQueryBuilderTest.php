@@ -104,6 +104,17 @@ test('wyrażalność jako query i licencja', function () {
         ->and(LabVariant::RrfNative->requiresTrial())->toBeTrue();
 });
 
-test('elser czeka na ETAP 14b', function () {
-    $this->builder->body(LabVariant::Elser, 'x');
-})->throws(LogicException::class, 'wariant elser wymaga make lab-setup-elser (ETAP 14b)');
+test('elser to zapytanie semantic na polu semantic_elser', function () {
+    $body = $this->builder->body(LabVariant::Elser, 'ciepła kurtka');
+
+    expect($body['query'])->toBe(['semantic' => ['field' => 'semantic_elser', 'query' => 'ciepła kurtka']])
+        ->and($body['size'])->toBe(10);
+});
+
+test('elser celuje w products-lab-elser, pozostałe warianty w products-lab-v1', function () {
+    expect($this->builder->indexFor(LabVariant::Elser))->toBe('products-lab-elser');
+
+    foreach ([LabVariant::Bm25, LabVariant::Knn, LabVariant::HybridBool, LabVariant::RrfClient, LabVariant::RrfNative] as $variant) {
+        expect($this->builder->indexFor($variant))->toBe('products-lab-v1');
+    }
+});

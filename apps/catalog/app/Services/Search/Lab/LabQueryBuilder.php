@@ -7,7 +7,8 @@ use InvalidArgumentException;
 use LogicException;
 
 /**
- * Ciała `_search` wariantów laboratorium na `products-lab-v1` (węzeł es-lab).
+ * Ciała `_search` wariantów laboratorium na `products-lab-v1` (węzeł es-lab); `elser` na `products-lab-elser`
+ * (zapytanie `semantic` na polu `semantic_text` z endpointem `lab-elser`).
  *
  * kNN na polu `semantic_text` (`semantic_e5`) idzie jako ZAPYTANIE `knn` w `query`
  * z `query_vector_builder.text_embedding` — sprawdzone na ES 9.5.1: sekcja `knn`
@@ -24,6 +25,11 @@ class LabQueryBuilder
     public const INFERENCE_ID = 'lab-e5';
 
     public const SEMANTIC_FIELD = 'semantic_e5';
+
+    /** ELSER (ETAP 14b) żyje we własnym indeksie: products-lab-v1 zostaje nietknięty (make lab-setup-elser). */
+    public const ELSER_INDEX = 'products-lab-elser';
+
+    public const ELSER_FIELD = 'semantic_elser';
 
     public const K = 10;
 
@@ -60,6 +66,12 @@ class LabQueryBuilder
         $this->numCandidates = $numCandidates;
     }
 
+    /** Indeks, w który celuje wariant: `elser` ma własny, reszta `products-lab-v1`. */
+    public function indexFor(LabVariant $variant): string
+    {
+        return $variant === LabVariant::Elser ? self::ELSER_INDEX : self::INDEX;
+    }
+
     /**
      * @return array<string, mixed> pełne ciało `_search` (`query` albo `retriever`)
      */
@@ -79,7 +91,7 @@ class LabQueryBuilder
             ]]],
             LabVariant::RrfClient => throw new LogicException('rrf-client to dwa zapytania (bm25 i knn) łączone w PHP — patrz LabEvalRunner.'),
             LabVariant::KnnExact => throw new LogicException('knn-exact potrzebuje wektora zapytania — użyj knnExactBody().'),
-            LabVariant::Elser => throw new LogicException('wariant elser wymaga make lab-setup-elser (ETAP 14b)'),
+            LabVariant::Elser => ['query' => ['semantic' => ['field' => self::ELSER_FIELD, 'query' => $q]]],
         };
 
         return $body + ['size' => $size, '_source' => false];

@@ -22,8 +22,8 @@ class LabEvalRunner
 
     private string $knnFilter = LabQueryBuilder::FILTER_NONE;
 
-    /** Indeks, który odpytują `_search` (domyślnie products-lab-v1; demo filtra podaje własny, jednorazowy). */
-    private string $index = LabQueryBuilder::INDEX;
+    /** Jawny indeks `_search` (demo filtra podaje własny, jednorazowy); null = indeks wariantu (`LabQueryBuilder::indexFor`). */
+    private ?string $index = null;
 
     public function __construct(
         private readonly Client $client,
@@ -120,7 +120,7 @@ class LabEvalRunner
             return $this->search($this->builder->knnBody($q, $size, $this->knnField, $this->knnFilter));
         }
 
-        return $this->search($this->builder->body($variant, $q, $size));
+        return $this->search($this->builder->body($variant, $q, $size), $variant);
     }
 
     /**
@@ -148,13 +148,14 @@ class LabEvalRunner
      */
     public function rankEvalMismatches(LabVariant $variant, array $queries, array $phpScores, int $k): array
     {
+        $index = $this->builder->indexFor($variant);
         $requests = [];
         foreach ($queries as $i => $entry) {
             $requests[] = [
                 'id' => "q{$i}",
                 'request' => ['query' => $this->builder->body($variant, $entry['query'], $k)['query']],
                 'ratings' => array_map(
-                    static fn (int|string $id, int $grade) => ['_index' => LabQueryBuilder::INDEX, '_id' => (string) $id, 'rating' => $grade],
+                    static fn (int|string $id, int $grade) => ['_index' => $index, '_id' => (string) $id, 'rating' => $grade],
                     array_keys($entry['ratings']),
                     $entry['ratings'],
                 ),
@@ -162,7 +163,7 @@ class LabEvalRunner
         }
 
         $response = $this->client->rankEval([
-            'index' => LabQueryBuilder::INDEX,
+            'index' => $this->builder->indexFor($variant),
             'body' => ['requests' => $requests, 'metric' => ['dcg' => ['k' => $k, 'normalize' => true]]],
         ])->asArray();
 
@@ -360,9 +361,10 @@ class LabEvalRunner
      * @param  array<string, mixed>  $body
      * @return Ranked
      */
-    private function search(array $body): array
+    private function search(array $body, LabVariant $variant = LabVariant::Bm25): array
     {
-        $response = $this->client->search(['index' => $this->index, 'body' => $body])->asArray();
+        $index = $this->index ?? $this->builder->indexFor($variant);
+        $response = $this->client->search(['index' => $index, 'body' => $body])->asArray();
         $hits = $response['hits']['hits'];
 
         return [

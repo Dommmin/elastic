@@ -15,7 +15,7 @@ use InvalidArgumentException;
 
 /**
  * `php artisan search:eval:lab` (`make lab-eval`) — nDCG@k wariantów wyszukiwania
- * (bm25, knn, hybrid-bool, rrf-client, rrf-native) na węźle es-lab, w podziale na grupy
+ * (bm25, knn, hybrid-bool, rrf-client, rrf-native oraz elser z ETAPU 14b) na węźle es-lab, w podziale na grupy
  * zapytań z `/tests/relevance/semantic-queries.yaml` (ETAP 14, spec §6).
  *
  * nDCG liczy PHP (`Ndcg`) dla wszystkich wariantów; `--check-rank-eval` porównuje go
@@ -123,6 +123,12 @@ class SearchEvalLabCommand extends Command
             if ($e->getCode() === 403 && str_contains($body, 'license')) {
                 $trial = array_map(static fn (LabVariant $v): string => $v->value, array_filter($variants, static fn (LabVariant $v): bool => $v->requiresTrial()));
                 $this->error('Licencja węzła lab nie obejmuje wariantów '.implode(', ', $trial).' — włącz trial: make lab-setup.');
+
+                return self::FAILURE;
+            }
+
+            if (in_array(LabVariant::Elser, $variants, true) && (str_contains($body, LabQueryBuilder::ELSER_INDEX) || str_contains($body, 'lab-elser') || str_contains($body, LabQueryBuilder::ELSER_FIELD))) {
+                $this->error('Wariant elser nie ma indeksu ('.LabQueryBuilder::ELSER_INDEX.') albo endpointu lab-elser — przygotuj je: make lab-setup-elser.');
 
                 return self::FAILURE;
             }
