@@ -282,7 +282,7 @@ analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, d
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
 .PHONY: seller360-setup
-seller360-setup: ## Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
+seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
 	@bash infra/elasticsearch/setup-seller360.sh
 
 .PHONY: simulate

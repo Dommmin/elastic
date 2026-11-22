@@ -13,7 +13,11 @@
 #  complaints-resolve-seller. Polityki nie da się zmienić w miejscu — przebudowa: nagłówek setup-analytics.sh.
 #  Świeżość (Task 10): pola p99 w mapowaniu alerts-analytics (dynamic: strict), import dashboardu
 #  infra/kibana/seller360-dashboard.ndjson (overwrite=true) i reguła infra/kibana/rules/seller360-lag.json
-#  (idempotentnie po nazwie: jest → PUT, brak → POST). Wymaga wcześniejszego `make analytics-setup`
+#  (idempotentnie po nazwie: jest → PUT, brak → POST) oraz seller360-sales-stale. Reguła lagu liczy p99 per sekcja
+#  tylko z dokumentów, których własna sekcja zapisała się w ostatnich 10 min (zamrożony lag sekcji nieruszanej nie
+#  alarmuje). Zastój pisarza wykrywa osobno reguła sales-stale (wiek sales > 900 s = 3 pominięte odświeżenia co 300 s):
+#  tylko dla sales, bo jest okresowa; sekcje sterowane zdarzeniami bywają bezczynne całymi dniami, więc ich wiek
+#  nie jest błędem (API reguł nie ma pola opisu, stąd uzasadnienie tutaj). Wymaga wcześniejszego `make analytics-setup`
 #  (indeks alerts-analytics i connectory Kibany o stałych ID).
 #  Aliasy: seller-360 (odczyt) + seller-360-write (is_write_index) → seller-360-v1,
 #          seller-360-public + seller-360-public-write → seller-360-public-v1.
@@ -49,6 +53,33 @@ esa_exists() {
     'curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ELASTIC_PASSWORD" "http://localhost:9200$0"' "$1")"
   [ "${code}" = "200" ]
 }
+
+KIBANA_URL="${KIBANA_URL:-http://kibana:5601}"
+KIBANA_DIR="$(cd "${DIR}/../../kibana" && pwd)"
+die() { printf '[seller360] BŁĄD: %s\n' "$*" >&2; exit 1; }
+
+kba() {
+  local method="$1" path="$2" file="${3:-}"
+  if [ -n "${file}" ]; then
+    ${DC} exec -T es01 sh -c \
+      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -H "Content-Type: application/json" -X "$0" "$1$2" --data-binary @-' \
+      "${method}" "${KIBANA_URL}" "${path}" <"${file}"
+  else
+    ${DC} exec -T es01 sh -c \
+      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -X "$0" "$1$2"' \
+      "${method}" "${KIBANA_URL}" "${path}"
+  fi
+}
+
+
+# Wymagania wstępne (make analytics-setup) sprawdzane PRZED jakąkolwiek zmianą
+esa_exists "/alerts-analytics" || die "brak indeksu alerts-analytics — uruchom najpierw make analytics-setup"
+[ "$(${DC} exec -T es01 sh -c 'curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ELASTIC_PASSWORD" "$0/api/status"' "${KIBANA_URL}")" = "200" ] \
+  || die "Kibana nie odpowiada 200 na /api/status — uruchom stos (make up)"
+for c in analytics-alerts-index analytics-server-log; do
+  [ "$(${DC} exec -T es01 sh -c 'curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ELASTIC_PASSWORD" "$0$1"' "${KIBANA_URL}" "/api/actions/connector/${c}")" = "200" ] \
+    || die "brak connectora ${c} — uruchom najpierw make analytics-setup"
+done
 
 NODES="$(esa GET '/_cat/nodes?h=name' | grep -c . || true)"
 REPLICAS=1
@@ -124,28 +155,9 @@ for idx in complaints complaints-unmatched; do
   fi
 done
 
-# --- Świeżość (Task 10): dashboard i reguła w Kibanie ------------------------
-KIBANA_URL="${KIBANA_URL:-http://kibana:5601}"
-KIBANA_DIR="$(cd "${DIR}/../../kibana" && pwd)"
-die() { printf '[seller360] BŁĄD: %s\n' "$*" >&2; exit 1; }
-
-kba() {
-  local method="$1" path="$2" file="${3:-}"
-  if [ -n "${file}" ]; then
-    ${DC} exec -T es01 sh -c \
-      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -H "Content-Type: application/json" -X "$0" "$1$2" --data-binary @-' \
-      "${method}" "${KIBANA_URL}" "${path}" <"${file}"
-  else
-    ${DC} exec -T es01 sh -c \
-      'curl -sS --fail-with-body -u "elastic:$ELASTIC_PASSWORD" -H "kbn-xsrf: setup-seller360" -X "$0" "$1$2"' \
-      "${method}" "${KIBANA_URL}" "${path}"
-  fi
-}
-
-esa_exists "/alerts-analytics" || die "brak indeksu alerts-analytics — uruchom najpierw make analytics-setup"
-
+# --- Świeżość (Task 10): mapowanie, dashboard i reguły ----------------------
 log "Mapowanie alerts-analytics: pola p99 lagu (idempotentne)"
-printf '{"properties":{"profile_p99":{"type":"double"},"billing_p99":{"type":"double"},"offers_p99":{"type":"double"}}}' >"${TMP}"
+printf '{"properties":{"profile_p99":{"type":"double"},"billing_p99":{"type":"double"},"offers_p99":{"type":"double"},"sales_age_seconds":{"type":"double"}}}' >"${TMP}"
 esa PUT /alerts-analytics/_mapping "${TMP}" >/dev/null
 
 log "Import seller360-dashboard.ndjson (overwrite=true)"
@@ -160,24 +172,28 @@ if not r.get("success"):
     sys.exit(1)
 print("[seller360] Zaimportowano obiektów: %d" % r["successCount"])'
 
-RULE="${KIBANA_DIR}/rules/seller360-lag.json"
-NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "${RULE}")"
-RID="$(kba GET "/api/alerting/rules/_find?per_page=100" | python3 -c '
+ensure_rule() {
+  local rule="$1" name rid
+  name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "${rule}")"
+  rid="$(kba GET "/api/alerting/rules/_find?per_page=100" | python3 -c '
 import json, sys
 name = sys.argv[1]
 ids = [r["id"] for r in json.load(sys.stdin)["data"] if r["name"] == name]
-print(ids[0] if ids else "")' "${NAME}")"
-if [ -n "${RID}" ]; then
-  log "Reguła „${NAME}”: aktualizuję (${RID})"
-  python3 -c '
+print(ids[0] if ids else "")' "${name}")"
+  if [ -n "${rid}" ]; then
+    log "Reguła „${name}”: aktualizuję (${rid})"
+    python3 -c '
 import json, sys
 r = json.load(open(sys.argv[1]))
-print(json.dumps({k: r[k] for k in ("name", "tags", "schedule", "params", "actions", "notify_when")}))' "${RULE}" >"${TMP}"
-  kba PUT "/api/alerting/rule/${RID}" "${TMP}" >/dev/null
-else
-  log "Reguła „${NAME}”: tworzę"
-  kba POST "/api/alerting/rule" "${RULE}" >/dev/null
-fi
+print(json.dumps({k: r[k] for k in ("name", "tags", "schedule", "params", "actions", "notify_when")}))' "${rule}" >"${TMP}"
+    kba PUT "/api/alerting/rule/${rid}" "${TMP}" >/dev/null
+  else
+    log "Reguła „${name}”: tworzę"
+    kba POST "/api/alerting/rule" "${rule}" >/dev/null
+  fi
+}
+ensure_rule "${KIBANA_DIR}/rules/seller360-lag.json"
+ensure_rule "${KIBANA_DIR}/rules/seller360-sales-stale.json"
 log "Dashboard: http://localhost:${KIBANA_PORT:-5601}/app/dashboards#/view/seller360-freshness"
 
 log "Gotowe."

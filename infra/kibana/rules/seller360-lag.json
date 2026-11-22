@@ -13,7 +13,7 @@
   "params": {
     "searchType": "esqlQuery",
     "esqlQuery": {
-      "esql": "FROM seller-360\n| EVAL profile_lag = DATE_DIFF(\"seconds\", `profile._meta.source_ts`, `profile._meta.updated_at`), billing_lag = DATE_DIFF(\"seconds\", `billing._meta.source_ts`, `billing._meta.updated_at`), offers_lag = DATE_DIFF(\"seconds\", `offers._meta.source_ts`, `offers._meta.updated_at`)\n| STATS profile_p99 = PERCENTILE(profile_lag, 99), billing_p99 = PERCENTILE(billing_lag, 99), offers_p99 = PERCENTILE(offers_lag, 99)\n| WHERE profile_p99 > 300 OR billing_p99 > 300 OR offers_p99 > 300"
+      "esql": "FROM seller-360\n| EVAL profile_lag = CASE(`profile._meta.updated_at` >= NOW() - 10 minutes, DATE_DIFF(\"seconds\", `profile._meta.source_ts`, `profile._meta.updated_at`), null), billing_lag = CASE(`billing._meta.updated_at` >= NOW() - 10 minutes, DATE_DIFF(\"seconds\", `billing._meta.source_ts`, `billing._meta.updated_at`), null), offers_lag = CASE(`offers._meta.updated_at` >= NOW() - 10 minutes, DATE_DIFF(\"seconds\", `offers._meta.source_ts`, `offers._meta.updated_at`), null)\n| STATS profile_p99 = PERCENTILE(profile_lag, 99), billing_p99 = PERCENTILE(billing_lag, 99), offers_p99 = PERCENTILE(offers_lag, 99)\n| WHERE profile_p99 > 300 OR billing_p99 > 300 OR offers_p99 > 300"
     },
     "timeField": "doc_updated_at",
     "timeWindowSize": 10,

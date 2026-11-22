@@ -1,0 +1,55 @@
+{
+  "name": "Seller 360: sekcja sales nieodświeżana",
+  "consumer": "alerts",
+  "rule_type_id": ".es-query",
+  "schedule": {
+    "interval": "1m"
+  },
+  "tags": [
+    "etap-13",
+    "seller360"
+  ],
+  "notify_when": "onActionGroupChange",
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM seller-360\n| STATS last_sales_update = MAX(`sales._meta.updated_at`)\n| EVAL sales_age_seconds = DATE_DIFF(\"seconds\", last_sales_update, NOW())\n| WHERE sales_age_seconds > 900"
+    },
+    "timeField": "doc_updated_at",
+    "timeWindowSize": 30,
+    "timeWindowUnit": "d",
+    "size": 1,
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "excludeHitsFromPreviousRun": false
+  },
+  "actions": [
+    {
+      "group": "query matched",
+      "id": "analytics-alerts-index",
+      "params": {
+        "documents": [
+          {
+            "@timestamp": "{{date}}",
+            "rule": {
+              "id": "{{rule.id}}",
+              "name": "{{rule.name}}"
+            },
+            "message": "Sekcja sales seller-360 nie była zapisana od ponad 900 s (3 pominięte odświeżenia co 300 s)",
+            "sales_age_seconds": "{{#context.hits}}{{_source.sales_age_seconds}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "group": "query matched",
+      "id": "analytics-server-log",
+      "params": {
+        "level": "warn",
+        "message": "[{{rule.name}}] Sekcja sales seller-360 nie była zapisana od ponad 900 s (3 pominięte odświeżenia co 300 s)"
+      }
+    }
+  ]
+}

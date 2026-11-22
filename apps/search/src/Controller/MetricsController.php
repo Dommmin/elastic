@@ -6,6 +6,7 @@ use App\Seller360\LagReport;
 use App\Seller360\Registry\CircuitBreaker;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\DependencyInjection\Attribute\AutowireServiceClosure;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Routing\Attribute\Route;
@@ -27,6 +28,9 @@ use Symfony\Component\Routing\Attribute\Route;
  * ETAP 13: dopisujemy metryki seller-360 (lag i wiek sekcji z raportu `seller360:lag`, liczniki
  * projektora, stan bezpiecznika rejestru), wszystkie z Redisa. Ich błąd nie ruszy metryk wyżej:
  * kończy się ostrzeżeniem w logu i `seller360_metrics_scrape_error 1`.
+ * Redis i bezpiecznik wstrzykujemy jako domknięcia (leniwie): fabryka Redisa łączy się i loguje przy
+ * tworzeniu usługi, więc przy niedostępnym Redisie sam kontroler nie dałby się zbudować (500).
+ * Domknięcia wołamy dopiero w bloku try.
  */
 final class MetricsController
 {
@@ -34,8 +38,10 @@ final class MetricsController
         #[Autowire(service: 'messenger.transport.failed')]
         private readonly MessageCountAwareInterface $failedTransport,
         private readonly LoggerInterface $logger,
-        private readonly ?\Redis $redis = null,
-        private readonly ?CircuitBreaker $breaker = null,
+        #[AutowireServiceClosure('Redis')]
+        private readonly ?\Closure $redisProvider = null,
+        #[AutowireServiceClosure(CircuitBreaker::class)]
+        private readonly ?\Closure $breakerProvider = null,
     ) {
     }
 
@@ -54,8 +60,8 @@ final class MetricsController
                 ."search_metrics_scrape_error 1\n";
         }
 
-        if ($this->redis !== null && $this->breaker !== null) {
-            $body .= $this->seller360Metrics($this->redis, $this->breaker);
+        if ($this->redisProvider !== null && $this->breakerProvider !== null) {
+            $body .= $this->seller360Metrics($this->redisProvider, $this->breakerProvider);
         }
 
         // Wersja formatu w nagłówku jest wymagana przez Prometheus; charset
@@ -63,10 +69,15 @@ final class MetricsController
         return new Response($body, 200, ['Content-Type' => 'text/plain; version=0.0.4; charset=UTF-8']);
     }
 
-    private function seller360Metrics(\Redis $redis, CircuitBreaker $breaker): string
+    private function seller360Metrics(\Closure $redisProvider, \Closure $breakerProvider): string
     {
         try {
+            /** @var \Redis $redis */
+            $redis = $redisProvider();
+            /** @var CircuitBreaker $breaker */
+            $breaker = $breakerProvider();
             $lag = json_decode((string) $redis->get(LagReport::REDIS_KEY), true);
+            $missing = \is_array($lag) && $lag !== [] ? 0 : 1;
             $out = "# HELP seller360_section_lag_seconds Lag sekcji seller-360: updated_at minus source_ts (p50, p99, max).\n"
                 ."# TYPE seller360_section_lag_seconds gauge\n";
             $age = "# HELP seller360_section_age_seconds Sekundy od ostatniego zapisu sekcji seller-360 (wykrywa martwego pisarza).\n"
@@ -77,7 +88,10 @@ final class MetricsController
                 }
                 $age .= \sprintf("seller360_section_age_seconds{section=\"%s\"} %s\n", $section, $this->number($r['age_max'] ?? 0));
             }
-            $out .= $age;
+            $out .= $age
+                ."# HELP seller360_lag_report_missing 1, gdy brak raportu lagu w Redisie (scheduler nie działa albo klucz wygasł).\n"
+                ."# TYPE seller360_lag_report_missing gauge\n"
+                ."seller360_lag_report_missing {$missing}\n";
 
             $keys = [];
             foreach (LagReport::SECTIONS as $section) {

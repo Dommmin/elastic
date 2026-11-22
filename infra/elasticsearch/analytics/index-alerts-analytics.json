@@ -25,7 +25,8 @@
       "baseline_ctr": { "type": "double" },
       "profile_p99": { "type": "double" },
       "billing_p99": { "type": "double" },
-      "offers_p99": { "type": "double" }
+      "offers_p99": { "type": "double" },
+      "sales_age_seconds": { "type": "double" }
     }
   }
 }
