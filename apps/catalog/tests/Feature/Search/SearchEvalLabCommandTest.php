@@ -217,3 +217,8 @@ test('unknown --vector-field and --knn-filter are refused', function () {
         ->expectsOutputToContain('nope')
         ->assertFailed();
 });
+
+test('--index is accepted', function () {
+    $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--index' => 'products-lab-filter', '--queries' => $this->queriesFile])
+        ->assertSuccessful();
+});

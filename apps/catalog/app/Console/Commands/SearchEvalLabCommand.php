@@ -39,6 +39,7 @@ class SearchEvalLabCommand extends Command
         {--latency=0 : Liczba przebiegów po wszystkich zapytaniach do pomiaru p50/p99 (0 = bez pomiaru)}
         {--vector-field=semantic_e5 : Pole wariantu knn: semantic_e5 (domyślnie) albo jawne vec_float, vec_int8, vec_bbq}
         {--knn-filter=none : Filtr dostępności (in_stock) w wariancie knn: none, in-knn (filter w knn), post (post_filter)}
+        {--index= : Indeks zamiast products-lab-v1 (tylko _search; np. jednorazowy indeks demo filtra)}
         {--recall : recall@k HNSW (knn na vec_float) względem knn-exact (brute force na vec_float)}';
 
     protected $description = 'Porównuje warianty wyszukiwania (BM25, kNN, hybryda, RRF) na węźle lab: nDCG@k wariant × grupa';
@@ -83,6 +84,9 @@ class SearchEvalLabCommand extends Command
         }
 
         $this->runner->configureKnn($field, $filter);
+        if ($index = (string) $this->option('index')) {
+            $this->runner->useIndex($index);
+        }
 
         $path = (string) $this->option('queries');
         if (! is_file($path)) {

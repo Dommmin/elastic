@@ -22,6 +22,9 @@ class LabEvalRunner
 
     private string $knnFilter = LabQueryBuilder::FILTER_NONE;
 
+    /** Indeks, który odpytują `_search` (domyślnie products-lab-v1; demo filtra podaje własny, jednorazowy). */
+    private string $index = LabQueryBuilder::INDEX;
+
     public function __construct(
         private readonly Client $client,
         private readonly LabQueryBuilder $builder,
@@ -34,6 +37,11 @@ class LabEvalRunner
     {
         $this->knnField = $field;
         $this->knnFilter = $filter;
+    }
+
+    public function useIndex(string $index): void
+    {
+        $this->index = $index;
     }
 
     public function knnIsDefault(): bool
@@ -349,7 +357,7 @@ class LabEvalRunner
      */
     private function search(array $body): array
     {
-        $response = $this->client->search(['index' => LabQueryBuilder::INDEX, 'body' => $body])->asArray();
+        $response = $this->client->search(['index' => $this->index, 'body' => $body])->asArray();
         $hits = $response['hits']['hits'];
 
         return [
