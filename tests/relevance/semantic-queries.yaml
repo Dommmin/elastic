@@ -208,7 +208,7 @@ queries:
     # Literówka w marce (Romagera). BM25 nie zna literówki, więc „Romaguera Inc”
     # i „Wolff Inc Rower górski Pro X 29"” remisują na 1. miejscu (wspólne „Inc”
     # i model), a niżej remisuje cała reszta tego modelu. Ocena 3 tylko dla
-    # Romaguera rozbijałaby grupę remisu (TieGroupGuard, ETAP 14 Task 5), więc
+    # Romaguera rozbijałaby grupę remisu (zasada remisów, TieGroupGuard), więc
     # cała rodzina modelu dostaje 2 („dokładnie ten typ produktu”): zapytanie
     # mierzy, czy wariant znajduje model mimo literówki w marce.
     - query: 'Romagera Inc Rower górski Pro X 29"'

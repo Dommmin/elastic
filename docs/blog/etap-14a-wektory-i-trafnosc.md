@@ -373,21 +373,22 @@ RRF(d) = Σ po listach  1 / (rank_constant + pozycja d w liście)        pozycje
 ```
 
 Dokument nieobecny w liście nie dostaje z niej nic. Przykład z prawdziwego przebiegu, zapytanie
-`Wyman-Howell Laptop Ultra 14"` (pozycje z `eval-14a.json`):
+`Wyman-Howell Laptop Ultra 14"` (pozycje z `eval-14a.json`, gdzie `per_query[].top` ma top-10 id każdego
+wariantu):
 
 | Dokument | pozycja BM25 | pozycja kNN | RRF | miejsce `rrf-client` |
 |---|---|---|---|---|
 | 272625 | 1 | 1 | 1/61 + 1/61 = **0,032787** | 1 |
 | 254550 | 2 | 2 | 1/62 + 1/62 = **0,032258** | 2 |
 | 199620 | 3 | 3 | 1/63 + 1/63 = **0,031746** | 3 |
-| 17625 | 8 | 9 | 1/68 + 1/69 = 0,014706 + 0,014493 = **0,029199** | 4 |
+| 17625 | 7 | 9 | 1/67 + 1/69 = 0,014925 + 0,014493 = **0,029418** | 4 |
 | 108240 | 9 | 10 | 1/69 + 1/70 = 0,014493 + 0,014286 = **0,028778** | 5 |
 | 108075 | 4 | — | 1/64 = **0,015625** | 7 |
 | 268725 | — | 4 | 1/64 = **0,015625** | 8 |
 
 Trzy lekcje z tej tabeli:
 
-1. **Zgoda wygrywa z siłą.** Dokument 17625 jest na 8. i 9. miejscu, a w fuzji wyprzedza 108075 z 4. miejsca BM25,
+1. **Zgoda wygrywa z siłą.** Dokument 17625 jest na 7. i 9. miejscu, a w fuzji wyprzedza 108075 z 4. miejsca BM25,
    bo jest w obu listach. Druga lista prawie podwaja wynik.
 2. **Skala `_score` nie ma znaczenia.** BM25 daje tu wyniki rzędu dziesiątek, kNN poniżej 1. RRF tego nie widzi, i
    właśnie dlatego nie ma problemu `hybrid-bool` (krok 10).
@@ -466,8 +467,9 @@ Pozostałe zapytania (11 lexical, 2 descriptive, 7 exact) mają 1,000 we wszystk
 
 **Dlaczego `hybrid-bool` zabija kNN.** `bool.should` sumuje wyniki. BM25 daje dziesiątki punktów, a zapytanie `knn`
 z podobieństwem cosinusowym daje wynik poniżej 1 (w przestrzeni E5 typowo ~0,9). Gdy BM25 znajdzie cokolwiek, choćby
-nietrafnie (pojedyncze słowo zapytania w nazwie innego produktu), jego wyniki przykrywają kNN całkowicie: cztery
-zapytania opisowe spadają z 1,000 (knn) do 0,000. Suma ma sens tylko po wyrównaniu skal (wagi, normalizacja);
+nietrafnie (pojedyncze słowo zapytania w nazwie innego produktu), jego wyniki przykrywają kNN całkowicie: „coś ciepłego
+na zimę” i „oświetlenie do ogrodu bez prądu” spadają z 1,000 (knn) do 0,000, a „odpoczynek na tarasie” z 0,129
+do 0,000 (na pierwszej budowie grafu do zera spadały cztery zapytania z 1,000). Suma ma sens tylko po wyrównaniu skal (wagi, normalizacja);
 na basic ES innej mieszanki w jednym zapytaniu nie da. RRF patrzy na pozycje, więc ratuje połowę (0,44–0,56).
 
 **Dlaczego tyle jedynek.** Reguły kategorii obejmują setki dokumentów próbki (np. ~1800 smartfonów z oceną 1),
@@ -669,8 +671,9 @@ i ich nie mierzyliśmy.
    Nova 13"” i smartfony tej samej marki. Jedno krótkie słowo daje wektor, który ląduje w przypadkowym rejonie
    przestrzeni; na pierwszej budowie grafu HNSW zgubił tu nawet dokładnych sąsiadów (recall 0). RRF ciągnie to
    zapytanie w dół do 0,45–0,56, choć BM25 było idealne.
-2. **Naiwna mieszanka.** `hybrid-bool` daje w descriptive **0,515**, mniej niż sam knn (0,693): cztery zapytania
-   opisowe spadają z 1,000 do 0,000, bo skala BM25 przykrywa kNN (krok 10). Hybryda nie jest automatycznie
+2. **Naiwna mieszanka.** `hybrid-bool` daje w descriptive **0,515**, mniej niż sam knn (0,693): dwa zapytania
+   opisowe spadają z 1,000 do 0,000, a „odpoczynek na tarasie” z 0,129 do 0,000, bo skala BM25 przykrywa kNN
+   (krok 10). Hybryda nie jest automatycznie
    „najlepsza z obu światów”.
 3. **Niestabilność.** Ten sam indeks po przebudowie grafu: knn descriptive 0,801 → 0,693, a przy 500+ kandydatach
    0,651 (domyślne bbq w `semantic_text`). BM25 przez wszystkie budowy: 0,167, co do bitu.

@@ -9,7 +9,7 @@ namespace App\Services\Search\Lab;
  * (nie tylko te, które wróciły) — oceniony dokument spoza wyników obniża wynik —
  * obcięte do min(k, liczba zwróconych wyników). To obcięcie robi `_rank_eval`
  * (sprawdzone na ES 9.5.1: jedno trafienie z oceną 1 przy ocenach {1, 3} daje 1/7,
- * nie 1/(7 + 3/log2 3)); zapytanie z mniej niż k wynikami nie jest karane za
+ * nie 1/(7 + 1/log2 3) ≈ 0,131); zapytanie z mniej niż k wynikami nie jest karane za
  * puste pozycje, tylko za kolejność i dobór tego, co wróciło.
  *
  * Po co własny licznik: tryb hybrydowy (RRF) i `semantic_text` zwracają wyniki
