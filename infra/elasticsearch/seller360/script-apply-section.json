@@ -1,6 +1,6 @@
 {
   "script": {
     "lang": "painless",
-    "source": "String sec = params.section;\nMap stored = ctx._source[sec];\nlong incoming = ((Number) params.meta.version).longValue();\nif (stored != null && stored._meta != null && stored._meta.version != null\n    && ((Number) stored._meta.version).longValue() >= incoming) {\n  ctx.op = 'noop';\n  return;\n}\nif (ctx._source.seller_id == null) {\n  ctx._source.seller_id = ctx._id;\n}\nMap next = new HashMap(params.data);\nnext._meta = params.meta;\nctx._source[sec] = next;\nctx._source.doc_updated_at = params.meta.updated_at;"
+    "source": "String sec = params.section;\nMap stored = ctx._source[sec];\nlong incoming = ((Number) params.meta.version).longValue();\nif (stored != null && stored._meta != null && stored._meta.version != null\n    && ((Number) stored._meta.version).longValue() >= incoming) {\n  ctx.op = 'noop';\n  return;\n}\nif (ctx._source.seller_id == null) {\n  ctx._source.seller_id = ctx._id;\n}\nMap next = new HashMap(params.data);\nnext._meta = params.meta;\nctx._source[sec] = next;\nctx._source.doc_updated_at = params.meta.updated_at;\nif (params.doc != null) {\n  for (Map.Entry e : params.doc.entrySet()) {\n    ctx._source[e.getKey()] = e.getValue();\n  }\n}"
   }
 }

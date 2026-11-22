@@ -699,6 +699,8 @@ services:
       # Szablon seller-360 (ETAP 13): ApplySectionScriptTest tworzy indeks testowy
       # z mapowaniem tego samego pliku, którego używa setup-seller360.sh.
       - ./infra/elasticsearch/seller360:/infra/elasticsearch/seller360:ro
+      # Miasta i województwa (ETAP 13): RegionResolverTest i handler seller360 czytają ten plik.
+      - ./infra/reference:/infra/reference:ro
     depends_on:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }
@@ -738,6 +740,42 @@ services:
       postgres: { condition: service_healthy }
       es01: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    mem_limit: 512m
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
+  # ETAP 13: projektor seller-360 (kolejka search.seller360: seller.#, billing.#, offer.#) do
+  # indeksów seller-360 i seller-360-public. Kopia analytics-consumer: ten sam obraz, osobny proces,
+  # niezależny restart. Dodatkowo Redis (zbiór seller360:dirty:offers, liczniki) i plik miast.
+  seller360-consumer:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["php", "bin/console", "messenger:consume", "seller360", "-vv", "--time-limit=3600", "--memory-limit=256M"]
+    environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: seller360-consumer
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      ELASTICSEARCH_HOST: http://es01:9200
+      ELASTICSEARCH_USER: searchsvc
+      ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
+      MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - ./apps/search:/app
+      - ./infra/reference:/infra/reference:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      es01: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
     mem_limit: 512m
     logging: *json-logging
     networks: [marketplace]

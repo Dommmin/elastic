@@ -60,6 +60,19 @@ framework:
                 retry_strategy:
                     max_retries: 3
                     multiplier: 2
+            # ETAP 13: projektor seller-360 (seller.#, billing.#, offer.#). Własna kolejka i własny DLQ
+            # (search.seller360.dlq), ta sama strategia ponowień co przy analityce.
+            seller360:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                serializer: App\Messenger\ExternalJsonEnvelopeSerializer
+                options:
+                    auto_setup: false
+                    delay: *amqp_retry_delay
+                    queues:
+                        search.seller360: ~
+                retry_strategy:
+                    max_retries: 3
+                    multiplier: 2
             alerts:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
                 serializer: App\Messenger\ExternalJsonEnvelopeSerializer

@@ -9,6 +9,10 @@
 parameters:
     # Domyślna wartość dla %env(INTERNAL_API_TOKEN)% (patrz bind $internalApiToken).
     env(INTERNAL_API_TOKEN): ''
+    # ETAP 13 (seller-360): Redis i plik miast; w kontenerze montowane przez compose.yaml.
+    env(REDIS_HOST): 'redis'
+    env(REDIS_PASSWORD): ''
+    env(REGION_CSV_PATH): '/infra/reference/miasta-wojewodztwa.csv'
 
 services:
     # default configuration for services in *this* file
@@ -44,6 +48,19 @@ services:
     Elastic\Elasticsearch\Client:
         factory: ['@App\Service\ElasticsearchClientFactory', 'create']
 
+    # ETAP 13 (projektor seller-360): Redis na zbiór `seller360:dirty:offers` i liczniki metryk.
+    # Usługa powstaje dopiero z handlerem (proces consume seller360), nie przy starcie kernela.
+    Redis:
+        class: Redis
+        factory: ['App\Seller360\RedisFactory', 'create']
+        arguments:
+            $host: '%env(REDIS_HOST)%'
+            $password: '%env(REDIS_PASSWORD)%'
+
+    App\Seller360\RegionResolver:
+        arguments:
+            $csvPath: '%env(REGION_CSV_PATH)%'
+
     # Transporty AMQP: reject po przejęciu wiadomości przez retry /
     # failure_transport -> ack, żeby *.dlq łapała tylko trucizny (redelivery
     # po crashu, błędy dekodowania), a nie kopię KAŻDEJ nieudanej próby.
@@ -55,6 +72,10 @@ services:
     app.messenger.transport.analytics.ack_after_hand_off:
         class: App\Messenger\AckAfterHandOffTransport
         decorates: messenger.transport.analytics
+        arguments: ['@.inner']
+    app.messenger.transport.seller360.ack_after_hand_off:
+        class: App\Messenger\AckAfterHandOffTransport
+        decorates: messenger.transport.seller360
         arguments: ['@.inner']
     app.messenger.transport.alerts.ack_after_hand_off:
         class: App\Messenger\AckAfterHandOffTransport
