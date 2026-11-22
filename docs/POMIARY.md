@@ -1121,3 +1121,86 @@ domyślnie 0. Zmienimy to, gdy na k3s będą `products-v6` i refresh popularnoś
   sprawdzany dopiero po powrocie). Teraz odczyt idzie przez `with_timeout` (perl, własna grupa procesów, domyślnie
   20 s, `RMQCTL_TIMEOUT`). Zawieszony odczyt = „kolejka zajęta” i kolejna próba. Busybox `timeout` w kontenerze nie
   wystarcza: zabija wrapper `sh`, a escript `rabbitmqctl` zostaje.
+
+## 17. ETAP 13 — agregat „Seller 360” (2026-11-22)
+
+> Część 13a: read model `seller-360` z sześciu sekcji, koalescencja ofert, rejestr z bezpiecznikiem, lag per sekcja,
+> generator z prawdą podstawową, ekran konsultanta. Przewodnik:
+> [`blog/etap-13a-agregat-seller-360.md`](blog/etap-13a-agregat-seller-360.md). Część 13b (fan-out kuriera,
+> przebudowa, FLS/DLS) dopisze §17.4 i dalej. Maszyna współdzielona z innymi projektami: czasy **orientacyjne**.
+
+**Konfiguracja:** 3 węzły ES 9.5.1, `seller-360-v1` 1 shard + 1 replika, 20 061 dokumentów (20 000 syntetycznych
+z `seller360:simulate --seed=1 --sellers=20000 --billing --sales --complaints=… --plant=5` + 61 prawdziwych).
+Projektor `seller360-consumer` (jeden proces), `seller360-scheduler`, `seller360-registry` (pętla, 20 żądań/s).
+
+### 17.1 Zapytanie z DoD (`make seller360-verify`, 2026-11-22 ~02:39 UTC)
+
+Preset: `region=mazowieckie`, `sales.conversion_drop ≥ 0.2`, `billing.overdue_cents > 0`,
+`simple_query_string "uszkodzon*"` na `complaints.recent_texts` (`analyze_wildcard`), sort `sales.gmv_30d_cents desc`
+(`missing: _last`). Prawda podstawowa: `storage/app/seller360/planted.json` (5 zasadzonych, 4 bliskie pudła).
+
+| dokumenty w indeksie | wynik | precyzja | czułość | bliskie pudła w wyniku | `took` p50 | `took` p99 | min / max |
+|---|---|---|---|---|---|---|---|
+| 20 061 | 5 (5014882, 5011866, 5012886, 5017067, 5008159) | **1,000** | **1,000** | **0** | **1 ms** | **6 ms** | 1 / 11 ms |
+
+100 powtórzeń tego samego zapytania po jednym zapytaniu kontrolnym, więc cache filtrów jest ciepły (stan ustalony).
+Wcześniejszy przebieg tego samego dnia: p50 1 ms, p99 2 ms (min 0, max 14). Samo zapytanie o frazę zwraca 8
+dokumentów: 5 zasadzonych + bliskie pudła `region`, `drop`, `overdue`. Zapytanie bez prawdy podstawowej (z pierwszego,
+uszkodzonego przebiegu generatora, 17 809 dokumentów) też dawało dokładnie 5, ale bliskie pudło `complaint` nie miało
+wtedy spadku (zgubione okno sprzedaży) — dowód stał się pełny dopiero po replayu DLQ.
+
+### 17.2 Koalescencja ofert i generator
+
+**Koalescencja** (`make churn rate=50 duration=60`, liczniki od zera, Task 7):
+
+| churn: zmienione / usunięte | `seller360_offer_events_total` | zapisy sekcji `offers` (created / updated / noop) | zdarzeń na zapis |
+|---|---|---|---|
+| 2853 / 147 | 2713 | 154 (60 / 94 / 0) | **~17,6** (o ~94% mniej zapisów) |
+
+Zbiór `seller360:dirty:offers` opróżnił się do zera po ostatnim cyklu `offers:flush` (co 30 s).
+
+**Generator** (`--sellers=20000 --billing --sales --complaints --plant=5`, pierwszy przebieg bez backpressure,
+2026-11-22 ~01:45 UTC):
+
+| sprzedawcy | z fakturami | reklamacje | sprzedawcy ze sprzedażą | zdarzenia sprzedaży | zapis do bazy | całość komendy |
+|---|---|---|---|---|---|---|
+| 20 000 | 20 000 | 8148 | 2079 | 119 604 | **170,1 s** (500/paczkę, ~4,3 s na paczkę) | **175,3 s** |
+
+Z backpressure (generator czeka, aż `search.seller360` spadnie poniżej 50 tys.) przebieg 20 tys. jest ograniczony
+tempem projektora (~170 wiadomości/s przy ~140 tys. zdarzeń `seller.*`/`billing.*`): **~14 min** (szacunek z tempa,
+pełnego przebiegu z backpressure nie powtarzałem, bo wymagałby `--purge`).
+
+**Incydent przepełnienia (pierwszy przebieg):** outbox opróżnił się od razu, a kolejki trafiły na politykę
+`max-length 100000, overflow drop-head`:
+
+| kolejka | do DLQ | skutek | replay shovelem | po replayu |
+|---|---|---|---|---|
+| `search.seller360` | 19 817 (najstarsze `seller.*`/`billing.*`) | `_count` 17 809 zamiast ~20 061 | 19 817 → 0 w **8 s** | `_count` 20 061 |
+| `search.analytics.ingest` | 18 889 (pierwsze zdarzenia sprzedaży) | część sprzedawców bez okna poprzedniego | 18 889 → 0 | 2079 sekcji `sales` |
+
+Projektor opróżnił kolejkę po przepełnieniu w ~9 min. Import reklamacji przed replayem: `indexed=6973,
+unmatched=1175`, 4,3 s; po replayu: `indexed=8148, unmatched=0`, 4065 sekcji `complaints`. `search.product.sync`
+w trakcie replayu stała na 0 (routing przez domyślny exchange, bez duplikatów). RUNBOOK #143.
+
+### 17.3 Opóźnione źródło (`make seller360-stale-source`, 2026-11-22 ~02:36 UTC)
+
+Sprzedawca 5000000 (syntetyczny, poza `planted.json`), `WAIT_SECONDS=90`. Czasy od włączenia awarii:
+
+| krok | wynik | czas |
+|---|---|---|
+| 1. `outage: true` | każde żądanie do mocka 3 s, potem 503 (timeout klienta 2 s) | 0 s |
+| 2–3. faktura + zmiana nazwy | `billing` v3 → v4, `profile.name` nowa, w ES | **4 s** |
+| 3. registry | `stale`, `error` „Operation timed out after 2000 ms…”, dane z cache zostały, lag 11 s | 12 s |
+| 4. lag sprzedawcy po 90 s | registry **11 s → 108 s**, profile 2 s, billing 1 s | 110 s |
+| 4. zapisy registry od początku awarii (pętla) | `stale` 1 → **15 757**, max lag **7 → 894 s** | 110 s |
+| 4. `seller360:lag` p99 | profile 1466 → 1466 s, billing bez wzrostu (w granicach szumu TDigestu) | 145 s |
+| 5. `outage: false` | registry `ok`, lag 0 s, `error` null | 146 s |
+
+Cały skrypt: **2 min 26 s**. Pomiar pętli w osobnej, 90-sekundowej awarii: 12 398 zapisów `stale` (~140/s przy
+otwartym bezpieczniku, pierwsze ~35 s to 5 prób z timeoutami przed otwarciem). Powrót wszystkich dokumentów do `ok`
+po awarii to pełne przejście pętli przy ~10 sprzedawcach/s: zmierzone 2121 dokumentów w 213 s, czyli ~30 min dla
+~18,6 tys. dokumentów `stale`.
+
+Wartości bezwzględne lagu `profile` (p99 ~1466 s) i `billing` (~7,7 mln s) to historia generatora: `profile` po
+replayu DLQ (zdarzenia sprzed ~25 min zapisane po replayu), `billing` z fakturami z datą wsteczną do 90 dni. Reguła
+Kibany liczy p99 tylko z zapisów z ostatnich 10 min, więc te wartości jej nie zapalają.

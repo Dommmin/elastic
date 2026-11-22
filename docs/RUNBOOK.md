@@ -5948,3 +5948,251 @@ Nieoczywiste:
 **Czego się nauczyłem**
 Kolejka bez konsumenta to bomba z opóźnionym zapłonem dla całego brokera. Limit długości jest tani, ale przy DLX
 trzeba policzyć, dokąd trafiają wyrzucone wiadomości.
+
+---
+
+<a id="140"></a>
+## 140 — Martwe wiadomości projektora `seller-360` lądowałyby w DLQ synchronizacji produktów
+
+> ETAP 13a, Task 5 (2026-11-21). Znalezione przy projektowaniu topologii, zapobiegnięte przed pierwszym uruchomieniem.
+
+**Objaw**
+Wiadomość `seller.*` albo `offer.*`, która w `search.seller360` przekroczy limit dostarczeń (5), bez dodatkowej
+konfiguracji trafiłaby do `search.product.sync.dlq` (i do `search.seller360.dlq` tylko przypadkiem). Replay DLQ
+produktów puściłby wtedy zdarzenia projektora przez `ProductSyncHandler`, a DLQ projektora byłaby pusta mimo strat.
+
+**Diagnoza**
+```bash
+docker compose exec -T rabbitmq rabbitmqctl -t 60 list_bindings source_name routing_key destination_name | grep -E 'marketplace.dlx'
+docker compose exec -T rabbitmq rabbitmqctl -t 60 list_queues name arguments | grep seller360
+```
+
+**Przyczyna**
+`marketplace.dlx` kieruje martwe wiadomości po ich **pierwotnym** routing key (`seller.renamed`, `offer.updated`…),
+a klucze `seller.#` i `offer.#` są związane z `search.product.sync.dlq` od ETAPU 6. DLX nie wie, z której kolejki
+wiadomość umarła.
+
+**Naprawa**
+`search.seller360` ma `x-dead-letter-routing-key: search.seller360` (nadpisuje klucz przy martwej wiadomości),
+a `search.seller360.dlq` jest związana z `marketplace.dlx` **tylko** tym kluczem
+(`infra/rabbitmq/definitions.template.json`, `deploy/k8s/rabbitmq-cluster/topology.yaml`). Konsekwencja przy replayu:
+wiadomość w `search.seller360.dlq` nie ma już pierwotnego klucza w nagłówku routingu, więc **nie** publikujemy jej
+z powrotem do `marketplace.events` (poszłaby do wszystkich kolejek albo do żadnej), tylko przez domyślny exchange
+z kluczem `search.seller360` (`tools/seller360/replay-dlq.sh`, #143). Pierwotny klucz jest w `x-death`.
+
+**Czego się nauczyłem**
+DLX dzieli klucze routingu ze zwykłymi wiązaniami. Każda kolejka, która dzieli wzorzec klucza z inną, potrzebuje
+własnego `x-dead-letter-routing-key`, inaczej DLQ zbiera „cudze” trupy.
+
+---
+
+<a id="141"></a>
+## 141 — Reklamacje w `complaints-unmatched` po imporcie
+
+> ETAP 13a, Task 9 i Task 11 (2026-11-22). Pierwszy import po uszkodzonym przebiegu generatora: `unmatched=1175`.
+
+**Objaw**
+```
+seller360:complaints:import: indexed=6973, unmatched=1175, failed=0
+```
+Część reklamacji nie ma sekcji `complaints` u sprzedawcy, a `complaints-unmatched/_count` > 0.
+
+**Diagnoza**
+```bash
+# NIP-y bez dopasowania i czy taki sprzedawca w ogóle ma dokument
+docker compose exec -T search-consumer sh -c 'curl -s -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" -H "Content-Type: application/json" \
+  "$ELASTICSEARCH_HOST/complaints-unmatched/_search?size=0" -d "{\"aggs\":{\"nip\":{\"terms\":{\"field\":\"nip\",\"size\":5}}}}"' | jq '.aggregations.nip.buckets'
+docker compose exec -T search-consumer sh -c 'curl -s -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" "$ELASTICSEARCH_HOST/seller-360/_count?q=nip:<NIP>"'
+```
+
+**Przyczyna**
+Pipeline `complaints-resolve-seller` dopasowuje NIP enrichem `seller-by-nip`, a polityka enrich to **migawka**
+`seller-360` z chwili ostatniego `_execute`. Wiersz trafia do `complaints-unmatched` (`reroute`), gdy:
+- sprzedawca o tym NIP-ie nie ma jeszcze dokumentu w `seller-360` (tu: dokumenty zginęły w przepełnionej kolejce, #143);
+- dokument powstał po ostatnim `_execute` polityki;
+- NIP w CSV jest błędny (prawdziwy brak dopasowania).
+
+**Naprawa**
+Najpierw usunąć przyczynę (dokumenty w `seller-360`), potem:
+```bash
+docker compose exec seller360-consumer php bin/console seller360:complaints:import --retry-unmatched
+```
+Komenda robi `_execute` polityki, `_reindex` z `complaints-unmatched` do `complaints` z jawnym pipeline'em, kasuje
+przeniesione wiersze i przelicza sekcje `complaints` dotkniętych sprzedawców. Po replayu DLQ zwykły ponowny import
+tego samego CSV też wystarcza (`_id = ticket_id`, wiersz dopasowany teraz jest usuwany z `unmatched`): wynik
+`indexed=8148, unmatched=0`.
+
+Nie robi tego sam: wiersz raz dopasowany **nie wraca** do `unmatched`, gdy sprzedawca zniknie, a duplikat NIP
+w `seller-360` daje dopasowanie do dowolnego z nich.
+
+**Czego się nauczyłem**
+Enrich to join z migawką, nie z żywym indeksem. Każdy pipeline z enrichem potrzebuje miejsca na „jeszcze nie wiem”
+i drogi ponowienia po `_execute`.
+
+---
+
+<a id="142"></a>
+## 142 — Sekcja `registry` w stanie `stale`, w logach „Bezpiecznik rejestru otwarty”
+
+> ETAP 13a, Task 8 i Task 12 (2026-11-22). Zachowanie zamierzone przy awarii rejestru; wpis mówi, jak je czytać.
+
+**Objaw**
+Karta konsultanta pokazuje przy rejestrze odznakę „nieaktualne”, w dokumencie
+`registry._meta.status: stale` i `error: "Rejestr niedostępny (...): Operation timed out after 2000 milliseconds…"`
+albo `"Bezpiecznik rejestru otwarty."`. Logi `seller360-registry`: `bezpiecznik OTWARTY`.
+
+**Diagnoza**
+```bash
+docker compose exec search-consumer curl -s registry-mock:8080/_chaos          # mock: outage/error_rate/delay_ms
+docker compose logs --since 5m seller360-registry | grep -E 'bezpiecznik|niedostępny' | tail
+docker compose exec -T seller360-scheduler php bin/console seller360:lag      # lag registry rośnie w trakcie awarii
+docker compose exec -T search-consumer sh -c 'curl -s -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" -H "Content-Type: application/json" \
+  "$ELASTICSEARCH_HOST/seller-360/_search?size=0" -d "{\"aggs\":{\"s\":{\"terms\":{\"field\":\"registry._meta.status\"}}}}"' | jq -c '.aggregations.s.buckets'
+```
+
+**Przyczyna**
+Rejestr nie odpowiada w 2 s (3 próby). Po 5 błędach z rzędu bezpiecznik w Redisie otwiera się na 30 s: bez HTTP,
+sekcja dostaje dane z cache (24 h) ze `status: stale`, a bez cache same `_meta` ze `status: error`. Przy otwartym
+bezpieczniku pętla nie hamuje i przepisuje wszystkich sprzedawców jako `stale` (~140/s). `source_ts` zapisu `stale`
+to chwila ostatniego udanego pobrania, więc lag `updated_at − source_ts` rośnie przez całą awarię. (Do Task 12
+`source_ts` był ustawiany na „teraz” i lag stał na zerze; poprawione, cache trzyma `{fetched_at, data}`.)
+
+**Naprawa**
+Usunąć awarię źródła (lokalnie: `POST registry-mock:8080/_chaos {"outage":false}` albo `{"reset":true}`). Nic więcej:
+po 30 s bezpiecznik próbuje znowu, a pętla wraca do `ok` sprzedawca po sprzedawcy (od najstarszej synchronizacji,
+10/s, czyli ~30 min dla 20 tys.). Jeden sprzedawca od razu:
+```bash
+docker compose exec seller360-registry php bin/console seller360:registry:sync --seller=<ID>
+```
+Pozostałe sekcje i kolejka `search.seller360` nie są dotknięte (osobny proces), co sprawdza
+`make seller360-stale-source`.
+
+**Czego się nauczyłem**
+Bezpiecznik chroni źródło i nasz proces, ale nie zmniejsza zapisów do ES: każde przejście w trakcie awarii to pełne
+przepisanie sekcji jako `stale`. Status `stale` z opisem jest uczciwszy niż stare dane bez ostrzeżenia albo dziura.
+
+---
+
+<a id="143"></a>
+## 143 — 19 817 + 18 889 wiadomości w DLQ po generatorze: limit 100 tys. z `drop-head`, replay shovelem
+
+> ETAP 13a, Task 11 (2026-11-22 ~01:45 UTC). Pierwszy przebieg `seller360:simulate --sellers=20000`.
+
+**Objaw**
+Generator skończył w 175 s, ale `seller-360/_count` = 17 809 zamiast ~20 061, część sprzedawców bez `profile`,
+import reklamacji `unmatched=1175`. Kolejki:
+```
+search.seller360.dlq          19817
+search.analytics.ingest.dlq   18889
+```
+
+**Diagnoza**
+```bash
+docker compose exec -T rabbitmq rabbitmqctl -t 60 list_queues name messages | grep -E 'seller360|analytics.ingest'
+docker compose exec -T rabbitmq rabbitmqctl -t 60 list_policies          # seller360-cap, analytics-ingest-cap
+# NIGDY rabbitmqadmin get bez --ack-mode ack_requeue_true: domyślnie konsumuje
+```
+
+**Przyczyna**
+Obie kolejki mają politykę `max-length: 100000, overflow: drop-head` (#139). Generator bez backpressure opublikował
+~140 tys. wierszy outboxu (`seller.*`, `billing.*`) i ~120 tys. zdarzeń sprzedaży w ~3 min, a projektor je
+~170 wiadomości/s. `drop-head` wyrzuca **najstarsze**, a przez DLX trafiają one do DLQ (powód `maxlen`).
+
+**Naprawa**
+1. Kod: `QueueBackpressure` w generatorze (pasywne `queue_declare`, czekanie poniżej 50 tys. razem z outboxem
+   w drodze, `--max-wait=900`, przy przekroczeniu czytelny błąd z poleceniem `--purge`). Commit `c484e69`.
+2. Dane, bez purge: replay DLQ dynamicznym shovelem.
+   ```bash
+   tools/seller360/replay-dlq.sh search.seller360.dlq search.seller360
+   tools/seller360/replay-dlq.sh search.analytics.ingest.dlq search.analytics.ingest
+   make seller360-complaints-import          # po replayu: unmatched=0
+   ```
+   Skrypt włącza wtyczkę `rabbitmq_shovel` **tylko w działającym węźle**
+   (`rabbitmqctl eval 'rabbit:start_apps(...)'`; `enabled_plugins` jest montowany tylko do odczytu, `rabbitmq-plugins
+   enable` odmawia „target node uses a different path”), znika po restarcie RabbitMQ. Shovel: źródło DLQ,
+   `src-delete-after: queue-length`, cel = domyślny exchange z kluczem = nazwa kolejki docelowej (#140), więc
+   `search.product.sync` nie dostaje duplikatów. Na koniec `clear_parameter shovel …`.
+
+   Wynik: 19 817 → 0 w 8 s, `_count` 20 061, DoD 5/5. Bezpieczne, bo `seller.*`/`billing.*` niosą pełny stan i wersję
+   (strażnik `noop`), a zdarzenia analityki mają stałe `_id` (409).
+
+**Uwaga: replay nie ma backpressure.** DLQ większa niż 100 tys. (albo kolejka docelowa już mocno zapełniona) przepełni
+cel znowu i wiadomości wrócą do DLQ. Przy dużej DLQ: zatrzymać źródła ruchu albo puszczać shovel partiami
+(`src-delete-after: <N>`) i czekać na opróżnienie celu.
+
+**Czego się nauczyłem**
+Limit długości z `drop-head` chroni brokera, ale przy wsadowym zasilaniu zamienia „wolniej” na „bez części danych”.
+Producent wsadowy musi patrzeć na głębokość kolejki konsumenta. A replay jest tani tylko wtedy, gdy każda wiadomość
+niesie pełny stan i wersję.
+
+---
+
+<a id="144"></a>
+## 144 — `AnalyticsEventHandler` uruchamiany na każdym transporcie (podwójna rejestracja handlera wsadowego)
+
+> ETAP 13a, Task 6 (2026-11-21). Wada istniejąca od ETAPU 12, ujawniona przez nowy transport `seller360`.
+
+**Objaw**
+Wiadomości w `seller360` i `product_sync` czekały na „idle flush” paczki analityki, a przy `SIGTERM` z niedokończoną
+paczką worker kończył się fatalem z destruktora `Acknowledger` („acknowledger was not called”; dokładnego
+komunikatu nie zachowałem).
+`debug:messenger` pokazywał `AnalyticsEventHandler` dwa razy, raz bez `from_transport`.
+
+**Diagnoza**
+```bash
+docker compose exec search-consumer php bin/console debug:messenger | grep -A3 IntegrationEvent
+```
+
+**Przyczyna**
+Symfony autokonfiguruje `BatchHandlerInterface` dodatkowym, **bezwarunkowym** tagiem `messenger.message_handler`.
+Atrybut `#[AsMessageHandler(fromTransport: 'analytics')]` dawał drugi tag, z transportem. Handler był więc
+wywoływany dla `IntegrationEvent` z każdego transportu.
+
+**Naprawa**
+Jawna definicja w `apps/search/config/services.yaml`: `autoconfigure: false` i jeden tag
+`messenger.message_handler` (`handles: IntegrationEvent`, `from_transport: analytics`). Test regresji
+`tests/Integration/Messenger/AnalyticsHandlerRegistrationTest` (każdy z trzech handlerów ma dokładnie jedną
+rejestrację z własnym `from_transport`). Po zmianie restart `analytics-consumer`, `search-consumer`,
+`seller360-consumer`. Wynik `debug:messenger`:
+```
+handled by App\MessageHandler\AnalyticsEventHandler (when from_transport=analytics)
+handled by App\MessageHandler\ProductSyncHandler (when from_transport=product_sync)
+handled by App\MessageHandler\Seller360EventHandler (when from_transport=seller360)
+```
+
+**Czego się nauczyłem**
+Autokonfiguracja dokłada tagi po interfejsach niezależnie od atrybutów. Przy kilku transportach z tym samym typem
+wiadomości `debug:messenger` po każdej zmianie handlerów to obowiązek, nie ciekawostka.
+
+---
+
+<a id="145"></a>
+## 145 — `make seller360-setup` pada bez `make analytics-setup`
+
+> ETAP 13a, Task 10 (2026-11-22).
+
+**Objaw**
+```
+[seller360] BŁĄD: brak indeksu alerts-analytics — uruchom najpierw make analytics-setup
+```
+albo `brak connectora … — uruchom najpierw make analytics-setup`.
+
+**Diagnoza**
+```bash
+docker compose exec -T search-consumer sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" "$ELASTICSEARCH_HOST/alerts-analytics"'
+```
+
+**Przyczyna**
+Reguły świeżości `seller-360` (ES|QL w Kibana Alerting) zapisują wynik akcją do indeksu `alerts-analytics`
+i używają connectorów o stałych ID, które zakłada setup ETAPU 12. `alerts-analytics` ma `dynamic: strict`, więc
+setup seller360 dokłada do niego pola `profile_p99`, `billing_p99`, `offers_p99`, `sales_age_seconds`. Wymagania są
+sprawdzane na samym początku skryptu, przed jakąkolwiek zmianą, żeby nie zostawić połowicznego stanu.
+
+**Naprawa**
+```bash
+make analytics-setup && make seller360-setup     # oba idempotentne
+```
+
+**Czego się nauczyłem**
+Zależność między setupami trzeba sprawdzać na wejściu i nazwać w komunikacie, którą komendę uruchomić. Inaczej błąd
+wychodzi w połowie, z kodem HTTP Kibany zamiast przyczyny.

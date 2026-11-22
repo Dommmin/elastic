@@ -430,6 +430,18 @@ sekcji 4 setupu (przed migracją) i refreshu popularności tam.
 **DoD:** działa zapytanie z sekcji 5 dokumentu `04` (spadek konwersji + zaległość +
 fraza w reklamacjach); opóźnienie jednego źródła nie psuje pozostałych sekcji dokumentu.
 
+**Stan (2026-11-22): część 13a zrobiona lokalnie** na gałęzi `etap-13-seller-360`, DoD sprawdzone na żywym stacku:
+- **13a:** NIP w SellerPortal, `seller.*` i nowy kontekst Billing (`billing.*`) przez outbox, `user.*` v2
+  z `events-seller-default` i Transformem `seller-sales-daily`, projektor `seller360-consumer` ze strażnikiem wersji
+  sekcji, koalescencja ofert, import reklamacji z enrich `seller-by-nip`, rejestr z bezpiecznikiem i `stale`, lag per
+  sekcja z regułami Kibany, generator z prawdą podstawową, ekran konsultanta `/panel/sellers-360`. Przewodnik:
+  [`blog/etap-13a-agregat-seller-360.md`](blog/etap-13a-agregat-seller-360.md).
+- **Dowód:** `make seller360-verify` — zapytanie z DoD zwraca dokładnie 5 zasadzonych z 20 061 (precyzja i czułość
+  1,0, 0 bliskich pudeł, p50 1 ms / p99 6 ms); `make seller360-stale-source` — przy awarii rejestru `billing`
+  i `profile` w ES po 4 s, `registry` `stale` z rosnącym lagiem, powrót do `ok`. Pomiary w [POMIARY §17](POMIARY.md),
+  RUNBOOK #140–#145.
+- **13b** (fan-out kuriera, przebudowa bez przestoju, widok sprzedawcy, FLS/DLS na trialu, manifesty k8s): w toku.
+
 ### ETAP 14 (opcjonalny) — Semantyka i ML (2–3 dni) → **moduł 13**
 - `dense_vector`, kNN, hybryda z RRF, porównanie z BM25 na tym samym `_rank_eval`
 - profil `ml` na trialu: ELSER / anomaly detection
