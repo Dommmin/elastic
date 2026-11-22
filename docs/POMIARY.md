@@ -1127,7 +1127,8 @@ domyślnie 0. Zmienimy to, gdy na k3s będą `products-v6` i refresh popularnoś
 > Część 13a: read model `seller-360` z sześciu sekcji, koalescencja ofert, rejestr z bezpiecznikiem, lag per sekcja,
 > generator z prawdą podstawową, ekran konsultanta. Przewodnik:
 > [`blog/etap-13a-agregat-seller-360.md`](blog/etap-13a-agregat-seller-360.md). Część 13b (fan-out kuriera,
-> przebudowa, FLS/DLS) dopisze §17.4 i dalej. Maszyna współdzielona z innymi projektami: czasy **orientacyjne**.
+> przebudowa, FLS/DLS): §17.4–17.6, przewodnik
+> [`blog/etap-13b-skala-i-bezpieczenstwo.md`](blog/etap-13b-skala-i-bezpieczenstwo.md). Maszyna współdzielona z innymi projektami: czasy **orientacyjne**.
 
 **Konfiguracja:** 3 węzły ES 9.5.1, `seller-360-v1` 1 shard + 1 replika, 20 061 dokumentów (20 000 syntetycznych
 z `seller360:simulate --seed=1 --sellers=20000 --billing --sales --complaints=… --plant=5` + 61 prawdziwych).
@@ -1204,3 +1205,70 @@ po awarii to pełne przejście pętli przy ~10 sprzedawcach/s: zmierzone 2121 do
 Wartości bezwzględne lagu `profile` (p99 ~1466 s) i `billing` (~7,7 mln s) to historia generatora: `profile` po
 replayu DLQ (zdarzenia sprzed ~25 min zapisane po replayu), `billing` z fakturami z datą wsteczną do 90 dni. Reguła
 Kibany liczy p99 tylko z zapisów z ostatnich 10 min, więc te wartości jej nie zapalają.
+
+### 17.4 Fan-out oceny kuriera (`tools/seller360/fanout-measure.sh`, 2026-11-22, Task 13)
+
+Część 13b ([`blog/etap-13b-skala-i-bezpieczenstwo.md`](blog/etap-13b-skala-i-bezpieczenstwo.md)). Zmiana oceny
+`courier-3` w mocku (`POST /_chaos {"bump_courier":"courier-3"}`), potem `seller360:courier:poll --once`:
+`_update_by_query` (`slices: auto`, `conflicts: proceed`, skrypt `seller360-courier-rating`) na `seller-360-write`
+i `seller-360-public-write`. Kurier 3 obsługuje **~5 055 dokumentów w obu indeksach** (~2,5 tys. na indeks).
+W tle 100 zapytań z DoD (`seller360:query:verify`), startujących przed pollem i nakładających się na niego.
+
+| przebieg | updated | noops | conflicts | took | DoD p50 / p99 w trakcie | DoD p50 / p99 bez fan-outu |
+|---|---|---|---|---|---|---|
+| pierwsza wersja, run 1 | 5052–5055 | 0 | 1–4 | 1017–1019 ms | 1 / **18 ms** | 1 / 1–3 ms |
+| pierwsza wersja, run 2 | 5052–5055 | 0 | 1–4 | 1017–1019 ms | 1 / 2 ms | 1 / 1–3 ms |
+| po poprawce (ponowienia, `since` tylko po czystym przebiegu) | 3595 | 5056 | **0** | **2300 ms** | 1 / **5 ms** | 1 / 1 ms |
+| bootstrap: `since` = epoka, wszystkie 8 kurierów (pierwsza wersja) | 39 992 | — | 10 | 2376 ms | — | — |
+
+Baseline: 100 powtórzeń; „w trakcie” to najgorsza z 3 nakładających się paczek po 100 zapytań. Konflikty 1–4
+w pierwszej wersji były **zgubionymi aktualizacjami** (`conflicts: proceed` pomija dokument, a `since` szło dalej) —
+poprawka ponawia parę (kurier, indeks) do 3 razy po odświeżeniu i przesuwa `since` tylko przy 0 resztkowych
+konfliktów. Po poprawce konflikt wystąpił i został ponowiony; `updated + noops` przekracza liczbę dokumentów, bo
+liczniki sumują się po próbach (dokument poprawiony w 1. próbie liczy się w 2. jako `noop`). Czas 2,3 s zamiast
+~1,0 s to odświeżenie i pauza przed ponowieniem.
+
+### 17.5 Przebudowa bez przestoju pod ruchem (`make seller360-rebuild-under-load`, 2026-11-22 ~03:20 UTC, Task 14)
+
+`seller-360-v1` → `-v2` (i `seller-360-public-v1` → `-v2`), 20 061 dokumentów. Ruch przez 120 s: `make churn` 20/s
+(updated 2270, deleted 130, failed 0) i `billing:churn` 10/s (1201 faktur, failed 0); przebudowa ruszyła po 10 s
+ruchu i skończyła się 87 s przed jego końcem.
+
+| create | dual (czekanie) | backfill | verify | switch | enrich | **całość** |
+|---|---|---|---|---|---|---|
+| 296 ms | 2001 ms | 18 423 ms | 287 ms | **65 ms** | 1425 ms | **23 s** (zegar hosta) |
+
+Backfill per sekcja:
+
+| sekcja | czas | zapisane (created \| updated, bez noop) |
+|---|---|---|
+| profile | 4160 ms | 20 061 |
+| billing | 3681 ms | 19 916 (84 noop = już zapisane podwójnym zapisem) |
+| registry | 4918 ms | 19 866 |
+| offers | 1521 ms | 61 |
+| sales | 651 ms | 2079 |
+| complaints | 3492 ms | 4065 |
+
+Weryfikacja: `_count` stare main/public 20 061 / 20 061, nowe 20 061 / 20 061; próbka 500 losowych `_id`,
+**0 rozjazdów** (profile/billing: równe wersje; registry: `source_ts` równe albo wersja nowa ≥ stara; offers, sales,
+complaints: tylko obecność). 30 s po ruchu `seller360:billing:parity`: 20 000 kont, **0 rozjazdów** (baseline przed
+przebudową też 0). 0 wpisów WARNING/ERROR w logach komend. Po przebudowie `make seller360-verify`: 5/5, precyzja
+i czułość 1,000, p50 0 / p99 3 ms. Prawdziwi sprzedawcy: profil + NIP 61/61 (przed: profil 1/61), region 0/61 (miasta
+fakera spoza CSV). Czekanie 2 s po `startDual` = 2 × cache listy celów (1 s) w każdym pisarzu. Test wyścigu
+(`RebuildTest`): billing v6 wysłany między dual a backfillem wygrywa z backfillem v5.
+
+### 17.6 Demo DLS/FLS na węźle z trialem (`make seller360-fls-demo`, 2026-11-22, Task 16)
+
+Jednorazowy węzeł `marketplace/elasticsearch:9.5.1`, `-Xmx768m`, licencja trial, szablon `seller-360` (repliki 0),
+próbka 200 dokumentów z głównego klastra (pierwsze po `seller_id` z sekcją `billing`). Role `seller_self` (DLS po
+`_user.metadata.seller_id`, FLS bez `billing.*` i `complaints.recent_texts`) i `consultant`.
+
+| wersja | asercje | czas | sprzedawca A / B | kod | kontener po skrypcie |
+|---|---|---|---|---|---|
+| pierwsza (Task 16) | 12/12 | 23–25 s | 5000013 / 5000000 | 0 | brak |
+| po poprawce pustych asercji | **17/17** | **26 s** | 5000025 / inny z próbki | 0 | brak |
+
+Kontrola pamięci przed startem (próg zapasu 2048 MB): Docker 15 969 MB, kontenery 12 284 MB, zapas **3685 MB**.
+Pierwsza wersja miała asercje przechodzące także na odpowiedzi z błędem (np. „suma `billing.overdue_cents` 0 albo
+`null`”); poprawka dodała sprawdzenie odpowiedzi przed każdą asercją i kontrole dodatnie. Przebieg z brakującymi
+eksportami haseł dał po poprawce 15 FAIL zamiast fałszywej zieleni.

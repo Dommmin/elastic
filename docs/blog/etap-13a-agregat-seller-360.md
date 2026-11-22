@@ -5,8 +5,8 @@ z mazowieckiego tracą konwersję, zalegają z płatnościami i dostają reklama
 w pięciu systemach: profil i oferty w catalogu, sprzedaż w analityce z ETAPU 12, rozliczenia w nowym kontekście
 Billing, reklamacje w pliku CSV z helpdesku, a status VAT i kurier w zewnętrznym rejestrze. Joina przez te systemy nie
 ma. Ten etap buduje piąty archetyp ES: **zmaterializowany model odczytu** `seller-360`, jeden dokument na sprzedawcę,
-składany z sześciu niezależnych sekcji. Część 13b (fan-out kuriera, przebudowa bez przestoju, FLS/DLS) będzie
-w `etap-13b-skala-i-bezpieczenstwo.md`.*
+składany z sześciu niezależnych sekcji. Część 13b (fan-out kuriera, przebudowa bez przestoju, FLS/DLS) jest
+w [`etap-13b-skala-i-bezpieczenstwo.md`](etap-13b-skala-i-bezpieczenstwo.md).*
 
 > **Stan:** gałąź `etap-13-seller-360` (niewypchnięta), lokalny stos Docker (3 węzły ES 9.5.1, RabbitMQ, Redis),
 > sprawdzone 2026-11-22. **Na żywo:** 20 061 dokumentów (20 000 syntetycznych + 61 prawdziwych), zapytanie z DoD
@@ -15,7 +15,7 @@ w `etap-13b-skala-i-bezpieczenstwo.md`.*
 > z rosnącym lagiem i wraca do `ok` po końcu awarii.
 > Projekt: [specyfikacja](../superpowers/specs/2026-11-21-etap-13-seller-360-design.md).
 > Pomiary: [`POMIARY.md` §17](../POMIARY.md). Błędy z drogi: RUNBOOK [#140–#145](../RUNBOOK.md#140).
-> Nie wdrożone na k3s (brak serwera, manifesty w 13b).
+> Nie wdrożone na k3s (brak serwera, manifesty w [13b](etap-13b-skala-i-bezpieczenstwo.md#krok-14--manifesty-k3s-i-sekrety)).
 
 ---
 
@@ -246,7 +246,7 @@ oparty był replay 19 817 wiadomości w [incydencie](#incydent-przepełnione-kol
 
 Ten sam skrypt pisze kopię okrojoną do `seller-360-public` (tylko `profile`, `offers`, `sales` i ocena kuriera,
 `PublicProjection`). Zapis publiczny idzie zawsze, także gdy prywatny był `noop`: ponowienie po awarii między dwoma
-zapisami domyka kopię publiczną. Odczyt tej kopii przez sprzedawcę to temat 13b.
+zapisami domyka kopię publiczną. Odczyt tej kopii przez sprzedawcę to temat [13b](etap-13b-skala-i-bezpieczenstwo.md#krok-10--widok-sprzedawcy-na-licencji-basic).
 
 ## Krok 4 — `doc_as_upsert` a skrypt
 
@@ -619,7 +619,7 @@ Więcej: [`POMIARY.md` §17](../POMIARY.md).
 - **Syntetyczne koszyki i checkouty zaburzają lejek ETAPU 12** (zdarzenia bez wyszukania w `events-user-default`).
   Czyszczenie danych analityki z syntetyków jest poza zakresem.
 - **Prawdziwi sprzedawcy mają rzadkie karty** (brak historycznych zdarzeń `seller.*`, więc bez `profile` i `nip`).
-  Uzupełni ich przebudowa z backfillem w 13b.
+  Uzupełni ich przebudowa z backfillem w [13b](etap-13b-skala-i-bezpieczenstwo.md#krok-7--backfill-i-weryfikacja).
 - **Awaria rejestru wzmacnia zapisy**: przy otwartym bezpieczniku pętla przepisuje wszystkich jako `stale` (~140/s),
   a powrót do `ok` to pełne przejście (~30 min dla 20 tys.).
 - **Wpis cache rejestru w starym formacie** (sprzed poprawki `fetched_at`) daje przy awarii `stale` z

@@ -140,6 +140,17 @@
 | [137](#137) | `make reindex` nie skacze do `products-v6`: zawsze vN → vN+1 | narzędzia | 12b |
 | [138](#138) | `closed-loop.sh` wisi 24 min: zawieszony `rabbitmqctl` w kontenerze RabbitMQ | RabbitMQ / narzędzia | 12b |
 | [139](#139) | `search.analytics.ingest` rośnie bez końca, gdy nie ma analytics-consumera (G5) | RabbitMQ | 12 |
+| [140](#140) | Martwe wiadomości projektora `seller-360` lądowałyby w DLQ synchronizacji produktów | RabbitMQ | 13a |
+| [141](#141) | Reklamacje w `complaints-unmatched` po imporcie | Elasticsearch | 13a |
+| [142](#142) | Sekcja `registry` w stanie `stale`, w logach „Bezpiecznik rejestru otwarty” | search / rejestr | 13a |
+| [143](#143) | 19 817 + 18 889 wiadomości w DLQ po generatorze: limit 100 tys. z `drop-head`, replay shovelem | RabbitMQ | 13a |
+| [144](#144) | `AnalyticsEventHandler` uruchamiany na każdym transporcie | Symfony | 13a |
+| [145](#145) | `make seller360-setup` pada bez `make analytics-setup` | narzędzia | 13a |
+| [146](#146) | Fan-out kuriera z resztkowymi konfliktami, `seller360:courier:since` stoi | Elasticsearch | 13b |
+| [147](#147) | Podwójny zapis nie wyłączył się po nieudanym przełączeniu aliasów | Elasticsearch / Redis | 13b |
+| [148](#148) | Pulpit sprzedawcy: „Statystyki chwilowo niedostępne” | Elasticsearch / Laravel | 13b |
+| [149](#149) | `make seller360-fls-demo` odmawia (pamięć) albo zostaje kontener `seller360-trial-*` | narzędzia | 13b |
+| [150](#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu | k8s / Elasticsearch | 13b |
 
 ---
 
@@ -6196,3 +6207,215 @@ make analytics-setup && make seller360-setup     # oba idempotentne
 **Czego się nauczyłem**
 Zależność między setupami trzeba sprawdzać na wejściu i nazwać w komunikacie, którą komendę uruchomić. Inaczej błąd
 wychodzi w połowie, z kodem HTTP Kibany zamiast przyczyny.
+
+---
+
+<a id="146"></a>
+## 146 — Fan-out kuriera z resztkowymi konfliktami, `seller360:courier:since` stoi
+
+> ETAP 13b, Task 13 (2026-11-22). Zachowanie zamierzone po poprawce `52aae65`; wpis mówi, kiedy przestaje być
+> chwilowe.
+
+**Objaw**
+W logach `seller360-scheduler` co minutę:
+```
+Fan-out ocen kuriera z resztkowymi konfliktami, since bez zmian (następny przebieg powtórzy).
+```
+a `seller360:courier:since` w Redisie nie zmienia wartości.
+
+**Diagnoza**
+```bash
+docker compose logs --since 10m seller360-scheduler | grep -E 'Fan-out ocen kuriera'
+docker compose exec -T seller360-scheduler php -r '$r = new Redis(); $r->connect(getenv("REDIS_HOST")); $r->auth(getenv("REDIS_PASSWORD")); var_dump($r->get("seller360:courier:since"));'
+docker compose exec -T seller360-scheduler php bin/console seller360:courier:poll --once   # updated / noops / conflicts
+make es-tasks                                                                               # co jeszcze pisze w seller-360*
+```
+
+**Przyczyna**
+`_update_by_query` z `conflicts: proceed` pomija dokumenty zmienione przez innego pisarza między snapshotem a zapisem
+(projektor, pętla rejestru, przebudowa). Przed poprawką te dokumenty zostawały ze starą oceną, a `since` szło dalej
+— zgubiona aktualizacja na zawsze. Teraz każda para (kurier, indeks) z konfliktami jest ponawiana do 3 razy po
+odświeżeniu, a `since` przesuwa się tylko przy 0 resztkowych konfliktów. Pojedyncze ostrzeżenie to zwykła kolizja
+z ruchem i następny przebieg ją domyka. Ostrzeżenie w każdym przebiegu przez wiele minut znaczy, że ktoś stale pisze
+w te same dokumenty szybciej, niż fan-out ponawia (np. pętla rejestru przy otwartym bezpieczniku przepisuje
+wszystkich jako `stale`, #142, albo trwa długi wsad).
+
+**Naprawa**
+Zwykle nic: poczekać, aż ustanie konkurencyjny wsad (awaria rejestru, generator, przebudowa); następny przebieg
+domknie oceny i przesunie `since`. Nie przesuwać `since` ręcznie — to dokładnie ten błąd, który poprawka usunęła.
+Gdy trzeba wymusić pełne przeliczenie ocen: usunąć klucz `since` (`$r->del("seller360:courier:since")`), następny
+przebieg zrobi bootstrap wszystkich 8 kurierów (~40 tys. aktualizacji w ~2,4 s, POMIARY §17.4).
+
+**Czego się nauczyłem**
+`conflicts: proceed` nie znaczy „konflikty są nieszkodliwe”, tylko „nie przerywaj, policz je”. Licznik konfliktów to
+lista dokumentów, których nie zaktualizowano. Kursor (`since`) wolno przesunąć dopiero po pracy bez reszty.
+
+---
+
+<a id="147"></a>
+## 147 — Podwójny zapis nie wyłączył się po nieudanym przełączeniu aliasów
+
+> ETAP 13b, Task 14 (2026-11-22). Znane ryzyko z przeglądu (faza switch poza blokiem sprzątającym), nie
+> wystąpiło na żywo. Procedura na wypadek.
+
+**Objaw**
+`make seller360-rebuild` kończy się błędem w fazie 5 (`POST _aliases`, np. timeout albo 400), a kolejna próba:
+```
+Podwójny zapis już trwa (przebudowa w toku albo przerwana): [{"main":"seller-360-write",...},{"main":"seller-360-v3",...}]. Sprawdź i wyczyść seller360:write-targets.
+```
+Wszyscy pisarze dalej piszą do dwóch par indeksów.
+
+**Diagnoza**
+```bash
+docker compose exec -T seller360-scheduler php -r '$r = new Redis(); $r->connect(getenv("REDIS_HOST")); $r->auth(getenv("REDIS_PASSWORD")); var_dump($r->get("seller360:write-targets"));'
+docker compose exec -T search-consumer sh -c 'curl -s -u "$ELASTICSEARCH_USER:$ELASTICSEARCH_PASSWORD" "$ELASTICSEARCH_HOST/_cat/aliases/seller-360*?v"'
+```
+Klucz z dwiema parami `{main, public}` i aliasy wskazujące jeszcze stary indeks (albo — jeśli `_aliases` przeszło,
+a padło coś po nim — już nowy).
+
+**Przyczyna**
+Wyjątek w fazach 2–4 wyłącza podwójny zapis (`finish`), ale faza switch jest poza tym blokiem. Klucz
+`seller360:write-targets` zostaje z dwiema parami, a `Seller360Rebuilder` odmawia startu, gdy lista ma więcej niż
+jedną parę.
+
+**Naprawa**
+1. Sprawdzić, na co wskazują aliasy (`_cat/aliases` wyżej).
+2. Aliasy dalej na **starym** indeksie: usunąć klucz — pisarze wracają do aliasów zapisu w ≤ 1 s (cache listy):
+   ```bash
+   docker compose exec -T seller360-scheduler php -r '$r = new Redis(); $r->connect(getenv("REDIS_HOST")); $r->auth(getenv("REDIS_PASSWORD")); var_dump($r->del("seller360:write-targets"));'
+   ```
+   Nowe indeksy `-v<N+1>` zostają niekompletne; usunąć je ręcznie i powtórzyć `make seller360-rebuild`.
+3. Aliasy już na **nowym** indeksie: także usunąć klucz (brak klucza = aliasy, a te wskazują nowy indeks), potem
+   `_enrich/policy/seller-by-nip/_execute`.
+
+**Czego się nauczyłem**
+Każdy krok, który zmienia stan współdzielony z innymi procesami (tu: lista celów w Redisie), potrzebuje sprzątania
+na każdej ścieżce błędu, także po ostatnim kroku. Strażnik „odmawiam, gdy już trwa” chroni przed dwiema
+przebudowami naraz, ale po awarii sam staje się blokadą do ręcznego zdjęcia.
+
+---
+
+<a id="148"></a>
+## 148 — Pulpit sprzedawcy: „Statystyki chwilowo niedostępne”
+
+> ETAP 13b, Task 15 (2026-11-22).
+
+**Objaw**
+Na `/seller` blok „Twoje statystyki” pokazuje „Statystyki chwilowo niedostępne”, a reszta pulpitu działa.
+W logach catalogu / GlitchTipie przy każdym wejściu `ClientResponseException` z kodem 401 (albo 403).
+
+**Diagnoza**
+```bash
+grep -c '^ES_CATALOG_SELLER_VIEW_PASSWORD=.\+' .env            # 0 = brak hasła
+docker compose exec -T catalog-app php artisan tinker --execute 'echo config("services.elasticsearch_seller_view.password") ? "hasło ustawione" : "BRAK hasła";'   # bez wypisywania wartości
+docker compose logs --since 10m catalog-app | grep -iE '401|403|seller-360-public' | tail
+docker compose exec -e ELASTIC_PASSWORD="$(grep '^ELASTIC_PASSWORD=' .env | cut -d= -f2-)" search-consumer \
+  php bin/phpunit tests/Integration/Seller360/SellerViewRoleTest.php   # rola i konto na żywym ES
+```
+
+**Przyczyna**
+`SellerStatsReader` zwraca `null` (i strona pokazuje komunikat) w trzech sytuacjach:
+- **401** — brak `ES_CATALOG_SELLER_VIEW_PASSWORD` w `.env` (compose ma `${…:-}`, więc catalog-app startuje
+  z pustym hasłem) albo użytkownik `catalog_seller_view` nie istnieje: `setup-security.sh` go pomija bez hasła
+  („Pomijam catalog_seller_view: brak ES_CATALOG_SELLER_VIEW_PASSWORD.”);
+- **403** — brak roli `seller_stats_view` albo alias `seller-360-public` nie istnieje (rola jest na dokładną nazwę);
+- **404** — sprzedawca nie ma dokumentu w `seller-360-public` (to zwykły stan, bez `report()`; np. nowy sprzedawca
+  przed pierwszym zdarzeniem albo prawdziwy sprzedawca przed przebudową z backfillem).
+
+**Naprawa**
+```bash
+echo "ES_CATALOG_SELLER_VIEW_PASSWORD=$(openssl rand -hex 24)" >> .env
+docker compose run --rm es-setup                                     # rola + użytkownik
+docker compose up -d --force-recreate catalog-app catalog-worker     # nowe env
+```
+Przy 404: `make seller360-rebuild` (backfill profilu z catalogu). Na k3s klucz jest wymagany: `tools/k3s/secrets.sh`
+kończy się `brak ES_CATALOG_SELLER_VIEW_PASSWORD … (RUNBOOK #148)`, a catalog-app bez klucza w Secrecie nie wstaje
+(celowo, jak `INTERNAL_API_TOKEN`, #127).
+
+**Czego się nauczyłem**
+Łagodna degradacja („chwilowo niedostępne”) jest dobra dla użytkownika i zła dla diagnozy: ten sam komunikat kryje
+brak konfiguracji, brak uprawnień i brak danych. Dlatego 401/403 idą do `report()`, a 404 nie — i dlatego na k3s
+brak sekretu zatrzymuje poda zamiast włączać ciche 401.
+
+---
+
+<a id="149"></a>
+## 149 — `make seller360-fls-demo` odmawia (pamięć) albo zostaje kontener `seller360-trial-*`
+
+> ETAP 13b, Task 16 (2026-11-22).
+
+**Objaw**
+```
+BŁĄD: za mało pamięci (zapas 1730 MB < 2048 MB); zwolnij pamięć i uruchom ponownie (cudzych kontenerów nie zatrzymuję)
+```
+(liczba przykładowa) albo po przerwanym przebiegu `docker ps` pokazuje `seller360-trial-<pid>`.
+
+**Diagnoza**
+```bash
+docker info --format '{{.MemTotal}}'                     # pamięć Docker VM
+docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' | sort -k2 -h | tail
+docker ps -a --filter name=seller360-trial
+```
+
+**Przyczyna**
+Maszyna jest współdzielona z innymi projektami (`igrit-*`, `starter-*`, `blog_*`). Skrypt liczy zapas jako pamięć
+Docker VM minus sumę użycia kontenerów i odmawia poniżej 2048 MB, bo węzeł z `-Xmx768m` plus narzut JVM i systemu
+plików potrzebuje ~1,5 GB, a OOM w VM zabiłby losowy kontener, także cudzy. Kontener sprząta `trap EXIT`, więc zostaje
+tylko po `kill -9` skryptu albo restarcie Dockera w trakcie.
+
+**Naprawa**
+- Pamięć: zatrzymać **własne** zbędne usługi (np. `docker compose stop` profilu `obs` albo Kibany na czas demo),
+  nigdy cudzych kontenerów; uruchomić ponownie.
+- Pozostały kontener (tylko nasz, po nazwie): `docker rm -f seller360-trial-<pid>`. Nie ma wolumenu, więc nic więcej
+  nie zostaje; plik próbki z `mktemp` (`$TMPDIR/s360-sample.*`) też można usunąć.
+
+**Czego się nauczyłem**
+Na współdzielonej maszynie skrypt, który stawia ciężki kontener, sprawdza zapas przed startem i sprząta po sobie na
+każdej ścieżce. „Zrób miejsce” to decyzja człowieka, nie skryptu.
+
+---
+
+<a id="150"></a>
+## 150 — k3s: zwykły indeks `seller-360-write` zamiast aliasu
+
+> ETAP 13b, Task 17 (2026-11-22). Ryzyko wdrożeniowe znalezione przy pisaniu manifestów; **nie wystąpiło** (k3s
+> nie wdrożony). Procedura na wypadek.
+
+**Objaw**
+Po pierwszym wdrożeniu ETAPU 13 na k3s `setup-seller360` (albo jego odpowiednik) pada przy zakładaniu aliasów:
+```
+invalid_alias_name_exception: Invalid alias name [seller-360-write]: an index or data stream exists with the same name as the alias
+```
+(treść orientacyjna — scenariusz nie wystąpił na żywo)
+a `GET _cat/indices/seller-360*` pokazuje indeksy `seller-360-write` / `seller-360-public-write` z mapowaniem
+dynamicznym.
+
+**Diagnoza**
+```bash
+make k3s k="-n marketplace get deploy seller360-consumer seller360-scheduler seller360-registry"
+# przez tunel do marketplace-es-http (konto elastic):
+curl -s -u "elastic:$ELASTIC_PASSWORD" "http://localhost:<port>/_cat/indices/seller-360*?v&h=index,docs.count,creation.date.string"
+curl -s -u "elastic:$ELASTIC_PASSWORD" "http://localhost:<port>/_cat/aliases/seller-360*?v"
+```
+
+**Przyczyna**
+Procesy seller-360 ruszyły przed setupem ES. Piszą do aliasów zapisu, a rola `search_service` ma `all` na
+`seller-360*` (z `create_index`), więc pierwszy `_update`/`_bulk` do nieistniejącego `seller-360-write`
+**auto-tworzy zwykły indeks** o tej nazwie (szablon pasuje tylko do `seller-360-v*`, więc mapowanie dynamiczne).
+`courier-ratings` tego problemu nie ma: tam rola nie ma `create_index`, więc zapis po prostu pada.
+
+**Naprawa**
+1. Zatrzymać pisarzy: `make k3s k="-n marketplace scale deploy/seller360-consumer deploy/seller360-scheduler deploy/seller360-registry --replicas=0"`.
+2. Usunąć przypadkowe indeksy (dane w nich są śmieciowe — zdarzenia wrócą z kolejki albo z przebudowy):
+   `DELETE seller-360-write,seller-360-public-write` (konto `elastic`, przez tunel).
+3. Setup (`analytics-setup`, potem `seller360-setup`) — przewodnik 13b, krok 15.
+4. `replicas: 1`, potem `seller360:rebuild` w podzie harmonogramu (backfill).
+
+Zapobieganie: kolejność z przewodnika 13b (setup przed procesami; przy pierwszym wdrożeniu `replicas: 0`). Trwała
+poprawka w kodzie: `require_alias=true` w zapisach `SectionWriter`/fan-outu — ES odpowie wtedy błędem zamiast tworzyć
+indeks.
+
+**Czego się nauczyłem**
+Alias zapisu wygląda jak indeks dla każdego klienta, także wtedy, gdy go nie ma. Uprawnienie `all` na wzorcu razem
+z `auto_create_index` zamienia literówkę albo złą kolejność wdrożenia w cichy, nowy indeks. Pisarz, który zakłada
+istnienie aliasu, powinien to powiedzieć ES-owi (`require_alias`).
