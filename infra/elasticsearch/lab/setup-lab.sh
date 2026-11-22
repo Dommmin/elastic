@@ -118,6 +118,9 @@ phase_load() {
   if [ "${idx_modulo}" != "${modulo}" ] && { [ -n "${idx_modulo}" ] || [ "${idx_count}" != 0 ]; }; then
     die "indeks products-lab-v1 pochodzi z innej próbki (_meta.lab_modulo='${idx_modulo}', dokumentów: ${idx_count}); usuń indeks (DELETE products-lab-v1 na es-lab) albo make lab-reset i powtórz make lab-setup"
   fi
+  # znacznik PRZED ładowaniem: przerwane ładowanie (stałe _id) da się wznowić tym samym modulo, a inne modulo nadal jest odrzucane
+  lab_es -X PUT "${LAB_URL}/products-lab-v1/_mapping" -H 'Content-Type: application/json' \
+    -d '{"_meta":{"lab_modulo":'"${modulo}"'}}' | jq -c .
 
   local work started sent=0 n
   work="$(mktemp -d)"
@@ -141,9 +144,6 @@ phase_load() {
   step "Refresh i forcemerge do 1 segmentu"
   lab_es -X POST "${LAB_URL}/products-lab-v1/_refresh" | jq -c ._shards
   lab_es --max-time 1800 -X POST "${LAB_URL}/products-lab-v1/_forcemerge?max_num_segments=1" | jq -c ._shards
-
-  lab_es -X PUT "${LAB_URL}/products-lab-v1/_mapping" -H 'Content-Type: application/json' \
-    -d '{"_meta":{"lab_modulo":'"${modulo}"'}}' | jq -c .
 
   step "Kontrola liczby dokumentów"
   local count
