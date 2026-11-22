@@ -14,6 +14,7 @@ use App\Service\ProjectionUnavailableException;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Component\Messenger\Exception\RecoverableMessageHandlingException;
 
 /**
@@ -26,20 +27,24 @@ final class ProductSyncHandlerTest extends TestCase
     private CatalogProjectionClient&MockObject $catalogClient;
     private ElasticsearchIndexer&MockObject $indexer;
     private ProductSyncHandler $handler;
-    private LoggerInterface&MockObject $logger;
+    private ProcessedEventRepository $processedEvents;
 
     protected function setUp(): void
     {
-        $processedEvents = $this->createStub(ProcessedEventRepository::class);
-        $processedEvents->method('tryMarkProcessed')->willReturn(true);
+        $this->processedEvents = $this->createStub(ProcessedEventRepository::class);
+        $this->processedEvents->method('tryMarkProcessed')->willReturn(true);
 
         $this->catalogClient = $this->createMock(CatalogProjectionClient::class);
         $this->indexer = $this->createMock(ElasticsearchIndexer::class);
-        $this->logger = $this->createMock(LoggerInterface::class);
-        $this->handler = new ProductSyncHandler(
-            $processedEvents,
+        $this->handler = $this->handlerWith(new NullLogger());
+    }
+
+    private function handlerWith(LoggerInterface $logger): ProductSyncHandler
+    {
+        return new ProductSyncHandler(
+            $this->processedEvents,
             new ProductSynchronizer($this->catalogClient, $this->indexer),
-            $this->logger,
+            $logger,
         );
     }
 
@@ -93,19 +98,23 @@ final class ProductSyncHandlerTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('zdarzeniaSprzedawcy')]
     public function test_zdarzenie_sprzedawcy_jest_swiadomie_ignorowane_na_poziomie_debug(string $type): void
     {
-        $this->logger->expects(self::once())->method('debug');
-        $this->logger->expects(self::never())->method('warning');
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())->method('debug');
+        $logger->expects(self::never())->method('warning');
         $this->catalogClient->expects(self::never())->method('fetchProductProjection');
+        $this->indexer->expects(self::never())->method('indexProduct');
 
-        ($this->handler)($this->event($type, 'seller', '9'));
+        $this->handlerWith($logger)($this->event($type, 'seller', '9'));
     }
 
     public function test_nieznany_typ_dalej_daje_ostrzezenie(): void
     {
-        $this->logger->expects(self::once())->method('warning');
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())->method('warning');
         $this->catalogClient->expects(self::never())->method('fetchProductProjection');
+        $this->indexer->expects(self::never())->method('indexProduct');
 
-        ($this->handler)($this->event('foo.bar', 'foo', '1'));
+        $this->handlerWith($logger)($this->event('foo.bar', 'foo', '1'));
     }
 
     /** @param array<string, mixed> $data */
