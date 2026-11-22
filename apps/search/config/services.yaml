@@ -48,6 +48,16 @@ services:
     Elastic\Elasticsearch\Client:
         factory: ['@App\Service\ElasticsearchClientFactory', 'create']
 
+    # AnalyticsEventHandler jest BatchHandlerInterface, a framework autokonfiguruje takie klasy
+    # dodatkowym, BEZWARUNKOWYM tagiem messenger.message_handler (obok tagu z atrybutu
+    # #[AsMessageHandler(fromTransport: 'analytics')]). Handler odpalał się wtedy na każdym
+    # transporcie (seller360, product_sync). Wyłączamy autokonfigurację i dajemy jeden tag
+    # z from_transport; test AnalyticsHandlerRegistrationTest pilnuje, żeby tak zostało.
+    App\MessageHandler\AnalyticsEventHandler:
+        autoconfigure: false
+        tags:
+            - { name: messenger.message_handler, handles: App\Message\IntegrationEvent, from_transport: analytics }
+
     # ETAP 13 (projektor seller-360): Redis na zbiór `seller360:dirty:offers` i liczniki metryk.
     # Usługa powstaje dopiero z handlerem (proces consume seller360), nie przy starcie kernela.
     Redis:
