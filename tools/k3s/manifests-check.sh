@@ -36,6 +36,10 @@ check outbox-publisher outbox-publisher
 check catalog-worker queue
 check catalog-scheduler scheduler
 check search-consumer consumer
+check analytics-consumer analytics-consumer
+check seller360-consumer seller360-consumer
+check seller360-scheduler seller360-scheduler
+check seller360-registry seller360-registry
 
 # --- GlitchTip na k3s (opcjonalny: aktywuje go Secret glitchtip-secrets z secrets.sh) --------
 echo "GlitchTip na k3s"
@@ -65,7 +69,8 @@ glitchtip_report=$(echo "$rendered" | ruby -E UTF-8:UTF-8 -ryaml -e '# encoding:
 
   # SDK w aplikacjach: DSN z opcjonalnego Secretu, więc bez GlitchTipa nic się nie zmienia.
   { "catalog-app" => "SENTRY_LARAVEL_DSN", "outbox-publisher" => "SENTRY_LARAVEL_DSN",
-    "catalog-worker" => "SENTRY_LARAVEL_DSN", "catalog-scheduler" => "SENTRY_LARAVEL_DSN", "search-consumer" => "SENTRY_DSN" }.each do |name, var|
+    "catalog-worker" => "SENTRY_LARAVEL_DSN", "catalog-scheduler" => "SENTRY_LARAVEL_DSN", "search-consumer" => "SENTRY_DSN",
+    "seller360-consumer" => "SENTRY_DSN", "seller360-scheduler" => "SENTRY_DSN", "seller360-registry" => "SENTRY_DSN" }.each do |name, var|
     d = find.("Deployment", name)
     e = d && (d.dig("spec", "template", "spec", "containers", 0, "env") || []).find { |x| x["name"] == var }
     ref = e && e.dig("valueFrom", "secretKeyRef")

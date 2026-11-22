@@ -1,0 +1,89 @@
+# ============================================================================
+#  seller360-scheduler — ETAP 13
+#  Jeden proces z zadaniami okresowymi seller-360 (`seller360:scheduler`):
+#  offers:flush co 30 s, sales:refresh co 300 s, courier:poll co 60 s (fan-out
+#  ocen kuriera przez _update_by_query), lag co minutę. W tym samym podzie
+#  uruchamia się ręcznie przebudowę (`seller360:rebuild`, backfill z catalogu).
+#  Potrzebuje: Redisa (zbiór brudnych ofert, since kuriera, write-targets, lag),
+#  wewnętrznego API catalogu (offer-stats, sellers, billing/accounts -> token),
+#  rejestru (oceny kurierów) i pliku miast — ten jest W OBRAZIE (/infra/reference).
+#  Nie konsumuje kolejki, więc bez MESSENGER_TRANSPORT_DSN i bez trasy do RabbitMQ.
+#  Kolejność wdrożenia jak przy seller360-consumer (RUNBOOK #150).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seller360-scheduler
+  labels:
+    app.kubernetes.io/component: app
+    app: seller360-scheduler
+spec:
+  replicas: 1          # jeden harmonogram: dwa pody liczyłyby te same zadania dwa razy
+  strategy:
+    type: Recreate     # z tego samego powodu bez nakładania się starego i nowego poda przy rolloucie
+  selector:
+    matchLabels:
+      app: seller360-scheduler
+  template:
+    metadata:
+      labels:
+        app: seller360-scheduler
+    spec:
+      serviceAccountName: search
+      automountServiceAccountToken: false
+      # stop_grace_period: 30s z compose — bieżące zadanie (np. _update_by_query) kończy się po SIGTERM.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33      # www-data (obraz FrankenPHP)
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: scheduler
+          image: ghcr.io/dommmin/elastic-search:placeholder
+          command: ["php", "bin/console", "seller360:scheduler"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - configMapRef:
+                name: marketplace-config
+          env:
+            - name: ERROR_TRACKING_PROCESS
+              value: seller360-scheduler
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: glitchtip-secrets, key: DSN_SEARCH, optional: true } }
+            - name: APP_ENV
+              value: prod
+            - name: APP_SECRET
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: SEARCH_APP_SECRET } }
+            # Jak w compose: kontener Symfony dostaje DATABASE_URL (konfiguracja Doctrine).
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: DATABASE_URL } }
+            - name: ELASTICSEARCH_USER
+              valueFrom: { configMapKeyRef: { name: marketplace-config, key: ES_SEARCHSVC_USER } }
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: ES_SEARCHSVC_PASSWORD } }
+            # REDIS_HOST=redis i CATALOG_INTERNAL_BASE_URL=http://catalog-app przychodzą z marketplace-config.
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: REDIS_PASSWORD } }
+            # Wspólny sekret /api/internal/* (X-Internal-Token, RUNBOOK #127).
+            - name: INTERNAL_API_TOKEN
+              valueFrom: { secretKeyRef: { name: marketplace-secrets, key: INTERNAL_API_TOKEN } }
+            # courier:poll pyta rejestr o oceny kurierów (Service registry-mock).
+            - name: REGISTRY_BASE_URL
+              value: http://registry-mock:8080
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -f seller360:scheduler"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

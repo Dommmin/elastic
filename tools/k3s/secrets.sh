@@ -21,6 +21,10 @@ NS=marketplace
 # mają go jako nieopcjonalny klucz Secretu, więc bez niego pody nie wstaną. Dopisanie:
 #   echo "INTERNAL_API_TOKEN=$(openssl rand -hex 32)" >> /opt/marketplace/.env
 : "${INTERNAL_API_TOKEN:?brak INTERNAL_API_TOKEN w /opt/marketplace/.env (RUNBOOK #127)}"
+# Hasło konta ES catalog_seller_view (ETAP 13, widok sprzedawcy). Wymagane jak wyżej: catalog-app ma je
+# jako nieopcjonalny klucz Secretu, a ECK — Secret es-user-catalog-seller-view w fileRealm. Dopisanie:
+#   echo "ES_CATALOG_SELLER_VIEW_PASSWORD=$(openssl rand -hex 24)" >> /opt/marketplace/.env
+: "${ES_CATALOG_SELLER_VIEW_PASSWORD:?brak ES_CATALOG_SELLER_VIEW_PASSWORD w /opt/marketplace/.env (RUNBOOK #148)}"
 
 apply() { kubectl apply -f - >/dev/null; }
 
@@ -38,6 +42,7 @@ kubectl -n "${NS}" create secret generic marketplace-secrets --dry-run=client -o
   --from-literal=CATALOG_APP_KEY="${CATALOG_APP_KEY}" \
   --from-literal=SEARCH_APP_SECRET="${SEARCH_APP_SECRET}" \
   --from-literal=INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN}" \
+  --from-literal=ES_CATALOG_SELLER_VIEW_PASSWORD="${ES_CATALOG_SELLER_VIEW_PASSWORD}" \
   --from-literal=DATABASE_URL="postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8" \
   --from-literal=MESSENGER_TRANSPORT_DSN="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/%2f" \
   ${FAKE_GATEWAY_WEBHOOK_SECRET:+--from-literal=FAKE_GATEWAY_WEBHOOK_SECRET="${FAKE_GATEWAY_WEBHOOK_SECRET}"} \
@@ -52,10 +57,12 @@ kubectl -n "${NS}" create secret generic marketplace-secrets --dry-run=client -o
 kubectl -n "${NS}" create secret generic marketplace-es-elastic-user --dry-run=client -o yaml \
   --from-literal=elastic="${ELASTIC_PASSWORD}" | apply
 
-# --- 3. użytkownicy aplikacji ES (file realm) — w D1 robił to es-setup przez API
-for user in catalog:ES_CATALOG_PASSWORD:catalog_app searchsvc:ES_SEARCHSVC_PASSWORD:search_service; do
+# --- 3. użytkownicy aplikacji ES (file realm) — w D1 robił to es-setup przez API.
+#        Nazwa Secretu: es-user-<użytkownik> z `_` zamienionym na `-` (nazwy obiektów k8s nie znają `_`).
+for user in catalog:ES_CATALOG_PASSWORD:catalog_app searchsvc:ES_SEARCHSVC_PASSWORD:search_service \
+            catalog_seller_view:ES_CATALOG_SELLER_VIEW_PASSWORD:seller_stats_view; do
   IFS=: read -r name var role <<<"${user}"
-  kubectl -n "${NS}" create secret generic "es-user-${name}" --type=kubernetes.io/basic-auth --dry-run=client -o yaml \
+  kubectl -n "${NS}" create secret generic "es-user-${name//_/-}" --type=kubernetes.io/basic-auth --dry-run=client -o yaml \
     --from-literal=username="${name}" --from-literal=password="${!var}" --from-literal=roles="${role}" | apply
 done
 
@@ -82,4 +89,4 @@ if [ -n "${GLITCHTIP_KEY_CATALOG:-}" ] && [ -n "${GLITCHTIP_SECRET_KEY:-}" ]; th
   GT=", glitchtip-secrets"
 fi
 
-echo "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc${GT:-})"
+echo "secrets: OK (marketplace-secrets, marketplace-es-elastic-user, es-user-catalog, es-user-searchsvc, es-user-catalog-seller-view${GT:-})"

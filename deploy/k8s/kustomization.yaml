@@ -23,6 +23,10 @@ resources:
   - hpa.yaml
   - search-consumer.yaml
   - analytics-consumer.yaml
+  - seller360-consumer.yaml
+  - seller360-scheduler.yaml
+  - seller360-registry.yaml
+  - registry-mock.yaml
   - glitchtip.yaml
   - jobs/migrate.yaml
   - backup.yaml

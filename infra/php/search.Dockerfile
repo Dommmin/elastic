@@ -73,6 +73,13 @@ RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-in
 COPY apps/search/ ./
 # Mapowanie indeksu dla `search:index:create` — lokalnie montowane z repo.
 COPY infra/elasticsearch/mappings /infra/elasticsearch/mappings
+# ETAP 13: miasto -> województwo (RegionResolver w seller360-consumer i backfillu
+# seller360:rebuild). Dane referencyjne w obrazie, tak jak mapowania wyżej —
+# lokalnie (compose) ten sam katalog jest montowany z repo.
+COPY infra/reference /infra/reference
+# ETAP 13: mock zewnętrznego rejestru (Deployment registry-mock na k3s, `php -S`).
+# Kilka KB bez zależności; w compose montowany z repo pod tę samą ścieżkę.
+COPY tools/registry-mock /srv/registry-mock
 # Pusty .env: Symfony (Dotenv::bootEnv) RZUCA wyjątkiem, gdy pliku nie ma,
 # a apps/search/.env jest gitignorowany — w czystym klonie (CI) go nie ma.
 # Wszystkie wartości przychodzą ze zmiennych środowiskowych z compose;

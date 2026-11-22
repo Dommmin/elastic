@@ -90,6 +90,9 @@ spec:
                   - search-consumer
                   - analytics-consumer # failure transport Messengera
                   - search-metrics     # failure transport Messengera (doctrine://)
+                  - seller360-consumer   # ETAP 13: failure transport Messengera
+                  - seller360-scheduler  # ETAP 13: DATABASE_URL jak w compose (konfiguracja Doctrine)
+                  - seller360-registry   # ETAP 13: jw.
                   - glitchtip
                   - glitchtip-db-setup
                   - glitchtip-setup
@@ -118,7 +121,16 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler]
+                values:
+                  - catalog-app
+                  - outbox-publisher
+                  - catalog-worker
+                  - catalog-scheduler
+                  # ETAP 13: brudne oferty, since kuriera, bezpiecznik i cache rejestru, write-targets, lag
+                  - seller360-consumer
+                  - seller360-scheduler
+                  - seller360-registry
+                  - search-metrics       # gauge'e lagu seller-360 (klucz seller360:lag)
       ports:
         - port: 6379
 ---
@@ -137,7 +149,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, search-consumer, analytics-consumer]
+                values: [catalog-app, outbox-publisher, search-consumer, analytics-consumer, seller360-consumer]
       ports:
         - port: 5672
     # 15692 = wtyczka rabbitmq_prometheus. UI zarządzania (15672) celowo bez
@@ -170,7 +182,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, migrate, search-consumer, analytics-consumer]
+                values: [catalog-app, outbox-publisher, migrate, search-consumer, analytics-consumer, seller360-consumer, seller360-scheduler, seller360-registry]
         - podSelector:
             matchLabels: { kibana.k8s.elastic.co/name: marketplace }
         # Operator ECK sprawdza zdrowie klastra, ustawia hasła i role przez HTTP API.
@@ -213,14 +225,16 @@ spec:
             matchLabels: { kubernetes.io/metadata.name: ingress }
       ports:
         - port: 80
-    # Wewnętrzne API: projekcja produktu (search -> catalog) i webhook bramki
-    # płatności (worker -> catalog-app). Blok `http://catalog-app` w Caddyfile.
+    # Wewnętrzne API: projekcja produktu (search -> catalog), webhook bramki
+    # płatności (worker -> catalog-app) i ETAP 13: offer-stats, sellers i
+    # billing/accounts dla seller360-scheduler (harmonogram i backfill przebudowy).
+    # Blok `http://catalog-app` w Caddyfile.
     - from:
         - podSelector:
             matchExpressions:
               - key: app
                 operator: In
-                values: [search-consumer, catalog-worker]
+                values: [search-consumer, catalog-worker, seller360-scheduler]
       ports:
         - port: 80
     - from:
@@ -245,6 +259,27 @@ spec:
       ports:
         - port: 80
 ---
+# --------------------------------------------------------------- registry-mock --
+# ETAP 13: mock zewnętrznego rejestru. Klienci: pętla sekcji registry i courier:poll
+# w harmonogramie (oceny kurierów) — tylko te dwa pody mają REGISTRY_BASE_URL.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: registry-mock-ingress
+spec:
+  podSelector:
+    matchLabels: { app: registry-mock }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [seller360-registry, seller360-scheduler]
+      ports:
+        - port: 8080
+---
 # ------------------------------------------------------------------ GlitchTip --
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -265,7 +300,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler, search-consumer, analytics-consumer, search-metrics]
+                values: [catalog-app, outbox-publisher, catalog-worker, catalog-scheduler, search-consumer, analytics-consumer, search-metrics, seller360-consumer, seller360-scheduler, seller360-registry]
       ports:
         - port: 8000
     - from:

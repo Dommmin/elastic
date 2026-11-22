@@ -201,6 +201,8 @@ P = {
   "outbox-publisher" => mp.("outbox-publisher"), "catalog-worker" => mp.("catalog-worker"),
   "catalog-scheduler" => mp.("catalog-scheduler"), "migrate" => mp.("migrate"),
   "search-consumer" => mp.("search-consumer"), "analytics-consumer" => mp.("analytics-consumer"), "search-metrics" => mp.("search-metrics"),
+  "seller360-consumer" => mp.("seller360-consumer"), "seller360-scheduler" => mp.("seller360-scheduler"),
+  "seller360-registry" => mp.("seller360-registry"), "registry-mock" => mp.("registry-mock"),
   "postgres" => mp.("postgres"), "redis" => mp.("redis"), "rabbitmq" => mp.("rabbitmq"),
   "glitchtip" => mp.("glitchtip"), "glitchtip-db-setup" => mp.("glitchtip-db-setup"),
   "glitchtip-setup" => mp.("glitchtip-setup"), "pg-backup" => mp.("pg-backup"),
@@ -228,6 +230,14 @@ ALLOWED = [
   ["search-consumer", "glitchtip", 8000], ["search-consumer", "catalog-app", 80], ["search-consumer", "catalog-app-canary", 80],
   ["analytics-consumer", "rabbitmq", 5672], ["analytics-consumer", "postgres", 5432], ["analytics-consumer", "es", 9200],
   ["search-metrics", "postgres", 5432], ["search-metrics", "glitchtip", 8000],
+  ["search-metrics", "redis", 6379], # gauge'e lagu seller-360 (ETAP 13)
+  # ETAP 13: seller-360 — projektor, harmonogram, pętla rejestru
+  ["seller360-consumer", "rabbitmq", 5672], ["seller360-consumer", "postgres", 5432], ["seller360-consumer", "es", 9200],
+  ["seller360-consumer", "redis", 6379], ["seller360-consumer", "glitchtip", 8000],
+  ["seller360-scheduler", "es", 9200], ["seller360-scheduler", "redis", 6379], ["seller360-scheduler", "postgres", 5432],
+  ["seller360-scheduler", "catalog-app", 80], ["seller360-scheduler", "registry-mock", 8080], ["seller360-scheduler", "glitchtip", 8000],
+  ["seller360-registry", "es", 9200], ["seller360-registry", "redis", 6379], ["seller360-registry", "postgres", 5432],
+  ["seller360-registry", "registry-mock", 8080], ["seller360-registry", "glitchtip", 8000],
   ["glitchtip", "postgres", 5432], ["glitchtip-db-setup", "postgres", 5432], ["glitchtip-setup", "postgres", 5432],
   ["pg-backup", "postgres", 5432],
   ["kibana", "es", 9200], ["es", "es", 9300], ["es", "es", 9200], ["eck-operator", "es", 9200],
@@ -251,6 +261,13 @@ DENIED = [
   ["loadgen", "catalog-app", 80, "generator obciążenia idzie przez ingress, nie na skróty"],
   ["kibana", "postgres", 5432, "Kibana mówi tylko z ES"],
   ["es", "postgres", 5432, "ES nie ma czego szukać w bazie"],
+  ["seller360-consumer", "catalog-app", 80, "projektor nie ma INTERNAL_API_TOKEN (pełny stan sekcji jest w zdarzeniu)"],
+  ["seller360-registry", "catalog-app", 80, "pętla rejestru nie ma INTERNAL_API_TOKEN"],
+  ["seller360-scheduler", "rabbitmq", 5672, "harmonogram nie konsumuje kolejki"],
+  ["seller360-consumer", "registry-mock", 8080, "projektor nie pyta rejestru (osobny proces, awaria nie blokuje kolejki)"],
+  ["search-consumer", "registry-mock", 8080, "rejestr tylko dla procesów seller-360"],
+  ["registry-mock", "es", 9200, "mock rejestru nie ma użytkownika ES"],
+  ["registry-mock", "redis", 6379, "mock rejestru nie ma hasła do Redisa"],
 ].freeze
 
 ALLOWED.each { |s, d, port| ok(allowed?(P[s], P[d], port), "NetworkPolicy pozwala: #{s} -> #{d}:#{port}") }

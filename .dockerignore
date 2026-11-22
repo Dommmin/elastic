@@ -35,4 +35,6 @@ infra/rabbitmq/definitions.json
 .remember
 docs
 tools
+# wyjątek: mock rejestru (ETAP 13) jedzie w obrazie search jako Deployment registry-mock na k3s
+!tools/registry-mock
 **/.DS_Store
