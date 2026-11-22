@@ -3,6 +3,8 @@
 namespace App\Seller360;
 
 use Elastic\Elasticsearch\Client;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
 /**
  * Zapis sekcji do `seller-360` i filtrowanej kopii do `seller-360-public` (ETAP 13).
@@ -25,6 +27,7 @@ class SectionWriter
         private readonly string $writeIndex = 'seller-360-write',
         private readonly string $publicWriteIndex = 'seller-360-public-write',
         private readonly bool $refresh = false,
+        private readonly LoggerInterface $logger = new NullLogger,
     ) {
     }
 
@@ -64,6 +67,7 @@ class SectionWriter
         $updatedAt = new \DateTimeImmutable;
         $body = [];
         $privatePositions = [];
+        $publicPositions = [];
         foreach ($items as $i => $item) {
             $docFields = $item['docFields'] ?? [];
             $privatePositions[] = intdiv(\count($body), 2);
@@ -71,6 +75,7 @@ class SectionWriter
 
             $public = PublicProjection::filter($item['section'], $item['data']);
             if ($public !== null) {
+                $publicPositions[$i] = intdiv(\count($body), 2);
                 array_push($body, ...$this->action($this->publicWriteIndex, $item['sellerId'], $item['section'], $public, $item['meta'], $docFields, $updatedAt));
             }
         }
@@ -89,6 +94,21 @@ class SectionWriter
             $result = ($status >= 200 && $status < 300) ? (string) ($outcome['result'] ?? 'updated') : 'error';
             $results[] = $result;
             $this->metrics->sectionWrite($item['section'], $result);
+
+            // Zapis publiczny nie zmienia wyniku, ale nieudanego nie gubimy po cichu.
+            if (isset($publicPositions[$i])) {
+                $public = $entries[$publicPositions[$i]];
+                $publicOutcome = $public[array_key_first($public)];
+                $publicStatus = (int) ($publicOutcome['status'] ?? 0);
+                if ($publicStatus < 200 || $publicStatus >= 300) {
+                    $this->logger->warning('Zapis kopii publicznej seller-360 odrzucony.', [
+                        'seller_id' => $item['sellerId'],
+                        'section' => $item['section'],
+                        'status' => $publicStatus,
+                        'error' => $publicOutcome['error']['reason'] ?? $publicOutcome['error']['type'] ?? null,
+                    ]);
+                }
+            }
         }
 
         return $results;

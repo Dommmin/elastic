@@ -120,7 +120,8 @@ final class Seller360EventHandler
         $occurredAt = $event->data['occurred_at'] ?? null;
         try {
             $sourceTs = \is_string($occurredAt) ? new \DateTimeImmutable($occurredAt) : $event->occurredAt;
-        } catch (\Exception) {
+        } catch (\Exception $e) {
+            $this->logger->warning('Nieparsowalne occurred_at w ładunku, biorę czas koperty.', ['event_id' => $event->id, 'type' => $event->type, 'occurred_at' => $occurredAt, 'error' => $e->getMessage()]);
             $sourceTs = $event->occurredAt;
         }
 
