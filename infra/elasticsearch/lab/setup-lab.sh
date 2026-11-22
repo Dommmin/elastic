@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  setup-lab.sh [schema|all] — konfiguracja es-lab (ETAP 14); idempotentna
+#  setup-lab.sh [schema|load|all] — konfiguracja es-lab (ETAP 14); idempotentna
 #  Fazy: schema = trial, endpoint E5 `lab-e5`, pipeline `lab-embed`, indeks `products-lab-v1`.
-#  (kolejne fazy — load, elser — dochodzą w następnych zadaniach; `all` = wszystkie istniejące)
+#          load   = próbka z `make lab-export` → _bulk do products-lab-v1 (stałe _id: powtórka nadpisuje), refresh, forcemerge do 1 segmentu.
+#  (faza elser dochodzi w następnym zadaniu; `all` = wszystkie istniejące)
 #  Dotyka WYŁĄCZNIE es-lab (LAB_URL), nigdy głównego klastra.
 # ============================================================================
 set -euo pipefail
@@ -95,8 +96,56 @@ phase_schema() {
   fi
 }
 
+SAMPLE=apps/catalog/storage/app/private/lab/products.ndjson
+SAMPLE_MODULO=58   # musi równać się LabExportCommand::MODULO
+BULK_CHUNK=500
+BULK_TIMEOUT_S=1800   # każdy dokument jest embeddowany dwa razy (pipeline + semantic_text), na CPU to potrwa
+
+phase_load() {
+  step "Próbka produktów → products-lab-v1"
+  [ -f "${SAMPLE}" ] || die "brak ${SAMPLE}; uruchom make lab-export (w trybie normalnym, przed make lab-mode-on)"
+  local modulo expected
+  modulo="$(head -1 "${SAMPLE}" | jq -r '._lab_export.modulo // empty')"
+  expected="$(head -1 "${SAMPLE}" | jq -r '._lab_export.count // empty')"
+  [ "${modulo}" = "${SAMPLE_MODULO}" ] || die "nagłówek próbki ma modulo='${modulo}', oczekiwano ${SAMPLE_MODULO}; uruchom make lab-export"
+  [ -n "${expected}" ] || die "nagłówek próbki bez count; uruchom make lab-export"
+  [ "$(es_code "${LAB_URL}/products-lab-v1")" = 200 ] || die "brak indeksu products-lab-v1; najpierw make lab-setup (faza schema)"
+  echo "  dokumentów w próbce: ${expected}"
+
+  local work started sent=0 n
+  work="$(mktemp -d)"
+  # `id` idzie do _id, nie do _source (mapowanie jest strict); pierwsza linia to nagłówek
+  tail -n +2 "${SAMPLE}" | jq -c '{index: {_id: .id}}, del(.id)' | split -l $((BULK_CHUNK * 2)) - "${work}/chunk."
+  started="$(date +%s)"
+  for f in "${work}"/chunk.*; do
+    n=$(( $(wc -l < "${f}") / 2 ))
+    lab_es --max-time "${BULK_TIMEOUT_S}" -X POST "${LAB_URL}/products-lab-v1/_bulk?refresh=false" \
+      -H 'Content-Type: application/x-ndjson' --data-binary "@${f}" > "${work}/resp.json" || { rm -rf "${work}"; die "żądanie _bulk nie powiodło się (po ${sent} dokumentach)"; }
+    if [ "$(jq -r '.errors' "${work}/resp.json")" != false ]; then
+      jq -c '[.items[] | select(.index.error) | .index.error.reason][0:3]' "${work}/resp.json" >&2
+      rm -rf "${work}"; die "_bulk zgłosił błędy (po ${sent} dokumentach)"
+    fi
+    sent=$((sent + n))
+    printf '  %s/%s (%s s)\n' "${sent}" "${expected}" "$(( $(date +%s) - started ))"
+  done
+  rm -rf "${work}"
+  echo "  load_seconds=$(( $(date +%s) - started ))"
+
+  step "Refresh i forcemerge do 1 segmentu"
+  lab_es -X POST "${LAB_URL}/products-lab-v1/_refresh" | jq -c ._shards
+  lab_es --max-time 1800 -X POST "${LAB_URL}/products-lab-v1/_forcemerge?max_num_segments=1" | jq -c ._shards
+
+  step "Kontrola liczby dokumentów"
+  local count
+  count="$(lab_es "${LAB_URL}/products-lab-v1/_count" | jq -r .count)"
+  echo "  _count=${count}, nagłówek=${expected}"
+  [ "${count}" = "${expected}" ] || die "_count (${count}) różni się od liczby z nagłówka (${expected})"
+}
+
 case "${1:-all}" in
-  schema|all) phase_schema ;;
-  *) die "użycie: setup-lab.sh [schema|all]" ;;
+  schema) phase_schema ;;
+  load) phase_load ;;
+  all) phase_schema; phase_load ;;
+  *) die "użycie: setup-lab.sh [schema|load|all]" ;;
 esac
 step "Gotowe"

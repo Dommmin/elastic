@@ -309,6 +309,10 @@ lab-reset: ## Zatrzymuje es-lab i KASUJE wolumen es-lab-data (wymaga CONFIRM=1)
 lab-setup: ## Trial, endpoint E5, pipeline i indeks products-lab-v1 na es-lab (idempotentne; wymaga lab-up)
 	@bash infra/elasticsearch/lab/setup-lab.sh
 
+.PHONY: lab-export
+lab-export: ## Eksportuje próbkę produktów (id % 58 = 0) do apps/catalog/storage/app/private/lab/products.ndjson (tryb normalny, główny ES)
+	$(DC) exec catalog-app php artisan search:lab:export
+
 .PHONY: seller360-setup
 seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
 	@bash infra/elasticsearch/setup-seller360.sh
