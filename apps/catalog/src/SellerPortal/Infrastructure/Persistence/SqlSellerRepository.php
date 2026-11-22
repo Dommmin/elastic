@@ -27,9 +27,10 @@ use UnexpectedValueException;
 /**
  * Repozytorium sprzedawców na Query Builderze (bez Eloquenta, ADR-0002).
  *
- * Bez outboxu: zdarzenia sprzedawcy nie wychodzą poza kontekst (reakcję
- * na blokadę realizuje polityka w procesie, a search dowiaduje się o skutkach
- * z `offer.suspended`). Optymistyczna blokada jak w `SqlOfferRepository`;
+ * Z outboxem (ETAP 13): zdarzenia sprzedawcy wychodzą jako `seller.*` przez
+ * `SellerIntegrationEvents`, zapisane w tej samej transakcji co stan, bo
+ * search buduje z nich projekcję `seller-360`. Reakcję na blokadę nadal
+ * realizuje polityka w procesie. Optymistyczna blokada jak w `SqlOfferRepository`;
  * `save()` nie zmienia obiektu w pamięci, wołający przeładowuje agregat.
  */
 final class SqlSellerRepository implements SellerRepository
@@ -142,6 +143,8 @@ final class SqlSellerRepository implements SellerRepository
                     'created_at' => $now,
                 ]);
 
+                SellerIntegrationEvents::record($seller, $seller->pendingEvents(), $newVersion);
+
                 return;
             }
 
@@ -157,6 +160,8 @@ final class SqlSellerRepository implements SellerRepository
             if ($updated === 0) {
                 throw new ConcurrencyConflict;
             }
+
+            SellerIntegrationEvents::record($seller, $seller->pendingEvents(), $newVersion);
         });
     }
 

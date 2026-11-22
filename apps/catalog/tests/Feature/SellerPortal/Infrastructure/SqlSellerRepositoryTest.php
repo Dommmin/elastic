@@ -67,16 +67,6 @@ test('slug sprzedawcy = slug nazwy + id', function () {
         ->and($row->lon)->toBeNull();
 });
 
-test('zapis sprzedawcy nie tworzy wiersza outboxu', function () {
-    $repo = new SqlSellerRepository;
-    $registered = sellerRepoRegister($repo);
-    $seller = $repo->get($registered->id());
-    $seller->approve(ModeratorId::fromInt(1), new DateTimeImmutable('2026-10-15 13:00:00'));
-    $repo->save($seller);
-
-    expect(DB::table('outbox')->count())->toBe(0);
-});
-
 test('status_changed_at to czas ostatniego zdarzenia, a status i powód się zapisują', function () {
     $repo = new SqlSellerRepository;
     $seller = sellerRepoRegister($repo, at: new DateTimeImmutable('2026-10-15 12:00:00'));
