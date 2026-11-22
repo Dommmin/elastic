@@ -1272,3 +1272,150 @@ Kontrola pamięci przed startem (próg zapasu 2048 MB): Docker 15 969 MB, konten
 Pierwsza wersja miała asercje przechodzące także na odpowiedzi z błędem (np. „suma `billing.overdue_cents` 0 albo
 `null`”); poprawka dodała sprawdzenie odpowiedzi przed każdą asercją i kontrole dodatnie. Przebieg z brakującymi
 eksportami haseł dał po poprawce 15 FAIL zamiast fałszywej zieleni.
+
+## 18. ETAP 14 — laboratorium wektorów i trafności (2026-11-22)
+
+> Część 14a: BM25 / kNN / hybryda / RRF na polskich zapytaniach, koszt wektorów, filtrowany kNN, recall HNSW.
+> Przewodnik: [`blog/etap-14a-wektory-i-trafnosc.md`](blog/etap-14a-wektory-i-trafnosc.md). Część 14b (ELSER,
+> anomalie) dopisze §18.6 i dalej. Maszyna współdzielona z innymi projektami: czasy **orientacyjne**. Wyniki JSON
+> (ignorowane przez git) w `apps/catalog/storage/app/private/lab/`: `eval-14a.json` (tabela kanoniczna),
+> `eval-14a-pre-rebuild.json` (pierwsza budowa grafu), `latency-14a.json`.
+
+### 18.1 Węzeł i próbka
+
+| Co | Wartość |
+|---|---|
+| Węzeł | `es-lab` (profil Compose `ml`), ES 9.5.1, jeden węzeł, licencja trial, heap 1,5 GB, `mem_limit` 4 GB, `xpack.ml.max_machine_memory_percent: 60` |
+| Pierwsza wersja | heap 1 GB / limit 3 GB: OOM-kill (`exit 137`) przy imporcie E5 |
+| Model | `.multilingual-e5-small`, 384 wymiary, endpoint `lab-e5` (1 alokacja, 1 wątek); 470 MB, `required_native_memory_bytes` ~1,5 GB; kontener po wdrożeniu ~3 GB |
+| Tryb lab | główny klaster (3 węzły) i `es-lab` nie mieszczą się w Docker VM 15,6 GB; `make lab-mode-on` zatrzymuje własne es01–es03, Kibanę i 10 procesów zależnych; zapas po nim ~9,8 GB |
+| Baza katalogu / indeks sklepu | 297 360 produktów / 1 171 554 dokumenty |
+| Próbka | `id % 15 = 0` → **19 824** produkty (pierwsza wersja M = 58 dała 5122); 1 z `in_stock=false` |
+| Eksport (`make lab-export`) | 19,9 s (M = 15); 6,3 s dla M = 58 |
+| Indeks `products-lab-v1` | 1 shard, 0 replik, `force_merge` do 1 segmentu; pola `semantic_e5`, `vec_float`, `vec_int8`, `vec_bbq` |
+| Ładowanie z wektorami | **896 s** (`make lab-setup` w całości 15:09); powtórka tych samych `_id`: 25–27 s (cache inferencji) |
+| Ładowanie bez wektorów | **~4 s** (rozdzielczość 1 s), indeks 5,6 MB |
+
+### 18.2 nDCG@10: 5 wariantów × 3 grupy
+
+33 zapytania z `tests/relevance/semantic-queries.yaml`: 13 lexical, 12 descriptive, 8 exact. `knn` na
+`semantic_e5`, k = 10, `num_candidates` = 100; RRF `rank_constant` 60, okno 100. `make lab-eval
+args="--check-rank-eval --check-rrf --json=lab/eval-14a.json"`; dwa przebiegi pod rząd identyczne co do bitu,
+ponowny przebieg przy pisaniu przewodnika identyczny.
+
+| Wariant | lexical | descriptive | exact |
+|---|---|---|---|
+| bm25 | 1,000 | 0,167 | 1,000 |
+| knn | 0,950 | 0,693 | 0,972 |
+| hybrid-bool | 1,000 | 0,515 | 1,000 |
+| rrf-client | 0,958 | 0,612 | 0,975 |
+| rrf-native | 0,966 | 0,594 | 0,975 |
+
+Kontrole: PHP vs `_rank_eval` (bm25, knn, hybrid-bool) **33/33** zgodne (1e-6); `rrf-client` vs `rrf-native`
+**33/33** (sumy RRF równe na każdej pozycji, kolejność różna tylko w remisach; remisy z różnymi ocenami w 5
+zapytaniach); strażnik remisów bm25: brak remisów z różnymi ocenami.
+
+**Pierwsza budowa grafu** (`eval-14a-pre-rebuild.json`, przed modyfikacją i przywróceniem indeksu): knn
+0,950 / **0,801** / 0,972; hybrid-bool 1,000 / 0,539 / 1,000; rrf-client 0,958 / 0,677 / 0,975; rrf-native
+0,966 / 0,656 / 0,975; bm25 bez zmian. Przebudowa grafu HNSW przesuwa wiersze oparte na kNN (descriptive o
+0,02–0,11), bm25 nie zmienia się. Kanoniczny jest stan obecny.
+
+**Zmiana oceny po wynikach:** zapytanie `Romagera Inc Rower górski Pro X 29"` (literówka) miało pierwotnie
+ocenę 3 tylko dla „Romaguera Inc …”. Remis `_score` BM25 z „Wolff Inc …” (ocena 0) łamał zasadę remisów, więc
+reguła stała się `name_contains: 'Rower górski Pro X 29"'` = 2. Skutek: exact bm25 0,954 → 1,000, knn
+1,000 → 0,972 (pierwsza budowa).
+
+Per zapytanie (stan kanoniczny; pozostałe 24 zapytania pod tabelą):
+
+| Zapytanie | grupa | bm25 | knn | hybrid-bool | rrf-client | rrf-native |
+|---|---|---|---|---|---|---|
+| `komórka` | lexical | 1,000 | 0,351 | 1,000 | 0,452 | 0,555 |
+| coś ciepłego na zimę | descriptive | 0,000 | 1,000 | 0,000 | 0,555 | 0,445 |
+| oświetlenie do ogrodu bez prądu | descriptive | 0,000 | 1,000 | 0,000 | 0,544 | 0,445 |
+| muzyka w podróży | descriptive | 0,000 | 0,469 | 0,469 | 0,469 | 0,469 |
+| prezent dla biegacza | descriptive | 0,000 | 0,713 | 0,713 | 0,713 | 0,713 |
+| do pracy w podróży | descriptive | 0,000 | 0,000 (1,000 na pierwszej budowie) | 0,000 | 0,000 | 0,000 |
+| odpoczynek na tarasie | descriptive | 0,000 | 0,129 | 0,000 | 0,068 | 0,054 |
+| dojazd do pracy bez wysiłku | descriptive | 0,000 | 0,000 | 0,000 | 0,000 | 0,000 |
+| `Romagera Inc Rower górski Pro X 29"` | exact | 1,000 | 0,779 | 1,000 | 0,801 | 0,801 |
+
+Bm25 = 0 i pozostałe = 1,000: „ćwiczenia w domu”, „ochrona przed deszczem”, „naprawy w domu”. Wszystkie = 1,000:
+11 lexical, „jazda po górach”, „telefon z dobrym aparatem”, 7 exact.
+
+### 18.3 Koszt wektorów i kwantyzacja
+
+`make lab-costs` (`_disk_usage?run_expensive_tasks=true`, 19 824 dokumenty, 1 segment):
+
+| Pole | MB | index_options (z `_mapping … include_defaults=true`) |
+|---|---|---|
+| `vec_float` | 29,5 | `hnsw`, float32 |
+| `vec_int8` | 37,0 | `int8_hnsw`, float32 + kopia int8 |
+| `vec_bbq` | 30,8 | `bbq_hnsw`, float32, `rescore_vector.oversample` 3,0 |
+| `semantic_e5` | 16,3 | pole wewnętrzne `semantic_e5.inference.chunks.embeddings`: **`bbq_hnsw`, `element_type: bfloat16`**, oversample 3,0 (~862 B/wektor) |
+| `name` (+ podpola) | 1,2 | |
+| cały indeks | 119,7 (store 120,1) | bez pól wektorowych: 5,6 MB |
+
+Pamięć: `_stats` (`dense_vector`) — value_count 79 296, poza stertą 119 164 174 B (surowe wektory 106 573 824,
+int8 7 929 600, bity bbq 2 458 176, graf 2 202 574), tylko sumy bez podziału na pola. `_nodes/stats/indices/segments`
+`memory_in_bytes`: **0** (wektorów nie liczy).
+
+nDCG@10 wariantu knn per pole i `num_candidates` (obecna budowa; lexical / descriptive / exact):
+
+| Pole | 100 | 500 | 2000 |
+|---|---|---|---|
+| `semantic_e5` | 0,950 / 0,693 / 0,972 | 0,923 / 0,652 / 0,972 | 0,923 / 0,651 / 0,972 |
+| `vec_bbq` | 0,973 / 0,689 / 0,972 | 0,923 / 0,651 / 0,972 | 0,923 / 0,651 / 0,972 |
+| `vec_int8` | 0,923 / 0,714 / 0,974 | 0,923 / 0,709 / 0,974 | 0,923 / 0,709 / 0,974 |
+| `vec_float` | 0,923 / 0,709 / 0,974 | 0,923 / 0,709 / 0,974 | 0,923 / 0,709 / 0,974 |
+
+`semantic_e5` zbiega do dokładnie tego samego wyniku co `vec_bbq`, a `vec_int8` do `vec_float`: domyślna kwantyzacja
+bbq w `semantic_text` (sprawdzona w mapowaniu) kosztuje ~0,06 w descriptive. Descriptive knn przez trzy budowy grafu:
+`semantic_e5` 0,801 / 0,774 / 0,693, `vec_bbq` 0,793 / 0,772 / 0,689, `vec_float` 0,709 / 0,709 / 0,709,
+`vec_int8` 0,709 / 0,709 / 0,714.
+
+Ekstrapolacja liniowa na 1 171 554 dokumenty (×59,1) — **rachunek, nie pomiar**: `vec_float` 1,70 GB, `int8`
+2,14 GB, `bbq` 1,78 GB, `semantic_e5` 0,94 GB, indeks ~6,9 GB; ładowanie z wektorami ~52 950 s (~14,7 h).
+
+### 18.4 Filtrowany kNN (`make lab-filter-demo`)
+
+„coś ciepłego na zimę”, pole `vec_float`, k = 10, `num_candidates` = 100, `size` 10. Jednorazowy indeks
+`products-lab-filter` (`_reindex` z `pipeline: _none`, `(id / 15) % 3 = 0` → 6620 dokumentów `in_stock=false`,
+`force_merge`, skasowany po przebiegu); `products-lab-v1` nietknięty.
+
+| Wariant | trafień | niedostępnych | nDCG@10 |
+|---|---|---|---|
+| a) bez filtra | 10 | 3 | 1,000 |
+| b) `filter` w `knn` | 10 | 0 | 1,000 |
+| c) `post_filter` | 7 | 0 | 1,000 |
+
+nDCG nasycone (oceny nie zależą od dostępności, ideał obcięty do liczby trafień), różnicuje liczba trafień.
+Pierwsza wersja (modyfikacja `products-lab-v1`, inne pole i graf) dała a) 10/6, b) 10/0, c) 4/0 i przebudowała
+graf głównego indeksu (§18.2).
+
+### 18.5 Latencja i recall HNSW
+
+`make lab-eval args="--latency=50"`: 5 żądań rozgrzewkowych, 50 przebiegów × 33 zapytania = 1650 próbek na wariant,
+pierwsza budowa grafu (ms; `took` rrf-client = suma dwóch żądań):
+
+| Wariant | `took` p50 | `took` p99 | PHP p50 | PHP p99 |
+|---|---|---|---|---|
+| bm25 | 0 | 1 | 1,3 | 2,8 |
+| knn | 1 | 2 | 1,7 | 4,8 |
+| hybrid-bool | 1 | 3 | 2,2 | 4,8 |
+| rrf-client | 2 | 4 | 3,8 | 7,2 |
+| rrf-native | 2 | 4 | 3,0 | 5,4 |
+| inference (z cache) | – | – | 0,8 | 1,1 |
+| inference bez cache | – | – | 78,4 | 117,7 |
+
+Cache inferencji wdrożenia: 448,3 MB; 121 140 trafień na 128 447 wywołań. Wiersze wariantów kNN są z wektorem
+z cache. `--latency=20` (660 próbek) dla `num_candidates` 100 / 500 / 2000: `semantic_e5` p50/p99 1/2, 1/1, 2/5 ms;
+`vec_float` 1/1, 1/5–7, 2/8 ms.
+
+recall@10 HNSW (`knn` na `vec_float`, `num_candidates` 100) względem brute force (`script_score`, `cosineSimilarity`
+na `vec_float`, ten sam wektor z `input_type: search`):
+
+| Budowa grafu | po id | z remisami na granicy | poniżej 1 |
+|---|---|---|---|
+| pierwsza | 0,952 | 0,955 | `komórka` 0,0 (przy 2000 kandydatów dokładne), `Wolff Inc` 0,7, „muzyka w podróży” 0,8, „ochrona przed deszczem” 0,9 |
+| po demo filtra na głównym indeksie | 0,988 | 0,991 | |
+| obecna (kanoniczna) | 0,997 | 1,000 | |

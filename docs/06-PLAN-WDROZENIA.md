@@ -463,6 +463,25 @@ procesy seller-360 (przewodnik 13b, krok 15; RUNBOOK #150).
 
 **DoD:** liczbowe porównanie BM25 vs kNN vs hybryda; wiesz, kiedy wektory szkodzą.
 
+**Stan (2026-11-22): 14a zrobione lokalnie** na gałęzi `etap-14-semantyka` (niewypchnięta), laboratorium, nie funkcja
+sklepu (główny klaster, `products-search` i k3s nietknięte):
+- **14a:** węzeł `es-lab` (profil `ml`, trial, heap 1,5 GB / limit 4 GB) z trybem lab (`make lab-mode-on/off`),
+  próbka `id % 15 = 0` (19 824 produkty) z `make lab-export`, model `.multilingual-e5-small` (`semantic_text` + trzy
+  jawne `dense_vector`: float / int8 / bbq), 33 zapytania w grupach lexical / descriptive / exact,
+  `search:eval:lab` z pięcioma wariantami (bm25, knn, hybrid-bool, rrf-client, rrf-native), własne nDCG sprawdzane
+  z `_rank_eval`, recall HNSW, koszt wektorów, filtrowany kNN. Przewodnik:
+  [`blog/etap-14a-wektory-i-trafnosc.md`](blog/etap-14a-wektory-i-trafnosc.md).
+- **Dowód:** nDCG@10 descriptive bm25 0,167 vs knn 0,693; exact bm25 1,000 vs knn 0,972 (cała strata z jednego
+  zapytania z literówką, przeocenionego po wynikach); `komórka` bm25 1,000 vs knn 0,351; hybrid-bool w descriptive
+  0,515 (skala BM25 przykrywa kNN); PHP vs `_rank_eval` 33/33, RRF client vs native 33/33; `semantic_text` w 9.5
+  domyślnie `bbq_hnsw` + bfloat16 (~0,06 straty w descriptive względem float). Pomiary w [POMIARY §18](POMIARY.md),
+  RUNBOOK #152–#155.
+- **14b (do zrobienia):** ELSER w tej samej tabeli, wykrywanie anomalii na zdarzeniach `user.*`.
+
+Spec: [`superpowers/specs/2026-11-22-etap-14-semantyka-ml-design.md`](superpowers/specs/2026-11-22-etap-14-semantyka-ml-design.md),
+plan: [`superpowers/plans/2026-11-22-etap-14-semantyka-ml.md`](superpowers/plans/2026-11-22-etap-14-semantyka-ml.md),
+RUNBOOK #152–#155.
+
 ### ETAP 15 (opcjonalny) — Security analytics lite → **tor 5 z `04`**
 - reguły detekcji nadużyć, `significant_terms`, Kibana Alerting
 

@@ -152,6 +152,10 @@
 | [149](#149) | `make seller360-fls-demo` odmawia (pamięć) albo zostaje kontener `seller360-trial-*` | narzędzia | 13b |
 | [150](#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu (zapobiegnięte: `require_alias`) | k8s / Elasticsearch | 13b |
 | [151](#151) | Wiadomości projektora `seller-360` w `failed` po długiej awarii ES | Symfony / Elasticsearch | 13b |
+| [152](#152) | Laboratorium po 30 dniach: inference i `rrf` dostają 403, `start_trial` odmawia | Elasticsearch / licencja | 14a |
+| [153](#153) | Model E5 się nie wdraża: OOM-kill przy imporcie, niekompletny model, brak pamięci ML | Elasticsearch ML / Docker | 14a |
+| [154](#154) | nDCG z PHP ≠ `_rank_eval` (`--check-rank-eval` czerwone) | Elasticsearch / catalog | 14a |
+| [155](#155) | `rrf-client` ≠ `rrf-native` w tabeli albo `--check-rrf` czerwone | Elasticsearch / catalog | 14a |
 
 ---
 
@@ -6477,3 +6481,155 @@ Gdy wiadomości jest bardzo dużo albo nie wiadomo, ile przepadło: `make seller
 **Czego się nauczyłem**
 Idempotencja po stronie zapisu (wersja w dokumencie) sprawia, że „ponów wszystko” jest poprawną procedurą
 odzyskiwania, a nie ryzykiem. Bez niej retry `failed` po awarii wymagałby ręcznego sortowania wiadomości.
+
+---
+
+<a id="152"></a>
+## 152 — Laboratorium po 30 dniach: inference i `rrf` dostają 403, `start_trial` odmawia
+
+> ETAP 14a (2026-11-22). Procedura na wypadek: trial węzła `es-lab` wygasa 30 dni po pierwszym starcie wolumenu.
+
+**Objaw**
+`make lab-eval` kończy się zdaniem „Licencja węzła lab nie obejmuje wariantów knn, hybrid-bool, rrf-client,
+rrf-native — włącz trial: make lab-setup”, a `make lab-setup` nie pomaga: `start_trial` zwraca
+`trial_was_started: false` z informacją, że trial był już aktywowany. `bm25` dalej działa.
+
+**Diagnoza**
+```bash
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_license" | jq '.license | {type, status, expiry_date}'   # basic albo trial/expired
+lab_es "${LAB_URL}/_license/trial_status"                                   # eligible_to_start_trial: false
+```
+
+**Przyczyna**
+Wdrożenie modelu, `_inference`, `query_vector_builder`, `semantic_text` i retriever `rrf` wymagają licencji trial
+(albo płatnej). Po 30 dniach licencja wraca do basic. Trial jest jednorazowy dla klastra (UUID klastra żyje
+w wolumenie `es-lab-data`), więc ponowne `start_trial` na tym samym wolumenie jest odrzucane.
+
+**Naprawa**
+Nowy klaster = nowy trial. Wolumen laboratorium nie ma danych, których nie da się odtworzyć: próbka leży w
+`apps/catalog/storage/app/private/lab/products.ndjson` (poza wolumenem).
+```bash
+make lab-reset CONFIRM=1        # stop es-lab, rm kontenera, kasuje wolumen es-lab-data
+make lab-up
+make lab-setup                  # trial od nowa, model pobierany ponownie, ładowanie ~15 min
+```
+Jeśli brak `products.ndjson`: `make lab-mode-off && make lab-export && make lab-mode-on` przed `lab-up`. Nowy indeks
+to nowa budowa grafu HNSW: wiersze kNN w tabeli mogą przesunąć się o ~0,1 w descriptive (przewodnik 14a, krok 11).
+
+**Czego się nauczyłem**
+Trial jest przypięty do klastra, nie do maszyny. Laboratorium, które da się postawić od zera jedną komendą
+z danych trzymanych poza wolumenem, nie boi się wygaśnięcia licencji.
+
+---
+
+<a id="153"></a>
+## 153 — Model E5 się nie wdraża: OOM-kill przy imporcie, niekompletny model, brak pamięci ML
+
+> ETAP 14a (2026-11-22). Wystąpiło przy pierwszej konfiguracji węzła (heap 1 GB, limit 3 GB).
+
+**Objaw**
+Podczas `make lab-setup` (tworzenie endpointu `lab-e5`) kontener `es-lab` znika; `docker compose ps -a` pokazuje
+`Exited (137)`. Po ponownym starcie model jest w stanie niekompletnym (`fully_defined: false`, „Model definition
+truncated”) i endpoint się nie wdraża. Inny wariant: wdrożenie odrzucone z komunikatem o braku pamięci dla ML.
+
+**Diagnoza**
+```bash
+docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' "$(docker compose --profile ml ps -aq es-lab)"
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_ml/trained_models/.multilingual-e5-small?include=definition_status" | jq '.trained_model_configs[0].fully_defined'
+lab_es "${LAB_URL}/_ml/trained_models/_stats" | jq '.trained_model_stats[] | {model_id, mem: .model_size_stats, state: .deployment_stats.allocation_status.state}'
+lab_es "${LAB_URL}/_ml/memory/_stats?human" | jq '.nodes[] | .mem.ml'
+```
+
+**Przyczyna**
+`.multilingual-e5-small` ma 470 MB, ale wdrożenie potrzebuje ~1,5 GB pamięci **natywnej** (proces PyTorch poza
+heapem JVM; `required_native_memory_bytes`). Przy limicie kontenera 3 GB i heapie 1 GB import (pobieranie definicji
+w kawałkach + JVM + page cache) przekroczył limit i jądro zabiło proces. Przerwany import zostawia częściową
+definicję modelu w indeksie systemowym. ML może zająć najwyżej `xpack.ml.max_machine_memory_percent` pamięci węzła.
+
+**Naprawa**
+- Konfiguracja, która działa: heap 1,5 GB, `mem_limit` 4 GB, `xpack.ml.max_machine_memory_percent: 60`
+  (compose.yaml, usługa `es-lab`). Przed startem `make lab-mode-on` (zwalnia ~9,8 GB) — `make lab-up` sam odmówi
+  przy zapasie < 4,5 GB.
+- Niekompletny model: `make lab-setup` wykrywa `fully_defined: false` i kasuje model razem z endpointem
+  (`DELETE _inference/text_embedding/lab-e5?force=true`), potem tworzy od nowa. Ręcznie to samo.
+- Na współdzielonej maszynie nie zatrzymywać cudzych kontenerów; zwalniać tylko własne usługi.
+
+**Czego się nauczyłem**
+Rozmiar pliku modelu to nie rozmiar wdrożenia. Pamięć ML jest poza heapem, więc heap trzeba ustawić **mniejszy**
+niż połowa limitu i zostawić miejsce na proces natywny. Skrypt instalacyjny powinien umieć posprzątać po własnym
+przerwanym przebiegu.
+
+---
+
+<a id="154"></a>
+## 154 — nDCG z PHP ≠ `_rank_eval` (`--check-rank-eval` czerwone)
+
+> ETAP 14a (2026-11-22). Rozjazd znaleziony sondą przy budowie licznika i poprawiony; kontrola zielona 33/33.
+
+**Objaw**
+`make lab-eval args="--check-rank-eval"` zgłasza rozbieżność dla wariantu bm25, knn albo hybrid-bool na jednym lub
+kilku zapytaniach (różnica > 1e-6) i kończy się kodem 1.
+
+**Diagnoza**
+Co sprawdzić, po kolei:
+1. **Liczba trafień < k.** ES obcina ideał DCG do min(k, liczba zwróconych trafień). Sonda: zapytanie
+   `{"ids": {"values": ["67230"]}}` z ocenami {67230: 1, 12555: 3} → `_rank_eval` 0,142857 = 1/7. Licznik, który
+   bierze ideał ze wszystkich ocen, da ~0,131.
+2. **Inne oceny.** Czy oceny podane do `_rank_eval` to te same, przecięte z próbką (dokument spoza indeksu w ocenach
+   zaniża ideał)? Czy plik zapytań nie zmienił się między przebiegami?
+3. **Inne zapytanie.** `_rank_eval` dostaje to samo ciało co `_search` (`LabQueryBuilder`)? Zapytanie `knn`
+   w `request.query` musi mieć ten sam `num_candidates` i `query_vector_builder`.
+4. **Remisy.** Dokumenty z równym `_score` i różnymi ocenami mogą wrócić w innej kolejności w dwóch żądaniach
+   (strażnik remisów, kod 2). Na 1 shardzie i 1 segmencie kolejność jest stała; po `_update_by_query` bez merge nie.
+5. **Inna budowa grafu.** Wariant kNN między dwoma przebiegami a zmianą indeksu.
+
+**Przyczyna**
+W tym etapie: pierwsza wersja `Ndcg` liczyła ideał ze wszystkich ocen, a `_rank_eval` z min(k, trafienia). Na 33
+zapytaniach rozjazd nie wychodził, bo każdy wariant zwraca 10 trafień; wyszedł dopiero na sondzie z jednym trafieniem.
+
+**Naprawa**
+`Ndcg::atK` obcina ideał jak ES (test „ideał obcięty do liczby zwróconych wyników, jak w _rank_eval”). Przy nowym
+rozjeździe: odtworzyć jedno zapytanie ręcznie, `_rank_eval` z `metric.dcg.normalize: true` i `k: 10`, porównać
+`details.<id>.hits` (kolejność i oceny) z top-10 z `search:eval:lab` (wydruk per zapytanie, JSON `top`).
+
+**Czego się nauczyłem**
+Własny licznik bez kontroli krzyżowej to opinia. Zgodność na prawdziwych danych nie dowodzi zgodności wzoru, jeśli
+dane nie dotykają przypadku brzegowego; trzeba go sprowokować. I konsekwencja wzoru ES: wynik z mniej niż k
+trafieniami nie jest karany za puste miejsca.
+
+---
+
+<a id="155"></a>
+## 155 — `rrf-client` ≠ `rrf-native` w tabeli albo `--check-rrf` czerwone
+
+> ETAP 14a (2026-11-22). Różnica w tabeli jest oczekiwana (remisy); czerwona kontrola nie wystąpiła.
+
+**Objaw**
+W tabeli `make lab-eval` `rrf-client` i `rrf-native` mają różne nDCG (np. lexical 0,958 vs 0,966), albo
+`--check-rrf` zgłasza rozbieżność sumy na którejś pozycji.
+
+**Diagnoza**
+```bash
+make lab-eval args="--variant=rrf-client --variant=rrf-native --check-rrf"
+# per zapytanie: które zapytania mają różne nDCG; w JSON (--json=…) porównać listy top dla obu wariantów
+```
+Dla rozbieżnego dokumentu policzyć ręcznie: Σ 1/(60 + pozycja) po liście BM25 (`size` 100) i liście kNN (k = 10).
+
+**Przyczyna**
+- **Różne nDCG przy zielonej kontroli:** remisy. Pozycja r tylko w liście A daje tę samą sumę co pozycja r tylko
+  w liście B. PHP rozstrzyga remis mniejszym id jako tekst, ES numerem dokumentu Lucene. Gdy remisujące dokumenty
+  mają różne oceny (tu 5 zapytań), nDCG się różni. Oba warianty są deterministyczne.
+- **Czerwona kontrola (rozjazd sum):** inne parametry (`rank_constant`, `rank_window_size` ≠ okno w PHP), inne
+  listy wejściowe (różne `num_candidates` albo `size` w dwóch zapytaniach `rrf-client`), indeks zmieniony między
+  zapytaniami, albo zbyt ciasna tolerancja wobec float32 w ES (kontrola dopuszcza 1e-6).
+
+**Naprawa**
+Remisy: nic do naprawy, różnica jest własnością RRF; w przewodniku i POMIARACH podawać obie liczby. Rozjazd sum:
+wyrównać parametry w `LabQueryBuilder` (retriever `rrf`) i `Rrf::fuse()`, powtórzyć na niezmienionym indeksie
+(1 segment).
+
+**Czego się nauczyłem**
+RRF to kilka linii arytmetyki, nie funkcja licencji: te same sumy można policzyć w aplikacji na basic. Różnica
+między implementacjami siedzi w regule rozstrzygania remisów, a RRF remisy produkuje z definicji.
