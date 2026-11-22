@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  export-events.sh — eksport zdarzeń user.* z GŁÓWNEGO klastra do NDJSON (ETAP 14b, zadanie 9)
+#  export-events.sh — eksport zdarzeń user.* z GŁÓWNEGO klastra do NDJSON (ETAP 14b, przewodnik 14b, krok 7)
 #  Tylko odczyt: _pit + search_after po (@timestamp, _shard_doc), porcje po 5000.
 #  Wynik: apps/catalog/storage/app/private/lab/events.ndjson (katalog w .gitignore);
 #  pierwsza linia to nagłówek {"_lab_events": {"count": N, "from": …, "to": …}}.

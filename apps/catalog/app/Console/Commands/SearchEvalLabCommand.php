@@ -85,6 +85,22 @@ class SearchEvalLabCommand extends Command
             return self::FAILURE;
         }
 
+        // Zapytania knn mają stałe k=10 (LabQueryBuilder::K): przy innym --k wariant wektorowy liczyłby nDCG@k z 10 sąsiadów.
+        $k = (int) $this->option('k');
+        $vector = array_filter($variants, static fn (LabVariant $v): bool => $v->usesKnn());
+        if ($k !== LabQueryBuilder::K && $vector !== []) {
+            $this->error("--k={$k} nie działa z wariantami wektorowymi (".implode(', ', array_map(static fn (LabVariant $v): string => $v->value, $vector)).'): zapytania knn mają stałe k='.LabQueryBuilder::K.'.');
+
+            return self::FAILURE;
+        }
+
+        // Kontrola _rank_eval i strażnik remisów bm25 pytają zawsze o indeks wariantu, nie o --index.
+        if ((string) $this->option('index') !== '' && ($this->option('check-rank-eval') || in_array(LabVariant::Bm25, $variants, true))) {
+            $this->error('--index nie łączy się z --check-rank-eval ani z wariantem bm25 (kontrola _rank_eval i strażnik remisów pytają products-lab-v1).');
+
+            return self::FAILURE;
+        }
+
         try {
             $this->runner->useNumCandidates((int) $this->option('num-candidates'));
         } catch (InvalidArgumentException $e) {
@@ -105,7 +121,6 @@ class SearchEvalLabCommand extends Command
             return self::FAILURE;
         }
 
-        $k = (int) $this->option('k');
         $queries = array_values(array_filter(
             $this->judgments->load($path),
             static fn (array $entry): bool => in_array($entry['group'], $groups, true),

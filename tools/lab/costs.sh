@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  costs.sh — koszt wektorów w products-lab-v1 (ETAP 14, Task 6); dotyka WYŁĄCZNIE es-lab
+#  costs.sh — koszt wektorów w products-lab-v1 (ETAP 14a, przewodnik 14a, krok 12); dotyka WYŁĄCZNIE es-lab
 #    1. rozmiar na dysku per pole (`_disk_usage?run_expensive_tasks=true`) i cały indeks,
 #    2. pamięć kNN poza stertą (`_stats/dense_vector`, `_nodes/stats/indices/segments`) — co raportuje ES 9.5,
 #    3. czas ładowania tej samej próbki BEZ wektorów: tymczasowy indeks `products-lab-novec`
 #       (to samo mapowanie bez semantic_e5/vec_*, bez pipeline'u), usuwany na końcu (trap),
 #    4. ekstrapolacja liniowa na 1 171 554 dokumentów — RACHUNEK, NIE POMIAR.
-#  Wyjście: `klucz: wartość` + tabela. Czas „z wektorami” = pomiar z make lab-setup (Task 3);
+#  Wyjście: `klucz: wartość` + tabela. Czas „z wektorami” = pomiar z make lab-setup (przewodnik 14a, krok 3);
 #  nadpisanie: LOAD_SECONDS_VECTORS=… Bez ładowania bez wektorów: SKIP_NOVEC=1.
 # ============================================================================
 set -euo pipefail
@@ -21,7 +21,7 @@ SAMPLE=apps/catalog/storage/app/private/lab/products.ndjson
 MAPPING=infra/elasticsearch/lab/products-lab-v1.json
 BULK_CHUNK=500
 FULL_DOCS=1171554
-LOAD_SECONDS_VECTORS="${LOAD_SECONDS_VECTORS:-896}"   # pomiar Task 3: pełne ładowanie z pipeline'em lab-embed i semantic_text
+LOAD_SECONDS_VECTORS="${LOAD_SECONDS_VECTORS:-896}"   # pomiar z make lab-setup (przewodnik 14a, krok 3): pełne ładowanie z pipeline'em lab-embed i semantic_text
 
 cleanup() { lab_es -o /dev/null -X DELETE "${LAB_URL}/${NOVEC}?ignore_unavailable=true" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -84,7 +84,7 @@ if [ "${SKIP_NOVEC:-0}" != 1 ]; then
   trap cleanup EXIT
   echo "tymczasowy indeks ${NOVEC} usunięty"
 fi
-echo "load_seconds_vectors: ${LOAD_SECONDS_VECTORS} (pomiar Task 3, pipeline lab-embed + semantic_text: każdy dokument liczony dwa razy)"
+echo "load_seconds_vectors: ${LOAD_SECONDS_VECTORS} (pomiar z make lab-setup, pipeline lab-embed + semantic_text: każdy dokument liczony dwa razy)"
 
 step "Podsumowanie"
 printf '%-30s %10s\n' "pole / wielkość" "MB"

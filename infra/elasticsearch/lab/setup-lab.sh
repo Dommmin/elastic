@@ -56,15 +56,30 @@ create_endpoint() {
   rm -f "${out}"
 }
 
+# Trial wygasa po 30 dniach: typ zostaje `trial`, status `expired`, a endpointy ML odpowiadają 403. Bez tej kontroli
+# skrypt uznałby model za niewdrożony, skasował endpoint i padł na surowym 403. Drugi trial na tym samym wolumenie
+# ES odrzuca (eligible_to_start_trial=false). W obu przypadkach jedyna droga to nowy wolumen.
+LICENSE_HINT="trial es-lab wygasł albo został już wykorzystany; make lab-reset CONFIRM=1 i od nowa make lab-up && make lab-setup (RUNBOOK #152)"
+require_trial() {
+  local lic type status
+  lic="$(lab_es "${LAB_URL}/_license")"
+  type="$(jq -r '.license.type // empty' <<<"${lic}")"
+  status="$(jq -r '.license.status // empty' <<<"${lic}")"
+  if [ "${type}" = basic ]; then
+    [ "$(lab_es "${LAB_URL}/_license/trial_status" | jq -r '.eligible_to_start_trial')" = true ] \
+      || die "licencja basic, a start_trial niedostępny: ${LICENSE_HINT}"
+    lab_es -X POST "${LAB_URL}/_license/start_trial?acknowledge=true" | jq -e -c '{trial_was_started, acknowledged} | select(.trial_was_started == true)' \
+      || die "start_trial nie uruchomił triala: ${LICENSE_HINT}"
+  elif [ "${status}" != active ]; then
+    die "licencja ${type:-?} ma status ${status:-?}: ${LICENSE_HINT}"
+  else
+    echo "  licencja: ${type}, ${status} (bez zmian)"
+  fi
+}
+
 phase_schema() {
   step "Licencja (trial tylko na es-lab)"
-  local type
-  type="$(lab_es "${LAB_URL}/_license" | jq -r '.license.type // empty')"
-  if [ "${type}" = basic ]; then
-    lab_es -X POST "${LAB_URL}/_license/start_trial?acknowledge=true" | jq -c '{trial_was_started, acknowledged}'
-  else
-    echo "  licencja: ${type} (bez zmian)"
-  fi
+  require_trial
 
   step "Endpoint inference lab-e5 (${MODEL_ID})"
   # model niedokończony (import przerwany, np. OOM-kill): ES odpowiada „Model definition truncated"; usuwamy go i endpoint
@@ -181,9 +196,30 @@ restore_e5() {
   wait_deployed "${MODEL_ID}"
 }
 
+# elser_complete — 0, gdy products-lab-elser istnieje i ma tyle dokumentów co products-lab-v1 (_reindex niepotrzebny)
+elser_complete() {
+  [ "$(es_code "${LAB_URL}/${ELSER_INDEX}")" = 200 ] || return 1
+  [ "$(lab_es "${LAB_URL}/${ELSER_INDEX}/_count" | jq -r .count)" = "$(lab_es "${LAB_URL}/products-lab-v1/_count" | jq -r .count)" ]
+}
+
+# elser_scale_to_one — wdrożenie ELSER na 1 alokację (6 alokacji przy bramce 90% grozi OOM-kill kontenera, RUNBOOK #156)
+elser_scale_to_one() {
+  local alloc
+  alloc="$(lab_es "${LAB_URL}/_ml/trained_models/${ELSER_MODEL}/_stats" | jq -r '[.trained_model_stats[]?.deployment_stats.number_of_allocations // empty][0] // empty')"
+  if [ -n "${alloc}" ] && [ "${alloc}" != 1 ]; then
+    echo "  ELSER ma ${alloc} alokacji: zmniejszam do 1"
+    lab_es -X PUT "${LAB_URL}/_inference/sparse_embedding/lab-elser/_update" -H 'Content-Type: application/json' \
+      -d '{"service_settings":{"num_allocations":1}}' | jq -c .service_settings
+    wait_deployed "${ELSER_MODEL}"
+  fi
+}
+
 phase_elser() {
+  step "Licencja"
+  require_trial
+
   step "Pamięć: es-lab i zapas Dockera"
-  [ "$(es_code "${LAB_URL}/products-lab-v1")" = 200 ] || die "brak products-lab-v1; najpierw make lab-setup i make lab-load"
+  [ "$(es_code "${LAB_URL}/products-lab-v1")" = 200 ] || die "brak products-lab-v1; najpierw make lab-setup (fazy schema i load)"
   need_free_mb 300
   lab_es "${LAB_URL}/_ml/info" | jq -r '"  pamięć ML węzła: \(.limits.total_ml_memory), efektywny limit modelu: \(.limits.effective_max_model_memory_limit)"'
 
@@ -204,9 +240,12 @@ phase_elser() {
       echo "  endpoint bez wdrożenia: kasuję i tworzę ponownie"
       lab_es -X DELETE "${LAB_URL}/_inference/sparse_embedding/lab-elser?force=true" | jq -c .
     fi
-    echo "  tworzę; pierwszy raz ES pobiera model z serwerów Elastic (może potrwać kilka minut)"
-    local body out code
-    body='{"service":"elasticsearch","service_settings":{"model_id":"'"${ELSER_MODEL}"'","num_allocations":'"${ELSER_INGEST_ALLOCATIONS}"',"num_threads":1}}'
+    # kilka alokacji tylko wtedy, gdy naprawdę pójdzie _reindex; przy kompletnym indeksie (np. po zatrzymaniu
+    # wdrożenia ELSER) od razu 1, bo przy bramce 90% sześć alokacji obok E5 grozi OOM-kill
+    local allocations=1 body out code
+    elser_complete || allocations="${ELSER_INGEST_ALLOCATIONS}"
+    echo "  tworzę z ${allocations} alokacjami; pierwszy raz ES pobiera model z serwerów Elastic (może potrwać kilka minut)"
+    body='{"service":"elasticsearch","service_settings":{"model_id":"'"${ELSER_MODEL}"'","num_allocations":'"${allocations}"',"num_threads":1}}'
     out="$(mktemp)"
     code="$(lab_es -o "${out}" -w '%{http_code}' -X PUT "${LAB_URL}/_inference/sparse_embedding/lab-elser?timeout=${WAIT_MAX_S}s" \
       -H 'Content-Type: application/json' -d "${body}")"
@@ -221,7 +260,7 @@ phase_elser() {
   step "Indeks ${ELSER_INDEX}"
   local modulo
   modulo="$(lab_es "${LAB_URL}/products-lab-v1/_mapping" | jq -r '.["products-lab-v1"].mappings._meta.lab_modulo // empty')"
-  [ -n "${modulo}" ] || die "products-lab-v1 nie ma _meta.lab_modulo; najpierw make lab-load"
+  [ -n "${modulo}" ] || die "products-lab-v1 nie ma _meta.lab_modulo; najpierw załaduj próbkę: bash infra/elasticsearch/lab/setup-lab.sh load"
   if [ "$(es_code "${LAB_URL}/${ELSER_INDEX}")" = 200 ]; then
     echo "  istnieje (bez zmian)"
   else
@@ -241,7 +280,9 @@ phase_elser() {
   count="$(lab_es "${LAB_URL}/${ELSER_INDEX}/_count" | jq -r .count)"
   if [ "${count}" = "${expected}" ]; then
     echo "  dokumentów: ${count} (komplet, pomijam _reindex)"
+    elser_scale_to_one
     restore_e5
+    [ "$(model_state)" = started ] || die "wdrożenie E5 nie działa (zapytania knn go potrzebują)"
     return
   fi
 
@@ -272,11 +313,9 @@ phase_elser() {
   [ "${count}" = "${expected}" ] || die "_count (${count}) różni się od products-lab-v1 (${expected})"
 
   step "ELSER: powrót do 1 alokacji; przywracanie E5 i pamięć"
-  lab_es -X PUT "${LAB_URL}/_inference/sparse_embedding/lab-elser/_update" -H 'Content-Type: application/json' \
-    -d '{"service_settings":{"num_allocations":1}}' | jq -c .service_settings
-  wait_deployed "${ELSER_MODEL}"
+  elser_scale_to_one
   restore_e5
-  docker stats --no-stream --format '  {{.Name}}: {{.MemUsage}}' marketplace-es-lab
+  docker stats --no-stream --format '  {{.Name}}: {{.MemUsage}}' "$(docker compose --profile ml ps -q es-lab)"
   [ "$(model_state)" = started ] || die "wdrożenie E5 nie działa (zapytania knn go potrzebują)"
   [ "$(model_state "${ELSER_MODEL}")" = started ] || die "wdrożenie ELSER nie działa (zapytania elser go potrzebują)"
 }

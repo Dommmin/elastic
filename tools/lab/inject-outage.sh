@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  inject-outage.sh [od] [godziny] — symuluje awarię: kasuje user.clicked_result z okna czasowego (ETAP 14b, zadanie 9)
+#  inject-outage.sh [od] [godziny] — symuluje awarię: kasuje user.clicked_result z okna czasowego (ETAP 14b, przewodnik 14b, krok 12)
 #  Działa WYŁĄCZNIE na kopii `lab-events-user` na węźle es-lab (LAB_URL z lib.sh); główny klaster jest nietykalny:
 #  skrypt odmawia, gdy docelowy host to nie host lab, albo gdy pod tym adresem istnieje indeks events-user-default.
 #  Domyślnie: okno 6 h od 2026-11-10T09:00:00Z. Idempotentne: drugi przebieg kasuje 0 dokumentów.

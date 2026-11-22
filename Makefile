@@ -314,7 +314,7 @@ lab-setup-elser: ## ETAP 14b: endpoint lab-elser (ELSER v2) i indeks products-la
 	@bash infra/elasticsearch/lab/setup-lab.sh elser
 
 .PHONY: lab-eval
-lab-eval: ## nDCG@10 wariantów bm25/knn/hybrid-bool/rrf-client/rrf-native na es-lab (np. args="--check-rank-eval --check-rrf")
+lab-eval: ## nDCG@10 wariantów bm25/knn/hybrid-bool/rrf-client/rrf-native na es-lab (np. args="--check-rank-eval --check-rrf"); ELSER: args="--variant=elser" po make lab-setup-elser
 	$(DC) exec catalog-app php artisan search:eval:lab $(args)
 
 .PHONY: lab-costs
@@ -322,7 +322,7 @@ lab-costs: ## Koszt wektorów: dysk per pole, pamięć kNN, czas ładowania bez 
 	@bash tools/lab/costs.sh
 
 .PHONY: lab-filter-demo
-lab-filter-demo: ## Filtrowany kNN: filtr w knn kontra post_filter (oznacza co trzeci dokument próbki jako in_stock=false; es-lab)
+lab-filter-demo: ## Filtrowany kNN: filtr w knn kontra post_filter (w tymczasowej kopii products-lab-filter oznacza co trzeci dokument jako in_stock=false; products-lab-v1 bez zmian; es-lab)
 	@bash tools/lab/filter-demo.sh
 
 .PHONY: lab-export-events

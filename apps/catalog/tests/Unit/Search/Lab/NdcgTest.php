@@ -24,7 +24,7 @@ test('oceniony dokument spoza wyników obniża wynik', function () {
 
 test('ideał obcięty do liczby zwróconych wyników, jak w _rank_eval', function () {
     // Sprawdzone na żywym ES 9.5.1: zapytanie z jednym trafieniem (ocena 1) przy ocenach {1, 3}
-    // daje w `_rank_eval` 1/7 = 0.142857…, a nie 1/(7 + 3/log2(3)) = 0.112450…
+    // daje w `_rank_eval` 1/7 = 0.142857…, a nie 1/(7 + 1/log2(3)) ≈ 0.131
     expect(Ndcg::atK(['a'], ['a' => 1, 'b' => 3], 10))->toEqualWithDelta(1 / 7, 1e-12);
 });
 

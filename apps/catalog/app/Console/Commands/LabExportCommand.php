@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Storage;
  */
 class LabExportCommand extends Command
 {
-    /** Jedyne źródło M próbki; ewaluacja (search:lab:eval) i setup-lab.sh czytają je stąd/z nagłówka pliku. */
+    /** Jedyne źródło M próbki; ewaluacja (search:eval:lab) i setup-lab.sh czytają je stąd/z nagłówka pliku. */
     public const MODULO = 15;
 
     private const ALIAS = 'products-search';

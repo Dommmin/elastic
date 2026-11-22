@@ -29,6 +29,17 @@ enum LabVariant: string
     }
 
     /**
+     * Czy wariant wysyła zapytanie `knn` (stałe k = `LabQueryBuilder::K`).
+     */
+    public function usesKnn(): bool
+    {
+        return match ($this) {
+            self::Knn, self::HybridBool, self::RrfClient, self::RrfNative, self::KnnExact => true,
+            default => false,
+        };
+    }
+
+    /**
      * Czy wariant potrzebuje licencji trial. Samo zapytanie `knn` działa na basic, ale wektor
      * zapytania liczy inference ES (endpoint `lab-e5`), a to funkcja ML — więc wszystko poza
      * `bm25` wymaga trial; `rrf-native` dodatkowo z powodu retrievera `rrf`.

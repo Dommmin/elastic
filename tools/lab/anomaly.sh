@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  anomaly.sh [--reload] [--no-assert] — wykrywanie anomalii ML na zdarzeniach user.* (ETAP 14b, zadanie 9)
-#  1. ładuje events.ndjson do lab-events-user (stałe _id z SHA-1 linii); gdy indeks już istnieje, NIE ładuje ponownie
-#     (żeby nie wskrzesić dokumentów skasowanych przez inject-outage.sh); --reload kasuje indeks i ładuje od nowa
+#  anomaly.sh [--reload] [--no-assert] — wykrywanie anomalii ML na zdarzeniach user.* (ETAP 14b, przewodnik 14b, kroki 8–11)
+#  1. ładuje events.ndjson do lab-events-user (stałe _id z SHA-1 linii); po udanym ładowaniu zapisuje w _meta indeksu
+#     znacznik lab_loaded (liczba dokumentów). Gdy indeks ma znacznik, NIE ładuje ponownie (żeby nie wskrzesić dokumentów
+#     skasowanych przez inject-outage.sh); indeks z dokumentami bez znacznika (przerwane ładowanie) → błąd z podpowiedzią
+#     --reload; --reload kasuje indeks i ładuje od nowa
 #  2. odtwarza job lab-user-activity i datafeed, uruchamia datafeed na całym zakresie danych, czeka na koniec
 #  3. wypisuje top-5 rekordów anomalii (czas, typ, record_score, actual vs typical)
 #  4. ASERCJA: rekord z record_score >= 50 dla user.clicked_result w oknie awarii (kod wyjścia 1, gdy brak);
@@ -35,6 +37,10 @@ JSON_H='Content-Type: application/json'
 
 # --- 1. dane -----------------------------------------------------------------
 exists="$(lab_es -o /dev/null -w '%{http_code}' -I "${LAB_URL}/${IDX}")"
+loaded=""
+if [ "${exists}" = 200 ]; then
+  loaded="$(lab_es "${LAB_URL}/${IDX}/_mapping" | jq -r --arg i "${IDX}" '.[$i].mappings._meta.lab_loaded // empty')"
+fi
 if [ "${RELOAD}" = 1 ] && [ "${exists}" = 200 ]; then
   step "--reload: kasuję ${IDX}"
   lab_es -X DELETE "${LAB_URL}/${IDX}" >/dev/null
@@ -70,8 +76,13 @@ for line in sys.stdin:
   done
   echo
   lab_es -X POST "${LAB_URL}/${IDX}/_refresh" >/dev/null
+  # znacznik PO udanym ładowaniu: bez niego kolejny przebieg nie pomyli połowy danych z kompletem
+  lab_es -X PUT "${LAB_URL}/${IDX}/_mapping" -H "${JSON_H}" -d "{\"_meta\":{\"lab_loaded\":${total}}}" \
+    | jq -e '.acknowledged' >/dev/null || die "nie udało się zapisać znacznika _meta.lab_loaded"
+elif [ -n "${loaded}" ]; then
+  step "Indeks ${IDX} załadowany wcześniej (${loaded} dokumentów): pomijam ładowanie (użyj --reload, żeby przywrócić dane sprzed awarii)"
 else
-  step "Indeks ${IDX} istnieje: pomijam ładowanie (użyj --reload, żeby przywrócić dane sprzed awarii)"
+  die "indeks ${IDX} istnieje, ale nie ma znacznika _meta.lab_loaded (przerwane ładowanie?); załaduj od nowa: make lab-anomaly args=\"--reload --no-assert\""
 fi
 docs="$(lab_es "${LAB_URL}/${IDX}/_count" | jq -r '.count')"
 clicks="$(lab_es "${LAB_URL}/${IDX}/_count" -H "${JSON_H}" -d '{"query":{"term":{"event.type":"user.clicked_result"}}}' | jq -r '.count')"
@@ -103,7 +114,7 @@ lab_es -X POST "${LAB_URL}/_ml/calendars/lab-known-gaps/events" -H "${JSON_H}" -
 
 open="$(lab_es -X POST "${LAB_URL}/_ml/anomaly_detectors/${JOB}/_open")"
 jq -e '.opened == true' <<<"${open}" >/dev/null \
-  || die "job się nie otworzył: ${open} (brak pamięci ML? zatrzymaj ELSER: POST _ml/trained_models/.elser_model_2/deployment/_stop; make lab-setup-elser uruchomi go ponownie)"
+  || die "job się nie otworzył: ${open} (brak pamięci ML? zatrzymaj ELSER: POST _ml/trained_models/lab-elser/deployment/_stop?force=true; make lab-setup-elser uruchomi go ponownie)"
 
 range="$(lab_es "${LAB_URL}/${IDX}/_search" -H "${JSON_H}" -d '{"size":0,"aggs":{"mn":{"min":{"field":"@timestamp"}},"mx":{"max":{"field":"@timestamp"}}}}')"
 t_from="$(jq -r '.aggregations.mn.value_as_string' <<<"${range}")"
@@ -161,6 +172,9 @@ for ((h = 1; h <= OUTAGE_HOURS; h++)); do
   esql="${esql//FROM events-user-\*/FROM ${IDX}}"
   esql="${esql//NOW() - 60 minutes/TO_DATETIME(\"${now_iso}\") - 60 minutes}"
   esql="${esql/| WHERE event.type IN/| WHERE @timestamp >= TO_DATETIME(\"${now_iso}\") - 7 days AND @timestamp < TO_DATETIME(\"${now_iso}\") AND event.type IN}"
+  # zmiana treści reguły w ctr-drop.json rozjechałaby podstawienia po cichu (zapytanie na events-user-* albo z NOW())
+  [[ "${esql}" == *"FROM ${IDX}"* && "${esql}" != *"NOW()"* && "${esql}" == *"- 7 days AND"* ]] \
+    || die "podstawienie zapytania z infra/kibana/rules/ctr-drop.json nie zadziałało (brak FROM ${IDX}, okna 7 dni albo zostało NOW()); sprawdź treść reguły"
   r="$(lab_es -X POST "${LAB_URL}/_query" -H "${JSON_H}" -d "$(jq -nc --arg q "${esql}" '{query: $q}')")"
   jq -e '.values' <<<"${r}" >/dev/null || die "ES|QL nie zadziałało: ${r}"
   # osobno surowe liczby godziny (żeby widać było, dlaczego reguła milczy lub strzela)

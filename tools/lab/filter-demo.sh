@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  filter-demo.sh — filtrowany kNN: filtr wewnątrz `knn` kontra `post_filter` (ETAP 14, Task 6); es-lab
+#  filter-demo.sh — filtrowany kNN: filtr wewnątrz `knn` kontra `post_filter` (ETAP 14a, przewodnik 14a, krok 13); es-lab
 #
 #  Zapytanie „coś ciepłego na zimę”, trzy ciała wariantu `knn` (pole vec_float, k=10, num_candidates=100, size=10):
 #    a) bez filtra,
@@ -11,7 +11,7 @@
 #  liczy osobne zapytanie `ids` + `in_stock:false` do es-lab. Oceny trafności NIE zależą od dostępności (reguły z
 #  semantic-queries.yaml), więc nDCG pokazuje koszt filtra dla trafności, a nie „karę za brak towaru”.
 #
-#  DANE: w próbce jest mało produktów `in_stock=false` (Task 3: 1), a products-lab-v1 ma zostać NIETKNIĘTY (każda
+#  DANE: w próbce jest mało produktów `in_stock=false` (po załadowaniu: 1), a products-lab-v1 ma zostać NIETKNIĘTY (każda
 #  zmiana + merge przebudowuje graf HNSW i przesuwa nDCG wariantów knn). Skrypt buduje więc własny, jednorazowy
 #  indeks `products-lab-filter` na es-lab: to samo mapowanie bez semantic_text i bez pipeline'u, `_reindex` z
 #  products-lab-v1 z `pipeline: _none` (wektory vec_* jadą z _source, bez ponownej inferencji), oznacza tam

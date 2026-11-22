@@ -227,3 +227,27 @@ test('--num-candidates is accepted and values below k are refused', function () 
     $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--num-candidates' => 500, '--queries' => $this->queriesFile])->assertSuccessful();
     $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--num-candidates' => 5, '--queries' => $this->queriesFile])->assertFailed();
 });
+
+test('--k other than 10 is refused for vector variants (knn has a fixed k)', function (string $variant) {
+    $this->artisan('search:eval:lab', ['--variant' => [$variant], '--k' => 20, '--queries' => $this->queriesFile])
+        ->expectsOutputToContain('--k=20')
+        ->assertFailed();
+
+    expect($this->log)->toBe([]);
+})->with(['knn', 'hybrid-bool', 'rrf-client', 'rrf-native']);
+
+test('--k other than 10 is accepted for bm25 and elser', function () {
+    $this->artisan('search:eval:lab', ['--variant' => ['bm25'], '--k' => 5, '--queries' => $this->queriesFile])
+        ->assertSuccessful();
+});
+
+test('--index is refused with --check-rank-eval and with the bm25 tie guard', function (array $args) {
+    $this->artisan('search:eval:lab', [...$args, '--index' => 'products-lab-filter', '--queries' => $this->queriesFile])
+        ->expectsOutputToContain('--index')
+        ->assertFailed();
+
+    expect($this->log)->toBe([]);
+})->with([
+    'check-rank-eval' => [['--variant' => ['knn'], '--check-rank-eval' => true]],
+    'bm25' => [['--variant' => ['bm25']]],
+]);

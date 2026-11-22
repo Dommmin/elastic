@@ -12,9 +12,11 @@ namespace App\Services\Search\Lab;
  * nie 1/(7 + 1/log2 3) ≈ 0,131); zapytanie z mniej niż k wynikami nie jest karane za
  * puste pozycje, tylko za kolejność i dobór tego, co wróciło.
  *
- * Po co własny licznik: tryb hybrydowy (RRF) i `semantic_text` zwracają wyniki
- * z `_search`, których `_rank_eval` nie obsługuje tak samo dla każdego
- * retrievera; jeden licznik dla wszystkich podejść daje porównywalne liczby.
+ * Po co własny licznik: `_rank_eval` przyjmuje tylko zwykłe `query`, a
+ * `rrf-native` to retriever `rrf`, `rrf-client` zaś łączy wyniki w PHP. Zapytania
+ * na `semantic_text` (knn E5, `semantic` na ELSER) `_rank_eval` liczy tak samo
+ * jak ten licznik (`--check-rank-eval`: 33/33 zgodnych); jeden licznik dla
+ * wszystkich wariantów daje porównywalne liczby.
  */
 final class Ndcg
 {
