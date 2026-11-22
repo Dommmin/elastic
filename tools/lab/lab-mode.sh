@@ -55,11 +55,18 @@ case "${1:-}" in
     done
     mkdir -p "$(dirname "${STATE}")"
     if [ "${#todo[@]}" -eq 0 ]; then
-      : > "${STATE}"
-      echo "  nic z listy nie działa (tryb lab już włączony?); zapisano pusty plik stanu: off nic nie przywróci"
+      if [ -f "${STATE}" ]; then
+        echo "  tryb lab już włączony: plik stanu ${STATE} zostaje bez zmian"
+      else
+        : > "${STATE}"
+        echo "  nic z listy nie działa; zapisano pusty plik stanu: off nic nie przywróci"
+      fi
     else
-      printf '%s\n' "${todo[@]}" > "${STATE}"
-      step "Zatrzymuję (zapisane w ${STATE}): ${todo[*]}"
+      # istniejący plik stanu (częściowo włączony tryb) uzupełniamy, nie nadpisujemy
+      for n in "${todo[@]}"; do
+        if [ ! -f "${STATE}" ] || ! grep -qx "${n}" "${STATE}"; then printf '%s\n' "${n}" >> "${STATE}"; fi
+      done
+      step "Zatrzymuję (stan w ${STATE}): ${todo[*]}"
       docker compose stop "${todo[@]}"
     fi
     step "Pamięć po zatrzymaniu"
@@ -82,7 +89,11 @@ case "${1:-}" in
       done
     fi
     if [ "${#restore[@]}" -eq 0 ]; then
-      echo "  plik stanu jest pusty (przed trybem lab nic z listy nie działało): nic nie przywracam, es-lab zatrzymany"
+      if [ -f "${STATE}" ]; then
+        echo "  plik stanu jest pusty (przed trybem lab nic z listy nie działało): nic nie przywracam, es-lab zatrzymany"
+      else
+        echo "  brak pliku stanu i brak istniejących kontenerów z listy: nic nie przywracam, es-lab zatrzymany"
+      fi
       rm -f "${STATE}"
       exit 0
     fi
