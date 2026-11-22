@@ -313,3 +313,37 @@ test('hamulec: przed każdą paczką sprawdza kolejkę projektora, przed sprzeda
         ->and(array_search('search.seller360', $this->backpressure->queues))
         ->toBeLessThan(array_search('search.analytics.ingest', $this->backpressure->queues));
 });
+
+test('kolejka nie schodzi poniżej limitu w --max-wait: przerywa z instrukcją --purge', function () {
+    $clock = new stdClass;
+    $clock->now = 0.0;
+    app()->instance(QueueBackpressure::class, new class(sleep: function (int $s) use ($clock): void {
+        $clock->now += $s;
+    }, clock: fn (): float => $clock->now) extends QueueBackpressure
+    {
+        protected function depth(string $queue): int
+        {
+            return 90_000;
+        }
+    });
+
+    $this->artisan('seller360:simulate', ['--sellers' => 10, '--plant' => 0, '--seed' => 3, '--complaints' => $this->csv, '--max-wait' => 60])
+        ->expectsOutputToContain('--purge')
+        ->assertFailed();
+
+    expect(Seller::query()->where('synthetic', true)->count())->toBe(0);
+});
+
+test('brak kolejki w RabbitMQ: czytelny błąd zamiast śladu stosu', function () {
+    app()->instance(QueueBackpressure::class, new class extends QueueBackpressure
+    {
+        protected function depth(string $queue): int
+        {
+            throw new RuntimeException("Kolejka {$queue} nie istnieje w RabbitMQ (404).");
+        }
+    });
+
+    $this->artisan('seller360:simulate', ['--sellers' => 10, '--plant' => 0, '--seed' => 3, '--complaints' => $this->csv])
+        ->expectsOutputToContain('nie istnieje')
+        ->assertFailed();
+});

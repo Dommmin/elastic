@@ -7,6 +7,7 @@ use App\Seller360\Simulation\BillingScenario;
 use App\Seller360\Simulation\ComplaintsCsvWriter;
 use App\Seller360\Simulation\PlantedSellers;
 use App\Seller360\Simulation\QueueBackpressure;
+use App\Seller360\Simulation\QueueBackpressureFailed;
 use App\Seller360\Simulation\SalesEvents;
 use App\Seller360\Simulation\SyntheticSellers;
 use DateTimeImmutable;
@@ -44,6 +45,7 @@ class Seller360SimulateCommand extends Command
         {--complaints=storage/app/seller360/complaints.csv : Ścieżka CSV z reklamacjami (względna wobec katalogu aplikacji)}
         {--sales : Zdarzenia sprzedaży w dwóch oknach po 30 dni: prawdziwi sprzedawcy i ok. 10% syntetycznych}
         {--plant=5 : Zasadzeni sprzedawcy (plus 4 bliskie pudła)}
+        {--max-wait=900 : Maksymalne czekanie [s] na zejście kolejki konsumenta poniżej limitu; potem przerwanie}
         {--purge : Usuń syntetycznych sprzedawców, użytkowników i faktury, wypisz komendę czyszczącą search}';
 
     protected $description = 'Generuje syntetycznych sprzedawców, faktury, reklamacje i sprzedaż z prawdą podstawową (seller-360)';
@@ -61,6 +63,8 @@ class Seller360SimulateCommand extends Command
     private const SALES_CHECK_EVERY = 1_000;
 
     private float $waited = 0.0;
+
+    private int $maxWait = QueueBackpressure::DEFAULT_MAX_WAIT_SECONDS;
 
     public const SEARCH_PURGE_COMMAND = 'docker compose exec seller360-consumer php bin/console seller360:purge-synthetic';
 
@@ -115,7 +119,12 @@ class Seller360SimulateCommand extends Command
             ];
         }
 
-        $persisted = $this->persist($plans, $synthetic, $billing, $backpressure, $random, $now, $started);
+        $this->maxWait = max(1, (int) $this->option('max-wait'));
+        try {
+            $persisted = $this->persist($plans, $synthetic, $billing, $backpressure, $random, $now, $started);
+        } catch (QueueBackpressureFailed $e) {
+            return $this->abort($e, $backpressure);
+        }
         $persistedAt = microtime(true);
 
         $path = $this->absolute((string) $this->option('complaints'));
@@ -135,7 +144,11 @@ class Seller360SimulateCommand extends Command
         }
         PlantedSellers::write($dir.'/planted.json', $planted, $nearMisses);
 
-        [$salesSellers, $events] = $this->publishSales($plans, $publisher, $backpressure, $random, $now);
+        try {
+            [$salesSellers, $events] = $this->publishSales($plans, $publisher, $backpressure, $random, $now);
+        } catch (QueueBackpressureFailed $e) {
+            return $this->abort($e, $backpressure);
+        }
         $backpressure->close();
 
         $this->table(
@@ -164,7 +177,7 @@ class Seller360SimulateCommand extends Command
         $withBilling = 0;
 
         foreach (array_chunk($plans, self::BATCH) as $batch) {
-            $this->waited += $backpressure->waitBelow(self::PROJECTOR_QUEUE, QueueBackpressure::LIMIT, $unpublished, $say);
+            $this->waited += $backpressure->waitBelow(self::PROJECTOR_QUEUE, QueueBackpressure::LIMIT, $unpublished, $say, $this->maxWait);
             DB::transaction(function () use ($batch, $synthetic, $billing, $random, $now, $passwordHash, $moderatorId, &$withBilling): void {
                 foreach ($batch as $plan) {
                     $synthetic->persist($plan['seller'], $passwordHash, $moderatorId, $now);
@@ -211,7 +224,7 @@ class Seller360SimulateCommand extends Command
         $say = fn (string $line) => $this->line($line);
         foreach ($targets as [$sellerId, $profile]) {
             if ($checkedAt === null || $events - $checkedAt >= self::SALES_CHECK_EVERY) {
-                $this->waited += $backpressure->waitBelow(self::ANALYTICS_QUEUE, QueueBackpressure::LIMIT, onWait: $say);
+                $this->waited += $backpressure->waitBelow(self::ANALYTICS_QUEUE, QueueBackpressure::LIMIT, onWait: $say, maxWaitSeconds: $this->maxWait);
                 $checkedAt = $events;
             }
             $events += SalesEvents::publish($publisher, $random, $sellerId, SalesEvents::draw($random, $profile), $now);
@@ -219,6 +232,21 @@ class Seller360SimulateCommand extends Command
         $publisher->finish();
 
         return [count($targets), $events];
+    }
+
+    /**
+     * Hamulec nie może czekać dalej: część paczek mogła już trafić do bazy (i do outboksu), więc
+     * ponowienie wymaga czystego stanu.
+     */
+    private function abort(QueueBackpressureFailed $e, QueueBackpressure $backpressure): int
+    {
+        $backpressure->close();
+        $this->error($e->getMessage());
+        $this->line('Generator przerwany; zapisane paczki zostały w bazie. Przed ponowieniem:');
+        $this->line('  php artisan seller360:simulate --purge');
+        $this->line('  '.self::SEARCH_PURGE_COMMAND.'  (po opróżnieniu kolejki projektora)');
+
+        return self::FAILURE;
     }
 
     private function purge(string $dir): int

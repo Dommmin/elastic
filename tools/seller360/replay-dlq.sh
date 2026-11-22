@@ -13,9 +13,13 @@
 #  Bezpieczne dla seller-360: każde zdarzenie niesie pełny stan sekcji i `version` (strażnik noop),
 #  a zdarzenia analityki mają stałe `_id` (409 przy duplikacie).
 #
-#  Wtyczka rabbitmq_shovel nie jest w enabled_plugins (plik montowany tylko do odczytu). Skrypt
-#  uruchamia ją w działającym węźle (do restartu RabbitMQ), bez zmiany konfiguracji. Nigdy nie
-#  używamy `rabbitmqadmin get` (konsumuje wiadomości).
+#  Wtyczka rabbitmq_shovel: TYLKO W CZASIE DZIAŁANIA. Nie ma jej w infra/rabbitmq/enabled_plugins
+#  (plik montowany tylko do odczytu, `rabbitmq-plugins enable` odmawia: "target node uses a different
+#  path"), więc skrypt startuje ją w działającym węźle przez `rabbitmqctl eval` — po restarcie
+#  RabbitMQ znika, a kolejne wywołanie skryptu uruchomi ją ponownie. Celowo nie włączamy jej na
+#  stałe: ponowienie DLQ to rzadka operacja ręczna, a trwała wtyczka wymagałaby zmiany obrazu,
+#  pliku enabled_plugins i manifestów k8s (rabbitmq.yaml, rabbitmq-ha.yaml). Nigdy nie używamy
+#  `rabbitmqadmin get` (konsumuje wiadomości).
 # ============================================================================
 set -euo pipefail
 
