@@ -5,6 +5,7 @@ namespace App\Command;
 use App\Seller360\Registry\CircuitBreaker;
 use App\Seller360\Registry\RegistrySync;
 use Elastic\Elasticsearch\Client;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -18,6 +19,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  * najstarsze `registry._meta.updated_at` pierwsze (sekcja bez daty na samym początku), a tempo to
  * najwyżej 20 żądań HTTP na sekundę (sprzedawca = 2 żądania). Gdy bezpiecznik jest otwarty,
  * nie ma HTTP, więc pętla nie hamuje: tylko odświeża sekcje stale/error z cache.
+ * Wyjątek przy jednym sprzedawcy (np. ES odrzucił zapis) nie zabija pętli: ostrzeżenie w logu i próba zapisu
+ * `_meta.status=error` (świeże `updated_at`, więc sprzedawca trafia na koniec kolejności), potem następny.
  * Osobny proces, bo awaria rejestru nie może zatrzymać kolejki zdarzeń.
  */
 #[AsCommand(name: 'seller360:registry:sync', description: 'Synchronizuje sekcję registry seller-360 z rejestrem zewnętrznym')]
@@ -33,6 +36,7 @@ final class Seller360RegistrySyncCommand extends Command
         private readonly RegistrySync $sync,
         private readonly CircuitBreaker $breaker,
         private readonly Client $es,
+        private readonly LoggerInterface $logger,
         private readonly string $index = 'seller-360',
     ) {
         parent::__construct();
@@ -86,7 +90,7 @@ final class Seller360RegistrySyncCommand extends Command
             }
             $started = microtime(true);
             $throttle = $this->breaker->allow();
-            $this->sync->syncSeller($seller['id'], $seller['nip']);
+            $this->syncOne($seller['id'], $seller['nip']);
             $done++;
             $left = $minPerSeller - (microtime(true) - $started);
             if ($throttle && $left > 0) {
@@ -95,6 +99,20 @@ final class Seller360RegistrySyncCommand extends Command
         }
 
         return $done;
+    }
+
+    private function syncOne(int $sellerId, string $nip): void
+    {
+        try {
+            $this->sync->syncSeller($sellerId, $nip);
+        } catch (\Throwable $e) {
+            $this->logger->warning('Synchronizacja rejestru sprzedawcy nie powiodła się, idę dalej.', ['seller_id' => $sellerId, 'error' => $e->getMessage()]);
+            try {
+                $this->sync->markError($sellerId, $nip, $e->getMessage());
+            } catch (\Throwable $inner) {
+                $this->logger->warning('Nie udało się zapisać statusu error sekcji registry.', ['seller_id' => $sellerId, 'error' => $inner->getMessage()]);
+            }
+        }
     }
 
     /** @return list<array{id: int, nip: string, updated: string}> sprzedawcy z NIP-em, `search_after` po seller_id */

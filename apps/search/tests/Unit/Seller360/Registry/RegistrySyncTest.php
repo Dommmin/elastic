@@ -193,4 +193,44 @@ final class RegistrySyncTest extends TestCase
 
         self::assertFalse((new CircuitBreaker($this->store->redis($this), fn (): float => $this->now))->isOpen());
     }
+
+    /**
+     * Ścieżka stale nie może cofnąć oceny kuriera, którą fan-out zapisał po ostatnim udanym pobraniu:
+     * kurier z cache dostaje świeżą ocenę z `courier-ratings`, tak jak na ścieżce sukcesu.
+     */
+    public function test_stale_z_cache_bierze_swieza_ocene_kuriera_z_courier_ratings(): void
+    {
+        $this->store->data['seller360:registry:5260250274'] = json_encode(['fetched_at' => 900, 'data' => [
+            'legal_name' => 'Acme', 'vat_status' => 'active', 'registered_at' => null,
+            'courier' => ['id' => 'courier-3', 'on_time_rate' => 0.5, 'rated_at' => '2026-11-20T10:00:00Z'],
+        ]]);
+        $es = $this->es(200, ['_source' => ['courier_id' => 'courier-3', 'on_time_rate' => 0.93, 'rated_at' => '2026-11-21T10:00:00Z']]);
+
+        $this->sync($this->downClient(), $es)->syncSeller(7, '5260250274');
+
+        self::assertSame('stale', $this->writes[0]['meta']->status);
+        self::assertSame('Acme', $this->writes[0]['data']['legal_name']);
+        self::assertSame(['id' => 'courier-3', 'on_time_rate' => 0.93, 'rated_at' => '2026-11-21T10:00:00Z'], $this->writes[0]['data']['courier']);
+    }
+
+    public function test_stale_bez_oceny_w_courier_ratings_zostawia_kuriera_z_cache(): void
+    {
+        $courier = ['id' => 'courier-3', 'on_time_rate' => 0.5, 'rated_at' => '2026-11-20T10:00:00Z'];
+        $this->store->data['seller360:registry:5260250274'] = json_encode(['fetched_at' => 900, 'data' => ['legal_name' => 'Acme', 'courier' => $courier]]);
+
+        $this->sync($this->downClient())->syncSeller(7, '5260250274');
+
+        self::assertSame($courier, $this->writes[0]['data']['courier']);
+    }
+
+    public function test_mark_error_zapisuje_pusta_sekcje_error_z_wersja_teraz(): void
+    {
+        $this->sync($this->healthyClient())->markError(7, '5260250274', 'boom');
+
+        self::assertSame([], $this->writes[0]['data']);
+        self::assertSame('error', $this->writes[0]['meta']->status);
+        self::assertSame('boom', $this->writes[0]['meta']->error);
+        self::assertSame(1_000_000, $this->writes[0]['meta']->version);
+        self::assertSame(['nip' => '5260250274'], $this->writes[0]['docFields']);
+    }
 }

@@ -16,6 +16,7 @@ use Psr\Log\LoggerInterface;
  *   - porażka z cache: dane z cache ze `status: stale` i `error`, a `source_ts` to chwila ostatniego udanego
  *     pobrania (lag `updated_at − source_ts` rośnie przez całą awarię, ruling R6); cache sprzed tej zmiany
  *     (same dane, bez `fetched_at`) dostaje `source_ts` = teraz i wygasa w ciągu 24 h;
+ *     Kurier z cache dostaje świeżą ocenę z `courier-ratings`, żeby zapis stale nie cofnął oceny z fan-outu;
  *   - porażka bez cache: pusta sekcja, same `_meta` ze `status: error`.
  * Wersja to czas w ms także dla stale/error, żeby nie zostały zignorowane jako starsze od wcześniejszego ok.
  * Ocena kuriera pochodzi z indeksu `courier-ratings` (dokument o `_id` = courier_id; powstaje w Task 13),
@@ -71,12 +72,24 @@ class RegistrySync
         $cached = $this->cacheGet($nip);
         if ($cached !== null) {
             [$data, $fetchedAt] = $cached;
+            $data = $this->withFreshRating($data);
             $staleTs = $fetchedAt !== null ? (new \DateTimeImmutable)->setTimestamp($fetchedAt) : $sourceTs;
             $this->writer->apply($sellerId, 'registry', $data, new SectionMeta($version, $staleTs, 'stale', $error), ['nip' => $nip]);
 
             return;
         }
         $this->writer->apply($sellerId, 'registry', [], new SectionMeta($version, $sourceTs, 'error', $error), ['nip' => $nip]);
+    }
+
+    /**
+     * Pusta sekcja ze `status: error` (wersja = teraz w ms). Woła ją pętla synchronizacji, gdy `syncSeller` rzucił
+     * nieoczekiwanym wyjątkiem: świeże `updated_at` przesuwa sprzedawcę na koniec kolejności „najstarsze pierwsze”,
+     * więc jeden zepsuty sprzedawca nie blokuje początku każdego przejścia.
+     */
+    public function markError(int $sellerId, string $nip, string $error): void
+    {
+        $now = ($this->now)();
+        $this->writer->apply($sellerId, 'registry', [], new SectionMeta((int) round($now * 1000), (new \DateTimeImmutable)->setTimestamp((int) $now), 'error', $error), ['nip' => $nip]);
     }
 
     /** @return array<string, mixed> */
@@ -92,6 +105,28 @@ class RegistrySync
             'registered_at' => $company['registered_at'] ?? null,
             'courier' => ['id' => $courierId, 'on_time_rate' => $rating['on_time_rate'], 'rated_at' => $rating['rated_at']],
         ];
+    }
+
+    /**
+     * Kurier z cache z oceną z `courier-ratings` (lokalny ES, działa mimo awarii rejestru). Bez tego zapis stale
+     * (wersja = teraz) cofałby ocenę, którą fan-out kuriera zapisał po ostatnim udanym pobraniu. Brak dokumentu
+     * oceny zostawia kuriera z cache bez zmian.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function withFreshRating(array $data): array
+    {
+        $courierId = $data['courier']['id'] ?? null;
+        if (! \is_string($courierId) || $courierId === '') {
+            return $data;
+        }
+        $rating = $this->rating($courierId);
+        if ($rating['on_time_rate'] !== null) {
+            $data['courier'] = ['id' => $courierId, 'on_time_rate' => $rating['on_time_rate'], 'rated_at' => $rating['rated_at']];
+        }
+
+        return $data;
     }
 
     /** @return array{on_time_rate: ?float, rated_at: ?string} */
