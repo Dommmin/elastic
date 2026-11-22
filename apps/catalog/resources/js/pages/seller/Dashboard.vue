@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head, Link, usePage } from '@inertiajs/vue3';
+import { Deferred, Head, Link, usePage } from '@inertiajs/vue3';
 import { Plus } from '@lucide/vue';
 import { computed } from 'vue';
 import BlockedBanner from '@/components/seller/BlockedBanner.vue';
@@ -10,13 +10,22 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
+import { formatPriceCents } from '@/lib/currency';
 import { offerFilterLabels } from '@/lib/offer';
+import { relativeTime } from '@/lib/relativeTime';
 import { dashboard } from '@/routes/seller';
 import { create, index } from '@/routes/seller/offers';
 import { index as ordersIndex } from '@/routes/seller/orders';
-import type { OfferFilter, SellerDashboardStats } from '@/types';
+import type { OfferFilter, SellerDashboardStats, SellerStats } from '@/types';
 
-defineProps<{ stats: SellerDashboardStats }>();
+defineProps<{
+    stats: SellerDashboardStats;
+    // Deferred: undefined do czasu dociągnięcia, null gdy brak dokumentu albo ES niedostępny.
+    seller360?: SellerStats | null;
+}>();
+
+const percent = (value: number | undefined) =>
+    value === undefined ? '—' : `${(value * 100).toFixed(1)}%`;
 
 defineOptions({
     layout: {
@@ -101,5 +110,102 @@ const tiles: { filter: OfferFilter; hint: string }[] = [
                 </Card>
             </Link>
         </div>
+
+        <section class="flex flex-col gap-3" aria-labelledby="seller360-title">
+            <h2 id="seller360-title" class="text-lg font-semibold">
+                Twoje statystyki
+            </h2>
+
+            <Deferred data="seller360">
+                <template #fallback>
+                    <p class="text-sm text-muted-foreground">
+                        Ładuję statystyki…
+                    </p>
+                </template>
+
+                <p
+                    v-if="!seller360"
+                    class="text-sm text-muted-foreground"
+                    data-test="seller360-unavailable"
+                >
+                    Statystyki chwilowo niedostępne
+                </p>
+
+                <div
+                    v-else
+                    class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+                    data-test="seller360"
+                >
+                    <Card>
+                        <CardHeader>
+                            <CardDescription>Oferty aktywne</CardDescription>
+                            <CardTitle class="text-3xl tabular-nums">
+                                {{ seller360.offers?.active ?? '—' }}
+                            </CardTitle>
+                            <CardDescription class="text-xs">
+                                z {{ seller360.offers?.total ?? '—' }} · dane
+                                {{ relativeTime(seller360.freshness.offers) }}
+                            </CardDescription>
+                        </CardHeader>
+                    </Card>
+                    <Card>
+                        <CardHeader>
+                            <CardDescription>
+                                Sprzedaż z 30 dni
+                            </CardDescription>
+                            <CardTitle class="text-3xl tabular-nums">
+                                {{
+                                    seller360.sales?.gmv_30d_cents === undefined
+                                        ? '—'
+                                        : formatPriceCents(
+                                              seller360.sales.gmv_30d_cents,
+                                          )
+                                }}
+                            </CardTitle>
+                            <CardDescription class="text-xs">
+                                {{ seller360.sales?.orders_30d ?? '—' }}
+                                zamówień · dane
+                                {{ relativeTime(seller360.freshness.sales) }}
+                            </CardDescription>
+                        </CardHeader>
+                    </Card>
+                    <Card>
+                        <CardHeader>
+                            <CardDescription>Konwersja koszyka</CardDescription>
+                            <CardTitle class="text-3xl tabular-nums">
+                                {{ percent(seller360.sales?.conversion_30d) }}
+                            </CardTitle>
+                            <CardDescription class="text-xs">
+                                poprzednio
+                                {{
+                                    percent(
+                                        seller360.sales?.conversion_prev_30d,
+                                    )
+                                }}
+                            </CardDescription>
+                        </CardHeader>
+                    </Card>
+                    <Card>
+                        <CardHeader>
+                            <CardDescription>
+                                Terminowość kuriera
+                            </CardDescription>
+                            <CardTitle class="text-3xl tabular-nums">
+                                {{
+                                    percent(
+                                        seller360.courier_on_time_rate ??
+                                            undefined,
+                                    )
+                                }}
+                            </CardTitle>
+                            <CardDescription class="text-xs">
+                                ocena z rejestru · dane
+                                {{ relativeTime(seller360.freshness.courier) }}
+                            </CardDescription>
+                        </CardHeader>
+                    </Card>
+                </div>
+            </Deferred>
+        </section>
     </div>
 </template>

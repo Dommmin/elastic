@@ -103,6 +103,23 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
 }' >/dev/null
 log "  OK"
 
+# --- 3b. rola widoku sprzedawcy (ETAP 13, Task 15) — TYLKO ODCZYT seller-360-public -------
+# Licencja basic nie ma FLS/DLS, więc izolację robi osobny alias `seller-360-public`
+# (bez billing i complaints), a ta rola widzi tylko jego. Brak `monitor` i brak
+# view_index_metadata: konto nie wie nawet, że istnieje `seller-360`.
+log "Tworzę rolę seller_stats_view (read seller-360-public)..."
+curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/seller_stats_view" \
+  -H 'Content-Type: application/json' -d '{
+  "cluster": [],
+  "indices": [
+    {
+      "names": ["seller-360-public"],
+      "privileges": ["read"]
+    }
+  ]
+}' >/dev/null
+log "  OK"
+
 # --- 4. użytkownicy aplikacyjni ---------------------------------------------
 log "Tworzę użytkownika catalog..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/user/catalog" \
@@ -115,6 +132,18 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/user/searchsvc" \
   -H 'Content-Type: application/json' \
   -d "{\"password\":\"${ES_SEARCHSVC_PASSWORD}\",\"roles\":[\"search_service\"],\"full_name\":\"Search service (Symfony)\"}" >/dev/null
 log "  OK"
+
+# Hasło bywa puste na świeżym checkoucie bez wpisu w .env: wtedy konta nie tworzymy
+# (blok statystyk pokaże „chwilowo niedostępne”), a reszta skryptu działa dalej.
+if [ -n "${ES_CATALOG_SELLER_VIEW_PASSWORD:-}" ]; then
+  log "Tworzę użytkownika catalog_seller_view..."
+  curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/user/catalog_seller_view" \
+    -H 'Content-Type: application/json' \
+    -d "{\"password\":\"${ES_CATALOG_SELLER_VIEW_PASSWORD}\",\"roles\":[\"seller_stats_view\"],\"full_name\":\"Catalog: widok sprzedawcy\"}" >/dev/null
+  log "  OK"
+else
+  log "Pomijam catalog_seller_view: brak ES_CATALOG_SELLER_VIEW_PASSWORD."
+fi
 
 # --- 5. rejestracja repozytorium snapshotów (przyda się w ETAPIE 10) --------
 log "Rejestruję repozytorium snapshotów 'local-fs'..."

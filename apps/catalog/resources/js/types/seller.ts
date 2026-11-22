@@ -105,6 +105,37 @@ export type SellerDashboardStats = Record<
     number
 >;
 
+/**
+ * Blok „Twoje statystyki” (App\Seller360\SellerStatsReader, alias seller-360-public).
+ * Sekcja bywa `null`, gdy agregat jeszcze jej nie ma; `freshness` to `updated_at` sekcji.
+ */
+export type SellerStats = {
+    profile: {
+        name: string;
+        city: string;
+        status: string;
+        status_reason: string | null;
+    } | null;
+    offers: {
+        active?: number;
+        suspended?: number;
+        sold_out?: number;
+        total?: number;
+    } | null;
+    sales: {
+        gmv_30d_cents?: number;
+        orders_30d?: number;
+        conversion_30d?: number;
+        conversion_prev_30d?: number;
+        conversion_drop?: number;
+    } | null;
+    courier_on_time_rate: number | null;
+    freshness: Record<
+        'profile' | 'offers' | 'sales' | 'courier',
+        string | null
+    >;
+};
+
 /** Podpowiedź z `GET /seller/products/lookup` (ReadModel\ProductLookup). */
 export type ProductLookupHit = {
     id: number;

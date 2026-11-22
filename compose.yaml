@@ -274,6 +274,7 @@ services:
       KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD}
       ES_CATALOG_PASSWORD: ${ES_CATALOG_PASSWORD}
       ES_SEARCHSVC_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
+      ES_CATALOG_SELLER_VIEW_PASSWORD: ${ES_CATALOG_SELLER_VIEW_PASSWORD}
     command: ["bash", "/usr/local/bin/setup-security.sh"]
     volumes:
       - ./infra/elasticsearch/setup-security.sh:/usr/local/bin/setup-security.sh:ro
@@ -389,6 +390,9 @@ services:
       ELASTICSEARCH_HOST: http://es01:9200
       ELASTICSEARCH_USER: catalog
       ELASTICSEARCH_PASSWORD: ${ES_CATALOG_PASSWORD}
+      # ETAP 13: osobny klient ES dla bloku „Twoje statystyki” (read tylko na seller-360-public).
+      ELASTICSEARCH_SELLER_VIEW_USER: catalog_seller_view
+      ELASTICSEARCH_SELLER_VIEW_PASSWORD: ${ES_CATALOG_SELLER_VIEW_PASSWORD:-}
       # B = 2: środek plateau 0,5–4 z pomiaru ETAPU 12 (POMIARY §16), strażnik 13 zapytań = 1,000.
       SEARCH_POPULARITY_BOOST: ${SEARCH_POPULARITY_BOOST:-2}
       RABBITMQ_HOST: rabbitmq

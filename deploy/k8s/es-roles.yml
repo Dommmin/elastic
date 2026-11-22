@@ -27,3 +27,11 @@ search_service:
       privileges: ["all"]
     - names: ["courier-ratings"]
       privileges: ["read", "write", "view_index_metadata"]
+
+# ETAP 13 (Task 15): widok sprzedawcy. Basic nie ma FLS/DLS, więc izolacja to osobny alias
+# `seller-360-public` (bez billing i complaints) i rola z `read` tylko na nim.
+seller_stats_view:
+  cluster: []
+  indices:
+    - names: ["seller-360-public"]
+      privileges: ["read"]

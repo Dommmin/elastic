@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Seller360\SellerStatsReader;
 use App\Support\ErrorTracking\JobTimeoutReporter;
 use App\Support\ErrorTracking\QueueRetryFilter;
 use Carbon\CarbonImmutable;
@@ -54,6 +55,23 @@ class AppServiceProvider extends ServiceProvider
 
             return $builder->build();
         });
+
+        // Osobny klient na konto o minimalnych uprawnieniach (ETAP 13, Task 15). Bez danych dostępowych
+        // budujemy go bez uwierzytelniania: ES odpowie 401, czytnik zamieni to na `null`, strona działa dalej.
+        // Dostaje go tylko SellerStatsReader (test Arch/SellerViewClientTest).
+        $this->app->singleton('es.seller_view', function () {
+            $builder = ClientBuilder::create()->setHosts([config('services.elasticsearch.host')]);
+
+            if (filled(config('services.elasticsearch_seller_view.user')) && filled(config('services.elasticsearch_seller_view.password'))) {
+                $builder->setBasicAuthentication(
+                    config('services.elasticsearch_seller_view.user'),
+                    config('services.elasticsearch_seller_view.password'),
+                );
+            }
+
+            return $builder->build();
+        });
+        $this->app->when(SellerStatsReader::class)->needs(Client::class)->give(fn ($app) => $app->make('es.seller_view'));
     }
 
     /**

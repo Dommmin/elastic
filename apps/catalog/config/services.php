@@ -54,6 +54,13 @@ return [
         'password' => env('ELASTICSEARCH_PASSWORD'),
     ],
 
+    // ETAP 13: konto `catalog_seller_view` (rola seller_stats_view: read tylko na seller-360-public),
+    // host ten sam co wyżej. Klient `es.seller_view` w AppServiceProvider.
+    'elasticsearch_seller_view' => [
+        'user' => env('ELASTICSEARCH_SELLER_VIEW_USER'),
+        'password' => env('ELASTICSEARCH_SELLER_VIEW_PASSWORD'),
+    ],
+
     // Waga popularności (rank_feature) w rankingu zapytań tekstowych; 0 = wyłączone.
     'search' => [
         'popularity_boost' => (float) env('SEARCH_POPULARITY_BOOST', 0),
