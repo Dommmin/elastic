@@ -265,6 +265,49 @@ services:
       es01:
         condition: service_started
 
+  # ==========================================================================
+  #  ETAP 14 — węzeł laboratoryjny (semantyka i ML)
+  # ==========================================================================
+  # Osobny, jednowęzłowy ES z licencją trial (włączaną ręcznie, `_license/start_trial`) — główny klaster
+  # zostaje na BASIC. Nie dziedziczy `x-es-common`: tamten ma discovery wielowęzłowe i TLS transportowy.
+  # Dane eksperymentów wchodzą z pliku (apps/catalog/storage/app/private/lab/), nie z głównego klastra.
+  es-lab:
+    image: marketplace/elasticsearch:${ES_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME:-marketplace}-es-lab
+    profiles: [ml]
+    environment:
+      cluster.name: marketplace-lab
+      discovery.type: single-node
+      ELASTIC_PASSWORD: ${ES_LAB_PASSWORD:?ES_LAB_PASSWORD musi być ustawione dla profilu ml}
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      xpack.ml.enabled: "true"
+      # modele ML mogą zająć najwyżej 60% pamięci kontenera (mem_limit 3g)
+      xpack.ml.max_machine_memory_percent: "60"
+    ports:
+      - "127.0.0.1:${ES_LAB_PORT:-19201}:9200"
+    volumes:
+      - es-lab-data:/usr/share/elasticsearch/data
+      - ./infra/elasticsearch/analysis:/usr/share/elasticsearch/config/analysis:ro
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    mem_limit: 3g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -u elastic:${ES_LAB_PASSWORD} http://localhost:9200/_cluster/health
+          | grep -qE '"status":"(green|yellow)"'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [marketplace]
+    restart: "no"
+
   # Kontener jednorazowy: hasło kibana_system + role i użytkownicy aplikacji.
   # To jest lekcja "jak inicjalizuje się sekrety w klastrze" (ETAP 2).
   es-setup:
@@ -390,6 +433,9 @@ services:
       ELASTICSEARCH_HOST: http://es01:9200
       ELASTICSEARCH_USER: catalog
       ELASTICSEARCH_PASSWORD: ${ES_CATALOG_PASSWORD}
+      # ETAP 14: węzeł laboratoryjny (profil ml); puste hasło = laboratorium wyłączone.
+      ELASTICSEARCH_LAB_HOST: http://es-lab:9200
+      ELASTICSEARCH_LAB_PASSWORD: ${ES_LAB_PASSWORD:-}
       # ETAP 13: osobny klient ES dla bloku „Twoje statystyki” (read tylko na seller-360-public).
       ELASTICSEARCH_SELLER_VIEW_USER: catalog_seller_view
       ELASTICSEARCH_SELLER_VIEW_PASSWORD: ${ES_CATALOG_SELLER_VIEW_PASSWORD:-}
@@ -1268,6 +1314,7 @@ volumes:
   es01-data:
   es02-data:
   es03-data:
+  es-lab-data:
   es-certs:
   es-snapshots:
   minio-data:

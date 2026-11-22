@@ -281,6 +281,22 @@ closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dni
 analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
+## Laboratorium semantyki i ML (ETAP 14, profil ml)
+.PHONY: lab-up
+lab-up: ## Uruchamia węzeł es-lab (osobny ES, trial/ML; potrzebuje ~3,5 GB wolnej pamięci Dockera)
+	@bash tools/lab/lab-up.sh
+
+.PHONY: lab-down
+lab-down: ## Zatrzymuje es-lab (dane zostają w wolumenie es-lab-data)
+	$(DC) --profile ml stop es-lab
+
+.PHONY: lab-reset
+lab-reset: ## Zatrzymuje es-lab i KASUJE wolumen es-lab-data (wymaga CONFIRM=1)
+	@[ "$(CONFIRM)" = "1" ] || { echo "lab-reset kasuje wolumen es-lab-data; powtórz z CONFIRM=1"; exit 1; }
+	$(DC) --profile ml stop es-lab
+	$(DC) --profile ml rm -f es-lab
+	docker volume rm $$($(DC) config --format json | jq -r '.name')_es-lab-data
+
 .PHONY: seller360-setup
 seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
 	@bash infra/elasticsearch/setup-seller360.sh

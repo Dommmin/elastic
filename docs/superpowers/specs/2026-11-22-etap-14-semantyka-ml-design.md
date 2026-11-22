@@ -175,7 +175,7 @@ wektory szkodzą” opartą na liczbach z grupy `exact`; testy catalog zielone.
   (recall@10), nie trafia do tabeli głównej.
 - R4. **14a kończy się tabelą 5 wariantów × 3 grupy**; 14b dokłada kolumnę `elser`. DoD etapu (§9) = 6.
 - R5. **Próbka i zdarzenia eksportowane raz** z głównego klastra do pliku w ścieżce ignorowanej przez git
-  (np. `.lab-data/`); `lab-setup` ładuje z pliku. Główny klaster potrzebny tylko do eksportu, `lab-eval`
+  (`apps/catalog/storage/app/private/lab/`, już ignorowana); `lab-setup` ładuje z pliku. Główny klaster potrzebny tylko do eksportu, `lab-eval`
   wymaga tylko `es-lab` i bazy katalogu (oceny). Eksport jest jawnym krokiem (`make lab-export`).
 
 ## 11. Zostawione budowniczemu

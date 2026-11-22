@@ -39,4 +39,3 @@ infra/rabbitmq/definitions.json
 # --- Python (infra/glitchtip) ---
 __pycache__/
 *.pyc
-.lab-data/
