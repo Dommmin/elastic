@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Head, Link } from '@inertiajs/vue3';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
     Card,
@@ -19,7 +20,12 @@ import { relativeTime } from '@/lib/relativeTime';
 import { index } from '@/routes/panel/sellers360';
 import type { Seller360Card, Seller360SectionKey } from '@/types';
 
-defineProps<{ seller: Seller360Card }>();
+// `seller` jest null, gdy ES leży (es_available: false): strona pokazuje komunikat zamiast 500.
+defineProps<{
+    seller: Seller360Card | null;
+    sellerId: number;
+    es_available: boolean;
+}>();
 
 defineOptions({
     layout: {
@@ -72,9 +78,24 @@ function scalarEntries(data: Record<string, unknown>): [string, unknown][] {
 </script>
 
 <template>
-    <Head :title="`Seller 360: ${seller.name ?? seller.id}`" />
+    <Head :title="`Seller 360: ${seller?.name ?? sellerId}`" />
 
-    <div class="flex flex-col gap-6 p-4">
+    <div v-if="!seller" class="flex flex-col gap-6 p-4">
+        <Alert variant="destructive" role="alert">
+            <AlertDescription>
+                Elasticsearch jest niedostępny, karta sprzedawcy {{ sellerId }}
+                chwilowo niewidoczna.
+            </AlertDescription>
+        </Alert>
+        <Link
+            :href="index()"
+            class="text-sm underline-offset-4 hover:underline"
+        >
+            ‹ Wróć do wyszukiwarki
+        </Link>
+    </div>
+
+    <div v-else class="flex flex-col gap-6 p-4">
         <div class="flex flex-wrap items-baseline justify-between gap-2">
             <div>
                 <h1 class="text-xl font-semibold">

@@ -42,6 +42,16 @@ test('nazwa krótsza niż 3 znaki → błąd walidacji name', function () {
     expect(DB::table('sellers')->count())->toBe(0);
 });
 
+test('NIP nie-napis → jeden błąd walidacji, bez wołania value objectu', function () {
+    $this->actingAs(User::factory()->create())
+        ->from('/seller/apply')
+        ->post('/seller/apply', ['name' => 'Sklep Testowy', 'city' => 'Kraków', 'nip' => ['5261040828']])
+        ->assertRedirect('/seller/apply')
+        ->assertSessionHasErrors('nip');
+
+    expect(session('errors')->get('nip'))->toHaveCount(1);
+});
+
 test('drugie zgłoszenie → przekierowanie na status, bez nowego wiersza', function () {
     $user = User::factory()->create();
     Seller::factory()->pending()->forUser($user)->create();

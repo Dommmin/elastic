@@ -162,6 +162,29 @@ final class RebuildTest extends TestCase
         self::assertCount(1, $this->targets->current(), 'podwójny zapis zatrzymany');
     }
 
+    /** Błąd `_aliases` w fazie switch też wyłącza podwójny zapis (wcześniej klucz zostawał z dwiema parami, RUNBOOK #147). */
+    public function test_nieudane_przelaczenie_aliasow_wylacza_podwojny_zapis(): void
+    {
+        $rebuilder = $this->rebuilder();
+        $failed = false;
+        try {
+            $rebuilder->run(afterDualStart: function (): void {
+                // zwykły indeks o nazwie aliasu odczytu: akcja `add` w `_aliases` dostaje 400 i całe żądanie pada
+                $this->client->indices()->deleteAlias(['index' => "seller-360-{$this->ns}-v1", 'name' => $this->names->mainAlias]);
+                $this->client->indices()->create(['index' => $this->names->mainAlias, 'body' => ['settings' => ['number_of_shards' => 1, 'number_of_replicas' => 0]]]);
+            });
+        } catch (\Elastic\Elasticsearch\Exception\ClientResponseException) {
+            $failed = true;
+        } finally {
+            $this->client->indices()->delete(['index' => $this->names->mainAlias, 'ignore_unavailable' => true]);
+        }
+
+        self::assertTrue($failed, 'przełączenie aliasów miało paść');
+
+        self::assertCount(1, $this->targets->current(), 'podwójny zapis zatrzymany mimo błędu w fazie switch');
+        self::assertSame($this->names->mainWriteAlias(), $this->targets->current()[0]['main']);
+    }
+
     public function test_druga_przebudowa_przy_trwajacym_podwojnym_zapisie_odmawia(): void
     {
         $this->targets->startDual('seller-360-cos', 'seller-360-public-cos');

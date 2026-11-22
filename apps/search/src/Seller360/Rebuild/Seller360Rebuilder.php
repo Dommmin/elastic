@@ -115,24 +115,25 @@ class Seller360Rebuilder
             $say('3. backfill: '.json_encode($report->backfill));
 
             $this->timed($report, 'verify', fn () => $this->verify($report));
+            $say(\sprintf('4. weryfikacja: _count stare %s, nowe %s; próbka %d, rozjazdów %d', json_encode($report->countsOld), json_encode($report->countsNew), $report->sampled, \count($report->mismatches)));
+
+            if ($this->beyondTolerance($report)) {
+                $this->stopDual();
+                $report->status = 'aborted';
+                $this->logger->error('Przebudowa seller-360 przerwana: rozjazd ponad tolerancję.', ['mismatches' => \array_slice($report->mismatches, 0, 20), 'counts_old' => $report->countsOld, 'counts_new' => $report->countsNew]);
+
+                return $report;
+            }
+
+            // Switch też w bloku sprzątającym: błąd `_aliases` nie może zostawić podwójnego zapisu (RUNBOOK #147).
+            $this->timed($report, 'switch', function () use ($report): void {
+                $this->switchAliases($report);
+                $this->stopDual();
+            });
         } catch (\Throwable $e) {
             $this->stopDual();
             throw $e;
         }
-        $say(\sprintf('4. weryfikacja: _count stare %s, nowe %s; próbka %d, rozjazdów %d', json_encode($report->countsOld), json_encode($report->countsNew), $report->sampled, \count($report->mismatches)));
-
-        if ($this->beyondTolerance($report)) {
-            $this->stopDual();
-            $report->status = 'aborted';
-            $this->logger->error('Przebudowa seller-360 przerwana: rozjazd ponad tolerancję.', ['mismatches' => \array_slice($report->mismatches, 0, 20), 'counts_old' => $report->countsOld, 'counts_new' => $report->countsNew]);
-
-            return $report;
-        }
-
-        $this->timed($report, 'switch', function () use ($report): void {
-            $this->switchAliases($report);
-            $this->stopDual();
-        });
         $report->status = 'switched';
         $say("5. aliasy przepięte na {$report->newMain} i {$report->newPublic}, podwójny zapis wyłączony");
 

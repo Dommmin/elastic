@@ -55,6 +55,8 @@ test('wystawienie, płatność i zaległość dają trzy wiersze outboxu z rosn�
     expect($overdue)->toMatchArray(['balance_cents' => 12500, 'overdue_cents' => 10000, 'open_invoices' => 2, 'invoice_id' => $f1->value(), 'version' => 3])
         ->and($overdue['overdue_since'])->toStartWith('2026-11-20');
 
+    expect($first['occurred_at'])->toBe('2026-11-21T12:00:00.000000+00:00');
+
     $paid = json_decode($rows[3]->payload, true);
     expect($paid)->toMatchArray(['balance_cents' => 10000, 'overdue_cents' => 10000, 'open_invoices' => 1, 'invoice_id' => $f2->value(), 'version' => 4]);
 });

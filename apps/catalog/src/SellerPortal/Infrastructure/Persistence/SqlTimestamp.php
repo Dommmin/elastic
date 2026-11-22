@@ -19,6 +19,15 @@ final class SqlTimestamp
         return $moment->setTimezone(new DateTimeZone(config('app.timezone')))->format('Y-m-d H:i:s.u');
     }
 
+    /**
+     * Czas w ładunku zdarzenia integracyjnego: ISO 8601 z offsetem i mikrosekundami (`2026-11-21T12:00:00.000000+00:00`).
+     * DLACZEGO nie `format()`: postać SQL nie ma strefy, więc konsument z inną strefą domyślną odczytałby inny moment.
+     */
+    public static function iso(DateTimeImmutable $moment): string
+    {
+        return $moment->setTimezone(new DateTimeZone(config('app.timezone')))->format('Y-m-d\TH:i:s.uP');
+    }
+
     public static function parse(string $value): DateTimeImmutable
     {
         return new DateTimeImmutable($value);

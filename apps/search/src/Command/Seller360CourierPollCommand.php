@@ -26,7 +26,7 @@ final class Seller360CourierPollCommand extends Command
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $r = $this->fanOut->pollFromRedis();
-        $output->writeln(\sprintf('couriers=%d updated=%d noops=%d conflicts=%d took_ms=%d', $r->couriers, $r->updated, $r->noops, $r->conflicts, $r->tookMs));
+        $output->writeln(\sprintf('couriers=%d updated=%d noops=%d conflicts=%d failures=%d took_ms=%d', $r->couriers, $r->updated, $r->noops, $r->conflicts, $r->failures, $r->tookMs));
 
         return Command::SUCCESS;
     }

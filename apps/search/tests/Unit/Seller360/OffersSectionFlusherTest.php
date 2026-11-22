@@ -75,6 +75,27 @@ final class OffersSectionFlusherTest extends TestCase
         self::assertArrayNotHasKey('seller360:dirty:offers:flushing', $this->sets);
     }
 
+    /** Nieparsowalne `computed_at` jednego sprzedawcy: ostrzeżenie, powrót do DIRTY, zdjęcie z WORK; reszta się zapisuje. */
+    public function test_nieparsowalne_computed_at_nie_blokuje_klucza_roboczego(): void
+    {
+        $this->sets['seller360:dirty:offers'] = ['7', '9'];
+        $client = $this->createStub(CatalogSellerClient::class);
+        $client->method('offerStats')->willReturnCallback(fn (int $id): array => [
+            'seller_id' => $id, 'active' => 1, 'suspended' => 0, 'sold_out' => 0, 'total' => 1,
+            'computed_at' => $id === 9 ? 'to-nie-data' : '2026-11-21T10:00:00.123+00:00',
+        ]);
+        $writer = $this->createMock(SectionWriter::class);
+        $writer->expects(self::once())->method('applyMany')
+            ->with(self::callback(fn (array $items): bool => array_column($items, 'sellerId') === [7]))
+            ->willReturn(['updated']);
+
+        $written = (new OffersSectionFlusher($this->redis(), $client, $writer, new NullLogger))->flush();
+
+        self::assertSame(1, $written);
+        self::assertSame(['9'], $this->sets['seller360:dirty:offers']);
+        self::assertArrayNotHasKey('seller360:dirty:offers:flushing', $this->sets);
+    }
+
     public function test_pusty_zbior_nic_nie_robi(): void
     {
         $writer = $this->createMock(SectionWriter::class);

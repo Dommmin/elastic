@@ -38,7 +38,7 @@ class ApplySellerRequest extends FormRequest
         return [
             'name' => ['required', 'string', 'min:3', 'max:120'],
             'city' => ['required', 'string', 'max:120'],
-            'nip' => ['required', 'string', $this->validTaxId(...), 'unique:sellers,nip'],
+            'nip' => ['bail', 'required', 'string', $this->validTaxId(...), 'unique:sellers,nip'],
         ];
     }
 

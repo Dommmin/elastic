@@ -153,4 +153,24 @@ final class Seller360EventHandlerTest extends TestCase
         $this->expectException(UnrecoverableMessageHandlingException::class);
         $this->handler($writer, $this->createStub(\Redis::class))($this->event('billing.payment_received', 'billing_account', $this->billingData()));
     }
+
+    /** Payload z offsetem i mikrosekundami (nowy format catalogu) i stary `Y-m-d H:i:s.u` (UTC) dają ten sam moment. */
+    public function test_occurred_at_w_obu_formatach(): void
+    {
+        $seen = [];
+        $writer = $this->createStub(SectionWriter::class);
+        $writer->method('apply')->willReturnCallback(function (int $id, string $section, array $data, SectionMeta $meta) use (&$seen): string {
+            $seen[] = $meta->sourceTs;
+
+            return 'updated';
+        });
+        $handler = $this->handler($writer, $this->createStub(\Redis::class));
+
+        foreach (['2026-11-21T09:59:00.123456+00:00', '2026-11-21 09:59:00.123456'] as $occurredAt) {
+            $handler($this->event('billing.payment_received', 'billing_account', ['occurred_at' => $occurredAt] + $this->billingData()));
+        }
+
+        self::assertSame('2026-11-21T09:59:00.123456+00:00', $seen[0]->format('Y-m-d\TH:i:s.uP'));
+        self::assertSame($seen[0]->format('U.u'), $seen[1]->format('U.u'));
+    }
 }

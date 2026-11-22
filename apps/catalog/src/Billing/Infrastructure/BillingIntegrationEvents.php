@@ -46,7 +46,7 @@ final class BillingIntegrationEvents
                     ...$snapshot,
                     'invoice_id' => $event->invoiceId->value(),
                     'version' => $version,
-                    'occurred_at' => SqlTimestamp::format($event->occurredAt()),
+                    'occurred_at' => SqlTimestamp::iso($event->occurredAt()),
                 ], JSON_THROW_ON_ERROR),
                 'sequence' => $version,
                 'occurred_at' => SqlTimestamp::format($event->occurredAt()),

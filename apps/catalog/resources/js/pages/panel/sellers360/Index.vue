@@ -17,6 +17,7 @@ const props = defineProps<{
     page: number;
     perPage: number;
     es_available: boolean;
+    query_error: number | null;
     filters: Seller360Filters;
     dodPreset: {
         region: string;
@@ -118,6 +119,12 @@ function cents(value: number | null): string {
         <Alert v-if="!es_available" variant="destructive" role="alert">
             <AlertDescription>
                 Elasticsearch jest niedostępny, wyniki chwilowo niewidoczne.
+            </AlertDescription>
+        </Alert>
+        <Alert v-else-if="query_error" variant="destructive" role="alert">
+            <AlertDescription>
+                Elasticsearch odrzucił zapytanie (HTTP {{ query_error }}). Zmień
+                filtry i spróbuj ponownie.
             </AlertDescription>
         </Alert>
 

@@ -58,7 +58,8 @@ test('rejestracja daje jeden wiersz seller.registered z version 1 i nip', functi
         ->and($payload['status_reason'])->toBeNull()
         ->and($payload['synthetic'])->toBeTrue()
         ->and($payload['version'])->toBe(1)
-        ->and($payload)->toHaveKey('occurred_at');
+        // ISO 8601 z offsetem i mikrosekundami: konsument nie zgaduje strefy (format SQL bez strefy był niejednoznaczny).
+        ->and($payload['occurred_at'])->toMatch('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$/');
 });
 
 test('approve i rename w kolejnych zapisach dają version 2 i 3', function () {

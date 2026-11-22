@@ -157,6 +157,33 @@ final class CourierFanOutTest extends TestCase
         self::assertSame(3, $fanOut->attempts);
     }
 
+    /** Wpisy `failures` zadania (np. odrzucone paczki bulk) traktujemy jak resztkowe konflikty: ponowienie, potem wynik. */
+    public function test_failures_zadania_sa_ponawiane_jak_konflikty(): void
+    {
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.91, 'rated_at' => '2026-11-22T08:00:00Z']];
+
+        $healed = $this->fanOut(failuresOnAttempts: [1 => 2]);
+        $result = $healed->poll(new \DateTimeImmutable('2026-11-22T00:00:00Z'));
+        self::assertSame(0, $result->failures);
+        self::assertSame(2, $healed->attempts);
+
+        $stuck = $this->fanOut(failuresOnAttempts: [1 => 1, 2 => 1, 3 => 1]);
+        $result = $stuck->poll(new \DateTimeImmutable('2026-11-22T00:00:00Z'));
+        self::assertSame(1, $result->failures);
+        self::assertSame(3, $stuck->attempts);
+    }
+
+    public function test_since_nie_przesuwa_sie_przy_resztkowych_failures(): void
+    {
+        $redis = $this->memoryRedis();
+        $redis->store[CourierFanOut::SINCE_KEY] = '2026-11-22T08:00:00Z';
+        $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.95, 'rated_at' => '2026-11-22T09:00:00Z']];
+
+        $this->fanOut(redis: $redis, failuresOnAttempts: [1 => 1, 2 => 1, 3 => 1])->pollFromRedis();
+
+        self::assertSame('2026-11-22T08:00:00Z', $redis->store[CourierFanOut::SINCE_KEY]);
+    }
+
     public function test_since_przesuwa_sie_tylko_po_czystym_przebiegu(): void
     {
         $redis = $this->memoryRedis();
@@ -256,16 +283,20 @@ final class CourierFanOutTest extends TestCase
     /**
      * @param  array<int, int>  $conflictsOnAttempts  numer próby (od 1) => liczba konfliktów dopisana do odpowiedzi zadania
      * @param  list<string>|null  $targets
+     * @param  array<int, int>  $failuresOnAttempts  numer próby (od 1) => liczba wpisów `failures` dopisana do odpowiedzi
      */
-    private function fanOut(?\Redis $redis = null, array $conflictsOnAttempts = [], ?array $targets = null): CourierFanOut
+    private function fanOut(?\Redis $redis = null, array $conflictsOnAttempts = [], ?array $targets = null, array $failuresOnAttempts = []): CourierFanOut
     {
         $http = new MockHttpClient(fn (): MockResponse => new MockResponse(json_encode($this->ratings), ['response_headers' => ['content-type: application/json']]));
 
-        return new class(new RegistryClient('http://registry.invalid', $http, static function (int $ms): void {}), $this->client, $redis ?? $this->memoryRedis(), new NullLogger, $conflictsOnAttempts, $targets ?? [$this->index]) extends CourierFanOut {
+        return new class(new RegistryClient('http://registry.invalid', $http, static function (int $ms): void {}), $this->client, $redis ?? $this->memoryRedis(), new NullLogger, $conflictsOnAttempts, $targets ?? [$this->index], $failuresOnAttempts) extends CourierFanOut {
             public int $attempts = 0;
 
-            /** @param array<int, int> $conflictsOnAttempts */
-            public function __construct(RegistryClient $registry, Client $es, \Redis $redis, NullLogger $logger, private array $conflictsOnAttempts, array $targets)
+            /**
+             * @param array<int, int> $conflictsOnAttempts
+             * @param array<int, int> $failuresOnAttempts
+             */
+            public function __construct(RegistryClient $registry, Client $es, \Redis $redis, NullLogger $logger, private array $conflictsOnAttempts, array $targets, private array $failuresOnAttempts = [])
             {
                 parent::__construct($registry, $es, $redis, $logger, static function (int $ms): void {}, targets: $targets);
             }
@@ -275,6 +306,9 @@ final class CourierFanOutTest extends TestCase
                 $response = parent::await($taskId);
                 $this->attempts++;
                 $response['version_conflicts'] = ($response['version_conflicts'] ?? 0) + ($this->conflictsOnAttempts[$this->attempts] ?? 0);
+                for ($i = 0; $i < ($this->failuresOnAttempts[$this->attempts] ?? 0); $i++) {
+                    $response['failures'][] = ['index' => 'x', 'id' => (string) $i, 'cause' => ['type' => 'es_rejected_execution_exception', 'reason' => 'kolejka pełna'], 'status' => 429];
+                }
 
                 return $response;
             }

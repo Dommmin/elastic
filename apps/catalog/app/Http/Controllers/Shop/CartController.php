@@ -228,9 +228,15 @@ class CartController extends Controller
             $productIds = $offers->pluck('product_id');
 
             // Kwota per sprzedawca z linii koszyka (cena × ilość); klucze to id sprzedawców jako napisy.
+            // Linia bez oferty w odczycie (nie powinno się zdarzyć, oferty nie są kasowane) wypada z atrybucji,
+            // zamiast wywrócić całe zdarzenie.
             $sellerAmounts = [];
             foreach ($lines as $line) {
-                $key = (string) $offers[$line->offerId]->seller_id;
+                $sellerId = $offers->get($line->offerId)?->seller_id;
+                if ($sellerId === null) {
+                    continue;
+                }
+                $key = (string) $sellerId;
                 $sellerAmounts[$key] = ($sellerAmounts[$key] ?? 0) + $line->quantity * $line->expectedUnitPriceCents;
             }
 

@@ -23,10 +23,11 @@ use Psr\Log\LoggerInterface;
  * zapytania a zapisem zostaje ze starą oceną, a `since` poszłoby dalej i nikt by go już nie poprawił. Dlatego każde
  * zadanie z `version_conflicts > 0` jest powtarzane (do 3 prób, po odświeżeniu indeksu i z pauzą): skrypt jest
  * idempotentny, więc dokumenty już poprawione stają się noopami, a liczby `updated` i `noops` sumują się po próbach.
- * `conflicts` w wyniku to konflikty RESZTKOWE po ostatniej próbie.
+ * `conflicts` w wyniku to konflikty RESZTKOWE po ostatniej próbie. Tak samo traktujemy wpisy `failures` zadania
+ * (np. paczka bulk odrzucona przez pełną kolejkę zapisu): ostrzeżenie w logu, ponowienie, a resztkowe w `failures`.
  *
  * Jako zadanie harmonogramu (`courier:poll`, 60 s) trzyma `since` w Redisie `seller360:courier:since` i przesuwa
- * je na największe `rated_at` TYLKO po czystym fan-oucie (bez resztkowych konfliktów); wyjątek lub konflikty
+ * je na największe `rated_at` TYLKO po czystym fan-oucie (bez resztkowych konfliktów i failures); wyjątek lub konflikty
  * zostawiają `since` bez zmian, więc następny przebieg powtarza pracę. Do rejestru idzie `since` cofnięte o 1 s:
  * `GET /couriers/ratings?since=` jest wyłączne (`rated_at > since`), a oceny dwóch kurierów z tej samej sekundy
  * mogłyby inaczej zginąć (powtórzone oceny to tanie noopy).
@@ -93,8 +94,8 @@ class CourierFanOut implements Seller360Job
             : new \DateTimeImmutable('@0');
 
         $result = $this->poll($since);
-        if ($result->conflicts > 0) {
-            $this->logger->warning('Fan-out ocen kuriera z resztkowymi konfliktami, since bez zmian (następny przebieg powtórzy).', ['conflicts' => $result->conflicts, 'couriers' => $result->couriers]);
+        if ($result->conflicts > 0 || $result->failures > 0) {
+            $this->logger->warning('Fan-out ocen kuriera z resztkowymi konfliktami, since bez zmian (następny przebieg powtórzy).', ['conflicts' => $result->conflicts, 'failures' => $result->failures, 'couriers' => $result->couriers]);
         } elseif ($result->maxRatedAt !== null) {
             $this->redis->set(self::SINCE_KEY, $result->maxRatedAt);
             $this->logger->info('Fan-out ocen kuriera.', ['couriers' => $result->couriers, 'updated' => $result->updated, 'noops' => $result->noops, 'conflicts' => $result->conflicts, 'took_ms' => $result->tookMs]);
@@ -138,7 +139,7 @@ class CourierFanOut implements Seller360Job
             }
         }
 
-        $updated = $noops = $conflicts = 0;
+        $updated = $noops = $conflicts = $failures = 0;
         for ($attempt = 1; $pending !== [] && $attempt <= self::MAX_ATTEMPTS; $attempt++) {
             if ($attempt > 1) {
                 // ponowienie musi widzieć wersje, które wygrały konflikt
@@ -150,25 +151,39 @@ class CourierFanOut implements Seller360Job
                 $tasks[$i] = $this->start($item['target'], $item['rating'], $item['ms']);
             }
             $conflicts = 0;
+            $failures = 0;
             $retry = [];
             foreach ($tasks as $i => $taskId) {
                 $response = $this->await($taskId);
                 $updated += (int) ($response['updated'] ?? 0);
                 $noops += (int) ($response['noops'] ?? 0);
                 $left = (int) ($response['version_conflicts'] ?? 0);
+                $failed = \is_array($response['failures'] ?? null) ? $response['failures'] : [];
+                if ($failed !== []) {
+                    $failures += \count($failed);
+                    $this->logger->warning('Fan-out ocen kuriera: zadanie z błędami (failures), ponowię.', [
+                        'target' => $pending[$i]['target'],
+                        'courier_id' => $pending[$i]['rating']['courier_id'],
+                        'attempt' => $attempt,
+                        'failures' => \count($failed),
+                        'first' => $failed[0],
+                    ]);
+                }
                 if ($left > 0) {
                     $conflicts += $left;
+                }
+                if ($left > 0 || $failed !== []) {
                     $retry[] = $pending[$i];
                 }
             }
             $pending = $retry;
         }
         if ($pending === []) {
-            $conflicts = 0;
+            $conflicts = $failures = 0;
         }
         $this->refresh(array_map(static fn (string $t): array => ['target' => $t], $targets));
 
-        return new FanOutResult(\count($ratings), $updated, $noops, $conflicts, (int) round((hrtime(true) - $started) / 1_000_000), $maxRatedAt);
+        return new FanOutResult(\count($ratings), $updated, $noops, $conflicts, (int) round((hrtime(true) - $started) / 1_000_000), $maxRatedAt, $failures);
     }
 
     /** @param list<array{target: string}> $items */

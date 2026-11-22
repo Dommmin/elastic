@@ -1,7 +1,9 @@
 <?php
 
 use App\Models\User;
+use App\Seller360\Seller360Query;
 use App\Seller360\Seller360Reader;
+use Elastic\Elasticsearch\Exception\ClientResponseException;
 use Elastic\Transport\Exception\NoNodeAvailableException;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -10,18 +12,21 @@ use Inertia\Testing\AssertableInertia as Assert;
  *
  * @param  array<int, array<string, mixed>>  $docs
  */
-function fakeSeller360Reader(array $docs = [], bool $down = false): object
+function fakeSeller360Reader(array $docs = [], bool $down = false, ?Throwable $searchError = null): object
 {
-    $fake = new class($docs, $down) extends Seller360Reader
+    $fake = new class($docs, $down, $searchError) extends Seller360Reader
     {
         public ?array $lastBody = null;
 
-        public function __construct(private array $docs, private bool $down) {}
+        public function __construct(private array $docs, private bool $down, private ?Throwable $searchError) {}
 
         public function search(array $body): array
         {
             if ($this->down) {
                 throw new NoNodeAvailableException('ES leży');
+            }
+            if ($this->searchError !== null) {
+                throw $this->searchError;
             }
             $this->lastBody = $body;
             $hits = [];
@@ -149,4 +154,41 @@ test('ES niedostępny: lista renderuje się z komunikatem', function () {
         ->assertInertia(fn (Assert $page) => $page
             ->where('es_available', false)
             ->has('sellers', 0));
+});
+
+test('ES niedostępny: karta sprzedawcy renderuje się z komunikatem zamiast 500', function () {
+    fakeSeller360Reader(down: true);
+
+    $this->actingAs(User::factory()->admin()->create())
+        ->get('/panel/sellers-360/42')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('panel/sellers360/Show')
+            ->where('es_available', false)
+            ->where('seller', null)
+            ->where('sellerId', 42));
+});
+
+test('4xx z ES to błąd zapytania, a nie „ES niedostępny”', function () {
+    fakeSeller360Reader(searchError: new ClientResponseException('400 Bad Request: search_phase_execution_exception', 400));
+
+    $this->actingAs(User::factory()->admin()->create())
+        ->get('/panel/sellers-360?q=x')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('es_available', true)
+            ->where('query_error', 400)
+            ->has('sellers', 0));
+});
+
+test('numer strony jest przycięty do okna from+size ≤ 10 000', function () {
+    $fake = fakeSeller360Reader([42 => profileOnlyDoc()]);
+
+    $this->actingAs(User::factory()->admin()->create())
+        ->get('/panel/sellers-360?page=999999')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page->where('page', 400));
+
+    expect($fake->lastBody['from'] + $fake->lastBody['size'])->toBeLessThanOrEqual(10000)
+        ->and($fake->lastBody['from'])->toBe(10000 - Seller360Query::DEFAULT_SIZE);
 });

@@ -16,7 +16,8 @@ use Inertia\Response;
 
 /**
  * Ekran konsultanta (ETAP 13): wyszukiwarka sprzedawców i karta z sześcioma sekcjami
- * `seller-360`. Czyta wyłącznie ES; gdy ES leży, lista mówi o tym komunikatem, a nie 500.
+ * `seller-360`. Czyta wyłącznie ES; gdy ES leży (transport, 5xx), lista i karta mówią o tym komunikatem,
+ * a nie 500. Odrzucone zapytanie (4xx) to osobny komunikat — ES działa, to zapytanie jest złe.
  */
 class Seller360Controller extends Controller
 {
@@ -27,6 +28,9 @@ class Seller360Controller extends Controller
     ];
 
     private const COURIERS = 8;
+
+    /** Okno `from + size` w ES (`index.max_result_window`, domyślnie 10 000): dalsza strona to 400. */
+    private const MAX_RESULT_WINDOW = 10000;
 
     public function index(Request $request, Seller360Reader $reader): Response
     {
@@ -40,15 +44,19 @@ class Seller360Controller extends Controller
             'courier' => (string) $request->query('courier', ''),
             'sort' => $request->query('sort') === 'gmv' ? 'gmv' : '',
         ];
-        $page = max(1, (int) $request->query('page', '1'));
+        $page = min(max(1, (int) $request->query('page', '1')), intdiv(self::MAX_RESULT_WINDOW, Seller360Query::DEFAULT_SIZE));
 
         $result = ['took' => null, 'total' => 0, 'hits' => []];
         $esAvailable = true;
+        $queryError = null;
         try {
             $result = $reader->search(Seller360Query::fromFilters($filters, $page));
-        } catch (TransportException|ServerResponseException|ClientResponseException $e) {
+        } catch (TransportException|ServerResponseException $e) {
             Log::warning('Seller 360: ES nieosiągalny', ['error' => $e->getMessage()]);
             $esAvailable = false;
+        } catch (ClientResponseException $e) {
+            Log::warning('Seller 360: ES odrzucił zapytanie', ['status' => $e->getCode(), 'error' => $e->getMessage()]);
+            $queryError = $e->getCode();
         }
 
         return Inertia::render('panel/sellers360/Index', [
@@ -61,6 +69,7 @@ class Seller360Controller extends Controller
             'page' => $page,
             'perPage' => Seller360Query::DEFAULT_SIZE,
             'es_available' => $esAvailable,
+            'query_error' => $queryError,
             'filters' => $filters,
             'dodPreset' => Seller360Query::dodPreset(),
             'options' => [
@@ -72,11 +81,19 @@ class Seller360Controller extends Controller
 
     public function show(int $seller, Seller360Reader $reader): Response
     {
-        $source = $reader->find($seller);
+        try {
+            $source = $reader->find($seller);
+        } catch (TransportException|ServerResponseException $e) {
+            Log::warning('Seller 360: ES nieosiągalny', ['error' => $e->getMessage()]);
+
+            return Inertia::render('panel/sellers360/Show', ['seller' => null, 'sellerId' => $seller, 'es_available' => false]);
+        }
         abort_if($source === null, 404);
 
         return Inertia::render('panel/sellers360/Show', [
             'seller' => Seller360Card::fromSource($seller, $source),
+            'sellerId' => $seller,
+            'es_available' => true,
         ]);
     }
 }

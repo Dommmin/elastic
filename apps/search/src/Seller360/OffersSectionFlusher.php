@@ -89,7 +89,14 @@ class OffersSectionFlusher implements Seller360Job
                 continue;
             }
 
-            $items[] = $this->item($sellerId, $stats);
+            // Nieparsowalne `computed_at` to błąd jednego sprzedawcy: wraca do zbioru brudnych, a klucz roboczy
+            // i tak zostaje zdjęty (`finish`), więc jedna zła wartość nie blokuje całej kolejki.
+            try {
+                $items[] = $this->item($sellerId, $stats);
+            } catch (\Throwable $e) {
+                $this->logger->warning('offer-stats: nieparsowalne computed_at, sprzedawca wraca do zbioru.', ['seller_id' => $sellerId, 'computed_at' => $stats['computed_at'] ?? null, 'error' => $e->getMessage()]);
+                $retry[] = $sellerId;
+            }
         }
 
         $written = 0;
