@@ -63,8 +63,9 @@ kontener z modelem (Python), fine-tuning modeli, `semantic_text` na głównym kl
 - Usługa `es-lab` w `compose.yaml`, `profiles: [ml]`, ten sam obraz `marketplace/elasticsearch:${ES_VERSION}`
   (te same analizatory polskie i synonimy co produkcja), `discovery.type=single-node`, role domyślne (w tym
   `ml`), wolumen `es-lab-data`, port tylko na `127.0.0.1:${ES_LAB_PORT:-19201}`.
-- Pamięć: heap 1 GB, `mem_limit` 4 GB (model E5 i ELSER żyją poza heapem). Start chroniony kontrolą
-  zapasu pamięci (jak `fls-demo.sh`): odmowa startu, gdy zapas Dockera < 5 GB.
+- Pamięć: heap 1 GB, `mem_limit` 3 GB, `xpack.ml.max_machine_memory_percent: 60` (modele żyją poza heapem).
+  Start chroniony kontrolą zapasu pamięci (jak `fls-demo.sh`): odmowa startu, gdy zapas Dockera < 3,5 GB
+  (korekta 2026-11-22: Docker VM ma 15,6 GB i ~4 GB wolne; podpowiedź: zatrzymać własną Kibanę).
 - Hasło `elastic` węzła: zmienna `ES_LAB_PASSWORD` w `.env` (`.env.example`: pusty placeholder; repo
   publiczne — żadnych haseł w commitach). Bez TLS (jak reszta lokalnego stosu).
 - `infra/elasticsearch/lab/setup-lab.sh` (idempotentny): trial (`start_trial`, gdy jeszcze basic), inference

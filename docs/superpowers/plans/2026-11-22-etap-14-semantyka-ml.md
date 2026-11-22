@@ -14,8 +14,8 @@
 
 - Repo `Dommmin/elastic` jest **publiczne**: zero haseł/tokenów/kluczy w commitach. `ES_LAB_PASSWORD` tylko w `.env`; w `.env.example` pusty placeholder `ES_LAB_PASSWORD=`.
 - Główny klaster, `products-*`, aliasy, pipeline'y sklepu, `compose.prod.yaml`, `deploy/k8s` — **bez zmian**. Główny klaster tylko do odczytu (eksport).
-- Nie zatrzymywać kontenerów innych projektów (igrit-*, starter-*, blog_*). Start `es-lab` odmawia, gdy zapas pamięci Dockera < 5 GB (wzór: `tools/seller360/fls-demo.sh`, sekcja „Kontrola pamięci”).
-- `es-lab`: `profiles: [ml]`, obraz `marketplace/elasticsearch:${ES_VERSION}`, `discovery.type=single-node`, heap 1 GB, `mem_limit: 4g`, wolumen `es-lab-data`, port `127.0.0.1:${ES_LAB_PORT:-19201}:9200`, security włączone, TLS HTTP wyłączony.
+- Nie zatrzymywać kontenerów innych projektów (igrit-*, starter-*, blog_*). Start `es-lab` odmawia, gdy zapas pamięci Dockera < 3,5 GB (Docker VM ma 15,6 GB, zwykle ~4 GB wolne; podpowiedź: zatrzymaj własną Kibanę `docker compose stop kibana`) (wzór: `tools/seller360/fls-demo.sh`, sekcja „Kontrola pamięci”).
+- `es-lab`: `profiles: [ml]`, obraz `marketplace/elasticsearch:${ES_VERSION}`, `discovery.type=single-node`, heap 1 GB, `mem_limit: 3g`, `xpack.ml.max_machine_memory_percent: 60`, wolumen `es-lab-data`, port `127.0.0.1:${ES_LAB_PORT:-19201}:9200`, security włączone, TLS HTTP wyłączony.
 - Inference endpointy: `lab-e5` (`.multilingual-e5-small`), `lab-elser` (ELSER v2). Indeks: `products-lab-v1`, 1 shard, 0 replik, `force_merge` do 1 segmentu po załadowaniu.
 - Próbka: produkty z `id % 58 = 0` (≈20 tys. z 1,17 mln; M stałe, nie strojone pod zapytania — R2).
 - Tekst dla modeli: `"{name}. {kategoria liścia}, {kategoria korzeń}"`, bez opisu.
@@ -68,9 +68,9 @@
 **Interfaces:**
 - Produces: host `http://127.0.0.1:${ES_LAB_PORT}` (z hosta) i `http://es-lab:9200` (z sieci `marketplace`); `tools/lab/lib.sh` z `lab_es <curl-args…>` (user `elastic`, hasło z `ES_LAB_PASSWORD` wczytanego z `.env`), `step`, `die`, `need_free_mb <MB>`.
 
-- [ ] **Step 1:** `es-lab` nie dziedziczy `x-es-common` (tamten ma `discovery.seed_hosts` i TLS transportowy wielowęzłowy). Własny blok: environment `discovery.type: single-node`, `ELASTIC_PASSWORD: ${ES_LAB_PASSWORD:?ES_LAB_PASSWORD musi być ustawione dla profilu ml}`, `ES_JAVA_OPTS: -Xms1g -Xmx1g`, `xpack.security.enabled: "true"`, `xpack.security.http.ssl.enabled: "false"`, `xpack.security.transport.ssl.enabled: "false"`, `xpack.ml.enabled: "true"`, `cluster.name: marketplace-lab`; healthcheck jak w `x-es-common` z `${ES_LAB_PASSWORD}`; `mem_limit: 4g`; `restart: "no"`.
+- [ ] **Step 1:** `es-lab` nie dziedziczy `x-es-common` (tamten ma `discovery.seed_hosts` i TLS transportowy wielowęzłowy). Własny blok: environment `discovery.type: single-node`, `ELASTIC_PASSWORD: ${ES_LAB_PASSWORD:?ES_LAB_PASSWORD musi być ustawione dla profilu ml}`, `ES_JAVA_OPTS: -Xms1g -Xmx1g`, `xpack.security.enabled: "true"`, `xpack.security.http.ssl.enabled: "false"`, `xpack.security.transport.ssl.enabled: "false"`, `xpack.ml.enabled: "true"`, `cluster.name: marketplace-lab`; healthcheck jak w `x-es-common` z `${ES_LAB_PASSWORD}`; `xpack.ml.max_machine_memory_percent: "60"`; `mem_limit: 3g`; `restart: "no"`.
 - [ ] **Step 2:** Sprawdź, że profil domyślny się nie zmienił: `docker compose config --services | grep -c es-lab` → `0`; `docker compose --profile ml config --services | grep es-lab` → `es-lab`. Bez `ES_LAB_PASSWORD` `docker compose --profile ml config` kończy się komunikatem z `:?`.
-- [ ] **Step 3:** `lab-up.sh`: `need_free_mb 5120` (ten sam sposób liczenia co `fls-demo.sh`), `docker compose --profile ml up -d es-lab`, czekanie do 180 s na `_cluster/health` yellow/green; na końcu wypisz licencję (`_license.type`).
+- [ ] **Step 3:** `lab-up.sh`: `need_free_mb 3584` (komunikat odmowy podpowiada `docker compose stop kibana` — własna Kibana zajmuje ~1,1 GB; cudzych kontenerów nie ruszamy) (ten sam sposób liczenia co `fls-demo.sh`), `docker compose --profile ml up -d es-lab`, czekanie do 180 s na `_cluster/health` yellow/green; na końcu wypisz licencję (`_license.type`).
 - [ ] **Step 4:** `shellcheck tools/lab/*.sh` czysto. Ustaw lokalnie `ES_LAB_PASSWORD` w `.env` (wygeneruj `openssl rand -hex 16`, nie wypisuj w czacie), `make lab-up` → health green, `_license.type = basic`.
 - [ ] **Step 5:** Commit `feat(lab): węzeł es-lab w profilu ml`.
 
@@ -207,7 +207,7 @@
 
 - [ ] **Step 1:** Faza „elser” idempotentna: endpoint `lab-elser` (`service: elasticsearch`, model ELSER v2 — identyfikator zgodny z 9.5 i architekturą obrazu; sprawdź w dokumentacji i zanotuj), czekanie na wdrożenie jak w Task 2, `PUT products-lab-v1/_mapping` dodające `semantic_elser` i rozszerzone `copy_to` (jeśli `copy_to` istniejącego pola nie da się zmienić — przebuduj do `products-lab-v2` przez `_reindex` i zanotuj to w RUNBOOK), potem `_update_by_query?wait_for_completion=false` + śledzenie zadania; `force_merge` do 1 segmentu.
 - [ ] **Step 2:** Test `LabQueryBuilderTest`: `elser` celuje w `semantic_elser`. FAIL → PASS.
-- [ ] **Step 3:** Pamięć: przed wdrożeniem ELSER sprawdź zapas (`need_free_mb` z lib); jeśli dwa modele nie mieszczą się w 4 GB, faza zatrzymuje wdrożenie E5 na czas indeksacji ELSER i przywraca je po (zanotuj).
+- [ ] **Step 3:** Pamięć: przed wdrożeniem ELSER sprawdź zapas (`need_free_mb` z lib); jeśli dwa modele nie mieszczą się w pamięci ML węzła (3 GB × 60%), faza zatrzymuje wdrożenie E5 na czas indeksacji ELSER i przywraca je po (zanotuj).
 - [ ] **Step 4:** Na żywo: `make lab-eval args="--variant=bm25 --variant=knn --variant=hybrid-bool --variant=rrf-client --variant=rrf-native --variant=elser --check-rank-eval --json=lab/eval-14b.json"` → tabela 6×3, dwa przebiegi identyczne. Commit `feat(lab): ELSER jako szósty wariant`.
 
 ### Task 9: Wykrywanie anomalii
