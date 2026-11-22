@@ -89,20 +89,7 @@ class OffersSectionFlusher implements Seller360Job
                 continue;
             }
 
-            $computedAt = new \DateTimeImmutable($stats['computed_at']);
-            $items[] = [
-                'sellerId' => $sellerId,
-                'section' => 'offers',
-                'data' => [
-                    'active' => (int) $stats['active'],
-                    'suspended' => (int) $stats['suspended'],
-                    'sold_out' => (int) $stats['sold_out'],
-                    'total' => (int) $stats['total'],
-                    'computed_at' => $stats['computed_at'],
-                ],
-                'meta' => new SectionMeta((int) $computedAt->format('Uv'), $computedAt),
-                'docFields' => [],
-            ];
+            $items[] = $this->item($sellerId, $stats);
         }
 
         $written = 0;
@@ -126,6 +113,61 @@ class OffersSectionFlusher implements Seller360Job
         $this->finish($members);
 
         return $written;
+    }
+
+    /**
+     * Przeliczenie sekcji `offers` dla podanych sprzedawców, z pominięciem zbioru brudnych (backfill przebudowy).
+     * Statystyki pobierane równolegle; `$writer` pozwala skierować zapis na wybrane indeksy (domyślnie writer usługi).
+     * Błąd pobrania lub zapisu leci wyjątkiem — przebudowa i tak się wtedy przerywa.
+     *
+     * @param  list<int>  $sellerIds
+     * @return int liczba zapisanych sekcji (`created|updated`)
+     */
+    public function refreshSellers(array $sellerIds, ?SectionWriter $writer = null): int
+    {
+        $writer ??= $this->writer;
+        $written = 0;
+        foreach (array_chunk(array_values(array_unique($sellerIds)), self::BATCH_LIMIT) as $chunk) {
+            $items = [];
+            foreach ($this->catalog->offerStatsMany($chunk) as $sellerId => $stats) {
+                if ($stats !== null) {
+                    $items[] = $this->item($sellerId, $stats);
+                }
+            }
+            foreach ($writer->applyMany($items) as $result) {
+                if ($result === 'error') {
+                    throw new \RuntimeException('Zapis sekcji offers odrzucony przez ES.');
+                }
+                if ($result !== 'noop') {
+                    $written++;
+                }
+            }
+        }
+
+        return $written;
+    }
+
+    /**
+     * @param  array{active: int, suspended: int, sold_out: int, total: int, computed_at: string}  $stats
+     * @return array{sellerId: int, section: string, data: array<string, mixed>, meta: SectionMeta, docFields: array<string, mixed>}
+     */
+    private function item(int $sellerId, array $stats): array
+    {
+        $computedAt = new \DateTimeImmutable($stats['computed_at']);
+
+        return [
+            'sellerId' => $sellerId,
+            'section' => 'offers',
+            'data' => [
+                'active' => (int) $stats['active'],
+                'suspended' => (int) $stats['suspended'],
+                'sold_out' => (int) $stats['sold_out'],
+                'total' => (int) $stats['total'],
+                'computed_at' => $stats['computed_at'],
+            ],
+            'meta' => new SectionMeta((int) $computedAt->format('Uv'), $computedAt),
+            'docFields' => [],
+        ];
     }
 
     /** Zdejmuje przetworzonych z klucza roboczego (pusty zbiór znika w Redisie). @param list<string> $members */

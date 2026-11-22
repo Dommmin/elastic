@@ -44,9 +44,13 @@ class SalesSectionRefresher implements Seller360Job
         $this->refresh(new \DateTimeImmutable);
     }
 
-    /** @return int liczba zapisanych sekcji (`created|updated`) */
-    public function refresh(\DateTimeImmutable $now): int
+    /**
+     * @param  SectionWriter|null  $writer  inny cel zapisu (backfill przebudowy kieruje go na nowe indeksy)
+     * @return int liczba zapisanych sekcji (`created|updated`)
+     */
+    public function refresh(\DateTimeImmutable $now, ?SectionWriter $writer = null): int
     {
+        $writer ??= $this->writer;
         $now = $now->setTimezone(new \DateTimeZone('UTC'));
         $mid = $now->modify('-30 days');
         $from = $now->modify('-60 days');
@@ -95,7 +99,7 @@ class SalesSectionRefresher implements Seller360Job
                 ];
             }
 
-            foreach ($this->writer->applyMany($items) as $result) {
+            foreach ($writer->applyMany($items) as $result) {
                 if ($result === 'created' || $result === 'updated') {
                     $written++;
                 }

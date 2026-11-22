@@ -119,7 +119,7 @@ class RegistrySync
     {
         try {
             $entry = ['fetched_at' => $fetchedAt, 'data' => $data];
-            $this->redis->set($this->cacheKey($nip), json_encode($entry, \JSON_THROW_ON_ERROR), ['EX' => self::CACHE_TTL_SECONDS]);
+            $this->redis->set(self::cacheKey($nip), json_encode($entry, \JSON_THROW_ON_ERROR), ['EX' => self::CACHE_TTL_SECONDS]);
         } catch (\Throwable $e) {
             $this->logger->warning('Nie udało się zapisać cache rejestru.', ['error' => $e->getMessage()]);
         }
@@ -129,15 +129,24 @@ class RegistrySync
     private function cacheGet(string $nip): ?array
     {
         try {
-            $raw = $this->redis->get($this->cacheKey($nip));
+            $raw = $this->redis->get(self::cacheKey($nip));
         } catch (\Throwable $e) {
             $this->logger->warning('Nie udało się odczytać cache rejestru.', ['error' => $e->getMessage()]);
 
             return null;
         }
-        if (! \is_string($raw)) {
-            return null;
-        }
+
+        return \is_string($raw) ? self::decodeCache($raw) : null;
+    }
+
+    /**
+     * Wpis cache rejestru: `{fetched_at, data}` albo stary format (same dane, bez chwili pobrania).
+     * Czyta go też backfill przebudowy.
+     *
+     * @return array{0: array<string, mixed>, 1: ?int}|null dane i chwila pobrania (null w starym formacie)
+     */
+    public static function decodeCache(string $raw): ?array
+    {
         $entry = json_decode($raw, associative: true);
         if (! \is_array($entry)) {
             return null;
@@ -149,7 +158,7 @@ class RegistrySync
         return [$entry, null];
     }
 
-    private function cacheKey(string $nip): string
+    public static function cacheKey(string $nip): string
     {
         return 'seller360:registry:'.$nip;
     }

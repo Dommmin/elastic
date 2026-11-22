@@ -2,6 +2,7 @@
 
 namespace App\Tests\Integration\Seller360;
 
+use App\Seller360\Rebuild\WriteTargets;
 use App\Seller360\SectionMeta;
 use App\Seller360\SectionWriter;
 use App\Seller360\Seller360Metrics;
@@ -133,5 +134,76 @@ final class SectionWriterTest extends TestCase
         self::assertTrue($this->source($this->public, 1)['synthetic']);
         self::assertNull($this->source($this->public, 2));
         self::assertSame(5, $this->source($this->private, 2)['billing']['balance_cents']);
+    }
+
+    public function testWritesEverySectionToEveryTargetPairAndReturnsTheFirstPairsResult(): void
+    {
+        [$private2, $public2] = $this->secondPair();
+        try {
+            $targets = $this->targets();
+            $targets->startDual($private2, $public2);
+            $writer = new SectionWriter($this->client, new Seller360Metrics($this->createStub(\Redis::class), new NullLogger), refresh: true, targets: $targets);
+            $writer->apply(5, 'billing', ['balance_cents' => 100], $this->meta(3));
+            self::assertSame(3, $this->source($private2, 5)['billing']['_meta']['version']);
+
+            // stary indeks ma już nowszą wersję, nowy nie: wynik to wynik pierwszej pary (aliasów)
+            self::assertSame('noop', (new SectionWriter($this->client, new Seller360Metrics($this->createStub(\Redis::class), new NullLogger), $this->private, $this->public, refresh: true))
+                ->apply(5, 'billing', ['balance_cents' => 100], $this->meta(3)));
+            $this->client->delete(['index' => $private2, 'id' => '5', 'refresh' => 'true']);
+            self::assertSame('noop', $writer->apply(5, 'billing', ['balance_cents' => 100], $this->meta(3)));
+            self::assertSame(3, $this->source($private2, 5)['billing']['_meta']['version'], 'druga para dostaje zapis mimo noop w pierwszej');
+
+            $results = $writer->applyMany([
+                ['sellerId' => 6, 'section' => 'profile', 'data' => ['name' => 'Sześć', 'city' => 'Łódź'], 'meta' => $this->meta(1), 'docFields' => ['synthetic' => true]],
+            ]);
+            self::assertSame(['created'], $results);
+            foreach ([$this->private, $private2, $this->public, $public2] as $index) {
+                self::assertSame('Sześć', $this->source($index, 6)['profile']['name'], $index);
+            }
+        } finally {
+            $this->client->indices()->delete(['index' => "{$private2},{$public2}", 'ignore_unavailable' => true]);
+        }
+    }
+
+    public function testApplyManyReportsErrorWhenTheNewPairRejectsTheWrite(): void
+    {
+        $targets = $this->targets();
+        $targets->startDual('seller-360-test-zamkniety-'.uniqid(), $this->public);
+        $this->client->indices()->create(['index' => $closed = $targets->current()[1]['main'], 'body' => ['settings' => ['number_of_shards' => 1, 'number_of_replicas' => 0]]]);
+        try {
+            $this->client->indices()->close(['index' => $closed]);
+            $writer = new SectionWriter($this->client, new Seller360Metrics($this->createStub(\Redis::class), new NullLogger), refresh: true, targets: $targets);
+
+            self::assertSame(['error'], $writer->applyMany([
+                ['sellerId' => 7, 'section' => 'billing', 'data' => ['balance_cents' => 1], 'meta' => $this->meta(1), 'docFields' => []],
+            ]), 'nieudany zapis do nowego indeksu wraca jako error, żeby wołający ponowił');
+        } finally {
+            $this->client->indices()->delete(['index' => $closed, 'ignore_unavailable' => true]);
+        }
+    }
+
+    private function targets(): WriteTargets
+    {
+        $redis = $this->createStub(\Redis::class);
+        $redis->method('get')->willReturn(false);
+        $redis->method('set')->willReturn(true);
+
+        return new WriteTargets($redis, new NullLogger, null, 'rt:targets', $this->private, $this->public);
+    }
+
+    /** @return array{0: string, 1: string} */
+    private function secondPair(): array
+    {
+        $suffix = uniqid();
+        $pair = ["seller-360-test-{$suffix}-b", "seller-360-public-test-{$suffix}-b"];
+        foreach (array_combine($pair, ['template-seller-360.json', 'template-seller-360-public.json']) as $index => $file) {
+            $template = json_decode(file_get_contents(self::DIR.'/'.$file), associative: true, flags: \JSON_THROW_ON_ERROR)['template'];
+            $this->client->indices()->create(['index' => $index, 'body' => [
+                'settings' => ['number_of_shards' => 1, 'number_of_replicas' => 0, 'analysis' => $template['settings']['analysis']],
+                'mappings' => $template['mappings'],
+            ]]);
+        }
+
+        return $pair;
     }
 }

@@ -2,11 +2,13 @@
 
 namespace App\Tests\Integration\Seller360;
 
+use App\Seller360\Rebuild\WriteTargets;
 use App\Seller360\SyntheticPurger;
 use App\Tests\Support\RealElasticsearch;
 use Elastic\Elasticsearch\Client;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\NullLogger;
 
 /**
  * `seller360:purge-synthetic` (ETAP 13, Task 11) na ŻYWYM Elasticsearchu: dwa indeksy testowe
@@ -69,6 +71,23 @@ final class SyntheticPurgerTest extends TestCase
             self::assertSame(1, $this->client->count(['index' => $index])->asArray()['count']);
             self::assertTrue($this->client->exists(['index' => $index, 'id' => '1'])->asBool());
         }
+    }
+
+    public function testIteratesOverWriteTargetsInsteadOfConstantAliases(): void
+    {
+        $body = [];
+        foreach ([$this->private, $this->public] as $index) {
+            $body[] = ['index' => ['_index' => $index, '_id' => '5000000']];
+            $body[] = ['seller_id' => 5000000, 'synthetic' => true];
+        }
+        $this->client->bulk(['refresh' => true, 'body' => $body]);
+        $redis = $this->createStub(\Redis::class);
+        $redis->method('get')->willReturn(false);
+        $targets = new WriteTargets($redis, new NullLogger, null, 'rt:targets', $this->private, $this->public);
+
+        $deleted = (new SyntheticPurger($this->client, 'seller-360-test-nie-ma-takiego', 'seller-360-test-nie-ma-takiego', $targets))->purge();
+
+        self::assertSame([$this->private => 1, $this->public => 1], $deleted);
     }
 
     public function testRequestUsesConflictsProceedAndSyntheticTerm(): void

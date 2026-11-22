@@ -5,6 +5,7 @@ namespace App\MessageHandler;
 use App\Message\IntegrationEvent;
 use App\Seller360\RegionResolver;
 use App\Seller360\SectionMeta;
+use App\Seller360\SectionPayloads;
 use App\Seller360\SectionWriter;
 use App\Seller360\Seller360Metrics;
 use Elastic\Elasticsearch\Exception\ClientResponseException;
@@ -57,41 +58,17 @@ final class Seller360EventHandler
         $sellerId = $this->sellerId($event);
         $meta = $this->meta($event);
 
-        $region = $this->regions->forCity((string) ($d['city'] ?? ''));
-        if ($region === null) {
+        $profile = SectionPayloads::profile($d, $this->regions);
+        if ($profile['doc']['region'] === null) {
             $this->metrics->regionUnknown();
         }
 
-        $this->writer->apply(
-            $sellerId,
-            'profile',
-            [
-                'name' => $d['name'] ?? null,
-                'city' => $d['city'] ?? null,
-                'status' => $d['status'] ?? null,
-                'status_reason' => $d['status_reason'] ?? null,
-            ],
-            $meta,
-            ['nip' => $d['nip'] ?? null, 'region' => $region, 'synthetic' => (bool) ($d['synthetic'] ?? false)],
-        );
+        $this->writer->apply($sellerId, 'profile', $profile['data'], $meta, $profile['doc']);
     }
 
     private function billing(IntegrationEvent $event): void
     {
-        $d = $event->data;
-
-        $this->writer->apply(
-            $this->sellerId($event),
-            'billing',
-            [
-                'balance_cents' => $d['balance_cents'] ?? 0,
-                'overdue_cents' => $d['overdue_cents'] ?? 0,
-                'overdue_since' => $d['overdue_since'] ?? null,
-                'open_invoices' => $d['open_invoices'] ?? 0,
-                'last_invoice_id' => isset($d['invoice_id']) ? (string) $d['invoice_id'] : null,
-            ],
-            $this->meta($event),
-        );
+        $this->writer->apply($this->sellerId($event), 'billing', SectionPayloads::billing($event->data), $this->meta($event));
     }
 
     private function offer(IntegrationEvent $event): void

@@ -41,10 +41,12 @@ class ComplaintsSectionRefresher
 
     /**
      * @param  list<int>  $sellerIds
+     * @param  SectionWriter|null  $writer  inny cel zapisu (backfill przebudowy kieruje go na nowe indeksy)
      * @return int liczba zapisanych sekcji (`created|updated`)
      */
-    public function refreshSellers(array $sellerIds, ?\DateTimeImmutable $now = null): int
+    public function refreshSellers(array $sellerIds, ?\DateTimeImmutable $now = null, ?SectionWriter $writer = null): int
     {
+        $writer ??= $this->writer;
         $sellerIds = array_values(array_unique($sellerIds));
         if ($sellerIds === []) {
             return 0;
@@ -67,7 +69,7 @@ class ComplaintsSectionRefresher
                     'docFields' => [],
                 ];
             }
-            foreach ($this->writer->applyMany($items) as $result) {
+            foreach ($writer->applyMany($items) as $result) {
                 if ($result === 'created' || $result === 'updated') {
                     $written++;
                 } elseif ($result === 'error') {

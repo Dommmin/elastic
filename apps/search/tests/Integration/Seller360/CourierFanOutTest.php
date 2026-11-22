@@ -2,6 +2,7 @@
 
 namespace App\Tests\Integration\Seller360;
 
+use App\Seller360\Rebuild\WriteTargets;
 use App\Seller360\Registry\CourierFanOut;
 use App\Seller360\Registry\RegistryClient;
 use App\Tests\Support\RealElasticsearch;
@@ -201,6 +202,33 @@ final class CourierFanOutTest extends TestCase
         $fanOut->pollFromRedis();
 
         self::assertStringContainsString('since=2026-11-22T07:59:59Z', $queries[0]);
+    }
+
+    public function test_bez_jawnych_celow_iteruje_po_wszystkich_parach_write_targets(): void
+    {
+        $second = 'seller-360-test-'.uniqid();
+        $template = json_decode(file_get_contents(self::TEMPLATE), associative: true, flags: \JSON_THROW_ON_ERROR)['template'];
+        $this->client->indices()->create(['index' => $second, 'body' => [
+            'settings' => ['number_of_shards' => 1, 'number_of_replicas' => 0, 'analysis' => $template['settings']['analysis']],
+            'mappings' => $template['mappings'],
+        ]]);
+        try {
+            $this->client->reindex(['refresh' => true, 'body' => ['source' => ['index' => $this->index], 'dest' => ['index' => $second]]]);
+            $redis = $this->memoryRedis();
+            $targets = new WriteTargets($redis, new NullLogger, null, 'rt:targets', $this->index, $this->index);
+            $targets->startDual($second, $second);
+            $this->ratings = [['courier_id' => $this->courier, 'on_time_rate' => 0.77, 'rated_at' => '2026-11-22T08:00:00Z']];
+            $http = new MockHttpClient(fn (): MockResponse => new MockResponse(json_encode($this->ratings), ['response_headers' => ['content-type: application/json']]));
+
+            $result = (new CourierFanOut(new RegistryClient('http://registry.invalid', $http, static function (int $ms): void {}), $this->client, $redis, new NullLogger, static function (int $ms): void {}, writeTargets: $targets))
+                ->poll(new \DateTimeImmutable('2026-11-22T00:00:00Z'));
+
+            self::assertSame(20, $result->updated, 'po 10 dokumentów kuriera w obu indeksach');
+            $rate = $this->client->get(['index' => $second, 'id' => '3'])->asArray()['_source']['registry']['courier']['on_time_rate'];
+            self::assertEqualsWithDelta(0.77, $rate, 0.0001);
+        } finally {
+            $this->client->indices()->delete(['index' => $second, 'ignore_unavailable' => true]);
+        }
     }
 
     private function memoryRedis(): object

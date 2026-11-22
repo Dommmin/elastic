@@ -298,6 +298,14 @@ seller360-complaints-import: ## Import CSV reklamacji z catalogu do search (domy
 seller360-verify: ## Dowód zapytania z DoD seller-360 vs planted.json: precyzja, czułość, bliskie pudła, p50/p99 took (ETAP 13)
 	$(DC) exec catalog-app php artisan seller360:query:verify $(args)
 
+.PHONY: seller360-rebuild
+seller360-rebuild: ## Przebudowa seller-360 do -v<N+1> bez przestoju: podwójny zapis, backfill, weryfikacja, aliasy (args="--delete-old")
+	$(DC) exec seller360-scheduler php bin/console seller360:rebuild $(args)
+
+.PHONY: seller360-rebuild-under-load
+seller360-rebuild-under-load: ## Przebudowa pod ruchem (churn + billing:churn) i zgodność billingu z catalogiem: 0 rozjazdów (ETAP 13)
+	@bash tools/seller360/rebuild-under-load.sh
+
 .PHONY: seller360-stale-source
 seller360-stale-source: ## Awaria rejestru: billing i profile dalej świeże, registry stale z rosnącym lagiem, potem powrót do ok (ETAP 13)
 	@bash tools/seller360/stale-source.sh

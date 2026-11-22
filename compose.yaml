@@ -810,6 +810,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
     volumes:
       - ./apps/search:/app
+      # seller360:rebuild (backfill profilu) liczy region z miasta jak projektor
+      - ./infra/reference:/infra/reference:ro
     depends_on:
       es01: { condition: service_healthy }
       redis: { condition: service_healthy }

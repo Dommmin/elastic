@@ -2,6 +2,7 @@
 
 namespace App\Seller360;
 
+use App\Seller360\Rebuild\WriteTargets;
 use Elastic\Elasticsearch\Client;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -14,6 +15,12 @@ use Psr\Log\NullLogger;
  * więc kolejność i powtórki zdarzeń nie psują stanu. Zapis publiczny idzie ZAWSZE, także gdy prywatny
  * był `noop` — dzięki temu ponowienie po awarii między zapisami domyka kopię publiczną.
  *
+ * Cele zapisu (ETAP 13, przebudowa): pary `{main, public}` z {@see WriteTargets} czytane przy każdym zapisie
+ * i każdej partii. Zwykle to jedna para aliasów, w trakcie przebudowy dochodzi para nowych indeksów. Sekcja idzie
+ * do KAŻDEJ pary, a zwracany wynik to wynik pierwszej (aliasów, czyli indeksu, z którego czytają odbiorcy).
+ * Bez `WriteTargets` (testy) jedyną parą są `$writeIndex` i `$publicWriteIndex`. `forPairs()` daje writer
+ * ze stałą listą par — tak przebudowa kieruje przeliczenia (offers, sales, complaints) tylko na nowe indeksy.
+ *
  * `data`, `meta` i `doc` lecą jako obiekty JSON: pusta tablica PHP to `[]` (lista), a skrypt
  * robi `new HashMap(params.data)`, który na liście rzuca wyjątek.
  */
@@ -21,6 +28,9 @@ class SectionWriter
 {
     private const SCRIPT = 'seller360-apply-section';
 
+    /**
+     * @param  list<array{main: string, public: string}>|null  $pairs  stała lista par (z {@see self::forPairs()})
+     */
     public function __construct(
         private readonly Client $client,
         private readonly Seller360Metrics $metrics,
@@ -28,22 +38,43 @@ class SectionWriter
         private readonly string $publicWriteIndex = 'seller-360-public-write',
         private readonly bool $refresh = false,
         private readonly LoggerInterface $logger = new NullLogger,
+        private readonly ?WriteTargets $targets = null,
+        private readonly ?array $pairs = null,
     ) {
+    }
+
+    /**
+     * Ten sam writer ze stałą listą par (bez `WriteTargets`).
+     *
+     * @param  list<array{main: string, public: string}>  $pairs
+     */
+    public function forPairs(array $pairs): self
+    {
+        return new self($this->client, $this->metrics, $this->writeIndex, $this->publicWriteIndex, $this->refresh, $this->logger, null, $pairs);
+    }
+
+    /** @return list<array{main: string, public: string}> */
+    public function pairs(): array
+    {
+        return $this->pairs ?? $this->targets?->current() ?? [['main' => $this->writeIndex, 'public' => $this->publicWriteIndex]];
     }
 
     /**
      * @param  array<string, mixed>  $data  pełny stan sekcji
      * @param  array<string, mixed>  $docFields  pola dokumentu (`nip`, `region`, `synthetic`), dopisywane razem z sekcją
-     * @return string `created|updated|noop` (wynik zapisu prywatnego)
+     * @return string `created|updated|noop` (wynik zapisu prywatnego pierwszej pary)
      */
     public function apply(int $sellerId, string $section, array $data, SectionMeta $meta, array $docFields = []): string
     {
         $updatedAt = new \DateTimeImmutable;
-        $result = $this->update($this->writeIndex, $sellerId, $section, $data, $meta, $docFields, $updatedAt);
-
         $public = PublicProjection::filter($section, $data);
-        if ($public !== null) {
-            $this->update($this->publicWriteIndex, $sellerId, $section, $public, $meta, $docFields, $updatedAt);
+        $result = null;
+        foreach ($this->pairs() as $pair) {
+            $main = $this->update($pair['main'], $sellerId, $section, $data, $meta, $docFields, $updatedAt);
+            $result ??= $main;
+            if ($public !== null) {
+                $this->update($pair['public'], $sellerId, $section, $public, $meta, $docFields, $updatedAt);
+            }
         }
 
         $this->metrics->sectionWrite($section, $result);
@@ -52,8 +83,10 @@ class SectionWriter
     }
 
     /**
-     * Hurtowy zapis dla przeliczeń. Wynik per element, w kolejności wejścia (wynik zapisu prywatnego):
-     * `created|updated|noop`, a przy odrzuceniu przez ES `error`. Błąd całego żądania leci wyjątkiem.
+     * Hurtowy zapis dla przeliczeń: jeden `_bulk` z akcjami dla wszystkich par. Wynik per element, w kolejności
+     * wejścia (wynik zapisu prywatnego pierwszej pary): `created|updated|noop`, a `error`, gdy ES odrzucił zapis
+     * prywatny w KTÓREJKOLWIEK parze (w trakcie przebudowy nowy indeks nie może zgubić zapisu po cichu, wołający
+     * ponawia). Błąd całego żądania leci wyjątkiem.
      *
      * @param  list<array{sellerId: int, section: string, data: array<string, mixed>, meta: SectionMeta, docFields?: array<string, mixed>}>  $items
      * @return list<string>
@@ -65,18 +98,22 @@ class SectionWriter
         }
 
         $updatedAt = new \DateTimeImmutable;
+        $pairs = $this->pairs();
         $body = [];
+        /** @var array<int, list<int>> $privatePositions element => pozycje zapisów prywatnych (pierwsza para pierwsza) */
         $privatePositions = [];
+        /** @var array<int, list<int>> $publicPositions */
         $publicPositions = [];
         foreach ($items as $i => $item) {
             $docFields = $item['docFields'] ?? [];
-            $privatePositions[] = intdiv(\count($body), 2);
-            array_push($body, ...$this->action($this->writeIndex, $item['sellerId'], $item['section'], $item['data'], $item['meta'], $docFields, $updatedAt));
-
             $public = PublicProjection::filter($item['section'], $item['data']);
-            if ($public !== null) {
-                $publicPositions[$i] = intdiv(\count($body), 2);
-                array_push($body, ...$this->action($this->publicWriteIndex, $item['sellerId'], $item['section'], $public, $item['meta'], $docFields, $updatedAt));
+            foreach ($pairs as $pair) {
+                $privatePositions[$i][] = intdiv(\count($body), 2);
+                array_push($body, ...$this->action($pair['main'], $item['sellerId'], $item['section'], $item['data'], $item['meta'], $docFields, $updatedAt));
+                if ($public !== null) {
+                    $publicPositions[$i][] = intdiv(\count($body), 2);
+                    array_push($body, ...$this->action($pair['public'], $item['sellerId'], $item['section'], $public, $item['meta'], $docFields, $updatedAt));
+                }
             }
         }
 
@@ -88,30 +125,46 @@ class SectionWriter
 
         $results = [];
         foreach ($items as $i => $item) {
-            $entry = $entries[$privatePositions[$i]];
-            $outcome = $entry[array_key_first($entry)];
-            $status = (int) ($outcome['status'] ?? 0);
-            $result = ($status >= 200 && $status < 300) ? (string) ($outcome['result'] ?? 'updated') : 'error';
-            $results[] = $result;
-            $this->metrics->sectionWrite($item['section'], $result);
+            $result = null;
+            foreach ($privatePositions[$i] as $position) {
+                $outcome = $this->outcome($entries[$position]);
+                $ok = $outcome['status'] >= 200 && $outcome['status'] < 300;
+                $result ??= $ok ? (string) ($outcome['raw']['result'] ?? 'updated') : 'error';
+                if (! $ok) {
+                    $result = 'error';
+                    $this->logger->warning('Zapis sekcji seller-360 odrzucony.', ['seller_id' => $item['sellerId'], 'section' => $item['section'], 'index' => $outcome['raw']['_index'] ?? null, 'status' => $outcome['status'], 'error' => $outcome['error']]);
+                }
+            }
+            $results[] = (string) $result;
+            $this->metrics->sectionWrite($item['section'], (string) $result);
 
             // Zapis publiczny nie zmienia wyniku, ale nieudanego nie gubimy po cichu.
-            if (isset($publicPositions[$i])) {
-                $public = $entries[$publicPositions[$i]];
-                $publicOutcome = $public[array_key_first($public)];
-                $publicStatus = (int) ($publicOutcome['status'] ?? 0);
-                if ($publicStatus < 200 || $publicStatus >= 300) {
+            foreach ($publicPositions[$i] ?? [] as $position) {
+                $outcome = $this->outcome($entries[$position]);
+                if ($outcome['status'] < 200 || $outcome['status'] >= 300) {
                     $this->logger->warning('Zapis kopii publicznej seller-360 odrzucony.', [
                         'seller_id' => $item['sellerId'],
                         'section' => $item['section'],
-                        'status' => $publicStatus,
-                        'error' => $publicOutcome['error']['reason'] ?? $publicOutcome['error']['type'] ?? null,
+                        'index' => $outcome['raw']['_index'] ?? null,
+                        'status' => $outcome['status'],
+                        'error' => $outcome['error'],
                     ]);
                 }
             }
         }
 
         return $results;
+    }
+
+    /**
+     * @param  array<string, mixed>  $entry  pozycja `items` z odpowiedzi `_bulk`
+     * @return array{status: int, error: ?string, raw: array<string, mixed>}
+     */
+    private function outcome(array $entry): array
+    {
+        $raw = $entry[array_key_first($entry)];
+
+        return ['status' => (int) ($raw['status'] ?? 0), 'error' => $raw['error']['reason'] ?? $raw['error']['type'] ?? null, 'raw' => $raw];
     }
 
     /**

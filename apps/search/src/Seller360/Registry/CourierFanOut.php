@@ -2,6 +2,7 @@
 
 namespace App\Seller360\Registry;
 
+use App\Seller360\Rebuild\WriteTargets;
 use App\Seller360\Seller360Job;
 use Elastic\Elasticsearch\Client;
 use Psr\Log\LoggerInterface;
@@ -50,7 +51,8 @@ class CourierFanOut implements Seller360Job
 
     /**
      * @param  (\Closure(int): void)|null  $sleepMs  uśpienie w ms między odczytami zadania (podmieniane w testach)
-     * @param  list<string>|null  $targets  indeksy lub aliasy do aktualizacji; null = `writeTargets()` (Task 14 podmieni to na WriteTargets)
+     * @param  list<string>|null  $targets  stała lista indeksów lub aliasów (testy); null = wszystkie indeksy z `WriteTargets`
+     * @param  WriteTargets|null  $writeTargets  cele zapisu seller-360 (w trakcie przebudowy także nowe indeksy); bez nich aliasy zapisu
      */
     public function __construct(
         private readonly RegistryClient $registry,
@@ -60,6 +62,7 @@ class CourierFanOut implements Seller360Job
         ?\Closure $sleepMs = null,
         private readonly string $ratingsIndex = 'courier-ratings',
         private readonly ?array $targets = null,
+        private readonly ?WriteTargets $writeTargets = null,
     ) {
         $this->sleepMs = $sleepMs ?? static function (int $ms): void {
             usleep($ms * 1000);
@@ -112,6 +115,7 @@ class CourierFanOut implements Seller360Job
         $maxMs = null;
         /** @var list<array{target: string, rating: array{courier_id: string, on_time_rate: float, rated_at: string}, ms: int}> $pending */
         $pending = [];
+        $rated = [];
         foreach ($ratings as $rating) {
             $ratedMs = (int) (new \DateTimeImmutable($rating['rated_at']))->format('Uv');
             if ($maxMs === null || $ratedMs > $maxMs) {
@@ -123,7 +127,13 @@ class CourierFanOut implements Seller360Job
                 'id' => $rating['courier_id'],
                 'body' => ['courier_id' => $rating['courier_id'], 'on_time_rate' => $rating['on_time_rate'], 'rated_at' => $rating['rated_at']],
             ]);
-            foreach ($this->writeTargets() as $target) {
+            $rated[] = [$rating, $ratedMs];
+        }
+        // Cele czytamy PO zapisie ocen do courier-ratings: indeks dopisany przez przebudowę później dostanie
+        // te oceny z backfillu (czyta courier-ratings), a dopisany wcześniej jest już na tej liście.
+        $targets = $this->writeTargets();
+        foreach ($rated as [$rating, $ratedMs]) {
+            foreach ($targets as $target) {
                 $pending[] = ['target' => $target, 'rating' => $rating, 'ms' => $ratedMs];
             }
         }
@@ -156,7 +166,7 @@ class CourierFanOut implements Seller360Job
         if ($pending === []) {
             $conflicts = 0;
         }
-        $this->refresh(array_map(static fn (string $t): array => ['target' => $t], $this->writeTargets()));
+        $this->refresh(array_map(static fn (string $t): array => ['target' => $t], $targets));
 
         return new FanOutResult(\count($ratings), $updated, $noops, $conflicts, (int) round((hrtime(true) - $started) / 1_000_000), $maxRatedAt);
     }
@@ -169,10 +179,14 @@ class CourierFanOut implements Seller360Job
         }
     }
 
-    /** Jedyne miejsce z listą celów (Task 14: iteracja po WriteTargets). */
+    /**
+     * Jedyne miejsce z listą celów: main i public każdej pary z `WriteTargets`, czytane raz na przebieg.
+     *
+     * @return list<string>
+     */
     private function writeTargets(): array
     {
-        return $this->targets ?? ['seller-360-write', 'seller-360-public-write'];
+        return $this->targets ?? $this->writeTargets?->indices() ?? ['seller-360-write', 'seller-360-public-write'];
     }
 
     /**
