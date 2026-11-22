@@ -67,6 +67,11 @@ services:
             $host: '%env(REDIS_HOST)%'
             $password: '%env(REDIS_PASSWORD)%'
 
+    # ETAP 13: harmonogram dostaje wszystkie zadania otagowane app.seller360_job (interfejs Seller360Job).
+    App\Seller360\Seller360Scheduler:
+        arguments:
+            $jobs: !tagged_iterator app.seller360_job
+
     App\Seller360\RegionResolver:
         arguments:
             $csvPath: '%env(REGION_CSV_PATH)%'

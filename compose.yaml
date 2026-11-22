@@ -781,6 +781,41 @@ services:
     networks: [marketplace]
     restart: unless-stopped
 
+  # ETAP 13: harmonogram seller-360 — jeden proces z zadaniami okresowymi (offers co 30 s, sales co 300 s;
+  # courier i lag dojdą jako kolejne zadania). Ten sam obraz co seller360-consumer, plus adres i sekret
+  # wewnętrznego API catalogu (offer-stats).
+  seller360-scheduler:
+    profiles: [apps]
+    build:
+      context: .
+      dockerfile: infra/php/search.Dockerfile
+      target: dev
+      args:
+        FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
+        PHP_VERSION: ${PHP_VERSION}
+    command: ["php", "bin/console", "seller360:scheduler", "-vv"]
+    environment:
+      <<: *error-tracking-search
+      ERROR_TRACKING_PROCESS: seller360-scheduler
+      DATABASE_URL: postgresql://${SEARCHSVC_DB_USER}:${SEARCHSVC_DB_PASSWORD}@postgres:5432/${SEARCHSVC_DB}?serverVersion=18.4.0&charset=utf8
+      ELASTICSEARCH_HOST: http://es01:9200
+      ELASTICSEARCH_USER: searchsvc
+      ELASTICSEARCH_PASSWORD: ${ES_SEARCHSVC_PASSWORD}
+      CATALOG_INTERNAL_BASE_URL: http://catalog-app
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-only-internal-api-token}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - ./apps/search:/app
+    depends_on:
+      es01: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    mem_limit: 256m
+    stop_grace_period: 30s
+    logging: *json-logging
+    networks: [marketplace]
+    restart: unless-stopped
+
   # ==========================================================================
   #  Profil `obs` (ETAP 11)
   #  Obserwowalność: logi (Filebeat -> ES), metryki (Prometheus, Grafana),
