@@ -28,6 +28,7 @@ class Outbox extends Model
         'occurred_at',
         'published_at',
         'trace_id',
+        'version',
     ];
 
     protected function casts(): array
@@ -35,6 +36,7 @@ class Outbox extends Model
         return [
             'payload' => 'array',
             'sequence' => 'integer',
+            'version' => 'integer',
             'occurred_at' => 'datetime',
             'published_at' => 'datetime',
         ];

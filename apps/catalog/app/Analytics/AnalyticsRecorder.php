@@ -18,9 +18,11 @@ use Throwable;
 class AnalyticsRecorder
 {
     /**
+     * `$version` to wersja schematu ładunku w kopercie (2 = atrybucja do sprzedawcy, ETAP 13).
+     *
      * @param  array<string, mixed>  $data
      */
-    public function record(string $type, string $sessionId, array $data, ?CarbonImmutable $occurredAt = null): void
+    public function record(string $type, string $sessionId, array $data, ?CarbonImmutable $occurredAt = null, int $version = 1): void
     {
         try {
             Outbox::create([
@@ -32,6 +34,7 @@ class AnalyticsRecorder
                 'sequence' => 0,
                 'occurred_at' => $occurredAt ?? now(),
                 'trace_id' => TraceId::current(),
+                'version' => $version,
             ]);
         } catch (Throwable $e) {
             report($e);

@@ -20,5 +20,5 @@ catalog_app:
 search_service:
   cluster: ["monitor", "manage_index_templates", "manage_ilm", "manage_pipeline", "cancel_task", "manage_transform", "manage_enrich"]
   indices:
-    - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "logs-app-*", "product-popularity*"]
+    - names: ["products-*", "offers-*", "seller-360*", "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*", "product-popularity*"]
       privileges: ["all"]

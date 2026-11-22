@@ -36,3 +36,11 @@ test('koperta ma dokładnie dotychczasowy kształt', function () {
 
     expect(array_keys($body))->toBe(['id', 'type', 'version', 'source', 'occurred_at', 'aggregate', 'sequence', 'data']);
 });
+
+test('wersja koperty pochodzi z wiersza outboxu, domyślnie 1', function () {
+    $v2 = factoryRow(null);
+    $v2->version = 2;
+
+    expect(json_decode(OutboxMessageFactory::make($v2)->getBody(), true)['version'])->toBe(2)
+        ->and(json_decode(OutboxMessageFactory::make(factoryRow(null))->getBody(), true)['version'])->toBe(1);
+});

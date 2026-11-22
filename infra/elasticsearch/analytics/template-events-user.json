@@ -35,6 +35,7 @@
         },
         "product": { "properties": { "id": { "type": "keyword" } } },
         "offer": { "properties": { "id": { "type": "keyword" } } },
+        "seller": { "properties": { "id": { "type": "keyword" } } },
         "click": { "properties": { "position": { "type": "integer" } } },
         "order": {
           "properties": {

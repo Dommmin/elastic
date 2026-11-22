@@ -16,6 +16,10 @@ class AnalyticsDocumentMapper
 {
     public const EVENTS_STREAM = 'events-user-default';
     public const IMPRESSIONS_STREAM = 'events-impression-default';
+    public const SELLER_STREAM = 'events-seller-default';
+
+    /** Od tej wersji koperty `user.*` niesie atrybucję do sprzedawcy (ETAP 13). */
+    private const SELLER_ATTRIBUTION_VERSION = 2;
 
     private const TYPES = ['user.searched', 'user.clicked_result', 'user.added_to_cart', 'user.checked_out'];
 
@@ -50,7 +54,7 @@ class AnalyticsDocumentMapper
 
         match ($event->type) {
             'user.clicked_result' => $doc += $this->click($data),
-            'user.added_to_cart' => $doc += $this->cart($data),
+            'user.added_to_cart' => $doc += $this->cart($data, $event->version),
             'user.checked_out' => $doc += $this->checkout($data),
             default => null,
         };
@@ -59,6 +63,10 @@ class AnalyticsDocumentMapper
 
         if ($event->type === 'user.searched') {
             array_push($items, ...$this->impressions($event, $timestamp, $search));
+        }
+
+        if ($event->version >= self::SELLER_ATTRIBUTION_VERSION) {
+            array_push($items, ...$this->sellerRows($event, $timestamp));
         }
 
         return $items;
@@ -110,7 +118,7 @@ class AnalyticsDocumentMapper
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function cart(array $data): array
+    private function cart(array $data, int $version): array
     {
         $out = [];
         if (isset($data['product_id'])) {
@@ -118,6 +126,9 @@ class AnalyticsDocumentMapper
         }
         if (isset($data['offer_id'])) {
             $out['offer'] = ['id' => (string) $data['offer_id']];
+        }
+        if ($version >= self::SELLER_ATTRIBUTION_VERSION && isset($data['seller_id'])) {
+            $out['seller'] = ['id' => (string) $data['seller_id']];
         }
 
         return $out;
@@ -145,6 +156,37 @@ class AnalyticsDocumentMapper
         }
 
         return $out;
+    }
+
+    /**
+     * Wiersze `events-seller-default` (ETAP 13): po jednym na (zdarzenie, sprzedawca), `_id` =
+     * `<event_id>:<seller_id>` — powtórka paczki daje 409. Koszyk to `kind=cart` (bez kwoty),
+     * zamówienie `kind=order` z kwotą sprzedawcy z `seller_amounts`.
+     *
+     * @return list<array{index: string, id: string, doc: array<string, mixed>}>
+     */
+    private function sellerRows(IntegrationEvent $event, string $timestamp): array
+    {
+        $data = $event->data;
+        $base = [
+            '@timestamp' => $timestamp,
+            'event' => ['id' => $event->id, 'type' => $event->type],
+            'session' => ['id' => $event->aggregateId],
+        ];
+
+        $rows = [];
+        if ($event->type === 'user.added_to_cart' && isset($data['seller_id'])) {
+            $sellerId = (string) $data['seller_id'];
+            $rows[] = ['index' => self::SELLER_STREAM, 'id' => "{$event->id}:{$sellerId}", 'doc' => $base + ['seller' => ['id' => $sellerId], 'kind' => 'cart']];
+        }
+        if ($event->type === 'user.checked_out' && ! empty($data['seller_amounts']) && \is_array($data['seller_amounts'])) {
+            foreach ($data['seller_amounts'] as $sellerId => $cents) {
+                $sellerId = (string) $sellerId;
+                $rows[] = ['index' => self::SELLER_STREAM, 'id' => "{$event->id}:{$sellerId}", 'doc' => $base + ['seller' => ['id' => $sellerId], 'kind' => 'order', 'amount_cents' => (int) $cents]];
+            }
+        }
+
+        return $rows;
     }
 
     /**

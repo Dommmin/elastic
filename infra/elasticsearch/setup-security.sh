@@ -86,7 +86,7 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
     {
       "names": [
         "products-*", "offers-*", "seller-360*",
-        "alerts-*", "events-*", "search-stats-*", "logs-app-*",
+        "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*",
         "product-popularity*"
       ],
       "privileges": ["all"]

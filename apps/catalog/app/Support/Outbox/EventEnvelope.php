@@ -27,11 +27,12 @@ final class EventEnvelope
         string $aggregateId,
         int $sequence,
         array $data,
+        int $version = 1,
     ): array {
         return [
             'id' => $id,
             'type' => $type,
-            'version' => 1,
+            'version' => $version,
             'source' => 'catalog',
             'occurred_at' => $occurredAt->format(DateTimeInterface::ATOM),
             'aggregate' => [

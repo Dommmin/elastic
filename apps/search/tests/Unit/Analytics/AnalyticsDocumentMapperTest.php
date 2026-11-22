@@ -109,13 +109,77 @@ final class AnalyticsDocumentMapperTest extends TestCase
         $this->assertArrayNotHasKey('sort', $docs[0]['doc']['search']);
     }
 
+    public function test_checkout_v2_daje_dokument_zdarzenia_bez_zmian_i_wiersz_na_sprzedawce(): void
+    {
+        $data = ['order_ids' => [1, 2], 'product_ids' => [10, 11], 'amount_cents' => 2000];
+        $v1 = (new AnalyticsDocumentMapper())->map($this->event('user.checked_out', $data));
+        $docs = (new AnalyticsDocumentMapper())->map($this->event('user.checked_out', $data + ['seller_amounts' => ['7' => 1500, '9' => 500]], version: 2));
+
+        $this->assertCount(3, $docs);
+        $this->assertSame($v1[0], $docs[0], 'dokument events-user z v2 jest identyczny jak z v1');
+
+        $this->assertSame('events-seller-default', $docs[1]['index']);
+        $this->assertSame('evt-1:7', $docs[1]['id']);
+        $this->assertSame([
+            '@timestamp' => '2026-11-20T10:00:00.000+00:00',
+            'event' => ['id' => 'evt-1', 'type' => 'user.checked_out'],
+            'session' => ['id' => 'sess-1'],
+            'seller' => ['id' => '7'],
+            'kind' => 'order',
+            'amount_cents' => 1500,
+        ], $docs[1]['doc']);
+        $this->assertSame('evt-1:9', $docs[2]['id']);
+        $this->assertSame(500, $docs[2]['doc']['amount_cents']);
+    }
+
+    public function test_checkout_v1_bez_seller_amounts_nie_daje_wierszy_events_seller(): void
+    {
+        $docs = (new AnalyticsDocumentMapper())->map($this->event('user.checked_out', ['order_ids' => [1], 'amount_cents' => 100]));
+
+        $this->assertCount(1, $docs);
+        $this->assertSame('events-user-default', $docs[0]['index']);
+    }
+
+    public function test_seller_amounts_w_v1_jest_ignorowane(): void
+    {
+        $docs = (new AnalyticsDocumentMapper())->map($this->event('user.checked_out', ['seller_amounts' => ['7' => 100]]));
+
+        $this->assertCount(1, $docs);
+    }
+
+    public function test_dodanie_do_koszyka_v2_daje_seller_id_i_wiersz_kind_cart(): void
+    {
+        $docs = (new AnalyticsDocumentMapper())->map($this->event('user.added_to_cart', [
+            'product_id' => 10, 'offer_id' => 7, 'seller_id' => 42, 'user_id' => 5,
+        ], version: 2));
+
+        $this->assertCount(2, $docs);
+        $this->assertSame('events-user-default', $docs[0]['index']);
+        $this->assertSame(['id' => '42'], $docs[0]['doc']['seller']);
+
+        $this->assertSame('events-seller-default', $docs[1]['index']);
+        $this->assertSame('evt-1:42', $docs[1]['id']);
+        $this->assertSame('cart', $docs[1]['doc']['kind']);
+        $this->assertSame(['id' => '42'], $docs[1]['doc']['seller']);
+        $this->assertSame('sess-1', $docs[1]['doc']['session']['id']);
+        $this->assertArrayNotHasKey('amount_cents', $docs[1]['doc']);
+    }
+
+    public function test_dodanie_do_koszyka_v1_nie_ma_seller_ani_wiersza(): void
+    {
+        $docs = (new AnalyticsDocumentMapper())->map($this->event('user.added_to_cart', ['product_id' => 10, 'offer_id' => 7, 'seller_id' => 42]));
+
+        $this->assertCount(1, $docs);
+        $this->assertArrayNotHasKey('seller', $docs[0]['doc']);
+    }
+
     /** @param array<string, mixed> $data */
-    private function event(string $type, array $data): IntegrationEvent
+    private function event(string $type, array $data, int $version = 1): IntegrationEvent
     {
         return new IntegrationEvent(
             id: 'evt-1',
             type: $type,
-            version: 1,
+            version: $version,
             source: 'catalog',
             occurredAt: new \DateTimeImmutable('2026-11-20T10:00:00+00:00'),
             aggregateType: 'session',

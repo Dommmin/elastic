@@ -1,0 +1,16 @@
+{
+  "settings": {
+    "index.number_of_shards": 1,
+    "index.number_of_replicas": 1
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "day": { "type": "date" },
+      "seller_id": { "type": "keyword" },
+      "cart_sessions": { "type": "long" },
+      "order_sessions": { "type": "long" },
+      "gmv_cents": { "type": "long" }
+    }
+  }
+}
