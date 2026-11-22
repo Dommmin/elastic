@@ -37,6 +37,8 @@ class SearchEvalLabCommand extends Command
         {--check-rank-eval : Porównaj nDCG z PHP z _rank_eval (warianty wyrażalne jako query)}
         {--check-rrf : Porównaj top-k rrf-client z rrf-native}
         {--latency=0 : Liczba przebiegów po wszystkich zapytaniach do pomiaru p50/p99 (0 = bez pomiaru)}
+        {--vector-field=semantic_e5 : Pole wariantu knn: semantic_e5 (domyślnie) albo jawne vec_float, vec_int8, vec_bbq}
+        {--knn-filter=none : Filtr dostępności (in_stock) w wariancie knn: none, in-knn (filter w knn), post (post_filter)}
         {--recall : recall@k HNSW (knn na vec_float) względem knn-exact (brute force na vec_float)}';
 
     protected $description = 'Porównuje warianty wyszukiwania (BM25, kNN, hybryda, RRF) na węźle lab: nDCG@k wariant × grupa';
@@ -65,6 +67,22 @@ class SearchEvalLabCommand extends Command
 
             return self::FAILURE;
         }
+
+        $field = (string) $this->option('vector-field');
+        if ($field !== LabQueryBuilder::SEMANTIC_FIELD && ! in_array($field, LabQueryBuilder::VECTOR_FIELDS, true)) {
+            $this->error("Nieznane pole „{$field}” (dozwolone: ".implode(', ', [LabQueryBuilder::SEMANTIC_FIELD, ...LabQueryBuilder::VECTOR_FIELDS]).').');
+
+            return self::FAILURE;
+        }
+
+        $filter = (string) $this->option('knn-filter');
+        if (! in_array($filter, LabQueryBuilder::FILTER_MODES, true)) {
+            $this->error("Nieznany tryb filtra „{$filter}” (dozwolone: ".implode(', ', LabQueryBuilder::FILTER_MODES).').');
+
+            return self::FAILURE;
+        }
+
+        $this->runner->configureKnn($field, $filter);
 
         $path = (string) $this->option('queries');
         if (! is_file($path)) {
@@ -124,6 +142,7 @@ class SearchEvalLabCommand extends Command
             'queries' => (string) $this->option('queries'),
             'variants' => array_map(static fn (LabVariant $v): string => $v->value, $variants),
             'groups' => $groups,
+            'knn' => ['field' => (string) $this->option('vector-field'), 'filter' => (string) $this->option('knn-filter')],
             'table' => $result['table'],
             'per_query' => $result['per_query'],
         ];
@@ -139,6 +158,12 @@ class SearchEvalLabCommand extends Command
                     .implode('; ', $unstable).'. Popraw reguły w semantic-queries.yaml (RUNBOOK #096).');
                 $exit = self::TIE_UNSTABLE;
             }
+        }
+
+        if ($this->option('check-rank-eval') && ! $this->runner->knnIsDefault()) {
+            $this->error('--check-rank-eval sprawdza domyślne ciało knn; nie łącz go z --vector-field ani --knn-filter.');
+
+            return self::FAILURE;
         }
 
         if ($this->option('check-rank-eval')) {

@@ -18,10 +18,28 @@ class LabEvalRunner
     /** Tolerancja porównania wyników RRF: ES zwraca `_score` jako float32. */
     private const RRF_EPSILON = 1e-6;
 
+    private string $knnField = LabQueryBuilder::SEMANTIC_FIELD;
+
+    private string $knnFilter = LabQueryBuilder::FILTER_NONE;
+
     public function __construct(
         private readonly Client $client,
         private readonly LabQueryBuilder $builder,
     ) {}
+
+    /**
+     * Pole i filtr dostępności wyłącznie dla wariantu `knn` (pozostałe warianty bez zmian).
+     */
+    public function configureKnn(string $field, string $filter): void
+    {
+        $this->knnField = $field;
+        $this->knnFilter = $filter;
+    }
+
+    public function knnIsDefault(): bool
+    {
+        return $this->knnField === LabQueryBuilder::SEMANTIC_FIELD && $this->knnFilter === LabQueryBuilder::FILTER_NONE;
+    }
 
     /**
      * @param  list<LabVariant>  $variants
@@ -83,6 +101,10 @@ class LabEvalRunner
 
         if ($variant === LabVariant::KnnExact) {
             return $this->search($this->builder->knnExactBody($this->queryVector($q), $size));
+        }
+
+        if ($variant === LabVariant::Knn) {
+            return $this->search($this->builder->knnBody($q, $size, $this->knnField, $this->knnFilter));
         }
 
         return $this->search($this->builder->body($variant, $q, $size));

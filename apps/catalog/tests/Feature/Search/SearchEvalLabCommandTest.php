@@ -202,3 +202,18 @@ test('unknown variant is refused', function () {
         ->expectsOutputToContain('nope')
         ->assertExitCode(1);
 });
+
+test('--vector-field and --knn-filter are accepted for the knn variant', function () {
+    $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--vector-field' => 'vec_int8', '--knn-filter' => 'post', '--queries' => $this->queriesFile])
+        ->assertSuccessful();
+});
+
+test('unknown --vector-field and --knn-filter are refused', function () {
+    $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--vector-field' => 'vec_nope', '--queries' => $this->queriesFile])
+        ->expectsOutputToContain('vec_nope')
+        ->assertFailed();
+
+    $this->artisan('search:eval:lab', ['--variant' => ['knn'], '--knn-filter' => 'nope', '--queries' => $this->queriesFile])
+        ->expectsOutputToContain('nope')
+        ->assertFailed();
+});

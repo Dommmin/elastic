@@ -27,6 +27,35 @@ test('knn na polu semantic_e5 z k=10 i num_candidates=100', function () {
         ->and($knn['query_vector_builder']['text_embedding'])->toBe(['model_id' => 'lab-e5', 'model_text' => 'ciepła kurtka']);
 });
 
+test('knnOn: zapytanie knn na jawnym polu wektorowym z query_vector_builder', function (string $field) {
+    $knn = $this->builder->knnOn($field, 'ciepła kurtka')['knn'];
+
+    expect($knn['field'])->toBe($field)
+        ->and($knn['k'])->toBe(10)
+        ->and($knn['num_candidates'])->toBe(100)
+        ->and($knn['query_vector_builder']['text_embedding'])->toBe(['model_id' => 'lab-e5', 'model_text' => 'ciepła kurtka']);
+})->with(['vec_float', 'vec_int8', 'vec_bbq']);
+
+test('knnOn odrzuca pole spoza vec_float, vec_int8, vec_bbq', function () {
+    $this->builder->knnOn('semantic_e5', 'x');
+})->throws(InvalidArgumentException::class);
+
+test('knnBody: filtr w knn, post_filter albo bez filtra', function () {
+    $none = $this->builder->knnBody('q');
+    $inside = $this->builder->knnBody('q', filter: LabQueryBuilder::FILTER_IN_KNN);
+    $post = $this->builder->knnBody('q', filter: LabQueryBuilder::FILTER_POST);
+
+    expect($none)->toBe($this->builder->body(LabVariant::Knn, 'q'))
+        ->and($inside['query']['knn']['filter'])->toBe(['term' => ['in_stock' => true]])
+        ->and($inside)->not->toHaveKey('post_filter')
+        ->and($post['post_filter'])->toBe(['term' => ['in_stock' => true]])
+        ->and($post['query']['knn'])->not->toHaveKey('filter');
+});
+
+test('knnBody na polu wektorowym używa knnOn', function () {
+    expect($this->builder->knnBody('q', field: 'vec_bbq')['query'])->toBe($this->builder->knnOn('vec_bbq', 'q'));
+});
+
 test('hybrid-bool ma oba człony w should', function () {
     $should = $this->builder->body(LabVariant::HybridBool, 'ciepła kurtka')['query']['bool']['should'];
 

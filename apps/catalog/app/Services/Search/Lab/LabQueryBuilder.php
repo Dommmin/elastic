@@ -3,6 +3,7 @@
 namespace App\Services\Search\Lab;
 
 use App\Services\ProductSearchService;
+use InvalidArgumentException;
 use LogicException;
 
 /**
@@ -32,6 +33,18 @@ class LabQueryBuilder
     public const RANK_CONSTANT = 60;
 
     public const RANK_WINDOW = 100;
+
+    /** Jawne pola wektorowe (te same wektory, różne `index_options`) — koszt i jakość kwantyzacji. */
+    public const VECTOR_FIELDS = ['vec_float', 'vec_int8', 'vec_bbq'];
+
+    /** Tryby filtra dostępności w wariancie `knn` (demo filtrowanego kNN). */
+    public const FILTER_NONE = 'none';
+
+    public const FILTER_IN_KNN = 'in-knn';
+
+    public const FILTER_POST = 'post';
+
+    public const FILTER_MODES = [self::FILTER_NONE, self::FILTER_IN_KNN, self::FILTER_POST];
 
     public function __construct(private readonly ProductSearchService $search) {}
 
@@ -81,6 +94,53 @@ class LabQueryBuilder
             'num_candidates' => self::NUM_CANDIDATES,
             'query_vector_builder' => ['text_embedding' => ['model_id' => self::INFERENCE_ID, 'model_text' => $q]],
         ]];
+    }
+
+    /**
+     * Zapytanie `knn` na jawnym polu wektorowym (`vec_float|vec_int8|vec_bbq`) z wektorem
+     * liczonym przez endpoint (`query_vector_builder`; na `dense_vector` E5 też dokłada `query: `).
+     *
+     * @return array<string, mixed>
+     */
+    public function knnOn(string $field, string $q): array
+    {
+        if (! in_array($field, self::VECTOR_FIELDS, true)) {
+            throw new InvalidArgumentException("Pole „{$field}” nie jest jawnym polem wektorowym (".implode(', ', self::VECTOR_FIELDS).').');
+        }
+
+        $knn = $this->knnQuery($q);
+        $knn['knn']['field'] = $field;
+
+        return $knn;
+    }
+
+    /**
+     * Ciało wariantu `knn` z wybranym polem i filtrem dostępności: `in-knn` = `filter` wewnątrz
+     * `knn` (filtr działa PRZED wyborem k sąsiadów), `post` = `post_filter` (PO wyborze k sąsiadów,
+     * więc wyników bywa mniej niż `size`).
+     *
+     * @return array<string, mixed>
+     */
+    public function knnBody(string $q, int $size = self::K, string $field = self::SEMANTIC_FIELD, string $filter = self::FILTER_NONE): array
+    {
+        if (! in_array($filter, self::FILTER_MODES, true)) {
+            throw new InvalidArgumentException("Nieznany tryb filtra „{$filter}” (".implode(', ', self::FILTER_MODES).').');
+        }
+
+        $query = $field === self::SEMANTIC_FIELD ? $this->knnQuery($q) : $this->knnOn($field, $q);
+        $stock = ['term' => ['in_stock' => true]];
+
+        if ($filter === self::FILTER_IN_KNN) {
+            $query['knn']['filter'] = $stock;
+        }
+
+        $body = ['query' => $query, 'size' => $size, '_source' => false];
+
+        if ($filter === self::FILTER_POST) {
+            $body['post_filter'] = $stock;
+        }
+
+        return $body;
     }
 
     /**

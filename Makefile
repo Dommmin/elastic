@@ -313,6 +313,14 @@ lab-setup: ## Trial, endpoint E5, pipeline i indeks products-lab-v1 na es-lab (i
 lab-eval: ## nDCG@10 wariantów bm25/knn/hybrid-bool/rrf-client/rrf-native na es-lab (np. args="--check-rank-eval --check-rrf")
 	$(DC) exec catalog-app php artisan search:eval:lab $(args)
 
+.PHONY: lab-costs
+lab-costs: ## Koszt wektorów: dysk per pole, pamięć kNN, czas ładowania bez wektorów (tymczasowy indeks), ekstrapolacja (es-lab)
+	@bash tools/lab/costs.sh
+
+.PHONY: lab-filter-demo
+lab-filter-demo: ## Filtrowany kNN: filtr w knn kontra post_filter (oznacza co trzeci dokument próbki jako in_stock=false; es-lab)
+	@bash tools/lab/filter-demo.sh
+
 .PHONY: lab-export
 lab-export: ## Eksportuje próbkę produktów (id % 15 = 0) do apps/catalog/storage/app/private/lab/products.ndjson (tryb normalny, główny ES)
 	$(DC) exec catalog-app php artisan search:lab:export
