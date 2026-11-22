@@ -3,7 +3,7 @@
 use App\Models\Seller;
 use Illuminate\Support\Facades\DB;
 
-test('zmienia nazwę sprzedawcy w bazie i nie dopisuje nic do outboxu', function () {
+test('zmienia nazwę sprzedawcy w bazie i dopisuje do outboxu tylko seller.renamed (ETAP 13)', function () {
     $this->artisan('marketplace:seed', ['--n' => 5, '--no-publish' => true])->assertSuccessful();
     $seller = Seller::query()->firstOrFail();
     DB::table('outbox')->truncate();
@@ -13,7 +13,7 @@ test('zmienia nazwę sprzedawcy w bazie i nie dopisuje nic do outboxu', function
         ->assertSuccessful();
 
     expect($seller->fresh()->name)->toBe('Nowa Nazwa')
-        ->and(DB::table('outbox')->count())->toBe(0);
+        ->and(DB::table('outbox')->pluck('event_type')->all())->toBe(['seller.renamed']);
 });
 
 test('odmawia dla nieistniejącego sprzedawcy i pustej nazwy', function () {
