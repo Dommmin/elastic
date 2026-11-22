@@ -1,0 +1,6 @@
+{
+  "script": {
+    "lang": "painless",
+    "source": "Map courier = ctx._source.registry != null ? ctx._source.registry.courier : null;\nif (courier == null) {\n  ctx.op = 'noop';\n  return;\n}\nif (courier.rated_at != null) {\n  long stored = 0L;\n  try {\n    stored = java.time.ZonedDateTime.parse(courier.rated_at.toString()).toInstant().toEpochMilli();\n  } catch (Exception e) {\n    stored = 0L;\n  }\n  if (stored >= ((Number) params.rated_at_ms).longValue()) {\n    ctx.op = 'noop';\n    return;\n  }\n}\ncourier.on_time_rate = params.rate;\ncourier.rated_at = params.rated_at;"
+  }
+}

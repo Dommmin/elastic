@@ -72,6 +72,8 @@ log "  OK"
 # (polityki enrich) oraz indeks product-popularity* (wynik transformu).
 # ETAP 13: complaints* — import reklamacji (complaints, complaints-unmatched, _reindex, delete-by-query);
 # manage_enrich wykonuje też politykę seller-by-nip.
+# ETAP 13b: courier-ratings (jawna nazwa, bez wzorca) — oceny kurierów z rejestru; `_update_by_query` fan-outu
+# na seller-360* mieści się w "all", a odczyt `_tasks/<id>` w `monitor`.
 log "Tworzę rolę search_service (write + manage)..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
   -H 'Content-Type: application/json' -d '{
@@ -92,6 +94,10 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
         "product-popularity*", "complaints*"
       ],
       "privileges": ["all"]
+    },
+    {
+      "names": ["courier-ratings"],
+      "privileges": ["read", "write", "create_index", "view_index_metadata"]
     }
   ]
 }' >/dev/null

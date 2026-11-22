@@ -19,6 +19,8 @@
 #  tylko dla sales, bo jest okresowa; sekcje sterowane zdarzeniami bywają bezczynne całymi dniami, więc ich wiek
 #  nie jest błędem (API reguł nie ma pola opisu, stąd uzasadnienie tutaj). Wymaga wcześniejszego `make analytics-setup`
 #  (indeks alerts-analytics i connectory Kibany o stałych ID).
+#  Fan-out kuriera (Task 13): skrypt seller360-courier-rating (noop, gdy zapisana rated_at jest nie starsza)
+#  i indeks courier-ratings (_id = courier_id; czyta go RegistrySync, pisze CourierFanOut).
 #  Aliasy: seller-360 (odczyt) + seller-360-write (is_write_index) → seller-360-v1,
 #          seller-360-public + seller-360-public-write → seller-360-public-v1.
 #
@@ -90,6 +92,21 @@ TMP="$(mktemp)"; trap 'rm -f "${TMP}"' EXIT
 
 log "Skrypt seller360-apply-section"
 esa PUT /_scripts/seller360-apply-section "${DIR}/script-apply-section.json" >/dev/null
+
+log "Skrypt seller360-courier-rating"
+esa PUT /_scripts/seller360-courier-rating "${DIR}/script-courier-rating.json" >/dev/null
+
+if esa_exists "/courier-ratings"; then
+  log "Indeks courier-ratings już istnieje"
+else
+  log "Tworzę indeks courier-ratings"
+  REPLICAS="${REPLICAS}" python3 -c '
+import json, os, sys
+t = json.load(open(sys.argv[1]))
+t["settings"]["index.number_of_replicas"] = int(os.environ["REPLICAS"])
+print(json.dumps(t))' "${DIR}/index-courier-ratings.json" >"${TMP}"
+  esa PUT /courier-ratings "${TMP}" >/dev/null
+fi
 
 # ensure_family NAZWA — szablon, potem indeks v1 z aliasami (gdy alias odczytu nie istnieje)
 ensure_family() {
