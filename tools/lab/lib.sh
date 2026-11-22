@@ -30,6 +30,6 @@ need_free_mb() {
   free=$(( total - used ))
   echo "  Docker: ${total} MB, użyte przez kontenery: ${used} MB, zapas: ${free} MB"
   if [ "${free}" -lt "${min}" ]; then
-    die "za mało pamięci (zapas ${free} MB < ${min} MB); zwolnij własną Kibanę: docker compose stop kibana (~1,1 GB). Cudzych kontenerów nie zatrzymuję"
+    die "za mało pamięci (zapas ${free} MB < ${min} MB); uruchom make lab-mode-on (zatrzymuje własny główny klaster i procesy zależne od ES). Cudzych kontenerów nie zatrzymuję"
   fi
 }

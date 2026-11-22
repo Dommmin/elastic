@@ -282,8 +282,16 @@ analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, d
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
 ## Laboratorium semantyki i ML (ETAP 14, profil ml)
+.PHONY: lab-mode-on
+lab-mode-on: ## Tryb lab: zatrzymuje własny główny klaster ES, Kibanę i procesy zależne (zwalnia pamięć dla es-lab)
+	@bash tools/lab/lab-mode.sh on
+
+.PHONY: lab-mode-off
+lab-mode-off: ## Wyłącza es-lab i przywraca główny klaster, Kibanę i procesy
+	@bash tools/lab/lab-mode.sh off
+
 .PHONY: lab-up
-lab-up: ## Uruchamia węzeł es-lab (osobny ES, trial/ML; potrzebuje ~3,5 GB wolnej pamięci Dockera)
+lab-up: ## Uruchamia węzeł es-lab (osobny ES, trial/ML; potrzebuje ~4,5 GB wolnej pamięci: najpierw make lab-mode-on)
 	@bash tools/lab/lab-up.sh
 
 .PHONY: lab-down
@@ -296,6 +304,10 @@ lab-reset: ## Zatrzymuje es-lab i KASUJE wolumen es-lab-data (wymaga CONFIRM=1)
 	$(DC) --profile ml stop es-lab
 	$(DC) --profile ml rm -f es-lab
 	docker volume rm $$($(DC) config --format json | jq -r '.name')_es-lab-data
+
+.PHONY: lab-setup
+lab-setup: ## Trial, endpoint E5, pipeline i indeks products-lab-v1 na es-lab (idempotentne; wymaga lab-up)
+	@bash infra/elasticsearch/lab/setup-lab.sh
 
 .PHONY: seller360-setup
 seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)

@@ -279,12 +279,12 @@ services:
       cluster.name: marketplace-lab
       discovery.type: single-node
       ELASTIC_PASSWORD: ${ES_LAB_PASSWORD:-}
-      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      ES_JAVA_OPTS: -Xms1536m -Xmx1536m
       xpack.security.enabled: "true"
       xpack.security.http.ssl.enabled: "false"
       xpack.security.transport.ssl.enabled: "false"
       xpack.ml.enabled: "true"
-      # modele ML mogą zająć najwyżej 60% pamięci kontenera (mem_limit 3g)
+      # modele ML mogą zająć najwyżej 60% pamięci kontenera (mem_limit 4g)
       xpack.ml.max_machine_memory_percent: "60"
     ports:
       - "127.0.0.1:${ES_LAB_PORT:-19201}:9200"
@@ -294,7 +294,7 @@ services:
     ulimits:
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
-    mem_limit: 3g
+    mem_limit: 4g
     healthcheck:
       test:
         - CMD-SHELL

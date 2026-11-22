@@ -13,8 +13,8 @@ command -v jq >/dev/null || die "brak jq"
 if [ -n "$(docker compose --profile ml ps --status running -q es-lab)" ]; then
   step "es-lab już działa: pomijam kontrolę pamięci"
 else
-  step "Kontrola pamięci (zapas minimum 3584 MB)"
-  need_free_mb 3584
+  step "Kontrola pamięci (zapas minimum 4608 MB)"
+  need_free_mb 4608
 fi
 
 step "Start es-lab"
