@@ -49,7 +49,7 @@ final class PortalWorld
     public function activeSeller(int $userId): SellerId
     {
         $id = (new RegisterSellerHandler($this->transactions, $this->clock, $this->dispatcher, $this->sellers))
-            ->handle(new RegisterSeller($userId, 'Sklep Testowy', 'Poznań'));
+            ->handle(new RegisterSeller($userId, 'Sklep Testowy', 'Poznań', '5261040828'));
         (new ApproveSellerHandler($this->transactions, $this->clock, $this->dispatcher, $this->sellers))
             ->handle(new ApproveSeller($id->value(), 900));
 

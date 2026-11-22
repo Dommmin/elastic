@@ -24,3 +24,20 @@ test('odmawia dla nieistniejącego sprzedawcy i pustej nazwy', function () {
 
     expect($seller->fresh()->name)->toBe('Stara');
 });
+
+test('zmiana nazwy idzie ścieżką domenową: wersja sprzedawcy rośnie o 1', function () {
+    $seller = Seller::factory()->create(['name' => 'Stara', 'version' => 4]);
+
+    $this->artisan('marketplace:seller-rename', ['seller_id' => $seller->id, 'name' => 'Nowa'])->assertSuccessful();
+
+    expect($seller->fresh()->name)->toBe('Nowa')
+        ->and($seller->fresh()->version)->toBe(5);
+});
+
+test('ta sama nazwa nie zmienia wersji', function () {
+    $seller = Seller::factory()->create(['name' => 'Ta Sama', 'version' => 4]);
+
+    $this->artisan('marketplace:seller-rename', ['seller_id' => $seller->id, 'name' => 'Ta Sama'])->assertSuccessful();
+
+    expect($seller->fresh()->version)->toBe(4);
+});

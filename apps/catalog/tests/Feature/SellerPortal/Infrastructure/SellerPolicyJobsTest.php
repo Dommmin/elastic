@@ -2,6 +2,7 @@
 
 use App\Models\Product;
 use App\Models\User;
+use App\Support\TaxIdGenerator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use SellerPortal\Application\Offer\DraftOffer;
@@ -36,7 +37,8 @@ beforeEach(function () {
 function policyJobsActiveSeller(): array
 {
     $moderator = User::factory()->create()->id;
-    $id = app(RegisterSellerHandler::class)->handle(new RegisterSeller(User::factory()->create()->id, 'Sklep Polityk', 'Poznań'));
+    $userId = User::factory()->create()->id;
+    $id = app(RegisterSellerHandler::class)->handle(new RegisterSeller($userId, 'Sklep Polityk', 'Poznań', TaxIdGenerator::forSeed($userId)));
     app(ApproveSellerHandler::class)->handle(new ApproveSeller($id->value(), $moderator));
 
     return [$id, $moderator];

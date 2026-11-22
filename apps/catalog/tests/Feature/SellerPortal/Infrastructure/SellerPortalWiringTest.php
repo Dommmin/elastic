@@ -16,7 +16,7 @@ use SharedKernel\DomainEvent;
 test('kontener składa handler z implementacjami SQL, a dispatcher jest scoped', function () {
     $user = User::factory()->create();
 
-    $id = app(RegisterSellerHandler::class)->handle(new RegisterSeller($user->id, 'Sklep Śródmieście', 'Poznań'));
+    $id = app(RegisterSellerHandler::class)->handle(new RegisterSeller($user->id, 'Sklep Śródmieście', 'Poznań', '5261040828'));
 
     expect(DB::table('sellers')->where('id', $id->value())->value('user_id'))->toBe($user->id)
         ->and(app(DomainEventDispatcher::class))->toBe(app(InProcessDomainEventDispatcher::class))

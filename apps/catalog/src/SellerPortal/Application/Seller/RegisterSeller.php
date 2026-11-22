@@ -12,5 +12,7 @@ final readonly class RegisterSeller
         public int $userId,
         public string $name,
         public string $city,
+        public string $nip,
+        public bool $synthetic = false,
     ) {}
 }

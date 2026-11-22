@@ -3,6 +3,7 @@
 namespace App\Support\RaceTest;
 
 use App\Models\Product;
+use App\Support\TaxIdGenerator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -58,6 +59,9 @@ final readonly class RaceFixture
                 'name' => "Race {$run}",
                 'slug' => "race-{$run}",
                 'city' => 'Warszawa',
+                // Fixture znika po teście, ale NIP musi być poprawny i unikalny na czas jego życia.
+                'nip' => TaxIdGenerator::forSeed(random_int(80_000_000, 89_999_999)),
+                'synthetic' => true,
                 'status' => 'active',
                 'version' => 1,
                 'created_at' => $now,

@@ -13,6 +13,8 @@ use SellerPortal\Domain\Seller\Event\SellerApproved;
 use SellerPortal\Domain\Seller\Event\SellerBlocked;
 use SellerPortal\Domain\Seller\Event\SellerRegistered;
 use SellerPortal\Domain\Seller\Event\SellerRejected;
+use SellerPortal\Domain\Seller\Event\SellerRelocated;
+use SellerPortal\Domain\Seller\Event\SellerRenamed;
 use SellerPortal\Domain\Seller\Event\SellerUnblocked;
 use SellerPortal\Domain\Shared\ModeratorId;
 use SellerPortal\Domain\Shared\Reason;
@@ -46,6 +48,8 @@ final class Seller extends AggregateRoot
         private ?UserId $userId,
         private SellerName $name,
         private City $city,
+        private readonly TaxId $taxId,
+        private readonly bool $synthetic,
         private SellerStatus $status,
         private ?Reason $statusReason,
         private int $version,
@@ -56,9 +60,11 @@ final class Seller extends AggregateRoot
         UserId $userId,
         SellerName $name,
         City $city,
+        TaxId $taxId,
+        bool $synthetic,
         DateTimeImmutable $now,
     ): self {
-        $seller = new self($id, $userId, $name, $city, SellerStatus::Pending, null, 0);
+        $seller = new self($id, $userId, $name, $city, $taxId, $synthetic, SellerStatus::Pending, null, 0);
         $seller->recordThat(new SellerRegistered($id, $userId, $now));
 
         return $seller;
@@ -73,11 +79,13 @@ final class Seller extends AggregateRoot
         ?UserId $userId,
         SellerName $name,
         City $city,
+        TaxId $taxId,
+        bool $synthetic,
         SellerStatus $status,
         ?Reason $statusReason,
         int $version,
     ): self {
-        return new self($id, $userId, $name, $city, $status, $statusReason, $version);
+        return new self($id, $userId, $name, $city, $taxId, $synthetic, $status, $statusReason, $version);
     }
 
     public function approve(ModeratorId $moderator, DateTimeImmutable $now): void
@@ -114,6 +122,32 @@ final class Seller extends AggregateRoot
         $this->status = SellerStatus::Active;
         $this->statusReason = null;
         $this->recordThat(new SellerUnblocked($this->id, $moderator, $now));
+    }
+
+    /**
+     * DLACZEGO brak zdarzenia przy tej samej wartości: zdarzenie mówi „coś się
+     * zmieniło”, a odbiorcy (projekcje, outbox) nie mają płacić za ruch, który
+     * niczego nie zmienił. Zmiana nazwy nie zależy od statusu sprzedawcy.
+     */
+    public function rename(SellerName $name, DateTimeImmutable $now): void
+    {
+        if ($this->name->value() === $name->value()) {
+            return;
+        }
+
+        $this->name = $name;
+        $this->recordThat(new SellerRenamed($this->id, $name, $now));
+    }
+
+    /** Jak `rename`: identyczne miasto to brak zmiany i brak zdarzenia. */
+    public function relocate(City $city, DateTimeImmutable $now): void
+    {
+        if ($this->city->value() === $city->value()) {
+            return;
+        }
+
+        $this->city = $city;
+        $this->recordThat(new SellerRelocated($this->id, $city, $now));
     }
 
     /**
@@ -166,6 +200,17 @@ final class Seller extends AggregateRoot
     public function city(): City
     {
         return $this->city;
+    }
+
+    public function taxId(): TaxId
+    {
+        return $this->taxId;
+    }
+
+    /** Dane z generatora (ETAP 13), nie prawdziwy sprzedawca; pozwala je odróżnić i posprzątać. */
+    public function isSynthetic(): bool
+    {
+        return $this->synthetic;
     }
 
     public function status(): SellerStatus

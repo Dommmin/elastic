@@ -15,6 +15,7 @@ use SellerPortal\Domain\Seller\Seller;
 use SellerPortal\Domain\Seller\SellerId;
 use SellerPortal\Domain\Seller\SellerName;
 use SellerPortal\Domain\Seller\SellerStatus;
+use SellerPortal\Domain\Seller\TaxId;
 use SellerPortal\Infrastructure\Persistence\SqlOfferRepository;
 use SellerPortal\Infrastructure\SystemClock;
 use SharedKernel\Money;
@@ -28,7 +29,7 @@ function traceIdSavedOffer(): void
 {
     $repo = new SqlOfferRepository(new SystemClock);
     $sellerId = SellerRow::factory()->create()->id;
-    $seller = Seller::reconstitute(SellerId::fromInt($sellerId), null, SellerName::fromString('Sklep'), City::fromString('Poznań'), SellerStatus::Active, null, 1);
+    $seller = Seller::reconstitute(SellerId::fromInt($sellerId), null, SellerName::fromString('Sklep'), City::fromString('Poznań'), TaxId::fromString('5261040828'), false, SellerStatus::Active, null, 1);
     $offer = $seller->draftOffer(
         $repo->nextIdentity(),
         ProductId::fromInt(Product::factory()->create()->id),
