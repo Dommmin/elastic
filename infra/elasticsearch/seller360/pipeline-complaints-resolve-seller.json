@@ -1,0 +1,46 @@
+{
+  "description": "Reklamacje: NIP -> seller_id i region (enrich seller-by-nip); brak dopasowania -> reroute do complaints-unmatched (ETAP 13)",
+  "processors": [
+    {
+      "enrich": {
+        "policy_name": "seller-by-nip",
+        "field": "nip",
+        "target_field": "seller",
+        "ignore_missing": false
+      }
+    },
+    {
+      "set": {
+        "if": "ctx.seller != null",
+        "field": "seller_id",
+        "copy_from": "seller.seller_id"
+      }
+    },
+    {
+      "set": {
+        "if": "ctx.seller != null",
+        "field": "region",
+        "copy_from": "seller.region"
+      }
+    },
+    {
+      "remove": {
+        "field": "seller",
+        "ignore_missing": true
+      }
+    },
+    {
+      "convert": {
+        "if": "ctx.seller_id != null",
+        "field": "seller_id",
+        "type": "long"
+      }
+    },
+    {
+      "reroute": {
+        "if": "ctx.seller_id == null",
+        "destination": "complaints-unmatched"
+      }
+    }
+  ]
+}

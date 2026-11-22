@@ -8,6 +8,9 @@
 #
 #  Szablony: seller-360-v* (6 sekcji) i seller-360-public-v* (bez billing i complaints).
 #  Skrypt zapisany: seller360-apply-section (strażnik wersji sekcji).
+#  Reklamacje (Task 9): szablony complaints (default_pipeline) i complaints-unmatched (bez niego),
+#  polityka enrich seller-by-nip (tworzona raz, _execute przy każdym uruchomieniu), pipeline
+#  complaints-resolve-seller. Polityki nie da się zmienić w miejscu — przebudowa: nagłówek setup-analytics.sh.
 #  Aliasy: seller-360 (odczyt) + seller-360-write (is_write_index) → seller-360-v1,
 #          seller-360-public + seller-360-public-write → seller-360-public-v1.
 #
@@ -75,5 +78,46 @@ print(json.dumps(t))' "${DIR}/${file}" >"${TMP}"
 
 ensure_family seller-360 template-seller-360.json
 ensure_family seller-360-public template-seller-360-public.json
+
+# --- Reklamacje (Task 9) -----------------------------------------------------
+# Kolejność jest wymuszona przez ES: pipeline z procesorem enrich powstaje dopiero po _execute polityki,
+# a polityka potrzebuje istniejącego indeksu źródłowego (seller-360-v1 z góry).
+POLICY=seller-by-nip
+POLICY_JSON="$(esa GET "/_enrich/policy/${POLICY}")"
+if printf '%s' "${POLICY_JSON}" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["policies"] else 1)'; then
+  log "Polityka ${POLICY} już istnieje (polityk nie da się aktualizować w miejscu)"
+else
+  log "Tworzę politykę enrich ${POLICY}"
+  esa PUT "/_enrich/policy/${POLICY}" "${DIR}/enrich-policy-${POLICY}.json" >/dev/null
+fi
+log "_execute ${POLICY} (indeks enrich z bieżącego seller-360)"
+esa POST "/_enrich/policy/${POLICY}/_execute?wait_for_completion=true" >/dev/null
+
+log "Pipeline complaints-resolve-seller (enrich → seller_id/region, brak dopasowania → reroute)"
+esa PUT /_ingest/pipeline/complaints-resolve-seller "${DIR}/pipeline-complaints-resolve-seller.json" >/dev/null
+
+log "Szablony complaints (z default_pipeline) i complaints-unmatched (bez — inaczej pętla reroute)"
+REPLICAS="${REPLICAS}" python3 -c '
+import json, os, sys
+t = json.load(open(sys.argv[1]))
+t["template"]["settings"]["index.number_of_replicas"] = int(os.environ["REPLICAS"])
+print(json.dumps(t))' "${DIR}/template-complaints.json" >"${TMP}"
+esa PUT /_index_template/complaints "${TMP}" >/dev/null
+REPLICAS="${REPLICAS}" python3 -c '
+import json, os, sys
+t = json.load(open(sys.argv[1]))
+t["index_patterns"] = ["complaints-unmatched"]
+t["template"]["settings"]["index.number_of_replicas"] = int(os.environ["REPLICAS"])
+del t["template"]["settings"]["index.default_pipeline"]
+print(json.dumps(t))' "${DIR}/template-complaints.json" >"${TMP}"
+esa PUT /_index_template/complaints-unmatched "${TMP}" >/dev/null
+for idx in complaints complaints-unmatched; do
+  if esa_exists "/${idx}"; then
+    log "Indeks ${idx} już istnieje"
+  else
+    log "Tworzę indeks ${idx}"
+    esa PUT "/${idx}" >/dev/null
+  fi
+done
 
 log "Gotowe."

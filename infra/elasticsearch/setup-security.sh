@@ -70,6 +70,8 @@ log "  OK"
 # `_tasks/<id>/_cancel` — bez tego przywileju ES odpowiada 403.
 # ETAP 12: manage_transform (transformy lejka i popularności), manage_enrich
 # (polityki enrich) oraz indeks product-popularity* (wynik transformu).
+# ETAP 13: complaints* — import reklamacji (complaints, complaints-unmatched, _reindex, delete-by-query);
+# manage_enrich wykonuje też politykę seller-by-nip.
 log "Tworzę rolę search_service (write + manage)..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
   -H 'Content-Type: application/json' -d '{
@@ -87,7 +89,7 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
       "names": [
         "products-*", "offers-*", "seller-360*",
         "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*",
-        "product-popularity*"
+        "product-popularity*", "complaints*"
       ],
       "privileges": ["all"]
     }
