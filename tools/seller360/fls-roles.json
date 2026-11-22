@@ -1,0 +1,25 @@
+{
+  "seller_self": {
+    "cluster": [],
+    "indices": [
+      {
+        "names": ["seller-360", "seller-360-v*"],
+        "privileges": ["read"],
+        "query": "{\"template\":{\"source\":{\"term\":{\"seller_id\":\"{{_user.metadata.seller_id}}\"}}}}",
+        "field_security": {
+          "grant": ["*"],
+          "except": ["billing.*", "complaints.recent_texts"]
+        }
+      }
+    ]
+  },
+  "consultant": {
+    "cluster": [],
+    "indices": [
+      {
+        "names": ["seller-360*"],
+        "privileges": ["read"]
+      }
+    ]
+  }
+}

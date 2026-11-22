@@ -696,3 +696,7 @@ g5-verify: ## Weryfikacja G5 na k3d: klaster, topologia, liczby, failover lidera
 
 g5-measure: ## Pomiary G5 na k3d: make g5-measure m=queues|failover|prefetch (3 przebiegi, mediana; kilka–kilkanaście minut)
 	@bash tools/k3d/measure.sh $(or $(m),$(error podaj m=queues|failover|prefetch))
+
+.PHONY: seller360-fls-demo
+seller360-fls-demo: ## Demo DLS/FLS seller-360 na jednorazowym węźle z trialem (-Xmx768m, 200 dokumentów, sprząta po sobie; ETAP 13)
+	@bash tools/seller360/fls-demo.sh
