@@ -1,0 +1,251 @@
+{
+  "index_patterns": [
+    "seller-360-public-v*"
+  ],
+  "priority": 200,
+  "_meta": {
+    "description": "Publiczny wycinek seller-360 (ETAP 13): bez billing i complaints, registry tylko courier"
+  },
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 1,
+      "analysis": {
+        "filter": {
+          "pl_stem": {
+            "type": "polish_stem"
+          },
+          "pl_stop": {
+            "type": "stop",
+            "stopwords": "_polish_"
+          },
+          "synonyms_pl": {
+            "type": "synonym_graph",
+            "synonyms_path": "analysis/synonyms.txt",
+            "updateable": true
+          }
+        },
+        "analyzer": {
+          "pl_index": {
+            "tokenizer": "standard",
+            "filter": [
+              "lowercase",
+              "asciifolding",
+              "pl_stop",
+              "pl_stem"
+            ]
+          },
+          "pl_search": {
+            "tokenizer": "standard",
+            "filter": [
+              "lowercase",
+              "asciifolding",
+              "synonyms_pl",
+              "pl_stop",
+              "pl_stem"
+            ]
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "seller_id": {
+          "type": "keyword"
+        },
+        "nip": {
+          "type": "keyword"
+        },
+        "region": {
+          "type": "keyword"
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "doc_updated_at": {
+          "type": "date"
+        },
+        "profile": {
+          "type": "object",
+          "dynamic": "strict",
+          "properties": {
+            "name": {
+              "type": "text",
+              "analyzer": "pl_index",
+              "search_analyzer": "pl_search",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "city": {
+              "type": "keyword"
+            },
+            "status": {
+              "type": "keyword"
+            },
+            "status_reason": {
+              "type": "keyword"
+            },
+            "_meta": {
+              "type": "object",
+              "dynamic": "strict",
+              "properties": {
+                "version": {
+                  "type": "long"
+                },
+                "source_ts": {
+                  "type": "date"
+                },
+                "updated_at": {
+                  "type": "date"
+                },
+                "status": {
+                  "type": "keyword"
+                },
+                "error": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "offers": {
+          "type": "object",
+          "dynamic": "strict",
+          "properties": {
+            "active": {
+              "type": "integer"
+            },
+            "suspended": {
+              "type": "integer"
+            },
+            "sold_out": {
+              "type": "integer"
+            },
+            "total": {
+              "type": "integer"
+            },
+            "computed_at": {
+              "type": "date"
+            },
+            "_meta": {
+              "type": "object",
+              "dynamic": "strict",
+              "properties": {
+                "version": {
+                  "type": "long"
+                },
+                "source_ts": {
+                  "type": "date"
+                },
+                "updated_at": {
+                  "type": "date"
+                },
+                "status": {
+                  "type": "keyword"
+                },
+                "error": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "sales": {
+          "type": "object",
+          "dynamic": "strict",
+          "properties": {
+            "gmv_30d_cents": {
+              "type": "long"
+            },
+            "orders_30d": {
+              "type": "integer"
+            },
+            "cart_sessions_30d": {
+              "type": "integer"
+            },
+            "cart_sessions_prev_30d": {
+              "type": "integer"
+            },
+            "conversion_30d": {
+              "type": "float"
+            },
+            "conversion_prev_30d": {
+              "type": "float"
+            },
+            "conversion_drop": {
+              "type": "float"
+            },
+            "_meta": {
+              "type": "object",
+              "dynamic": "strict",
+              "properties": {
+                "version": {
+                  "type": "long"
+                },
+                "source_ts": {
+                  "type": "date"
+                },
+                "updated_at": {
+                  "type": "date"
+                },
+                "status": {
+                  "type": "keyword"
+                },
+                "error": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "registry": {
+          "type": "object",
+          "dynamic": "strict",
+          "properties": {
+            "courier": {
+              "type": "object",
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "on_time_rate": {
+                  "type": "float"
+                },
+                "rated_at": {
+                  "type": "date"
+                }
+              }
+            },
+            "_meta": {
+              "type": "object",
+              "dynamic": "strict",
+              "properties": {
+                "version": {
+                  "type": "long"
+                },
+                "source_ts": {
+                  "type": "date"
+                },
+                "updated_at": {
+                  "type": "date"
+                },
+                "status": {
+                  "type": "keyword"
+                },
+                "error": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

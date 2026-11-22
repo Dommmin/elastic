@@ -281,6 +281,10 @@ closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dni
 analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
+.PHONY: seller360-setup
+seller360-setup: ## Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
+	@bash infra/elasticsearch/setup-seller360.sh
+
 .PHONY: simulate
 simulate: ## Symulator klientów -> zdarzenia user.* (make simulate days=30 [sessions=300 seed=1 args="--inject=ctr-drop"])
 	$(DC) exec catalog-app php artisan analytics:simulate --days=$(or $(days),30) --sessions-per-day=$(or $(sessions),300) --seed=$(or $(seed),1) $(args)

@@ -696,6 +696,9 @@ services:
       # Pipeline, polityka enrich i indeks popularności (ETAP 12): czyta je
       # PopularityPipelineTest (te same pliki co setup-analytics.sh).
       - ./infra/elasticsearch/analytics:/infra/elasticsearch/analytics:ro
+      # Szablon seller-360 (ETAP 13): ApplySectionScriptTest tworzy indeks testowy
+      # z mapowaniem tego samego pliku, którego używa setup-seller360.sh.
+      - ./infra/elasticsearch/seller360:/infra/elasticsearch/seller360:ro
     depends_on:
       postgres: { condition: service_healthy }
       catalog-app: { condition: service_healthy }

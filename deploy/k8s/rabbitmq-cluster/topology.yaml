@@ -119,6 +119,23 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Queue
 metadata:
+  name: search-seller360
+spec:
+  name: search.seller360
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  arguments:
+    x-dead-letter-exchange: marketplace.dlx
+    x-dead-letter-routing-key: search.seller360
+    x-delivery-limit: 5
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
   name: notifications-alerts
 spec:
   name: notifications.alerts
@@ -151,6 +168,19 @@ metadata:
   name: search-analytics-ingest-dlq
 spec:
   name: search.analytics.ingest.dlq
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-seller360-dlq
+spec:
+  name: search.seller360.dlq
   vhost: /
   type: quorum
   durable: true
@@ -252,6 +282,45 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
+  name: events-search-seller360-seller
+spec:
+  source: marketplace.events
+  destination: search.seller360
+  destinationType: queue
+  routingKey: 'seller.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-seller360-billing
+spec:
+  source: marketplace.events
+  destination: search.seller360
+  destinationType: queue
+  routingKey: 'billing.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-seller360-offer
+spec:
+  source: marketplace.events
+  destination: search.seller360
+  destinationType: queue
+  routingKey: 'offer.#'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
   name: events-notifications-alerts-alert
 spec:
   source: marketplace.events
@@ -343,6 +412,19 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
+  name: dlx-search-seller360-dlq
+spec:
+  source: marketplace.dlx
+  destination: search.seller360.dlq
+  destinationType: queue
+  routingKey: 'search.seller360'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
   name: dlx-notifications-alerts-dlq-alert
 spec:
   source: marketplace.dlx
@@ -366,6 +448,24 @@ spec:
   name: analytics-ingest-cap
   vhost: /
   pattern: '^search\.analytics\.ingest(\.dlq)?$'
+  applyTo: queues
+  priority: 10
+  definition:
+    max-length: 100000
+    overflow: drop-head
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+# Limit kolejki seller-360 (ETAP 13), 1:1 z policies w definitions.template.json.
+# drop-head obejmuje też DLQ: ta sama zasada co przy analityce.
+apiVersion: rabbitmq.com/v1beta1
+kind: Policy
+metadata:
+  name: seller360-cap
+spec:
+  name: seller360-cap
+  vhost: /
+  pattern: '^search\.seller360(\.dlq)?$'
   applyTo: queues
   priority: 10
   definition:
