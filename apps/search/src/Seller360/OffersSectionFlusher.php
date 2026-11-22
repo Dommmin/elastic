@@ -11,11 +11,14 @@ use Psr\Log\LoggerInterface;
  * atomowo przez `RENAME` na klucz roboczy (zdarzenia z trakcji lecą do świeżego zbioru), każdy
  * sprzedawca dostaje JEDNO zapytanie o statystyki, niezależnie od liczby zdarzeń. Sprzedawca,
  * dla którego pobranie albo zapis się nie udały, wraca do zbioru. Klucz roboczy, który przetrwał
- * awarię procesu, jest dołączany do następnego przebiegu.
+ * awarię procesu albo limit 500 sprzedawców, jest przetwarzany w pierwszej kolejności (bez scalania z DIRTY).
  */
 class OffersSectionFlusher implements Seller360Job
 {
     public const DIRTY_KEY = 'seller360:dirty:offers';
+
+    /** Maksymalna liczba sprzedawców w jednym przebiegu. */
+    public const BATCH_LIMIT = 500;
 
     private const WORK_KEY = 'seller360:dirty:offers:flushing';
 
@@ -45,13 +48,16 @@ class OffersSectionFlusher implements Seller360Job
     /** @return int liczba zapisanych sekcji (`created|updated`) */
     public function flush(): int
     {
-        if ($this->redis->exists(self::DIRTY_KEY)) {
-            if ($this->redis->exists(self::WORK_KEY)) {
-                // Pozostałość po przerwanym przebiegu: dołączamy nowe wpisy do niej.
-                $this->redis->sUnionStore(self::WORK_KEY, self::WORK_KEY, self::DIRTY_KEY);
-                $this->redis->del(self::DIRTY_KEY);
-            } else {
-                $this->redis->rename(self::DIRTY_KEY, self::WORK_KEY);
+        // Pozostałość po przerwanym przebiegu (albo po przekroczeniu limitu) przetwarzamy w pierwszej
+        // kolejności; zbiór DIRTY zostaje nietknięty do następnego cyklu (bez scalania, więc bez wyścigu z SADD).
+        if (! $this->redis->exists(self::WORK_KEY)) {
+            try {
+                if (! $this->redis->exists(self::DIRTY_KEY) || $this->redis->rename(self::DIRTY_KEY, self::WORK_KEY) === false) {
+                    return 0;
+                }
+            } catch (\RedisException) {
+                // Klucz zniknął między EXISTS a RENAME (równoległy flusher): pusty cykl.
+                return 0;
             }
         }
 
@@ -61,6 +67,9 @@ class OffersSectionFlusher implements Seller360Job
 
             return 0;
         }
+        // Jeden przebieg obejmuje najwyżej BATCH_LIMIT sprzedawców (mieści się w stop_grace_period);
+        // reszta czeka w kluczu roboczym na następny cykl.
+        $members = \array_slice($members, 0, self::BATCH_LIMIT);
 
         $items = [];
         $retry = [];
@@ -101,7 +110,7 @@ class OffersSectionFlusher implements Seller360Job
             $results = $this->writer->applyMany($items);
         } catch (\Throwable $e) {
             $this->requeue([...$retry, ...array_column($items, 'sellerId')]);
-            $this->redis->del(self::WORK_KEY);
+            $this->finish($members);
             throw $e;
         }
         foreach ($items as $i => $item) {
@@ -114,9 +123,15 @@ class OffersSectionFlusher implements Seller360Job
         }
 
         $this->requeue($retry);
-        $this->redis->del(self::WORK_KEY);
+        $this->finish($members);
 
         return $written;
+    }
+
+    /** Zdejmuje przetworzonych z klucza roboczego (pusty zbiór znika w Redisie). @param list<string> $members */
+    private function finish(array $members): void
+    {
+        $this->redis->sRem(self::WORK_KEY, ...$members);
     }
 
     /** @param list<int> $sellerIds */

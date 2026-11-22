@@ -30,6 +30,14 @@ final class OffersSectionFlusherTest extends TestCase
 
             return 1;
         });
+        $redis->method('sRem')->willReturnCallback(function (string $k, string ...$vs): int {
+            $this->sets[$k] = array_values(array_diff($this->sets[$k] ?? [], $vs));
+            if ($this->sets[$k] === []) {
+                unset($this->sets[$k]);
+            }
+
+            return \count($vs);
+        });
         $redis->method('sAdd')->willReturnCallback(function (string $k, string $v): int {
             $this->sets[$k][] = $v;
 
@@ -85,5 +93,38 @@ final class OffersSectionFlusherTest extends TestCase
 
         self::assertSame(0, (new OffersSectionFlusher($this->redis(), $client, $writer, new NullLogger))->flush());
         self::assertSame(['7'], $this->sets['seller360:dirty:offers']);
+    }
+
+    private function okClient(): CatalogSellerClient
+    {
+        $client = $this->createStub(CatalogSellerClient::class);
+        $client->method('offerStats')->willReturnCallback(fn (int $id): array => ['seller_id' => $id, 'active' => 1, 'suspended' => 0, 'sold_out' => 0, 'total' => 1, 'computed_at' => '2026-11-21T10:00:00.123+00:00']);
+
+        return $client;
+    }
+
+    public function test_pozostaly_klucz_roboczy_jest_przetwarzany_a_zbior_dirty_zostaje_nietkniety(): void
+    {
+        $this->sets['seller360:dirty:offers:flushing'] = ['5'];
+        $this->sets['seller360:dirty:offers'] = ['8'];
+        $writer = $this->createMock(SectionWriter::class);
+        $writer->expects(self::once())->method('applyMany')->with(self::callback(fn (array $items): bool => array_column($items, 'sellerId') === [5]))->willReturn(['updated']);
+
+        self::assertSame(1, (new OffersSectionFlusher($this->redis(), $this->okClient(), $writer, new NullLogger))->flush());
+        self::assertSame(['8'], $this->sets['seller360:dirty:offers']);
+        self::assertArrayNotHasKey('seller360:dirty:offers:flushing', $this->sets);
+    }
+
+    public function test_przebieg_jest_ograniczony_do_500_sprzedawcow_a_reszta_czeka_w_kluczu_roboczym(): void
+    {
+        $this->sets['seller360:dirty:offers'] = array_map('strval', range(1, 600));
+        $writer = $this->createStub(SectionWriter::class);
+        $writer->method('applyMany')->willReturnCallback(fn (array $items): array => array_fill(0, \count($items), 'updated'));
+        $flusher = new OffersSectionFlusher($this->redis(), $this->okClient(), $writer, new NullLogger);
+
+        self::assertSame(500, $flusher->flush());
+        self::assertCount(100, $this->sets['seller360:dirty:offers:flushing']);
+        self::assertSame(100, $flusher->flush());
+        self::assertArrayNotHasKey('seller360:dirty:offers:flushing', $this->sets);
     }
 }
