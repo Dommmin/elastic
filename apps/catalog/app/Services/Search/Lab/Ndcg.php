@@ -6,7 +6,11 @@ namespace App\Services\Search\Lab;
  * nDCG@k liczone po stronie PHP z tym samym wzorem co `_rank_eval` metryki
  * `dcg` z `normalize: true`: zysk `2^ocena - 1`, dyskonto `log2(pozycja + 1)`
  * (pozycje od 1). Ideał to posortowane malejąco WSZYSTKIE oceny zapytania
- * (nie tylko te, które wróciły) — oceniony dokument spoza wyników obniża wynik.
+ * (nie tylko te, które wróciły) — oceniony dokument spoza wyników obniża wynik —
+ * obcięte do min(k, liczba zwróconych wyników). To obcięcie robi `_rank_eval`
+ * (sprawdzone na ES 9.5.1: jedno trafienie z oceną 1 przy ocenach {1, 3} daje 1/7,
+ * nie 1/(7 + 3/log2 3)); zapytanie z mniej niż k wynikami nie jest karane za
+ * puste pozycje, tylko za kolejność i dobór tego, co wróciło.
  *
  * Po co własny licznik: tryb hybrydowy (RRF) i `semantic_text` zwracają wyniki
  * z `_search`, których `_rank_eval` nie obsługuje tak samo dla każdego
@@ -22,7 +26,8 @@ final class Ndcg
     {
         $ideal = array_values($ratings);
         rsort($ideal);
-        $idealDcg = self::dcg(array_slice($ideal, 0, $k));
+        $returned = min($k, count($rankedIds));
+        $idealDcg = self::dcg(array_slice($ideal, 0, $returned));
 
         if ($idealDcg <= 0.0) {
             return 0.0;

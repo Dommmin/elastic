@@ -205,8 +205,13 @@ queries:
       relevant:
           - { name_contains: 'Zenit 128GB', grade: 3 }
 
-    # Literówka w marce (Romagera) — oceny jak dla poprawnej nazwy.
+    # Literówka w marce (Romagera). BM25 nie zna literówki, więc „Romaguera Inc”
+    # i „Wolff Inc Rower górski Pro X 29"” remisują na 1. miejscu (wspólne „Inc”
+    # i model), a niżej remisuje cała reszta tego modelu. Ocena 3 tylko dla
+    # Romaguera rozbijałaby grupę remisu (TieGroupGuard, ETAP 14 Task 5), więc
+    # cała rodzina modelu dostaje 2 („dokładnie ten typ produktu”): zapytanie
+    # mierzy, czy wariant znajduje model mimo literówki w marce.
     - query: 'Romagera Inc Rower górski Pro X 29"'
       group: exact
       relevant:
-          - { name: 'Romaguera Inc Rower górski Pro X 29"', grade: 3 }
+          - { name_contains: 'Rower górski Pro X 29"', grade: 2 }
