@@ -156,6 +156,8 @@
 | [153](#153) | Model E5 się nie wdraża: OOM-kill przy imporcie, niekompletny model, brak pamięci ML | Elasticsearch ML / Docker | 14a |
 | [154](#154) | nDCG z PHP ≠ `_rank_eval` (`--check-rank-eval` czerwone) | Elasticsearch / catalog | 14a |
 | [155](#155) | `rrf-client` ≠ `rrf-native` w tabeli albo `--check-rrf` czerwone | Elasticsearch / catalog | 14a |
+| [156](#156) | ELSER się nie wdraża: HTTP 429, za mało pamięci ML obok E5 | Elasticsearch ML / Docker | 14b |
+| [157](#157) | Job anomalii bez wyników, datafeed zatrzymany albo awaria z `record_score` < 50 (luka w danych, kalendarz) | Elasticsearch ML | 14b |
 
 ---
 
@@ -6633,3 +6635,111 @@ wyrównać parametry w `LabQueryBuilder` (retriever `rrf`) i `Rrf::fuse()`, powt
 **Czego się nauczyłem**
 RRF to kilka linii arytmetyki, nie funkcja licencji: te same sumy można policzyć w aplikacji na basic. Różnica
 między implementacjami siedzi w regule rozstrzygania remisów, a RRF remisy produkuje z definicji.
+
+---
+
+<a id="156"></a>
+## 156 — ELSER się nie wdraża: HTTP 429, za mało pamięci ML obok E5
+
+> ETAP 14b (2026-11-22). Wystąpiło przy pierwszym `make lab-setup-elser`; faza `elser` obsługuje to sama.
+
+**Objaw**
+Tworzenie endpointu `lab-elser` (`PUT _inference/sparse_embedding/lab-elser`) albo `deployment/_start` dla
+`.elser_model_2` kończy się **HTTP 429** z informacją, że nie da się przydzielić modelu, bo brakuje pamięci ML na
+węźle. Inny wariant: ELSER się wdraża, ale potem nie da się wystartować E5 (ten sam 429), więc `make lab-eval`
+z wariantem knn albo elser pada.
+
+**Diagnoza**
+```bash
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_ml/memory/_stats?human" | jq '.nodes[] | .mem.ml'          # max, native_inference
+lab_es "${LAB_URL}/_ml/trained_models/_stats" \
+  | jq -c '.trained_model_stats[] | {model_id, need: .model_size_stats.required_native_memory_bytes, state: .deployment_stats.state, alloc: .deployment_stats.number_of_allocations}'
+lab_es "${LAB_URL}/_cluster/settings?include_defaults=true" | jq '[.persistent, .defaults] | map(.xpack.ml.max_machine_memory_percent)'
+docker stats --no-stream "$(docker compose --profile ml ps -q es-lab)"         # realne zużycie kontenera
+```
+
+**Przyczyna**
+ES przydziela model, jeśli **szacunek** jego pamięci natywnej mieści się w `xpack.ml.max_machine_memory_percent`
+pamięci węzła. Przy limicie 4 GB i 60% to ~2,4 GB, a szacunki to ELSER ~2 GB i E5 ~1,3 GB: razem się nie mieszczą.
+Szacunek jest ostrożny (realnie `pytorch_inference` ELSER ~0,9 GB RSS), ale bramka liczy szacunek, nie RSS. Wdrożenie
+z 6 alokacjami na czas `_reindex` zwiększa szacunek dodatkowo.
+
+**Naprawa**
+- `make lab-setup-elser` robi to sam: zatrzymuje wdrożenie E5 na czas wdrażania ELSER
+  (`POST _ml/trained_models/lab-e5/deployment/_stop?force=true`), ustawia persistent
+  `xpack.ml.max_machine_memory_percent: 90`, po `_reindex` zmniejsza ELSER do 1 alokacji i przywraca E5 (także po
+  błędzie, `trap EXIT`). Gdy przebieg przerwano w połowie i E5 zostało zatrzymane, ponowne `make lab-setup-elser`
+  je przywróci (`restore_e5`).
+- Jeśli ELSER został na 6 alokacjach (przerwany `_reindex`):
+  `PUT _inference/sparse_embedding/lab-elser/_update {"service_settings":{"num_allocations":1}}`.
+- Gdy ELSER nie jest potrzebny (np. praca nad anomaliami): `POST _ml/trained_models/.elser_model_2/deployment/_stop`;
+  `make lab-setup-elser` uruchomi go ponownie.
+- Powrót do bramki 60%: `PUT _cluster/settings {"persistent":{"xpack.ml.max_machine_memory_percent":null}}`
+  (obowiązuje znów wartość z `compose.yaml`); wtedy oba modele naraz się nie wdrożą.
+
+**Ryzyko ustawienia 90%:** bramka przestaje chronić węzeł. Heap 1,5 GB + do 3,6 GB dla ML to więcej niż limit
+kontenera 4 GB. Przy więcej alokacjach, dużym cache inferencji albo trzecim modelu jądro zabije kontener
+(`exit 137`, objawy jak w [#153](#153)). Ustawienie jest tylko na `es-lab`; na głównym klastrze nie ma ML.
+
+**Czego się nauczyłem**
+Bramka pamięci ML liczy szacunek ES, nie realne zużycie. Podniesienie jej to świadoma decyzja „wiem lepiej niż
+szacunek”, więc trzeba ją zapisać razem z ryzykiem i ze sposobem odwrotu. Na CPU równoległość inferencji dają
+alokacje (osobne kopie modelu), a nie wątki jednej alokacji, i każda alokacja kosztuje pamięć.
+
+---
+
+<a id="157"></a>
+## 157 — Job anomalii bez wyników, datafeed zatrzymany albo awaria z `record_score` < 50 (luka w danych, kalendarz)
+
+> ETAP 14b (2026-11-22). Wariant „awaria z wynikiem < 50” wystąpił przy pierwszym przebiegu; naprawiony kalendarzem.
+
+**Objaw**
+Jeden z trzech:
+1. `make lab-anomaly` kończy się „job się nie otworzył” albo „datafeed nie zakończył się w 360 s”.
+2. Job jest zamknięty, ale `results/records` zwraca 0 rekordów albo `data_counts.processed_record_count` = 0.
+3. Po `inject-outage.sh` asercja pada („BRAK takiego rekordu”), mimo że zero kliknięć w oknie jest w danych, a top
+   rekordów zajmują inne dni z wynikiem 90–99.
+
+**Diagnoza**
+```bash
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_ml/anomaly_detectors/lab-user-activity/_stats" \
+  | jq '.jobs[0] | {state, assignment_explanation, data_counts: (.data_counts | {processed_record_count, bucket_count, empty_bucket_count, missing_field_count, out_of_order_timestamp_count, latest_record_timestamp}), model: (.model_size_stats | {model_bytes, memory_status})}'
+lab_es "${LAB_URL}/_ml/datafeeds/datafeed-lab-user-activity/_stats" | jq '.datafeeds[0] | {state, assignment_explanation, timing_stats}'
+lab_es "${LAB_URL}/lab-events-user/_count"                                   # 158 710 przed awarią, 158 521 po
+lab_es "${LAB_URL}/_ml/calendars/lab-known-gaps/events" | jq '.events'
+# rozkład dzienny typu, który dominuje w top rekordów (luki widać od razu)
+lab_es -H 'Content-Type: application/json' "${LAB_URL}/lab-events-user/_search" -d '{"size":0,
+  "query":{"term":{"event.type":"user.added_to_cart"}},
+  "aggs":{"d":{"date_histogram":{"field":"@timestamp","calendar_interval":"day"}}}}' \
+  | jq -r '.aggregations.d.buckets[] | "\(.key_as_string[0:10]) \(.doc_count)"'
+```
+
+**Przyczyna**
+1. **Job się nie otwiera:** brak pamięci ML (dwa wdrożone modele i bramka, [#156](#156)); `assignment_explanation`
+   mówi wprost. **Datafeed nie kończy:** zakres `end` dalej niż dane albo bardzo wolny węzeł.
+2. **Brak wyników:** datafeed nie widzi danych (zły indeks, `time_field` ≠ `@timestamp`, `start` po ostatnim
+   zdarzeniu), albo wyniki są pod inną nazwą (`results_index_name`: `.ml-anomalies-custom-lab-user-activity-*`).
+   Po `_delete_by_query` bez ponownego przebiegu joba wyniki są ze starych danych: `anomaly.sh` zawsze odtwarza job.
+3. **Awaria z wynikiem < 50:** `record_score` jest **względny**, znormalizowany do najbardziej skrajnych anomalii
+   w historii joba. W tych danych jest prawdziwa luka 2026-10-21 → 2026-10-26 (koszyk ~70 zdarzeń na dobę zamiast
+   ~1900): dostaje 90–99 i spycha zero kliknięć (prawdopodobieństwo ~1e-6) do 37–40. Zmiana kubełka (30 min – 3 h),
+   `by_field_name` zamiast partycji i dłuższe okno awarii nie pomogły (maksimum ~44).
+
+**Naprawa**
+1. Zatrzymać ELSER (`POST _ml/trained_models/.elser_model_2/deployment/_stop`), ponowić `make lab-anomaly`.
+2. Sprawdzić `_count` indeksu i zakres `@timestamp`; ponownie załadować dane: `bash tools/lab/anomaly.sh --reload --no-assert`
+   (kasuje `lab-events-user` i ładuje z `events.ndjson`; potem awaria jeszcze raz). Brak pliku:
+   `make lab-mode-off && make lab-export-events && make lab-mode-on && make lab-up`.
+3. Oznaczyć znaną lukę **kalendarzem** (robi to `anomaly.sh`): zdarzenie z `skip_result: true` (bez rekordów)
+   i `skip_model_update: true` (bez uczenia się z luki). Po nim awaria dostaje 89–94. Daty kalendarza i okna awarii
+   są wpisane na stałe pod ten zbiór; przy innych danych najpierw `make lab-anomaly args="--no-assert"` i obejrzeć
+   top rekordów, potem poprawić zdarzenie kalendarza w `anomaly.sh` i `OUTAGE_FROM`.
+
+Nie obniżać progu asercji: próg 40 przepuściłby też szum i fałszywy alarm, który i tak już jest (03.11, 98,3).
+
+**Czego się nauczyłem**
+Wynik ML to nie bezwzględna miara „jak źle jest”, tylko pozycja na tle historii joba. Brudna historia (luki,
+migracje, testy obciążeniowe) przesuwa całą skalę. Przed uruchomieniem detekcji trzeba obejrzeć dane i znane
+odstępstwa oznaczyć kalendarzem; tak samo w produkcji: okna serwisowe, święta, kampanie.

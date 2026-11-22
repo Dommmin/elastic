@@ -5,7 +5,7 @@ Odpowiedź ma być liczbą, nie opinią. Budujemy osobny węzeł laboratoryjny z
 próbkę 19 824 produktów i mierzymy nDCG@10 pięciu sposobów wyszukiwania (BM25, kNN, suma w `bool`, RRF liczone
 w PHP, RRF w ES) na tych samych 33 zapytaniach i tych samych ocenach, rozbitych na trzy grupy: słownikowe, opisowe
 i dokładne. Do tego koszt wektorów (dysk, czas ładowania, kwantyzacja), filtrowany kNN i recall grafu HNSW. Część
-14b (ELSER i wykrywanie anomalii) będzie w osobnym przewodniku.*
+14b (ELSER i wykrywanie anomalii) jest w osobnym przewodniku: [etap-14b-elser-i-anomalie.md](etap-14b-elser-i-anomalie.md).*
 
 > **Stan:** gałąź `etap-14-semantyka` (niewypchnięta), lokalny stos Docker, węzeł `es-lab` (ES 9.5.1, jeden węzeł,
 > licencja trial), sprawdzone 2026-11-22. **Na żywo:** tabela 5 × 3 powtarza się co do cyfry dla tej samej budowy

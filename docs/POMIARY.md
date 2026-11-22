@@ -1277,9 +1277,10 @@ eksportami haseł dał po poprawce 15 FAIL zamiast fałszywej zieleni.
 
 > Część 14a: BM25 / kNN / hybryda / RRF na polskich zapytaniach, koszt wektorów, filtrowany kNN, recall HNSW.
 > Przewodnik: [`blog/etap-14a-wektory-i-trafnosc.md`](blog/etap-14a-wektory-i-trafnosc.md). Część 14b (ELSER,
-> anomalie) dopisze §18.6 i dalej. Maszyna współdzielona z innymi projektami: czasy **orientacyjne**. Wyniki JSON
-> (ignorowane przez git) w `apps/catalog/storage/app/private/lab/`: `eval-14a.json` (tabela kanoniczna),
-> `eval-14a-pre-rebuild.json` (pierwsza budowa grafu), `latency-14a.json`.
+> anomalie): §18.6–18.7, przewodnik [`blog/etap-14b-elser-i-anomalie.md`](blog/etap-14b-elser-i-anomalie.md).
+> Maszyna współdzielona z innymi projektami: czasy **orientacyjne**. Wyniki JSON (ignorowane przez git)
+> w `apps/catalog/storage/app/private/lab/`: `eval-14a.json` (tabela kanoniczna), `eval-14a-pre-rebuild.json`
+> (pierwsza budowa grafu), `latency-14a.json`, `eval-14b.json` (tabela 6 × 3).
 
 ### 18.1 Węzeł i próbka
 
@@ -1419,3 +1420,88 @@ na `vec_float`, ten sam wektor z `input_type: search`):
 | pierwsza | 0,952 | 0,955 | `komórka` 0,0 (przy 2000 kandydatów dokładne), `Wolff Inc` 0,7, „muzyka w podróży” 0,8, „ochrona przed deszczem” 0,9 |
 | po demo filtra na głównym indeksie | 0,988 | 0,991 | |
 | obecna (kanoniczna) | 0,997 | 1,000 | |
+
+### 18.6 ELSER jako szósty wariant (`make lab-setup-elser`, 2026-11-22)
+
+| Co | Wartość |
+|---|---|
+| Model / endpoint | `.elser_model_2` (wariant niezależny od platformy; `_linux-x86_64` nie działa na arm64), `lab-elser` (`sparse_embedding`) |
+| Indeks | `products-lab-elser`: `_reindex` z `products-lab-v1` (pola tekstowe, `op_type: create`), `semantic_elser` (`semantic_text`, `copy_to` z `lab_text`), 1 shard, 1 segment; `_count` 19 824 (`_cat/indices` 39 648 z dokumentami fragmentów), 35 MB |
+| Pamięć ML | przy `max_machine_memory_percent` 60% (2457 MB z 4 GB) wdrożenie ELSER obok E5: **HTTP 429** (szacunek ES: ELSER ~2 GB, E5 ~1,3 GB); E5 zatrzymane na czas wdrożenia i przywrócone; persistent `xpack.ml.max_machine_memory_percent=90` tylko na `es-lab`; realnie `pytorch_inference` ELSER ~0,9 GB RSS, kontener 3,0–3,7 / 4 GiB z oboma modelami |
+| Przepustowość | 1 alokacja ~0,65 s na fragment (~92/min); 8 wątków jednej alokacji = 1 rdzeń, bez zysku; 6 alokacji × 1 wątek ~700–1000 dokumentów/min |
+| Indeksacja | **992 s** (całe `make lab-setup-elser` 17 min z pobraniem modelu); potem 1 alokacja; drugi przebieg ~4 s (bez zmian) |
+
+nDCG@10 (`make lab-eval args="--variant=bm25 --variant=knn --variant=hybrid-bool --variant=rrf-client
+--variant=rrf-native --variant=elser --check-rank-eval --json=lab/eval-14b.json"`, dwa przebiegi identyczne,
+`_rank_eval` zgodny z PHP dla bm25 / knn / hybrid-bool / elser):
+
+| Wariant | lexical | descriptive | exact |
+|---|---|---|---|
+| bm25 | 1,000 | 0,167 | 1,000 |
+| knn | 0,950 | 0,693 | 0,972 |
+| hybrid-bool | 1,000 | 0,515 | 1,000 |
+| rrf-client | 0,958 | 0,612 | 0,975 |
+| rrf-native | 0,966 | 0,594 | 0,975 |
+| **elser** | **0,923** | **0,167** | **0,831** |
+
+Pięć wierszy innych niż elser jest równe `eval-14a.json` co do bitu (tabela, nDCG per zapytanie, top-10):
+`products-lab-v1` nietknięty, graf HNSW bez przebudowy.
+
+ELSER per zapytanie (różne od 1,000 albo od bm25): descriptive 1,000 tylko „oświetlenie do ogrodu bez prądu”
+i „ochrona przed deszczem” (bm25 0,000; wspólne kawałki WordPiece „og/##rod”, „##zcz” z „ogrodowa”,
+„przeciwdeszczowa”); 0,000 dla „coś ciepłego na zimę”, „ćwiczenia w domu”, „naprawy w domu”, „muzyka w podróży”,
+„prezent dla biegacza”, „jazda po górach”, „telefon z dobrym aparatem” (dwa ostatnie: bm25 i knn 1,000);
+`komórka` 0,000 (top-10: „Koszulka sportowa”); `Nova 256GB` 0,000 (rozwinięcie „256” → *128*, *memory*; na górze
+„Smartfon Nova 128GB”); literówka `Romagera Inc …` 0,649.
+
+Rozwinięcia (`_inference/sparse_embedding/lab-elser`, top-10 po wadze): `winter jacket` → winter, jacket,
+christmas, jackets, coat, clothing, cold, dress, weather, warmth (44 tokeny niezerowe); `kurtka zimowa` → kurt,
+##imo, ##ka, ##wa, z, she, actress, legend, director, her (43); „coś ciepłego na zimę” → kawałki słów + polish,
+poland.
+
+### 18.7 Wykrywanie anomalii na zdarzeniach `user.*` (`make lab-anomaly`, 2026-11-22)
+
+| Co | Wartość |
+|---|---|
+| Eksport (`make lab-export-events`, główny klaster, tylko odczyt) | `events-user-default`, PIT + `search_after` (`@timestamp`, `_shard_doc`), porcje 5000: **158 710** zdarzeń w 16 s, 2026-09-26T00:01:32Z → 2026-11-20T00:07:28Z; `user.clicked_result` 18 465 |
+| Typy (po awarii) | `user.added_to_cart` 95 977, `user.checked_out` 26 296, `user.clicked_result` 18 276, `user.searched` 17 972 |
+| Job `lab-user-activity` | `low_count`, `partition_field_name: event.type`, influencer `event.type`, `bucket_span` 1h, `model_memory_limit` 32mb (model 24 961 024 B, `ok`); 1320 kubełków; wyniki w `.ml-anomalies-custom-lab-user-activity-000001` |
+| Datafeed | `lab-events-user`, `match_all`, start/end = min/max `@timestamp` (+1 h), lookback i stop |
+| Pamięć | job otwarty obok wdrożonych E5 i ELSER, bez zatrzymywania modeli |
+| Luka w danych | 2026-10-21 ~10:00 → 2026-10-26: `user.added_to_cart` ~70/dobę zamiast ~1900, `user.checked_out` podobnie |
+| Kalendarz | `lab-known-gaps`: 2026-10-21T00:00Z → 2026-10-26T00:00Z, `skip_result` + `skip_model_update` |
+
+**Bez kalendarza:** 45 rekordów ≥ 50 (wszystkie w luce, wynik 90–99), awaria tylko **37–40** (prawdopodobieństwo
+~1e-5–1e-6). Kubełek 30 min / 2 h / 3 h, `by_field_name`, okno 12 h: maksimum ~44; kubełek 6 h: 86 (dopasowany do
+okna awarii, odrzucony).
+
+**Przed awarią** (z kalendarzem, `--no-assert`): 26 rekordów, **1 ≥ 50**.
+
+| Kubełek (UTC) | Typ | score | actual | typical |
+|---|---|---|---|---|
+| 2026-11-03 18:00 | `user.searched` | 98,3 | 15 | 35,3 |
+| 2026-10-02 01:00 | `user.checked_out` | 36,6 | 17 | 19,2 |
+| 2026-11-10 20:00 | `user.clicked_result` | 31,2 | 16 | 51,7 |
+| 2026-10-12 04:00 | `user.added_to_cart` | 30,5 | 51 | 77,1 |
+| 2026-10-02 02:00 | `user.checked_out` | 28,7 | 20 | 19,2 |
+
+Test negatywny: ten przebieg z asercją → kod 1 („BRAK takiego rekordu”).
+
+**Awaria** (`bash tools/lab/inject-outage.sh`): `_delete_by_query` `user.clicked_result` w 2026-11-10T09:00Z + 6 h,
+**189** skasowanych (drugie wywołanie 0). **Po awarii:** 31 rekordów, 3 ≥ 50; asercja zielona.
+
+| Kubełek clicked_result (UTC) | actual | typical | score | probability | reguła `ctr-drop` liczona na koniec godziny |
+|---|---|---|---|---|---|
+| 09:00 | 0 | – | brak rekordu | – | cisza (25 wyszukiwań < 30) |
+| 10:00 | 0 | 42,6 | **88,9** | 2,1e-4 | **ALARM** |
+| 11:00 | 0 | 31,1 | 5,1 | 5,4e-3 | **ALARM** |
+| 12:00 | 0 | 42,5 | 34,1 | 1,0e-3 | **ALARM** |
+| 13:00 | 0 | 37,3 | **93,7** | 1,5e-4 | **ALARM** |
+| 14:00 | 0 | 38,8 | 21,1 | 1,6e-3 | cisza (28 wyszukiwań < 30) |
+
+Fałszywy alarm 03.11 18:00 `user.searched`: probability 1,5e-7 (mniejsze niż w kubełkach awarii).
+
+**Porównanie:** ML 2 z 6 godzin okna ≥ 50, 1 fałszywy alarm przed awarią; reguła `ctr-drop` (ES|QL z
+`infra/kibana/rules/ctr-drop.json`, `NOW()` podstawione godzinami okna, `FROM lab-events-user`, dane `[t − 7 d, t)`)
+4 z 6 godzin. Reguła przeliczona godzina po godzinie dla 2026-11-03 → 2026-11-17 (336 h, jednorazowo, poza
+repozytorium): **0 fałszywych alarmów**, 4 trafienia, wszystkie w oknie awarii.
