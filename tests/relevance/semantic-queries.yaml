@@ -1,0 +1,217 @@
+# Zestaw zapytań laboratoryjnych ETAP 14 (wyszukiwanie semantyczne, hybrydowe
+# i leksykalne na jednym węźle lab, indeks `products-lab-v1`).
+#
+# Ten plik jest dla próbki M=15: produkty z `id % 15 = 0`
+# (App\Console\Commands\LabExportCommand::MODULO). Format reguł, skala ocen
+# 0-3 i selektory (`id`, `name`, `name_contains`, `brand`, `category`) są takie
+# same jak w `tests/relevance/queries.yaml` (rozwija je App\Services\Search\
+# RelevanceJudgments z bazy katalogu), z jednym dodatkiem: pole `group`
+# (`lexical` | `descriptive` | `exact`). App\Services\Search\Lab\LabJudgments
+# przecina oceny z próbką; zapytanie, które po przecięciu nie ma żadnych ocen,
+# przerywa ładowanie.
+#
+# `grade` 0-3: 3 = dokładnie ten produkt, o który pytano; 2 = dokładnie ten typ
+# produktu; 1 = trafny wynik szerszej kategorii/marki/synonimu.
+#
+# ZASADA remisów (jak w `queries.yaml`): każda grupa remisu `_score` BM25 w
+# top-10 ma JEDNĄ ocenę — sprawdza to TieGroupGuard w `search:lab:eval`.
+#
+# Grupy:
+#   lexical     — 13 zapytań z `queries.yaml` (BM25 powinno wygrywać lub remisować),
+#   descriptive — opisowe, bez słów z nazw produktów (tu liczymy na semantykę),
+#   exact       — pełne nazwy, marki, model + wariant, literówka (BM25 faworyt).
+
+queries:
+    # --- lexical ---------------------------------------------------------
+    - query: 'Wyman-Howell Laptop Ultra 14"'
+      group: lexical
+      relevant:
+          - { name: 'Wyman-Howell Laptop Ultra 14"', grade: 3 }
+
+    - query: 'Bailey Ltd Smartfon Nova 128GB'
+      group: lexical
+      relevant:
+          - { name: 'Bailey Ltd Smartfon Nova 128GB', grade: 3 }
+
+    # Sama marka jako wolny tekst — trafia też inne marki z „PLC” w nazwie,
+    # ale niżej niż każdy produkt Orn PLC.
+    - query: 'Orn PLC'
+      group: lexical
+      relevant:
+          - { brand: 'Orn PLC', grade: 1 }
+
+    - query: 'smartfon'
+      group: lexical
+      relevant:
+          - { category: 'Smartfony', grade: 1 }
+
+    - query: 'buty do biegania'
+      group: lexical
+      relevant:
+          - { category: 'Buty do biegania', grade: 1 }
+
+    # „Kurtka zimowa” > inne kurtki: nazwy z obu słowami mają wyższy `_score`
+    # niż sama „kurtka”, więc grupy remisu nie mieszają ocen 2 i 1.
+    - query: 'kurtka zimowa'
+      group: lexical
+      relevant:
+          - { name_contains: 'Kurtka zimowa', grade: 2 }
+          - { category: 'Kurtki', grade: 1 }
+
+    - query: 'meble ogrodowe'
+      group: lexical
+      relevant:
+          - { category: 'Meble ogrodowe', grade: 1 }
+
+    # Kategoria „Narzędzia” to też szlifierki i zestawy — nie są trafne.
+    - query: 'wiertarka'
+      group: lexical
+      relevant:
+          - { name_contains: 'Wiertarka', grade: 1 }
+
+    - query: 'rower górski'
+      group: lexical
+      relevant:
+          - { name_contains: 'Rower górski', grade: 2 }
+          - { category: 'Rowery', grade: 1 }
+
+    # Synonim (infra/elasticsearch/analysis/synonyms.txt: "laptop, notebook,
+    # komputer przenośny") — cała kategoria laptopów.
+    - query: 'notebook'
+      group: lexical
+      relevant:
+          - { category: 'Laptopy', grade: 1 }
+
+    # Synonim ("telefon, smartfon, komórka") — to samo co "smartfon".
+    - query: 'komórka'
+      group: lexical
+      relevant:
+          - { category: 'Smartfony', grade: 1 }
+
+    - query: 'telefon'
+      group: lexical
+      relevant:
+          - { category: 'Smartfony', grade: 1 }
+
+    # Synonim redukujący ("słuchawki bezprzewodowe => słuchawki") — patrz
+    # ZASADA w nagłówku: tylko kategoria, bez rozróżnienia typu słuchawek.
+    - query: 'słuchawki bezprzewodowe'
+      group: lexical
+      relevant:
+          - { category: 'Słuchawki', grade: 1 }
+
+    # --- descriptive -----------------------------------------------------
+    - query: 'coś ciepłego na zimę'
+      group: descriptive
+      relevant:
+          - { name_contains: 'Kurtka zimowa', grade: 3 }
+          - { category: 'Kurtki', grade: 1 }
+
+    - query: 'oświetlenie do ogrodu bez prądu'
+      group: descriptive
+      relevant:
+          - { name_contains: 'Lampa ogrodowa solarna', grade: 3 }
+          - { category: 'Oświetlenie', grade: 1 }
+
+    - query: 'ćwiczenia w domu'
+      group: descriptive
+      relevant:
+          - { category: 'Fitness', grade: 2 }
+
+    - query: 'jazda po górach'
+      group: descriptive
+      relevant:
+          - { name_contains: 'Rower górski', grade: 3 }
+          - { category: 'Rowery', grade: 1 }
+
+    - query: 'muzyka w podróży'
+      group: descriptive
+      relevant:
+          - { category: 'Słuchawki', grade: 2 }
+
+    - query: 'prezent dla biegacza'
+      group: descriptive
+      relevant:
+          - { category: 'Buty do biegania', grade: 2 }
+          - { name_contains: 'Koszulka termoaktywna', grade: 1 }
+
+    - query: 'ochrona przed deszczem'
+      group: descriptive
+      relevant:
+          - { name_contains: 'Kurtka przeciwdeszczowa', grade: 3 }
+          - { category: 'Kurtki', grade: 1 }
+
+    - query: 'do pracy w podróży'
+      group: descriptive
+      relevant:
+          - { category: 'Laptopy', grade: 2 }
+
+    - query: 'naprawy w domu'
+      group: descriptive
+      relevant:
+          - { category: 'Narzędzia', grade: 2 }
+
+    - query: 'odpoczynek na tarasie'
+      group: descriptive
+      relevant:
+          - { name_contains: 'Leżak ogrodowy', grade: 3 }
+          - { category: 'Meble ogrodowe', grade: 1 }
+
+    - query: 'dojazd do pracy bez wysiłku'
+      group: descriptive
+      relevant:
+          - { name_contains: 'Rower elektryczny', grade: 3 }
+          - { category: 'Rowery', grade: 1 }
+
+    # W danych nie ma informacji o aparacie — celowo trudny przypadek dla obu podejść.
+    - query: 'telefon z dobrym aparatem'
+      group: descriptive
+      relevant:
+          - { category: 'Smartfony', grade: 1 }
+
+    # --- exact -----------------------------------------------------------
+    - query: 'Romaguera Inc Rower górski Pro X 29"'
+      group: exact
+      relevant:
+          - { name: 'Romaguera Inc Rower górski Pro X 29"', grade: 3 }
+
+    - query: 'Jones-Gerhold Smartfon Vento 256GB 5G'
+      group: exact
+      relevant:
+          - { name: 'Jones-Gerhold Smartfon Vento 256GB 5G', grade: 3 }
+
+    - query: 'Schowalter LLC Wiertarka Ultra'
+      group: exact
+      relevant:
+          - { name: 'Schowalter LLC Wiertarka Ultra', grade: 3 }
+
+    - query: 'Wolff Inc'
+      group: exact
+      relevant:
+          - { brand: 'Wolff Inc', grade: 1 }
+
+    - query: 'Bosco PLC'
+      group: exact
+      relevant:
+          - { brand: 'Bosco PLC', grade: 1 }
+
+    - query: 'Nova 256GB'
+      group: exact
+      relevant:
+          - { name_contains: 'Nova 256GB', grade: 3 }
+
+    - query: 'Zenit 128GB'
+      group: exact
+      relevant:
+          - { name_contains: 'Zenit 128GB', grade: 3 }
+
+    # Literówka w marce (Romagera). BM25 nie zna literówki, więc „Romaguera Inc”
+    # i „Wolff Inc Rower górski Pro X 29"” remisują na 1. miejscu (wspólne „Inc”
+    # i model), a niżej remisuje cała reszta tego modelu. Ocena 3 tylko dla
+    # Romaguera rozbijałaby grupę remisu (zasada remisów, TieGroupGuard), więc
+    # cała rodzina modelu dostaje 2 („dokładnie ten typ produktu”): zapytanie
+    # mierzy, czy wariant znajduje model mimo literówki w marce.
+    - query: 'Romagera Inc Rower górski Pro X 29"'
+      group: exact
+      relevant:
+          - { name_contains: 'Rower górski Pro X 29"', grade: 2 }

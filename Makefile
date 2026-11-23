@@ -281,6 +281,62 @@ closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dni
 analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
+## Laboratorium semantyki i ML (ETAP 14, profil ml)
+.PHONY: lab-mode-on
+lab-mode-on: ## Tryb lab: zatrzymuje własny główny klaster ES, Kibanę i procesy zależne (zwalnia pamięć dla es-lab)
+	@bash tools/lab/lab-mode.sh on
+
+.PHONY: lab-mode-off
+lab-mode-off: ## Wyłącza es-lab i przywraca główny klaster, Kibanę i procesy
+	@bash tools/lab/lab-mode.sh off
+
+.PHONY: lab-up
+lab-up: ## Uruchamia węzeł es-lab (osobny ES, trial/ML; potrzebuje ~4,5 GB wolnej pamięci: najpierw make lab-mode-on)
+	@bash tools/lab/lab-up.sh
+
+.PHONY: lab-down
+lab-down: ## Zatrzymuje es-lab (dane zostają w wolumenie es-lab-data)
+	$(DC) --profile ml stop es-lab
+
+.PHONY: lab-reset
+lab-reset: ## Zatrzymuje es-lab i KASUJE wolumen es-lab-data (wymaga CONFIRM=1)
+	@[ "$(CONFIRM)" = "1" ] || { echo "lab-reset kasuje wolumen es-lab-data; powtórz z CONFIRM=1"; exit 1; }
+	$(DC) --profile ml stop es-lab
+	$(DC) --profile ml rm -f es-lab
+	docker volume rm $$($(DC) config --format json | jq -r '.name')_es-lab-data
+
+.PHONY: lab-setup
+lab-setup: ## Trial, endpoint E5, pipeline i indeks products-lab-v1 na es-lab (idempotentne; wymaga lab-up)
+	@bash infra/elasticsearch/lab/setup-lab.sh
+
+.PHONY: lab-setup-elser
+lab-setup-elser: ## ETAP 14b: endpoint lab-elser (ELSER v2) i indeks products-lab-elser z _reindex (idempotentne; products-lab-v1 bez zmian)
+	@bash infra/elasticsearch/lab/setup-lab.sh elser
+
+.PHONY: lab-eval
+lab-eval: ## nDCG@10 wariantów bm25/knn/hybrid-bool/rrf-client/rrf-native na es-lab (np. args="--check-rank-eval --check-rrf"); ELSER: args="--variant=elser" po make lab-setup-elser
+	$(DC) exec catalog-app php artisan search:eval:lab $(args)
+
+.PHONY: lab-costs
+lab-costs: ## Koszt wektorów: dysk per pole, pamięć kNN, czas ładowania bez wektorów (tymczasowy indeks), ekstrapolacja (es-lab)
+	@bash tools/lab/costs.sh
+
+.PHONY: lab-filter-demo
+lab-filter-demo: ## Filtrowany kNN: filtr w knn kontra post_filter (w tymczasowej kopii products-lab-filter oznacza co trzeci dokument jako in_stock=false; products-lab-v1 bez zmian; es-lab)
+	@bash tools/lab/filter-demo.sh
+
+.PHONY: lab-export-events
+lab-export-events: ## ETAP 14b: eksportuje events-user-default do NDJSON (tylko odczyt, główny klaster; najpierw make lab-mode-off)
+	@bash tools/lab/export-events.sh
+
+.PHONY: lab-anomaly
+lab-anomaly: ## ETAP 14b: ładuje zdarzenia do es-lab, uruchamia job ML lab-user-activity i sprawdza, że awaria jest wykryta (args="--no-assert" przed awarią)
+	@bash tools/lab/anomaly.sh $(args)
+
+.PHONY: lab-export
+lab-export: ## Eksportuje próbkę produktów (id % 15 = 0) do apps/catalog/storage/app/private/lab/products.ndjson (tryb normalny, główny ES)
+	$(DC) exec catalog-app php artisan search:lab:export
+
 .PHONY: seller360-setup
 seller360-setup: ## (wymaga make analytics-setup) Szablony, skrypt apply-section, indeksy i aliasy seller-360 (ETAP 13, idempotentne)
 	@bash infra/elasticsearch/setup-seller360.sh

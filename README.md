@@ -158,6 +158,7 @@ make logs s=es01
 make up-obs          # profil obs (stack i aplikacje już działają): obs-setup, potem Filebeat, Metricbeat, Prometheus, Alertmanager, Grafana, mailpit (ETAP 11)
 make obs-check       # promtool: config, testy reguł alertów; amtool: config Alertmanagera
 make up-errors       # profil errors (Postgres musi działać): GlitchTip + bootstrap (ETAP 11b), UI na :18000
+make lab-mode-on && make lab-up  # profil ml: węzeł es-lab z trialem (wektory, ELSER, anomalie; ETAP 14), zatrzymuje własny główny ES; powrót: make lab-mode-off
 make errors-sourcemaps  # build frontu z Debug IDs i upload source map do GlitchTipa
 make errors-smoke    # błędy z HTTP, kolejki, search i przeglądarki -> issues w GlitchTipie
 make errors-tunnel-check  # tunel POST /_errors na żywym catalog-app: 405/413/415, cel z configu, limit 429

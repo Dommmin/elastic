@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Seller360\SellerStatsReader;
+use App\Services\Search\Lab\LabEvalRunner;
 use App\Support\ErrorTracking\JobTimeoutReporter;
 use App\Support\ErrorTracking\QueueRetryFilter;
 use Carbon\CarbonImmutable;
@@ -72,6 +73,22 @@ class AppServiceProvider extends ServiceProvider
             return $builder->build();
         });
         $this->app->when(SellerStatsReader::class)->needs(Client::class)->give(fn ($app) => $app->make('es.seller_view'));
+
+        // ETAP 14: węzeł laboratoryjny es-lab (osobny ES z trialem i ML). Tylko LabEvalRunner
+        // (`search:eval:lab`) dostaje ten klient — sklep i reszta komend zostają przy głównym klastrze.
+        $this->app->singleton('es.lab', function () {
+            $builder = ClientBuilder::create()->setHosts([config('services.elasticsearch_lab.host')]);
+
+            if (filled(config('services.elasticsearch_lab.password'))) {
+                $builder->setBasicAuthentication(
+                    config('services.elasticsearch_lab.user'),
+                    config('services.elasticsearch_lab.password'),
+                );
+            }
+
+            return $builder->build();
+        });
+        $this->app->when(LabEvalRunner::class)->needs(Client::class)->give(fn ($app) => $app->make('es.lab'));
     }
 
     /**

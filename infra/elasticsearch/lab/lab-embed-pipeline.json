@@ -1,0 +1,8 @@
+{
+  "description": "Laboratorium ETAP 14: lab_text -> E5 (lab-e5) -> vec_float; kopie do vec_int8 i vec_bbq (kwantyzacje robi sam indeks). PREFIKSY E5 (sprawdzone na ES 9.5.1): procesor inference sam dokleja 'passage: ' (jego wektor = endpoint z input_type=ingest = wejście 'passage: ...'), wiec NIE dodajemy prefiksu w pipeline (podwojny prefiks psuje wektor). Wejście search/query_vector_builder: endpoint dokleja 'query: ' przy input_type=search; wektor zapytania podany recznie trzeba policzyc z input_type=search.",
+  "processors": [
+    { "inference": { "model_id": "lab-e5", "input_output": [ { "input_field": "lab_text", "output_field": "vec_float" } ], "ignore_missing": true } },
+    { "remove": { "field": "model_id", "ignore_missing": true } },
+    { "script": { "lang": "painless", "if": "ctx.vec_float != null", "source": "ctx.vec_int8 = ctx.vec_float; ctx.vec_bbq = ctx.vec_float;" } }
+  ]
+}

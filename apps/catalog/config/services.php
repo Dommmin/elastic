@@ -61,6 +61,14 @@ return [
         'password' => env('ELASTICSEARCH_SELLER_VIEW_PASSWORD'),
     ],
 
+    // ETAP 14: osobny węzeł laboratoryjny es-lab (trial/ML), tylko dla `search:eval:lab`.
+    // Klient `es.lab` w AppServiceProvider, wstrzykiwany wyłącznie do LabEvalRunner.
+    'elasticsearch_lab' => [
+        'host' => env('ELASTICSEARCH_LAB_HOST', 'http://es-lab:9200'),
+        'user' => 'elastic',
+        'password' => env('ELASTICSEARCH_LAB_PASSWORD'),
+    ],
+
     // Waga popularności (rank_feature) w rankingu zapytań tekstowych; 0 = wyłączone.
     'search' => [
         'popularity_boost' => (float) env('SEARCH_POPULARITY_BOOST', 0),

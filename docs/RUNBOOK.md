@@ -152,6 +152,12 @@
 | [149](#149) | `make seller360-fls-demo` odmawia (pamięć) albo zostaje kontener `seller360-trial-*` | narzędzia | 13b |
 | [150](#150) | k3s: zwykły indeks `seller-360-write` zamiast aliasu (zapobiegnięte: `require_alias`) | k8s / Elasticsearch | 13b |
 | [151](#151) | Wiadomości projektora `seller-360` w `failed` po długiej awarii ES | Symfony / Elasticsearch | 13b |
+| [152](#152) | Laboratorium po 30 dniach: inference i `rrf` dostają 403, `start_trial` odmawia | Elasticsearch / licencja | 14a |
+| [153](#153) | Model E5 się nie wdraża: OOM-kill przy imporcie, niekompletny model, brak pamięci ML | Elasticsearch ML / Docker | 14a |
+| [154](#154) | nDCG z PHP ≠ `_rank_eval` (`--check-rank-eval` czerwone) | Elasticsearch / catalog | 14a |
+| [155](#155) | `rrf-client` ≠ `rrf-native` w tabeli albo `--check-rrf` czerwone | Elasticsearch / catalog | 14a |
+| [156](#156) | ELSER się nie wdraża: HTTP 429, za mało pamięci ML obok E5 | Elasticsearch ML / Docker | 14b |
+| [157](#157) | Job anomalii bez wyników, datafeed zatrzymany albo awaria z `record_score` < 50 (luka w danych, kalendarz) | Elasticsearch ML | 14b |
 
 ---
 
@@ -6477,3 +6483,266 @@ Gdy wiadomości jest bardzo dużo albo nie wiadomo, ile przepadło: `make seller
 **Czego się nauczyłem**
 Idempotencja po stronie zapisu (wersja w dokumencie) sprawia, że „ponów wszystko” jest poprawną procedurą
 odzyskiwania, a nie ryzykiem. Bez niej retry `failed` po awarii wymagałby ręcznego sortowania wiadomości.
+
+---
+
+<a id="152"></a>
+## 152 — Laboratorium po 30 dniach: inference i `rrf` dostają 403, `start_trial` odmawia
+
+> ETAP 14a (2026-11-22). Procedura na wypadek: trial węzła `es-lab` wygasa 30 dni po pierwszym starcie wolumenu.
+
+**Objaw**
+`make lab-eval` kończy się zdaniem „Licencja węzła lab nie obejmuje wariantów knn, hybrid-bool, rrf-client,
+rrf-native — włącz trial: make lab-setup”, a `make lab-setup` nie pomaga: `start_trial` zwraca
+`trial_was_started: false` z informacją, że trial był już aktywowany. `bm25` dalej działa.
+
+**Diagnoza**
+```bash
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_license" | jq '.license | {type, status, expiry_date}'   # basic albo trial/expired
+lab_es "${LAB_URL}/_license/trial_status"                                   # eligible_to_start_trial: false
+```
+
+**Przyczyna**
+Wdrożenie modelu, `_inference`, `query_vector_builder`, `semantic_text` i retriever `rrf` wymagają licencji trial
+(albo płatnej). Po 30 dniach licencja wraca do basic. Trial jest jednorazowy dla klastra (UUID klastra żyje
+w wolumenie `es-lab-data`), więc ponowne `start_trial` na tym samym wolumenie jest odrzucane.
+
+**Naprawa**
+Nowy klaster = nowy trial. Wolumen laboratorium nie ma danych, których nie da się odtworzyć: próbka leży w
+`apps/catalog/storage/app/private/lab/products.ndjson` (poza wolumenem).
+```bash
+make lab-reset CONFIRM=1        # stop es-lab, rm kontenera, kasuje wolumen es-lab-data
+make lab-up
+make lab-setup                  # trial od nowa, model pobierany ponownie, ładowanie ~15 min
+```
+Jeśli brak `products.ndjson`: `make lab-mode-off && make lab-export && make lab-mode-on` przed `lab-up`. Nowy indeks
+to nowa budowa grafu HNSW: wiersze kNN w tabeli mogą przesunąć się o ~0,1 w descriptive (przewodnik 14a, krok 11).
+
+**Czego się nauczyłem**
+Trial jest przypięty do klastra, nie do maszyny. Laboratorium, które da się postawić od zera jedną komendą
+z danych trzymanych poza wolumenem, nie boi się wygaśnięcia licencji.
+
+---
+
+<a id="153"></a>
+## 153 — Model E5 się nie wdraża: OOM-kill przy imporcie, niekompletny model, brak pamięci ML
+
+> ETAP 14a (2026-11-22). Wystąpiło przy pierwszej konfiguracji węzła (heap 1 GB, limit 3 GB).
+
+**Objaw**
+Podczas `make lab-setup` (tworzenie endpointu `lab-e5`) kontener `es-lab` znika; `docker compose ps -a` pokazuje
+`Exited (137)`. Po ponownym starcie model jest w stanie niekompletnym (`fully_defined: false`, „Model definition
+truncated”) i endpoint się nie wdraża. Inny wariant: wdrożenie odrzucone z komunikatem o braku pamięci dla ML.
+
+**Diagnoza**
+```bash
+docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' "$(docker compose --profile ml ps -aq es-lab)"
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_ml/trained_models/.multilingual-e5-small?include=definition_status" | jq '.trained_model_configs[0].fully_defined'
+lab_es "${LAB_URL}/_ml/trained_models/_stats" | jq '.trained_model_stats[] | {model_id, mem: .model_size_stats, state: .deployment_stats.allocation_status.state}'
+lab_es "${LAB_URL}/_ml/memory/_stats?human" | jq '.nodes[] | .mem.ml'
+```
+
+**Przyczyna**
+`.multilingual-e5-small` ma 470 MB, ale wdrożenie potrzebuje ~1,5 GB pamięci **natywnej** (proces PyTorch poza
+heapem JVM; `required_native_memory_bytes`). Przy limicie kontenera 3 GB i heapie 1 GB import (pobieranie definicji
+w kawałkach + JVM + page cache) przekroczył limit i jądro zabiło proces. Przerwany import zostawia częściową
+definicję modelu w indeksie systemowym. ML może zająć najwyżej `xpack.ml.max_machine_memory_percent` pamięci węzła.
+
+**Naprawa**
+- Konfiguracja, która działa: heap 1,5 GB, `mem_limit` 4 GB, `xpack.ml.max_machine_memory_percent: 60`
+  (compose.yaml, usługa `es-lab`). Przed startem `make lab-mode-on` (zwalnia ~9,8 GB) — `make lab-up` sam odmówi
+  przy zapasie < 4,5 GB.
+- Niekompletny model: `make lab-setup` wykrywa `fully_defined: false` i kasuje model razem z endpointem
+  (`DELETE _inference/text_embedding/lab-e5?force=true`), potem tworzy od nowa. Ręcznie to samo.
+- Na współdzielonej maszynie nie zatrzymywać cudzych kontenerów; zwalniać tylko własne usługi.
+
+**Czego się nauczyłem**
+Rozmiar pliku modelu to nie rozmiar wdrożenia. Pamięć ML jest poza heapem, więc heap trzeba ustawić **mniejszy**
+niż połowa limitu i zostawić miejsce na proces natywny. Skrypt instalacyjny powinien umieć posprzątać po własnym
+przerwanym przebiegu.
+
+---
+
+<a id="154"></a>
+## 154 — nDCG z PHP ≠ `_rank_eval` (`--check-rank-eval` czerwone)
+
+> ETAP 14a (2026-11-22). Rozjazd znaleziony sondą przy budowie licznika i poprawiony; kontrola zielona 33/33.
+
+**Objaw**
+`make lab-eval args="--check-rank-eval"` zgłasza rozbieżność dla wariantu bm25, knn albo hybrid-bool na jednym lub
+kilku zapytaniach (różnica > 1e-6) i kończy się kodem 1.
+
+**Diagnoza**
+Co sprawdzić, po kolei:
+1. **Liczba trafień < k.** ES obcina ideał DCG do min(k, liczba zwróconych trafień). Sonda: zapytanie
+   `{"ids": {"values": ["67230"]}}` z ocenami {67230: 1, 12555: 3} → `_rank_eval` 0,142857 = 1/7. Licznik, który
+   bierze ideał ze wszystkich ocen, da ~0,131.
+2. **Inne oceny.** Czy oceny podane do `_rank_eval` to te same, przecięte z próbką (dokument spoza indeksu w ocenach
+   zaniża ideał)? Czy plik zapytań nie zmienił się między przebiegami?
+3. **Inne zapytanie.** `_rank_eval` dostaje to samo ciało co `_search` (`LabQueryBuilder`)? Zapytanie `knn`
+   w `request.query` musi mieć ten sam `num_candidates` i `query_vector_builder`.
+4. **Remisy.** Dokumenty z równym `_score` i różnymi ocenami mogą wrócić w innej kolejności w dwóch żądaniach
+   (strażnik remisów, kod 2). Na 1 shardzie i 1 segmencie kolejność jest stała; po `_update_by_query` bez merge nie.
+5. **Inna budowa grafu.** Wariant kNN między dwoma przebiegami a zmianą indeksu.
+
+**Przyczyna**
+W tym etapie: pierwsza wersja `Ndcg` liczyła ideał ze wszystkich ocen, a `_rank_eval` z min(k, trafienia). Na 33
+zapytaniach rozjazd nie wychodził, bo każdy wariant zwraca 10 trafień; wyszedł dopiero na sondzie z jednym trafieniem.
+
+**Naprawa**
+`Ndcg::atK` obcina ideał jak ES (test „ideał obcięty do liczby zwróconych wyników, jak w _rank_eval”). Przy nowym
+rozjeździe: odtworzyć jedno zapytanie ręcznie, `_rank_eval` z `metric.dcg.normalize: true` i `k: 10`, porównać
+`details.<id>.hits` (kolejność i oceny) z top-10 z `search:eval:lab` (wydruk per zapytanie, JSON `top`).
+
+**Czego się nauczyłem**
+Własny licznik bez kontroli krzyżowej to opinia. Zgodność na prawdziwych danych nie dowodzi zgodności wzoru, jeśli
+dane nie dotykają przypadku brzegowego; trzeba go sprowokować. I konsekwencja wzoru ES: wynik z mniej niż k
+trafieniami nie jest karany za puste miejsca.
+
+---
+
+<a id="155"></a>
+## 155 — `rrf-client` ≠ `rrf-native` w tabeli albo `--check-rrf` czerwone
+
+> ETAP 14a (2026-11-22). Różnica w tabeli jest oczekiwana (remisy); czerwona kontrola nie wystąpiła.
+
+**Objaw**
+W tabeli `make lab-eval` `rrf-client` i `rrf-native` mają różne nDCG (np. lexical 0,958 vs 0,966), albo
+`--check-rrf` zgłasza rozbieżność sumy na którejś pozycji.
+
+**Diagnoza**
+```bash
+make lab-eval args="--variant=rrf-client --variant=rrf-native --check-rrf"
+# per zapytanie: które zapytania mają różne nDCG; w JSON (--json=…) porównać listy top dla obu wariantów
+```
+Dla rozbieżnego dokumentu policzyć ręcznie: Σ 1/(60 + pozycja) po liście BM25 (`size` 100) i liście kNN (k = 10).
+
+**Przyczyna**
+- **Różne nDCG przy zielonej kontroli:** remisy. Pozycja r tylko w liście A daje tę samą sumę co pozycja r tylko
+  w liście B. PHP rozstrzyga remis mniejszym id jako tekst, ES numerem dokumentu Lucene. Gdy remisujące dokumenty
+  mają różne oceny (tu 5 zapytań), nDCG się różni. Oba warianty są deterministyczne.
+- **Czerwona kontrola (rozjazd sum):** inne parametry (`rank_constant`, `rank_window_size` ≠ okno w PHP), inne
+  listy wejściowe (różne `num_candidates` albo `size` w dwóch zapytaniach `rrf-client`), indeks zmieniony między
+  zapytaniami, albo zbyt ciasna tolerancja wobec float32 w ES (kontrola dopuszcza 1e-6).
+
+**Naprawa**
+Remisy: nic do naprawy, różnica jest własnością RRF; w przewodniku i POMIARACH podawać obie liczby. Rozjazd sum:
+wyrównać parametry w `LabQueryBuilder` (retriever `rrf`) i `Rrf::fuse()`, powtórzyć na niezmienionym indeksie
+(1 segment).
+
+**Czego się nauczyłem**
+RRF to kilka linii arytmetyki, nie funkcja licencji: te same sumy można policzyć w aplikacji na basic. Różnica
+między implementacjami siedzi w regule rozstrzygania remisów, a RRF remisy produkuje z definicji.
+
+---
+
+<a id="156"></a>
+## 156 — ELSER się nie wdraża: HTTP 429, za mało pamięci ML obok E5
+
+> ETAP 14b (2026-11-22). Wystąpiło przy pierwszym `make lab-setup-elser`; faza `elser` obsługuje to sama.
+
+**Objaw**
+Tworzenie endpointu `lab-elser` (`PUT _inference/sparse_embedding/lab-elser`) albo `deployment/_start` dla
+`.elser_model_2` kończy się **HTTP 429** z informacją, że nie da się przydzielić modelu, bo brakuje pamięci ML na
+węźle. Inny wariant: ELSER się wdraża, ale potem nie da się wystartować E5 (ten sam 429), więc `make lab-eval`
+z wariantem knn albo elser pada.
+
+**Diagnoza**
+```bash
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_ml/memory/_stats?human" | jq '.nodes[] | .mem.ml'          # max, native_inference
+lab_es "${LAB_URL}/_ml/trained_models/_stats" \
+  | jq -c '.trained_model_stats[] | {model_id, need: .model_size_stats.required_native_memory_bytes, state: .deployment_stats.state, alloc: .deployment_stats.number_of_allocations}'
+lab_es "${LAB_URL}/_cluster/settings?include_defaults=true" | jq '[.persistent, .defaults] | map(.xpack.ml.max_machine_memory_percent)'
+docker stats --no-stream "$(docker compose --profile ml ps -q es-lab)"         # realne zużycie kontenera
+```
+
+**Przyczyna**
+ES przydziela model, jeśli **szacunek** jego pamięci natywnej mieści się w `xpack.ml.max_machine_memory_percent`
+pamięci węzła. Przy limicie 4 GB i 60% to ~2,4 GB, a szacunki to ELSER ~2 GB i E5 ~1,3 GB: razem się nie mieszczą.
+Szacunek jest ostrożny (realnie `pytorch_inference` ELSER ~0,9 GB RSS), ale bramka liczy szacunek, nie RSS. Wdrożenie
+z 6 alokacjami na czas `_reindex` zwiększa szacunek dodatkowo.
+
+**Naprawa**
+- `make lab-setup-elser` robi to sam: zatrzymuje wdrożenie E5 na czas wdrażania ELSER
+  (`POST _ml/trained_models/lab-e5/deployment/_stop?force=true`), ustawia persistent
+  `xpack.ml.max_machine_memory_percent: 90`, po `_reindex` zmniejsza ELSER do 1 alokacji i przywraca E5 (także po
+  błędzie, `trap EXIT`). Gdy przebieg przerwano w połowie i E5 zostało zatrzymane, ponowne `make lab-setup-elser`
+  je przywróci (`restore_e5`).
+- Jeśli ELSER został na 6 alokacjach (przerwany `_reindex`):
+  `PUT _inference/sparse_embedding/lab-elser/_update {"service_settings":{"num_allocations":1}}`.
+- Gdy ELSER nie jest potrzebny (np. praca nad anomaliami): `POST _ml/trained_models/lab-elser/deployment/_stop?force=true`;
+  `make lab-setup-elser` uruchomi go ponownie, z 1 alokacją (indeks kompletny, `_reindex` pominięty). Identyfikatorem
+  jest deployment `lab-elser`, nie model: bez `force` ES odpowiada 409 (wdrożenie należy do endpointu), a
+  `.elser_model_2/deployment/_stop` zwraca `{"stopped":true}`, nic nie zatrzymując (sprawdzone na 9.5.1).
+- Powrót do bramki 60%: `PUT _cluster/settings {"persistent":{"xpack.ml.max_machine_memory_percent":null}}`
+  (obowiązuje znów wartość z `compose.yaml`); wtedy oba modele naraz się nie wdrożą.
+
+**Ryzyko ustawienia 90%:** bramka przestaje chronić węzeł. Heap 1,5 GB + do 3,6 GB dla ML to więcej niż limit
+kontenera 4 GB. Przy więcej alokacjach, dużym cache inferencji albo trzecim modelu jądro zabije kontener
+(`exit 137`, objawy jak w [#153](#153)). Ustawienie jest tylko na `es-lab`; na głównym klastrze nie ma ML.
+
+**Czego się nauczyłem**
+Bramka pamięci ML liczy szacunek ES, nie realne zużycie. Podniesienie jej to świadoma decyzja „wiem lepiej niż
+szacunek”, więc trzeba ją zapisać razem z ryzykiem i ze sposobem odwrotu. Na CPU równoległość inferencji dają
+alokacje (osobne kopie modelu), a nie wątki jednej alokacji, i każda alokacja kosztuje pamięć.
+
+---
+
+<a id="157"></a>
+## 157 — Job anomalii bez wyników, datafeed zatrzymany albo awaria z `record_score` < 50 (luka w danych, kalendarz)
+
+> ETAP 14b (2026-11-22). Wariant „awaria z wynikiem < 50” wystąpił przy pierwszym przebiegu; naprawiony kalendarzem.
+
+**Objaw**
+Jeden z trzech:
+1. `make lab-anomaly` kończy się „job się nie otworzył” albo „datafeed nie zakończył się w 360 s”.
+2. Job jest zamknięty, ale `results/records` zwraca 0 rekordów albo `data_counts.processed_record_count` = 0.
+3. Po `inject-outage.sh` asercja pada („BRAK takiego rekordu”), mimo że zero kliknięć w oknie jest w danych, a top
+   rekordów zajmują inne dni z wynikiem 90–99.
+
+**Diagnoza**
+```bash
+source tools/lab/lib.sh
+lab_es "${LAB_URL}/_ml/anomaly_detectors/lab-user-activity/_stats" \
+  | jq '.jobs[0] | {state, assignment_explanation, data_counts: (.data_counts | {processed_record_count, bucket_count, empty_bucket_count, missing_field_count, out_of_order_timestamp_count, latest_record_timestamp}), model: (.model_size_stats | {model_bytes, memory_status})}'
+lab_es "${LAB_URL}/_ml/datafeeds/datafeed-lab-user-activity/_stats" | jq '.datafeeds[0] | {state, assignment_explanation, timing_stats}'
+lab_es "${LAB_URL}/lab-events-user/_count"                                   # 158 710 przed awarią, 158 521 po
+lab_es "${LAB_URL}/_ml/calendars/lab-known-gaps/events" | jq '.events'
+# rozkład dzienny typu, który dominuje w top rekordów (luki widać od razu)
+lab_es -H 'Content-Type: application/json' "${LAB_URL}/lab-events-user/_search" -d '{"size":0,
+  "query":{"term":{"event.type":"user.added_to_cart"}},
+  "aggs":{"d":{"date_histogram":{"field":"@timestamp","calendar_interval":"day"}}}}' \
+  | jq -r '.aggregations.d.buckets[] | "\(.key_as_string[0:10]) \(.doc_count)"'
+```
+
+**Przyczyna**
+1. **Job się nie otwiera:** brak pamięci ML (dwa wdrożone modele i bramka, [#156](#156)); `assignment_explanation`
+   mówi wprost. **Datafeed nie kończy:** zakres `end` dalej niż dane albo bardzo wolny węzeł.
+2. **Brak wyników:** datafeed nie widzi danych (zły indeks, `time_field` ≠ `@timestamp`, `start` po ostatnim
+   zdarzeniu), albo wyniki są pod inną nazwą (`results_index_name`: `.ml-anomalies-custom-lab-user-activity-*`).
+   Po `_delete_by_query` bez ponownego przebiegu joba wyniki są ze starych danych: `anomaly.sh` zawsze odtwarza job.
+3. **Awaria z wynikiem < 50:** `record_score` jest **względny**, znormalizowany do najbardziej skrajnych anomalii
+   w historii joba. W tych danych jest prawdziwa luka 2026-10-21 → 2026-10-26 (koszyk ~70 zdarzeń na dobę zamiast
+   ~1900): dostaje 90–99 i spycha zero kliknięć (prawdopodobieństwo ~1e-6) do 37–40. Zmiana kubełka (30 min – 3 h),
+   `by_field_name` zamiast partycji i dłuższe okno awarii nie pomogły (maksimum ~44).
+
+**Naprawa**
+1. Zatrzymać ELSER (`POST _ml/trained_models/lab-elser/deployment/_stop?force=true`, patrz [#156](#156)), ponowić `make lab-anomaly`.
+2. Sprawdzić `_count` indeksu, znacznik `_meta.lab_loaded` (`GET lab-events-user/_mapping`; bez niego `anomaly.sh`
+   odmawia, bo ładowanie zostało przerwane) i zakres `@timestamp`; ponownie załadować dane: `bash tools/lab/anomaly.sh --reload --no-assert`
+   (kasuje `lab-events-user` i ładuje z `events.ndjson`; potem awaria jeszcze raz). Brak pliku:
+   `make lab-mode-off && make lab-export-events && make lab-mode-on && make lab-up`.
+3. Oznaczyć znaną lukę **kalendarzem** (robi to `anomaly.sh`): zdarzenie z `skip_result: true` (bez rekordów)
+   i `skip_model_update: true` (bez uczenia się z luki). Po nim awaria dostaje 89–94. Daty kalendarza i okna awarii
+   są wpisane na stałe pod ten zbiór; przy innych danych najpierw `make lab-anomaly args="--no-assert"` i obejrzeć
+   top rekordów, potem poprawić zdarzenie kalendarza w `anomaly.sh` i `OUTAGE_FROM`.
+
+Nie obniżać progu asercji: próg 40 przepuściłby też szum i fałszywy alarm, który i tak już jest (03.11, 98,3).
+
+**Czego się nauczyłem**
+Wynik ML to nie bezwzględna miara „jak źle jest”, tylko pozycja na tle historii joba. Brudna historia (luki,
+migracje, testy obciążeniowe) przesuwa całą skalę. Przed uruchomieniem detekcji trzeba obejrzeć dane i znane
+odstępstwa oznaczyć kalendarzem; tak samo w produkcji: okna serwisowe, święta, kampanie.

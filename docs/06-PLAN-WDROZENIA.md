@@ -463,6 +463,37 @@ procesy seller-360 (przewodnik 13b, krok 15; RUNBOOK #150).
 
 **DoD:** liczbowe porównanie BM25 vs kNN vs hybryda; wiesz, kiedy wektory szkodzą.
 
+**Stan (2026-11-22): ETAP 14 zakończony (14a i 14b) lokalnie** na gałęzi `etap-14-semantyka` (niewypchnięta), laboratorium, nie funkcja
+sklepu (główny klaster, `products-search` i k3s nietknięte):
+- **14a:** węzeł `es-lab` (profil `ml`, trial, heap 1,5 GB / limit 4 GB) z trybem lab (`make lab-mode-on/off`),
+  próbka `id % 15 = 0` (19 824 produkty) z `make lab-export`, model `.multilingual-e5-small` (`semantic_text` + trzy
+  jawne `dense_vector`: float / int8 / bbq), 33 zapytania w grupach lexical / descriptive / exact,
+  `search:eval:lab` z pięcioma wariantami (bm25, knn, hybrid-bool, rrf-client, rrf-native), własne nDCG sprawdzane
+  z `_rank_eval`, recall HNSW, koszt wektorów, filtrowany kNN. Przewodnik:
+  [`blog/etap-14a-wektory-i-trafnosc.md`](blog/etap-14a-wektory-i-trafnosc.md).
+- **Dowód:** nDCG@10 descriptive bm25 0,167 vs knn 0,693; exact bm25 1,000 vs knn 0,972 (cała strata z jednego
+  zapytania z literówką, przeocenionego po wynikach); `komórka` bm25 1,000 vs knn 0,351; hybrid-bool w descriptive
+  0,515 (skala BM25 przykrywa kNN); PHP vs `_rank_eval` 33/33, RRF client vs native 33/33; `semantic_text` w 9.5
+  domyślnie `bbq_hnsw` + bfloat16 (~0,06 straty w descriptive względem float). Pomiary w [POMIARY §18](POMIARY.md),
+  RUNBOOK #152–#155.
+- **14b:** ELSER (`.elser_model_2`, `make lab-setup-elser`) jako szósty wariant we własnym indeksie
+  `products-lab-elser` (pięć wierszy 14a bez zmian co do bitu); wykrywanie anomalii (`make lab-anomaly`) na kopii
+  158 710 zdarzeń `user.*` (`make lab-export-events`, PIT + `search_after`), job `low_count` z partycją `event.type`,
+  kubełek 1 h, kalendarz `lab-known-gaps` dla prawdziwej luki w danych, wstrzyknięta awaria kliknięć
+  (`tools/lab/inject-outage.sh`) i porównanie z regułą `ctr-drop` z ETAPU 12. Przewodnik:
+  [`blog/etap-14b-elser-i-anomalie.md`](blog/etap-14b-elser-i-anomalie.md).
+- **Dowód 14b:** nDCG@10 elser 0,923 / **0,167** / **0,831** (descriptive = bm25, exact najgorszy: model angielski
+  na polskim); dwa modele nie mieszczą się w bramce ML 60% (429) → persistent 90% tylko na `es-lab`. Anomalie:
+  bez kalendarza awaria 37–40 (< 50), z kalendarzem ML łapie 2 z 6 godzin (93,7; 88,9) przy 1 fałszywym alarmie,
+  reguła progowa 4 z 6 przy 0 fałszywych alarmach w 336 h: na ostry spadek znanej miary reguła wystarcza, ML
+  ma sens przy nieznanej sezonowości i wielu szeregach. Pomiary w [POMIARY §18.6–18.7](POMIARY.md), RUNBOOK
+  #156–#157.
+
+Spec: [`superpowers/specs/2026-11-22-etap-14-semantyka-ml-design.md`](superpowers/specs/2026-11-22-etap-14-semantyka-ml-design.md),
+plan: [`superpowers/plans/2026-11-22-etap-14-semantyka-ml.md`](superpowers/plans/2026-11-22-etap-14-semantyka-ml.md),
+RUNBOOK #152–#157. Przewodniki: [14a](blog/etap-14a-wektory-i-trafnosc.md), [14b](blog/etap-14b-elser-i-anomalie.md).
+Powrót do normalnej pracy po laboratorium: `make lab-mode-off`.
+
 ### ETAP 15 (opcjonalny) — Security analytics lite → **tor 5 z `04`**
 - reguły detekcji nadużyć, `significant_terms`, Kibana Alerting
 
