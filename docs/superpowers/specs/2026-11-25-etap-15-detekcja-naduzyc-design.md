@@ -104,11 +104,12 @@ sklep (Laravel)                        RabbitMQ marketplace.events           sea
   `client_ip_prefix` = sieć /24 dla IPv4 i /48 dla IPv6 w zapisie tekstowym (`203.0.113.0/24`).
   Surowe IP nie trafia do bazy, outboxu ani ES. Pusty pepper → pola IP są null, log ostrzeżenia,
   recenzja zapisuje się normalnie (brak sekretu nie psuje sklepu).
-- **Prawdziwe IP za proxy (decyzja).** `bootstrap/app.php` ufa proxy tylko przy ustawionym
-  `TRUSTED_PROXIES`, domyślnie pustym, więc za proxy w Compose `$request->ip()` byłby adresem proxy i
-  wszystkie recenzje miałyby jeden hasz. Etap ustawia `TRUSTED_PROXIES` w Compose na sieć dockerową
-  proxy (zmienna w `compose.yaml`, wartość niesekretna), a DoD obejmuje jedną recenzję wysłaną przez UI
-  z prefiksem IP innym niż adres proxy.
+- **Prawdziwe IP (decyzja, poprawiona przy planie).** W Compose przed `catalog-app` nie ma osobnego
+  proxy: Caddy działa w tym samym procesie FrankenPHP, więc `$request->ip()` to adres, z którego
+  przyszło połączenie, i `TRUSTED_PROXIES` zostaje puste (na k3s jest już `10.42.0.0/16`). Na Macu
+  cały ruch z hosta przychodzi przez bramę Docker Desktop, więc lokalne recenzje z UI mają jeden
+  prefiks — to ograniczenie środowiska, opisane w przewodniku. DoD: jedna recenzja z UI ląduje w
+  `events-security` z wypełnionym `client.ip_hash` / `client.ip_prefix` i bez surowego IP.
 - **Zmiana ceny (istniejące).** `offer.price_changed` już płynie przez outbox i ma `product_id` oraz
   `seller_id` z `OfferIntegrationEvents::base()` (`apps/catalog/src/SellerPortal/Infrastructure/Persistence/`).
   Nie ma `change_pct` — liczy go handler: `(new − old) / old × 100`, ze znakiem, zaokrąglone do 2 miejsc.
