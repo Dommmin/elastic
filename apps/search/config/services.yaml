@@ -66,8 +66,8 @@ services:
         tags:
             - { name: messenger.message_handler, handles: App\Message\IntegrationEvent, from_transport: security }
 
-    # ETAP 15: percolator reguł podmienia Task 5; do tego czasu no-op.
-    App\Security\EventPercolator: '@App\Security\NullEventPercolator'
+    # ETAP 15: percolator reguł (security-rules) po zapisie paczki zdarzeń bezpieczeństwa.
+    App\Security\EventPercolator: '@App\Security\SecurityPercolator'
 
     # ETAP 13 (projektor seller-360): Redis na zbiór `seller360:dirty:offers` i liczniki metryk.
     # Usługa powstaje dopiero z handlerem (proces consume seller360), nie przy starcie kernela.

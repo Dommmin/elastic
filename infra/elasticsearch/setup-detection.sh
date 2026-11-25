@@ -13,7 +13,7 @@
 #  `security-rules` (percolator) i `alerts-security`.
 #  Wymaga polityki enrich `product-popularity-policy` z `make analytics-setup`.
 #
-#  SEKCJA 2 (reguły percolatora): PLACEHOLDER — wypełnia Task 5.
+#  SEKCJA 2 (reguły percolatora): `security:rules:load` w kontenerze search-consumer (progi p95 z product-popularity).
 #  SEKCJA 3 (Kibana: reguła ES|QL, data views): PLACEHOLDER — wypełnia Task 6.
 #
 #  Replik: 1 w klastrze wielowęzłowym, 0 przy jednym węźle (liczone z _cat/nodes).
@@ -107,9 +107,13 @@ done
 log "[1] OK"
 
 # ============================================================================
-#  SEKCJA 2 — reguły percolatora (PLACEHOLDER, Task 5)
+#  SEKCJA 2 — reguły percolatora (pliki detection/rules → security-rules)
 # ============================================================================
-log "[2] Reguły percolatora: pominięte (dopisuje Task 5)"
+# Komenda działa w search-consumer (montuje detection/ i ma klienta ES); liczy percentyl 95
+# popularności z product-popularity, więc po zmianie popularności warto ją uruchomić ponownie.
+log "[2] Ładuję reguły percolatora (security:rules:load)"
+${DC} exec -T search-consumer php bin/console security:rules:load | sed 's/^/[detection]   /'
+log "[2] OK"
 
 # ============================================================================
 #  SEKCJA 3 — Kibana: reguła ES|QL, data views (PLACEHOLDER, Task 6)

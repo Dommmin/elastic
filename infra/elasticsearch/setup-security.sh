@@ -72,6 +72,7 @@ log "  OK"
 # (polityki enrich) oraz indeks product-popularity* (wynik transformu).
 # ETAP 13: complaints* — import reklamacji (complaints, complaints-unmatched, _reindex, delete-by-query);
 # manage_enrich wykonuje też politykę seller-by-nip.
+# ETAP 15: security-* (reguły percolatora `security-rules`; alerts-security i events-security mieszczą się we wzorcach wyżej).
 # ETAP 13b: courier-ratings (jawna nazwa, bez wzorca) — oceny kurierów z rejestru; `_update_by_query` fan-outu
 # na seller-360* mieści się w "all", a odczyt `_tasks/<id>` w `monitor`.
 log "Tworzę rolę search_service (write + manage)..."
@@ -91,7 +92,7 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
       "names": [
         "products-*", "offers-*", "seller-360*",
         "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*",
-        "product-popularity*", "complaints*"
+        "product-popularity*", "complaints*", "security-*"
       ],
       "privileges": ["all"]
     },

@@ -754,6 +754,9 @@ services:
       # Szablon seller-360 (ETAP 13): ApplySectionScriptTest tworzy indeks testowy
       # z mapowaniem tego samego pliku, którego używa setup-seller360.sh.
       - ./infra/elasticsearch/seller360:/infra/elasticsearch/seller360:ro
+      # Detekcja nadużyć (ETAP 15): `security:rules:load` czyta reguły percolatora z detection/rules,
+      # a testy integracyjne tworzą indeksy testowe z mapowań tego katalogu.
+      - ./infra/elasticsearch/detection:/infra/elasticsearch/detection:ro
       # Miasta i województwa (ETAP 13): RegionResolverTest i handler seller360 czytają ten plik.
       - ./infra/reference:/infra/reference:ro
     depends_on:

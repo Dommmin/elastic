@@ -1,0 +1,26 @@
+{
+  "rule": {
+    "id": "price-hug-threshold",
+    "kind": "percolator",
+    "severity": "medium",
+    "description": "Podwyżka ceny o 25-30% (tuż pod progiem 30%) na produkcie z górnego 5% popularności"
+  },
+  "params": {
+    "p95_from": "product-popularity.popularity"
+  },
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event.type": "offer.price_changed" } },
+        { "range": { "offer.change_pct": { "gte": 25, "lte": 30 } } },
+        { "range": { "product.popularity": { "gte": "{{p95}}" } } }
+      ]
+    }
+  },
+  "alert": {
+    "entity_type": "offer",
+    "entity_field": "offer.id",
+    "window": "event",
+    "evidence_fields": ["event.id", "offer.change_pct", "offer.old_price_cents", "offer.new_price_cents", "product.id", "product.popularity", "seller.id"]
+  }
+}
