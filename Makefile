@@ -290,7 +290,10 @@ DETECTION_CSV   := apps/catalog/storage/app/security/complaints.csv
 DETECTION_TRUTH := apps/catalog/storage/app/private/security/planted-security.json
 
 .PHONY: detection-simulate
+# Import bierze zawsze $(DETECTION_CSV): własne --complaints w args zapisałoby CSV gdzie indziej, a import wczytałby
+# stary plik. Dlatego target odmawia (do innej ścieżki: artisan security:simulate i seller360:complaints:import ręcznie).
 detection-simulate: ## Symulator nadużyć (catalog) + import reklamacji SEC- do seller-360: make detection-simulate args="--seed=1 --plant=5"
+	$(if $(filter --complaints --complaints=%,$(args)),$(error detection-simulate: --complaints w args nie jest obsługiwane, import czyta zawsze $(DETECTION_CSV)))
 	$(DC) exec catalog-app php artisan security:simulate $(args)
 	$(DC) cp $(DETECTION_CSV) seller360-consumer:/tmp/security-complaints.csv
 	$(DC) exec seller360-consumer php bin/console seller360:complaints:import /tmp/security-complaints.csv
