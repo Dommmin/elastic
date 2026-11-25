@@ -286,6 +286,28 @@ analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, d
 detection-setup: ## ILM, pipeline, data stream events-security, security-rules, alerts-security (idempotentne; wymaga analytics-setup)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-detection.sh
 
+DETECTION_CSV   := apps/catalog/storage/app/security/complaints.csv
+DETECTION_TRUTH := apps/catalog/storage/app/private/security/planted-security.json
+
+.PHONY: detection-simulate
+detection-simulate: ## Symulator nadużyć (catalog) + import reklamacji SEC- do seller-360: make detection-simulate args="--seed=1 --plant=5"
+	$(DC) exec catalog-app php artisan security:simulate $(args)
+	$(DC) cp $(DETECTION_CSV) seller360-consumer:/tmp/security-complaints.csv
+	$(DC) exec seller360-consumer php bin/console seller360:complaints:import /tmp/security-complaints.csv
+
+.PHONY: detection-detect
+detection-detect: ## Detektory nadużyć za okres wstecz, zapis do alerts-security (idempotentne; since=15d domyślnie)
+	$(DC) exec search-consumer php bin/console security:detect --since=$(or $(since),15d)
+
+.PHONY: detection-report
+detection-report: ## Precyzja/czułość reguł wobec prawdy symulatora (args="--json" dla POMIARY)
+	$(DC) cp $(DETECTION_TRUTH) search-consumer:/tmp/planted-security.json
+	$(DC) exec search-consumer php bin/console security:report --truth=/tmp/planted-security.json $(args)
+
+.PHONY: detection-purge
+detection-purge: ## Usuwa dane symulatora: zdarzenia i alerty syntetyczne, kliknięcia secsim-*, reklamacje SEC- (po opróżnieniu kolejek)
+	$(DC) exec search-consumer php bin/console security:purge-synthetic
+
 ## Laboratorium semantyki i ML (ETAP 14, profil ml)
 .PHONY: lab-mode-on
 lab-mode-on: ## Tryb lab: zatrzymuje własny główny klaster ES, Kibanę i procesy zależne (zwalnia pamięć dla es-lab)
