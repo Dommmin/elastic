@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { Head, Link, router, usePage } from '@inertiajs/vue3';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3';
 import { computed, reactive } from 'vue';
 import InputError from '@/components/InputError.vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 import { formatPriceCents } from '@/lib/currency';
 import { conditionLabels } from '@/lib/offer';
 import { login, search } from '@/routes';
 import { store } from '@/routes/cart/items';
+import { store as storeReview } from '@/routes/products/reviews';
 import type { ShopOffer, ShopProduct } from '@/types';
 
 const props = defineProps<{
     product: ShopProduct;
     offers: ShopOffer[];
     searchId: string | null;
+    canReview: boolean;
 }>();
 
 defineOptions({
@@ -61,6 +64,15 @@ function addToCart(offer: ShopOffer) {
             },
         },
     );
+}
+
+const reviewForm = useForm({ rating: 5, body: '' });
+
+function submitReview() {
+    reviewForm.post(storeReview(props.product.id).url, {
+        preserveScroll: true,
+        onSuccess: () => reviewForm.reset(),
+    });
 }
 
 function errorFor(offer: ShopOffer, field: 'quantity' | 'offer_id') {
@@ -157,5 +169,50 @@ function errorFor(offer: ShopOffer, field: 'quantity' | 'offer_id') {
                 </CardContent>
             </Card>
         </div>
+
+        <template v-if="!isGuest && canReview">
+            <h2 class="text-lg font-semibold">Oceń produkt</h2>
+
+            <form
+                class="flex max-w-xl flex-col gap-3"
+                @submit.prevent="submitReview"
+            >
+                <div class="flex flex-col gap-1">
+                    <Label for="review-rating">Ocena</Label>
+                    <select
+                        id="review-rating"
+                        v-model.number="reviewForm.rating"
+                        class="h-9 w-32 rounded-md border bg-background px-2 text-sm"
+                    >
+                        <option
+                            v-for="n in [5, 4, 3, 2, 1]"
+                            :key="n"
+                            :value="n"
+                        >
+                            {{ n }} / 5
+                        </option>
+                    </select>
+                    <InputError :message="reviewForm.errors.rating" />
+                </div>
+
+                <div class="flex flex-col gap-1">
+                    <Label for="review-body">Treść (opcjonalnie)</Label>
+                    <textarea
+                        id="review-body"
+                        v-model="reviewForm.body"
+                        rows="4"
+                        maxlength="2000"
+                        class="rounded-md border bg-background px-3 py-2 text-sm"
+                    />
+                    <InputError :message="reviewForm.errors.body" />
+                </div>
+
+                <div>
+                    <Button type="submit" :disabled="reviewForm.processing">
+                        Dodaj recenzję
+                    </Button>
+                </div>
+            </form>
+        </template>
     </div>
 </template>
