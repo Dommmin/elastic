@@ -54,12 +54,40 @@ final class SecurityEventHandlerTest extends TestCase
         self::assertSame(['a' => 'ack', 'b' => 'ack'], $this->results);
     }
 
-    public function test_blad_percolacji_nie_psuje_ack_zapisu(): void
+    public function test_blad_percolacji_to_nack_recoverable_zapisanych_bez_wymuszania_retry(): void
+    {
+        $writer = $this->createStub(AnalyticsBulkWriter::class);
+        $writer->method('write')->willReturn(new BulkOutcome(
+            created: 1,
+            rejected: [BulkOutcome::ref('events-security-default', 'b')],
+        ));
+        $percolator = $this->createStub(EventPercolator::class);
+        $percolator->method('percolate')->willThrowException(new \RuntimeException('percolator padl'));
+        $handler = $this->handler($writer, $percolator);
+
+        $this->feed($handler, 'a', 'offer.price_changed', self::price());
+        $this->feed($handler, 'b', 'offer.price_changed', self::price());
+        $this->feed($handler, 'x', 'seller.renamed', []);
+        $handler->flush(true);
+
+        // Zapisana wiadomość wraca do kolejki: powtórka dostanie 409 i spercoluje ponownie.
+        self::assertInstanceOf(RecoverableMessageHandlingException::class, $this->results['a']);
+        self::assertFalse($this->results['a']->forceRetry());
+        // Odrzucona zostaje Unrecoverable, a zdarzenie spoza katalogu ack (nie czeka na percolację).
+        self::assertInstanceOf(UnrecoverableMessageHandlingException::class, $this->results['b']);
+        self::assertSame('ack', $this->results['x']);
+    }
+
+    public function test_ack_zapisanych_dopiero_po_udanej_percolacji(): void
     {
         $writer = $this->createStub(AnalyticsBulkWriter::class);
         $writer->method('write')->willReturn(new BulkOutcome(created: 1));
-        $percolator = $this->createStub(EventPercolator::class);
-        $percolator->method('percolate')->willThrowException(new \RuntimeException('percolator padl'));
+        $percolator = $this->createMock(EventPercolator::class);
+        $percolator->expects(self::once())->method('percolate')->willReturnCallback(function (): int {
+            self::assertSame([], $this->results, 'ack przed percolacją');
+
+            return 1;
+        });
         $handler = $this->handler($writer, $percolator);
 
         $this->feed($handler, 'a', 'offer.price_changed', self::price());

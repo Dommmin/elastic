@@ -22,8 +22,11 @@ use Symfony\Component\Messenger\Handler\BatchHandlerTrait;
  * to Unrecoverable, 429/5xx to Recoverable (`forceRetry: false`, RUNBOOK #027).
  *
  * Po udanym zapisie paczki wołamy {@see EventPercolator} na dokumentach, które trafiły do ES
- * (utworzone albo już istniejące: powtórka po nieudanej percolacji nadrobi alert, a klucz alertu
- * i tak deduplikuje). Błąd percolacji tylko logujemy: zdarzenie jest już zapisane, więc ack zostaje.
+ * (utworzone albo już istniejące), i dopiero POTEM rozliczamy wiadomości. Percolator to jedyny
+ * detektor reguł `kind: percolator` (`security:detect` ich nie przelicza), więc błąd percolacji
+ * to nack Recoverable (`forceRetry: false`) dla zapisanych wiadomości: powtórka dostaje 409,
+ * ref nadal liczy się jako zapisany i percolacja idzie jeszcze raz. Id alertu jest deterministyczne
+ * ({@see \App\Security\Alert::id()}), więc ponowna percolacja nie dubluje alertów.
  */
 #[AsMessageHandler(fromTransport: 'security')]
 final class SecurityEventHandler implements BatchHandlerInterface
@@ -108,6 +111,7 @@ final class SecurityEventHandler implements BatchHandlerInterface
         $rejected = array_flip($outcome->rejected);
         $retryable = array_flip($outcome->retryable);
         $stored = [];
+        $storedJobs = [];
 
         foreach ($jobs as $i => [$event]) {
             $refs = $refsByJob[$i] ?? [];
@@ -117,9 +121,13 @@ final class SecurityEventHandler implements BatchHandlerInterface
                 $settle($i, new UnrecoverableMessageHandlingException(\sprintf('Elasticsearch odrzucił dokument bezpieczeństwa (%s): %s', $event->type, implode(', ', $reasons))));
             } elseif ($again = array_values(array_filter($refs, fn (string $r) => isset($retryable[$r])))) {
                 $settle($i, new RecoverableMessageHandlingException(\sprintf('Elasticsearch chwilowo nie przyjął dokumentu bezpieczeństwa (%s): %s', $event->type, implode(', ', $again)), forceRetry: false));
-            } else {
-                array_push($stored, ...$refs);
+            } elseif ($refs === []) {
+                // Zdarzenie spoza katalogu: nic do zapisu ani percolacji.
                 $settle($i, null);
+            } else {
+                // Rozliczenie dopiero po percolacji: ack przed nią zgubiłby alert przy jej błędzie.
+                array_push($stored, ...$refs);
+                $storedJobs[] = $i;
             }
         }
 
@@ -138,8 +146,16 @@ final class SecurityEventHandler implements BatchHandlerInterface
             $alerts = $this->percolator->percolate($stored);
             $this->logger->info('Percolacja zdarzeń bezpieczeństwa.', ['documents' => \count($stored), 'alerts' => $alerts]);
         } catch (\Throwable $e) {
-            // Zdarzenie już jest w ES, więc ack zostaje. Przegapiony alert nadrobi `security:detect`.
-            $this->logger->error('Percolacja zdarzeń bezpieczeństwa nie powiodła się.', ['documents' => \count($stored), 'error' => $e->getMessage()]);
+            // Zdarzenia są już w ES, ale alerty nie. Powtórka wiadomości (409 = nadal „zapisany”) percoluje ponownie.
+            $this->logger->error('Percolacja zdarzeń bezpieczeństwa nie powiodła się, wiadomości wracają do kolejki.', ['documents' => \count($stored), 'error' => $e->getMessage()]);
+            foreach ($storedJobs as $i) {
+                $settle($i, new RecoverableMessageHandlingException('Percolacja zdarzeń bezpieczeństwa nie powiodła się: '.$e->getMessage(), previous: $e, forceRetry: false));
+            }
+
+            return;
+        }
+        foreach ($storedJobs as $i) {
+            $settle($i, null);
         }
     }
 

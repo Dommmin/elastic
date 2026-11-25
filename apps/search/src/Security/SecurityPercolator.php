@@ -14,7 +14,8 @@ use Psr\Log\LoggerInterface;
  * Ref z konsumenta wskazuje NAZWĘ data streamu, a percolate po referencji (jak każdy get) potrzebuje
  * konkretnego indeksu zapasowego: stream rozwiązujemy `_mget`-em po jego indeksach, od najnowszego.
  * Idempotencja: id alertu jest deterministyczne ({@see Alert::id()}), więc ponowna percolacja
- * (duplikat 409, powtórka po błędzie) nadpisuje te same alerty.
+ * (duplikat 409, powtórka po błędzie) nadpisuje te same alerty. Każdy błąd (msearch, element `_mget`
+ * z `error`) rzuca wyjątek: konsument oddaje wtedy wiadomości do kolejki, a nie gubi alertów.
  */
 class SecurityPercolator implements EventPercolator
 {
@@ -102,6 +103,12 @@ class SecurityPercolator implements EventPercolator
                 }
                 $response = $this->client->mget(['index' => $candidate, 'body' => ['ids' => array_values($pending)]])->asArray();
                 foreach ($response['docs'] ?? [] as $doc) {
+                    // Błąd pojedynczego elementu (np. shard niedostępny) to nie „brak dokumentu”:
+                    // rzucamy, żeby konsument zrobił nack i powtórzył percolację, zamiast gubić alert.
+                    if (isset($doc['error'])) {
+                        $error = \is_array($doc['error']) ? ($doc['error']['reason'] ?? $doc['error']['type'] ?? 'błąd') : (string) $doc['error'];
+                        throw new \RuntimeException(\sprintf('_mget %s/%s: %s', $candidate, (string) ($doc['_id'] ?? '?'), $error));
+                    }
                     if (($doc['found'] ?? false) === true) {
                         $found[] = ['index' => (string) $doc['_index'], 'id' => (string) $doc['_id'], 'source' => $doc['_source'] ?? []];
                         $pending = array_values(array_diff($pending, [(string) $doc['_id']]));

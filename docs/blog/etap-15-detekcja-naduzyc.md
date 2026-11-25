@@ -349,7 +349,11 @@ w mapowaniu indeks nie przyjmie reguły z `range` na nieznanym polu.
 **Kiedy percolacja się dzieje.** Po zapisie partii handler bierze identyfikatory zapisanych dokumentów (także
 duplikatów 409, żeby powtórka po błędzie odtworzyła alerty) i woła `SecurityPercolator`. Ten pobiera dokumenty
 z ES (już po pipeline, więc z `product.popularity`) i puszcza `_msearch` z `percolate` **po referencji**
-`index` + `id`. Tu był pierwszy zgrzyt: referencja do **nazwy data streamu** nie działa.
+`index` + `id`. Wiadomości są potwierdzane (ack) **dopiero po udanej percolacji**: percolator to jedyny detektor
+reguł `kind: percolator` (`security:detect` ich nie przelicza), więc gdy percolacja padnie (`_msearch` z błędem, element
+`_mget` z `error`), zapisane wiadomości dostają nack Recoverable i wracają do kolejki. Powtórka dostaje 409, ref nadal
+liczy się jako zapisany i percolacja idzie jeszcze raz; deterministyczne id alertu nie pozwala na duplikaty.
+Tu był pierwszy zgrzyt: referencja do **nazwy data streamu** nie działa.
 
 ```bash
 # ten sam dokument: po nazwie streamu → index_not_found_exception ("excluded_ds": "true")
