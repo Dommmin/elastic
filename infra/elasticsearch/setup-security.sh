@@ -50,6 +50,8 @@ log "  OK"
 # --- 2. rola dla aplikacji catalog (Laravel) — TYLKO ODCZYT -----------------
 # D-03: Laravel nigdy nie pisze do Elasticsearcha. Ta rola to egzekwuje.
 # Ćwiczenie w ETAPIE 2: spróbuj z tego konta usunąć indeks. Dostaniesz 403.
+# ETAP 15: product-popularity* i security-rules — `security:simulate` czyta próg p95 reguły price-hug-threshold
+# i produkty po obu stronach progu (tylko odczyt).
 log "Tworzę rolę catalog_app (read-only)..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/catalog_app" \
   -H 'Content-Type: application/json' -d '{
@@ -58,6 +60,10 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/catalog_app" \
     {
       "names": ["products-*", "offers-*", "seller-360*", "search-stats-*"],
       "privileges": ["read", "view_index_metadata"]
+    },
+    {
+      "names": ["product-popularity*", "security-rules"],
+      "privileges": ["read"]
     }
   ]
 }' >/dev/null

@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Security\ClientFingerprint;
+use App\Security\Simulation\ElasticsearchPopularitySource;
+use App\Security\Simulation\PopularitySource;
 use App\Seller360\SellerStatsReader;
 use App\Services\Search\Lab\LabEvalRunner;
 use App\Support\ErrorTracking\JobTimeoutReporter;
@@ -37,6 +39,7 @@ class AppServiceProvider extends ServiceProvider
 
         // ETAP 15: odcisk klienta recenzji (hasz IP z pepperem z configu).
         $this->app->singleton(ClientFingerprint::class, fn () => new ClientFingerprint(config('services.security.ip_pepper')));
+        $this->app->bind(PopularitySource::class, ElasticsearchPopularitySource::class);
 
         // Jeden klient ES na cały request lifecycle — używany przez
         // HealthController (readiness) i przyszły ProductSearchService

@@ -84,6 +84,8 @@ return [
     // Pusty = hasz IP nie jest zapisywany (recenzja i tak się zapisuje, log warning).
     'security' => [
         'ip_pepper' => env('SECURITY_IP_PEPPER'),
+        // Prawda podstawowa `security:simulate` (planted-security.json); storage/app/private jest w .gitignore.
+        'simulation_dir' => storage_path('app/private/security'),
     ],
 
     // Symulowana bramka płatności (app/FakePaymentGateway, spec §6).
