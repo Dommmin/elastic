@@ -6853,6 +6853,13 @@ es GET '/_cat/indices/.enrich-product-popularity-policy-*,product-popularity?h=i
 3. `make popularity-refresh && make detection-setup`. Zdarzenia już zapisane nie dostaną popularności wstecz,
    a percolator nie sprawdzi ich ponownie: dla pomiaru `make detection-purge` i ponowna symulacja.
 
+**Uwaga: job `security-detect` bez `make detection-setup`.** `seller360-scheduler` uruchamia job co 300 s także na
+stosie, na którym ETAP 15 nie był skonfigurowany. Gdy brakuje indeksu `alerts-security` albo plików reguł
+(`/infra/kibana/rules/security-review-ip-burst.json`, `/infra/elasticsearch/detection/eql/price-bait-and-switch.eql`),
+job pomija przebieg z jednym ostrzeżeniem w logu (`security-detect: detekcja nieskonfigurowana, pomijam przebieg: …`)
+zamiast wyjątku co 5 minut (`DetectionReadiness`). Komenda `security:detect` nadal pada głośno. Naprawa: `make
+detection-setup` (i montaż `infra` w kontenerze, jeśli brakuje plików).
+
 **Czego się nauczyłem**
 Reguła zależy od danych innego etapu (popularność z ETAPU 12) w dwóch miejscach: próg p95 w regule i pole
 w zdarzeniu z enrichu. Oba są migawkami z różnych chwil. Dlatego p95 trafia do dokumentu reguły i do raportu: widać,

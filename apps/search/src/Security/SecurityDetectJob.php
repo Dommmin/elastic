@@ -14,6 +14,10 @@ use Psr\Log\NullLogger;
  *
  * Każdy detektor biegnie we własnym try/catch: awaria jednego (np. ES|QL) jest logowana z jego id
  * i nie odbiera przebiegu pozostałym; dopiero na końcu job rzuca, żeby scheduler zobaczył błąd.
+ *
+ * Gdy detekcja nie jest skonfigurowana ({@see DetectionReadiness}: brak `alerts-security` albo plików
+ * reguł), przebieg jest pomijany z jednym ostrzeżeniem zamiast wyjątku co 300 s. Dotyczy tylko `run()`:
+ * komenda `security:detect` woła `detect()` i nadal pada głośno.
  */
 final class SecurityDetectJob implements Seller360Job
 {
@@ -31,6 +35,7 @@ final class SecurityDetectJob implements Seller360Job
         private readonly AlertWriter $writer,
         ?\Closure $now = null,
         private readonly LoggerInterface $logger = new NullLogger(),
+        private readonly ?DetectionReadiness $readiness = null,
     ) {
         $this->now = $now ?? static fn (): \DateTimeImmutable => new \DateTimeImmutable();
     }
@@ -47,6 +52,12 @@ final class SecurityDetectJob implements Seller360Job
 
     public function run(): void
     {
+        if (($reason = $this->readiness?->missing()) !== null) {
+            $this->logger->warning(\sprintf('security-detect: detekcja nieskonfigurowana, pomijam przebieg: %s.', $reason));
+
+            return;
+        }
+
         $to = ($this->now)();
         $failures = [];
         $this->detect($to->modify('-'.self::LOOKBACK), $to, null, $failures);

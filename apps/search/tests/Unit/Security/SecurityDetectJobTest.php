@@ -4,6 +4,7 @@ namespace App\Tests\Unit\Security;
 
 use App\Security\Alert;
 use App\Security\AlertWriter;
+use App\Security\DetectionReadiness;
 use App\Security\Detector;
 use App\Security\SecurityDetectJob;
 use PHPUnit\Framework\TestCase;
@@ -114,5 +115,36 @@ final class SecurityDetectJobTest extends TestCase
         self::assertSame(['dobry' => 0], $counts);
         self::assertSame(['zepsuty'], array_keys($failures));
         self::assertSame(1, $ok);
+    }
+
+    public function test_nieskonfigurowana_detekcja_to_jedno_ostrzezenie_bez_wyjatku_i_bez_detektorow(): void
+    {
+        $a = 0;
+        $f = $t = null;
+        $readiness = $this->createStub(DetectionReadiness::class);
+        $readiness->method('missing')->willReturn('brak indeksu alerts-security (make detection-setup)');
+        $writer = $this->createMock(AlertWriter::class);
+        $writer->expects(self::never())->method('write');
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())->method('warning')->with(self::stringContains('alerts-security'));
+        $logger->expects(self::never())->method('error');
+
+        $job = new SecurityDetectJob([$this->detector('a', $a, $f, $t)], $writer, null, $logger, $readiness);
+        $job->run();
+
+        self::assertSame(0, $a);
+    }
+
+    public function test_skonfigurowana_detekcja_biegnie_normalnie(): void
+    {
+        $a = 0;
+        $f = $t = null;
+        $readiness = $this->createStub(DetectionReadiness::class);
+        $readiness->method('missing')->willReturn(null);
+        $writer = $this->createStub(AlertWriter::class);
+
+        (new SecurityDetectJob([$this->detector('a', $a, $f, $t)], $writer, null, new \Psr\Log\NullLogger(), $readiness))->run();
+
+        self::assertSame(1, $a);
     }
 }
