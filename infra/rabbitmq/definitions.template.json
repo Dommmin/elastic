@@ -23,6 +23,17 @@
       }
     },
     {
+      "name": "security-ingest-cap",
+      "vhost": "/",
+      "pattern": "^search\\.security\\.ingest(\\.dlq)?$",
+      "apply-to": "queues",
+      "priority": 10,
+      "definition": {
+        "max-length": 100000,
+        "overflow": "drop-head"
+      }
+    },
+    {
       "name": "seller360-cap",
       "vhost": "/",
       "pattern": "^search\\.seller360(\\.dlq)?$",
@@ -89,6 +100,17 @@
       }
     },
     {
+      "name": "search.security.ingest",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "marketplace.dlx",
+        "x-delivery-limit": 5
+      }
+    },
+    {
       "name": "search.seller360",
       "vhost": "/",
       "durable": true,
@@ -127,6 +149,13 @@
       "arguments": { "x-queue-type": "quorum" }
     },
     {
+      "name": "search.security.ingest.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
       "name": "search.seller360.dlq",
       "vhost": "/",
       "durable": true,
@@ -157,6 +186,11 @@
     { "source": "marketplace.events", "vhost": "/", "destination": "search.analytics.ingest",
       "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
 
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.security.ingest",
+      "destination_type": "queue", "routing_key": "offer.price_changed", "arguments": {} },
+    { "source": "marketplace.events", "vhost": "/", "destination": "search.security.ingest",
+      "destination_type": "queue", "routing_key": "review.created", "arguments": {} },
+
     { "source": "marketplace.events", "vhost": "/", "destination": "search.seller360",
       "destination_type": "queue", "routing_key": "seller.#", "arguments": {} },
     { "source": "marketplace.events", "vhost": "/", "destination": "search.seller360",
@@ -180,6 +214,11 @@
 
     { "source": "marketplace.dlx", "vhost": "/", "destination": "search.analytics.ingest.dlq",
       "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
+
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.security.ingest.dlq",
+      "destination_type": "queue", "routing_key": "offer.price_changed", "arguments": {} },
+    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.security.ingest.dlq",
+      "destination_type": "queue", "routing_key": "review.created", "arguments": {} },
 
     { "source": "marketplace.dlx", "vhost": "/", "destination": "search.seller360.dlq",
       "destination_type": "queue", "routing_key": "search.seller360", "arguments": {} },

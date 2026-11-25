@@ -281,6 +281,11 @@ closed-loop: ## Pętla zamknięta: symulacja → refresh → eval po każdym dni
 analytics-setup: ## ILM, pipeline, data streamy, transform search-stats-daily, dashboard Kibany (idempotentne)
 	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-analytics.sh
 
+## Detekcja nadużyć (ETAP 15)
+.PHONY: detection-setup
+detection-setup: ## ILM, pipeline, data stream events-security, security-rules, alerts-security (idempotentne; wymaga analytics-setup)
+	@KIBANA_PORT=$(KIBANA_PORT) bash infra/elasticsearch/setup-detection.sh
+
 ## Laboratorium semantyki i ML (ETAP 14, profil ml)
 .PHONY: lab-mode-on
 lab-mode-on: ## Tryb lab: zatrzymuje własny główny klaster ES, Kibanę i procesy zależne (zwalnia pamięć dla es-lab)
