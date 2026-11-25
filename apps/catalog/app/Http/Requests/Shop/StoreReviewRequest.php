@@ -14,6 +14,8 @@ use Illuminate\Validation\Validator;
  */
 class StoreReviewRequest extends FormRequest
 {
+    public const string DUPLICATE_MESSAGE = 'Ten produkt już oceniłeś.';
+
     public function authorize(): bool
     {
         return true;
@@ -47,7 +49,7 @@ class StoreReviewRequest extends FormRequest
                     ->exists();
 
                 if ($exists) {
-                    $validator->errors()->add('rating', 'Ten produkt już oceniłeś.');
+                    $validator->errors()->add('rating', self::DUPLICATE_MESSAGE);
                 }
             },
         ];

@@ -15,6 +15,7 @@ test('zalogowany zapisuje recenzję z odciskiem klienta w outboxie', function ()
     $product = Product::factory()->create();
 
     $this->actingAs($user)
+        ->withServerVariables(['REMOTE_ADDR' => '198.51.100.23'])
         ->withHeader('User-Agent', 'TestAgent/1.0')
         ->post(route('products.reviews.store', $product), ['rating' => 5, 'body' => 'ok'])
         ->assertRedirect(route('products.show', $product));
@@ -26,11 +27,11 @@ test('zalogowany zapisuje recenzję z odciskiem klienta w outboxie', function ()
 
     $payload = $events->first()->payload;
     expect($payload['client_ip_hash'])->toMatch('/^[0-9a-f]{16}$/')
-        ->and($payload['client_ip_prefix'])->toBe('127.0.0.0/24')
+        ->and($payload['client_ip_prefix'])->toBe('198.51.100.0/24')
         ->and($payload['client_user_agent'])->toBe('TestAgent/1.0')
         ->and($payload['user_account_age_hours'])->toBe(30)
         ->and($payload['rating'])->toBe(5)
-        ->and(json_encode($payload))->not->toContain('127.0.0.1');
+        ->and(json_encode($payload))->not->toContain('198.51.100.23');
 });
 
 test('gość jest przekierowany na logowanie i nic nie zapisuje', function () {
@@ -106,4 +107,28 @@ test('szóste żądanie w minucie dostaje 429', function () {
     $this->actingAs($user)
         ->post(route('products.reviews.store', $product), ['rating' => 5])
         ->assertStatus(429);
+});
+
+test('duplikat utworzony po walidacji, a przed zapisem, jest odrzucony pod blokadą', function () {
+    $user = User::factory()->create();
+    $product = Product::factory()->create();
+
+    // Zapytanie blokujące wiersz użytkownika odpala `retrieved` dopiero w transakcji, już po
+    // FormRequest; tam wstawiamy konkurencyjną recenzję, jakby wyprzedziło nas drugie żądanie.
+    User::retrieved(function () use ($user, $product) {
+        static $done = false;
+        if (! $done) {
+            $done = true;
+            Review::create(['product_id' => $product->id, 'user_id' => $user->id, 'rating' => 1]);
+        }
+    });
+
+    $this->actingAs($user)
+        ->post(route('products.reviews.store', $product), ['rating' => 5])
+        ->assertSessionHasErrors('rating');
+
+    // Konkurencyjny wiersz powstał w tej samej transakcji testu, więc cofnięcie go też zabiera;
+    // liczy się, że nasza recenzja (ocena 5) nie powstała i nie ma zdarzenia.
+    expect(Review::where('rating', 5)->count())->toBe(0)
+        ->and(Outbox::where('event_type', 'review.created')->count())->toBe(0);
 });
