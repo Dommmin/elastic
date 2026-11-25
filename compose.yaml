@@ -757,6 +757,9 @@ services:
       # Detekcja nadużyć (ETAP 15): `security:rules:load` czyta reguły percolatora z detection/rules,
       # a testy integracyjne tworzą indeksy testowe z mapowań tego katalogu.
       - ./infra/elasticsearch/detection:/infra/elasticsearch/detection:ro
+      # Reguła ES|QL review-ip-burst (ETAP 15): backfill `security:detect` czyta jej tekst z tego samego
+      # pliku, który ładuje Kibana — jedno źródło prawdy.
+      - ./infra/kibana/rules:/infra/kibana/rules:ro
       # Miasta i województwa (ETAP 13): RegionResolverTest i handler seller360 czytają ten plik.
       - ./infra/reference:/infra/reference:ro
     depends_on:
@@ -867,6 +870,8 @@ services:
       - ./apps/search:/app
       # seller360:rebuild (backfill profilu) liczy region z miasta jak projektor
       - ./infra/reference:/infra/reference:ro
+      # job security-detect (ETAP 15) czyta ES|QL reguły review-ip-burst z pliku reguły Kibany
+      - ./infra/kibana/rules:/infra/kibana/rules:ro
     depends_on:
       es01: { condition: service_healthy }
       redis: { condition: service_healthy }

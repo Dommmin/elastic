@@ -1,0 +1,63 @@
+{
+  "name": "Detekcja: review-ip-burst",
+  "consumer": "alerts",
+  "rule_type_id": ".es-query",
+  "schedule": {
+    "interval": "5m"
+  },
+  "tags": [
+    "etap-15",
+    "security",
+    "review-ip-burst"
+  ],
+  "notify_when": "onActiveAlert",
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM events-security-*\n| WHERE event.type == \"review.created\" AND client.ip_hash IS NOT NULL\n| STATS users = COUNT_DISTINCT(user.id), reviews = COUNT(*) BY client.ip_hash, hour = BUCKET(@timestamp, 1 hour)\n| WHERE users >= 5"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 1,
+    "timeWindowUnit": "h",
+    "size": 100,
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "excludeHitsFromPreviousRun": false
+  },
+  "actions": [
+    {
+      "group": "query matched",
+      "id": "security-alerts-index",
+      "params": {
+        "documents": [
+          {
+            "@timestamp": "{{date}}",
+            "rule": {
+              "id": "review-ip-burst",
+              "kind": "esql"
+            },
+            "severity": "medium",
+            "entity": {
+              "type": "ip_hash",
+              "id": "{{#context.hits}}{{_source.client.ip_hash}}{{/context.hits}}"
+            },
+            "window": {
+              "start": "{{#context.hits}}{{_source.hour}}{{/context.hits}}",
+              "end": "{{date}}"
+            },
+            "message": "Co najmniej 5 różnych użytkowników wystawiło recenzje z jednego odcisku IP w ciągu godziny",
+            "evidence": {
+              "users": "{{#context.hits}}{{_source.users}}{{/context.hits}}",
+              "reviews": "{{#context.hits}}{{_source.reviews}}{{/context.hits}}"
+            },
+            "labels": {
+              "synthetic": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

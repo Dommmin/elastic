@@ -83,6 +83,12 @@ services:
         arguments:
             $jobs: !tagged_iterator app.seller360_job
 
+    # ETAP 15: job security-detect (co 300 s w seller360-scheduler) i komenda security:detect dostają
+    # wszystkie detektory otagowane app.security_detector (interfejs Detector).
+    App\Security\SecurityDetectJob:
+        arguments:
+            $detectors: !tagged_iterator app.security_detector
+
     # Klient rejestru ma własny adres (`$baseUrl` jest zbindowany na catalog).
     App\Seller360\Registry\RegistryClient:
         arguments:

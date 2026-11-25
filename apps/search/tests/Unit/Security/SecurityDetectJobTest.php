@@ -1,0 +1,72 @@
+<?php
+
+namespace App\Tests\Unit\Security;
+
+use App\Security\Alert;
+use App\Security\AlertWriter;
+use App\Security\Detector;
+use App\Security\SecurityDetectJob;
+use PHPUnit\Framework\TestCase;
+
+final class SecurityDetectJobTest extends TestCase
+{
+    private function detector(string $id, int &$calls, ?\DateTimeImmutable &$from, ?\DateTimeImmutable &$to, array $alerts = []): Detector
+    {
+        return new class($id, $calls, $from, $to, $alerts) implements Detector {
+            public function __construct(private string $id, private int &$calls, private ?\DateTimeImmutable &$from, private ?\DateTimeImmutable &$to, private array $alerts) {}
+
+            public function id(): string { return $this->id; }
+
+            public function detect(\DateTimeImmutable $from, \DateTimeImmutable $to): array
+            {
+                ++$this->calls;
+                $this->from = $from;
+                $this->to = $to;
+
+                return $this->alerts;
+            }
+        };
+    }
+
+    public function test_nazwa_i_interwal(): void
+    {
+        $job = new SecurityDetectJob([], $this->createStub(AlertWriter::class));
+
+        self::assertSame('security-detect', $job->name());
+        self::assertSame(300, $job->intervalSeconds());
+    }
+
+    public function test_run_woła_kazdy_detektor_raz_za_ostatnie_2_godziny(): void
+    {
+        $a = $b = 0;
+        $fromA = $toA = $fromB = $toB = null;
+        $now = new \DateTimeImmutable('2026-11-25T12:00:00Z');
+        $writer = $this->createMock(AlertWriter::class);
+        $writer->expects(self::exactly(2))->method('write')->with([])->willReturn(0);
+
+        $job = new SecurityDetectJob([
+            $this->detector('a', $a, $fromA, $toA),
+            $this->detector('b', $b, $fromB, $toB),
+        ], $writer, static fn (): \DateTimeImmutable => $now);
+        $job->run();
+
+        self::assertSame([1, 1], [$a, $b]);
+        self::assertEquals(new \DateTimeImmutable('2026-11-25T10:00:00Z'), $fromA);
+        self::assertEquals($now, $toA);
+    }
+
+    public function test_alerty_trafiaja_do_writera_a_filtr_regul_pomija_inne_detektory(): void
+    {
+        $a = $b = 0;
+        $f = $t = null;
+        $alert = new Alert('a', 'esql', 'medium', 'ip_hash', 'x', new \DateTimeImmutable('2026-11-25T10:00:00Z'), new \DateTimeImmutable('2026-11-25T11:00:00Z'), 'm', [], false);
+        $writer = $this->createMock(AlertWriter::class);
+        $writer->expects(self::once())->method('write')->with([$alert])->willReturn(1);
+
+        $job = new SecurityDetectJob([$this->detector('a', $a, $f, $t, [$alert]), $this->detector('b', $b, $f, $t)], $writer);
+        $counts = $job->detect(new \DateTimeImmutable('-1 day'), new \DateTimeImmutable(), 'a');
+
+        self::assertSame(['a' => 1], $counts);
+        self::assertSame([1, 0], [$a, $b]);
+    }
+}
