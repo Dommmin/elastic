@@ -450,6 +450,8 @@ services:
       # Pusty klucz = tunel wyłączony (204).
       GLITCHTIP_FRONTEND_PROJECT_ID: "2"
       GLITCHTIP_FRONTEND_KEY: ${GLITCHTIP_KEY_FRONTEND:-}
+      # Pepper HMAC dla haszu IP recenzji (ETAP 15); pusty = brak haszu IP.
+      SECURITY_IP_PEPPER: ${SECURITY_IP_PEPPER:-}
       GLITCHTIP_UPSTREAM: glitchtip:8000
       # Symulowana bramka płatności (apps/catalog/app/FakePaymentGateway).
       # Adres webhooka to WEWNĄTRZ sieci `marketplace`: zwykłe HTTP na port 80
@@ -752,6 +754,12 @@ services:
       # Szablon seller-360 (ETAP 13): ApplySectionScriptTest tworzy indeks testowy
       # z mapowaniem tego samego pliku, którego używa setup-seller360.sh.
       - ./infra/elasticsearch/seller360:/infra/elasticsearch/seller360:ro
+      # Detekcja nadużyć (ETAP 15): `security:rules:load` czyta reguły percolatora z detection/rules,
+      # a testy integracyjne tworzą indeksy testowe z mapowań tego katalogu.
+      - ./infra/elasticsearch/detection:/infra/elasticsearch/detection:ro
+      # Reguła ES|QL review-ip-burst (ETAP 15): backfill `security:detect` czyta jej tekst z tego samego
+      # pliku, który ładuje Kibana — jedno źródło prawdy.
+      - ./infra/kibana/rules:/infra/kibana/rules:ro
       # Miasta i województwa (ETAP 13): RegionResolverTest i handler seller360 czytają ten plik.
       - ./infra/reference:/infra/reference:ro
     depends_on:
@@ -776,7 +784,7 @@ services:
       args:
         FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
         PHP_VERSION: ${PHP_VERSION}
-    command: ["php", "bin/console", "messenger:consume", "analytics", "-vv", "--time-limit=3600", "--memory-limit=256M"]
+    command: ["php", "bin/console", "messenger:consume", "analytics", "security", "-vv", "--time-limit=3600", "--memory-limit=256M"]
     environment:
       <<: *error-tracking-search
       ERROR_TRACKING_PROCESS: analytics-consumer
@@ -862,6 +870,10 @@ services:
       - ./apps/search:/app
       # seller360:rebuild (backfill profilu) liczy region z miasta jak projektor
       - ./infra/reference:/infra/reference:ro
+      # job security-detect (ETAP 15) czyta ES|QL reguły review-ip-burst z pliku reguły Kibany
+      - ./infra/kibana/rules:/infra/kibana/rules:ro
+      # ...a EQL reguły price-bait-and-switch z pliku .eql
+      - ./infra/elasticsearch/detection/eql:/infra/elasticsearch/detection/eql:ro
     depends_on:
       es01: { condition: service_healthy }
       redis: { condition: service_healthy }

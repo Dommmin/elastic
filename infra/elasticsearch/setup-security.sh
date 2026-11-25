@@ -50,6 +50,8 @@ log "  OK"
 # --- 2. rola dla aplikacji catalog (Laravel) — TYLKO ODCZYT -----------------
 # D-03: Laravel nigdy nie pisze do Elasticsearcha. Ta rola to egzekwuje.
 # Ćwiczenie w ETAPIE 2: spróbuj z tego konta usunąć indeks. Dostaniesz 403.
+# ETAP 15: product-popularity* i security-rules — `security:simulate` czyta próg p95 reguły price-hug-threshold
+# i produkty po obu stronach progu (tylko odczyt).
 log "Tworzę rolę catalog_app (read-only)..."
 curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/catalog_app" \
   -H 'Content-Type: application/json' -d '{
@@ -58,6 +60,10 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/catalog_app" \
     {
       "names": ["products-*", "offers-*", "seller-360*", "search-stats-*"],
       "privileges": ["read", "view_index_metadata"]
+    },
+    {
+      "names": ["product-popularity*", "security-rules"],
+      "privileges": ["read"]
     }
   ]
 }' >/dev/null
@@ -72,6 +78,7 @@ log "  OK"
 # (polityki enrich) oraz indeks product-popularity* (wynik transformu).
 # ETAP 13: complaints* — import reklamacji (complaints, complaints-unmatched, _reindex, delete-by-query);
 # manage_enrich wykonuje też politykę seller-by-nip.
+# ETAP 15: security-* (reguły percolatora `security-rules`; alerts-security i events-security mieszczą się we wzorcach wyżej).
 # ETAP 13b: courier-ratings (jawna nazwa, bez wzorca) — oceny kurierów z rejestru; `_update_by_query` fan-outu
 # na seller-360* mieści się w "all", a odczyt `_tasks/<id>` w `monitor`.
 log "Tworzę rolę search_service (write + manage)..."
@@ -91,7 +98,7 @@ curl -fsS -u "${AUTH}" -X PUT "${ES}/_security/role/search_service" \
       "names": [
         "products-*", "offers-*", "seller-360*",
         "alerts-*", "events-*", "search-stats-*", "seller-sales-*", "logs-app-*",
-        "product-popularity*", "complaints*"
+        "product-popularity*", "complaints*", "security-*"
       ],
       "privileges": ["all"]
     },

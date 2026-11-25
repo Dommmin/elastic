@@ -11,6 +11,9 @@ catalog_app:
   indices:
     - names: ["products-*", "offers-*", "seller-360*", "search-stats-*"]
       privileges: ["read", "view_index_metadata"]
+    # ETAP 15: security:simulate czyta p95 i popularność (tylko odczyt).
+    - names: ["product-popularity*", "security-rules"]
+      privileges: ["read"]
 
 # Jedyny serwis, który pisze do ES; zarządza też szablonami i ILM,
 # bo mapowania są kodem (01-INFRASTRUKTURA.md). cancel_task: Ctrl-C w

@@ -7,7 +7,7 @@ semantyczny Elastica, pomaga na polskich zapytaniach? Dokładamy go jako szósty
 Kopiujemy 158 710 prawdziwych zdarzeń `user.*` z głównego klastra, wstrzykujemy sześciogodzinną awarię kliknięć
 i porównujemy ML z regułą progową z ETAPU 12.*
 
-> **Stan:** gałąź `etap-14-semantyka` (niewypchnięta), lokalny stos Docker, węzeł `es-lab` (ES 9.5.1, jeden węzeł,
+> **Stan:** gałąź `etap-14-semantyka` (scalona, PR #24, 2026-11-23), lokalny stos Docker, węzeł `es-lab` (ES 9.5.1, jeden węzeł,
 > licencja trial), sprawdzone 2026-11-22. **Na żywo:** tabela 6 × 3 w dwóch przebiegach identyczna, pięć wierszy
 > z 14a co do bitu równe `eval-14a.json`, `_rank_eval` zgodny z PHP także dla ELSER; job anomalii z kalendarzem
 > wykrywa awarię (asercja `make lab-anomaly` zielona), test negatywny przed awarią czerwony, tak jak powinien.

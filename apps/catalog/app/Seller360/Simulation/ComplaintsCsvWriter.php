@@ -55,9 +55,11 @@ final class ComplaintsCsvWriter
 
     /**
      * @param  list<array{nip: string, complaints: list<array{days_ago: int, seconds: int, category: string, status: string, body: string}>}>  $sellers
+     * @param  string  $prefix  prefiks `ticket_id`: `SIM` (seller-360, ETAP 13) albo `SEC` (detekcja nadużyć, ETAP 15) —
+     *                          po nim każda komenda purge sprząta tylko swoje reklamacje
      * @return int liczba wierszy
      */
-    public static function write(string $path, int $seed, array $sellers, DateTimeImmutable $now): int
+    public static function write(string $path, int $seed, array $sellers, DateTimeImmutable $now, string $prefix = 'SIM'): int
     {
         if (! is_dir(dirname($path))) {
             mkdir(dirname($path), 0775, true);
@@ -76,7 +78,7 @@ final class ComplaintsCsvWriter
                     $rows++;
                     $createdAt = $today->modify("-{$complaint['days_ago']} days")->modify("+{$complaint['seconds']} seconds");
                     fputcsv($handle, [
-                        sprintf('SIM-%d-%07d', $seed, $rows),
+                        sprintf('%s-%d-%07d', $prefix, $seed, $rows),
                         $seller['nip'],
                         $createdAt->format(DateTimeInterface::ATOM),
                         $complaint['category'],

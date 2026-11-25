@@ -49,6 +49,14 @@ final class Seller360EventHandler
 
     public function __invoke(IntegrationEvent $event): void
     {
+        // ETAP 15: zdarzenia symulatora bezpieczeństwa (`offer.price_changed`) nie mogą ruszać seller-360.
+        // Rozstrzyga `simulation`, NIE `synthetic`: sprzedawcy syntetyczni z ETAPU 13 mają się projektować.
+        if (($event->data['simulation'] ?? null) === 'security') {
+            $this->logger->debug('Zdarzenie symulatora bezpieczeństwa, pomijam.', ['event_id' => $event->id, 'type' => $event->type]);
+
+            return;
+        }
+
         $kind = strstr($event->type, '.', true);
 
         match ($kind) {

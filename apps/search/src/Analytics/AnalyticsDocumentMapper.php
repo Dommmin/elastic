@@ -107,6 +107,10 @@ class AnalyticsDocumentMapper
         if (isset($data['product_id'])) {
             $out['product'] = ['id' => (string) $data['product_id']];
         }
+        // ETAP 15: oferta klikniętego wyniku — `price-bait-and-switch` (EQL) łączy kliknięcia ze zmianami cen po `offer.id`.
+        if (isset($data['offer_id'])) {
+            $out['offer'] = ['id' => (string) $data['offer_id']];
+        }
         if (isset($data['position'])) {
             $out['click'] = ['position' => (int) $data['position']];
         }

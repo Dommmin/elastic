@@ -9,6 +9,7 @@ use App\Http\Middleware\AnalyticsSession;
 use App\Http\Requests\Shop\AddToCartRequest;
 use App\Models\Offer;
 use App\Models\Product;
+use App\Models\Review;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -61,6 +62,9 @@ class ProductPageController extends Controller
             'offers' => $offers,
             // Przenoszony do formularza koszyka, żeby `user.added_to_cart` znał wyszukiwanie.
             'searchId' => $searchId,
+            // Zalogowany, który jeszcze nie ocenił tego produktu.
+            'canReview' => $userId !== null
+                && ! Review::query()->where('product_id', $product->id)->where('user_id', $userId)->exists(),
         ]);
     }
 

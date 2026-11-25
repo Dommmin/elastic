@@ -71,6 +71,20 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Shovel
 metadata:
+  name: migrate-search-security-ingest
+spec:
+  name: migrate-search-security-ingest
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.security.ingest
+  destQueue: search.security.ingest
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
   name: migrate-notifications-alerts
 spec:
   name: migrate-notifications-alerts
@@ -136,4 +150,18 @@ spec:
   srcDeleteAfter: queue-length
   srcQueue: search.seller360.dlq
   destQueue: search.seller360.dlq
+  rabbitmqClusterReference: { name: rabbitmq-ha }
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Shovel
+metadata:
+  name: migrate-search-security-ingest-dlq
+spec:
+  name: migrate-search-security-ingest-dlq
+  vhost: /
+  uriSecret: { name: rabbitmq-shovel-uris }
+  ackMode: on-confirm
+  srcDeleteAfter: queue-length
+  srcQueue: search.security.ingest.dlq
+  destQueue: search.security.ingest.dlq
   rabbitmqClusterReference: { name: rabbitmq-ha }

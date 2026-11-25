@@ -1,0 +1,24 @@
+{
+  "rule": {
+    "id": "fresh-account-5star",
+    "kind": "percolator",
+    "severity": "medium",
+    "description": "Recenzja 5 gwiazdek od konta młodszego niż 24 godziny"
+  },
+  "params": {},
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event.type": "review.created" } },
+        { "term": { "review.rating": 5 } },
+        { "range": { "user.account_age_hours": { "lt": 24 } } }
+      ]
+    }
+  },
+  "alert": {
+    "entity_type": "user",
+    "entity_field": "user.id",
+    "window": "event",
+    "evidence_fields": ["event.id", "review.id", "review.rating", "user.account_age_hours", "product.id", "client.ip_prefix"]
+  }
+}

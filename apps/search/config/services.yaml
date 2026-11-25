@@ -60,6 +60,15 @@ services:
         tags:
             - { name: messenger.message_handler, handles: App\Message\IntegrationEvent, from_transport: analytics }
 
+    # ETAP 15: SecurityEventHandler to też BatchHandlerInterface — ta sama pułapka z tagiem co wyżej.
+    App\MessageHandler\SecurityEventHandler:
+        autoconfigure: false
+        tags:
+            - { name: messenger.message_handler, handles: App\Message\IntegrationEvent, from_transport: security }
+
+    # ETAP 15: percolator reguł (security-rules) po zapisie paczki zdarzeń bezpieczeństwa.
+    App\Security\EventPercolator: '@App\Security\SecurityPercolator'
+
     # ETAP 13 (projektor seller-360): Redis na zbiór `seller360:dirty:offers` i liczniki metryk.
     # Usługa powstaje dopiero z handlerem (proces consume seller360), nie przy starcie kernela.
     Redis:
@@ -73,6 +82,12 @@ services:
     App\Seller360\Seller360Scheduler:
         arguments:
             $jobs: !tagged_iterator app.seller360_job
+
+    # ETAP 15: job security-detect (co 300 s w seller360-scheduler) i komenda security:detect dostają
+    # wszystkie detektory otagowane app.security_detector (interfejs Detector).
+    App\Security\SecurityDetectJob:
+        arguments:
+            $detectors: !tagged_iterator app.security_detector
 
     # Klient rejestru ma własny adres (`$baseUrl` jest zbindowany na catalog).
     App\Seller360\Registry\RegistryClient:
@@ -102,4 +117,8 @@ services:
     app.messenger.transport.alerts.ack_after_hand_off:
         class: App\Messenger\AckAfterHandOffTransport
         decorates: messenger.transport.alerts
+        arguments: ['@.inner']
+    app.messenger.transport.security.ack_after_hand_off:
+        class: App\Messenger\AckAfterHandOffTransport
+        decorates: messenger.transport.security
         arguments: ['@.inner']

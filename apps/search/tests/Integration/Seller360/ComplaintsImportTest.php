@@ -150,6 +150,25 @@ final class ComplaintsImportTest extends TestCase
         self::assertSame(0, $section['open']);
     }
 
+    public function testZeroMissingClearsSectionOfSellerWithoutComplaintsLeft(): void
+    {
+        // ETAP 15: `security:purge-synthetic` usuwa reklamacje SEC-; sprzedawca bez żadnej reklamacji nie może
+        // zostać ze starą sekcją (agregacja go nie zwraca, więc bez `zeroMissing` nic by jej nie nadpisało).
+        $this->importer->import(self::FIXTURE);
+        $this->client->deleteByQuery(['index' => 'complaints', 'refresh' => true, 'body' => ['query' => ['terms' => ['ticket_id' => ['T9TEST-001', 'T9TEST-002']]]]]);
+        $writer = new SectionWriter($this->client, new Seller360Metrics($this->createStub(\Redis::class), new NullLogger), refresh: true);
+        $refresher = new ComplaintsSectionRefresher($this->client, $writer, new NullLogger);
+
+        self::assertSame(2, $refresher->refreshSellers([990000001, 990000002], zeroMissing: true));
+
+        $empty = $this->client->get(['index' => 'seller-360', 'id' => '990000001'])->asArray()['_source']['complaints'];
+        self::assertSame(0, $empty['open']);
+        self::assertSame(0, $empty['last_30d']);
+        self::assertSame([], $empty['top_categories']);
+        self::assertSame([], $empty['recent_texts']);
+        self::assertSame(1, $this->client->get(['index' => 'seller-360', 'id' => '990000002'])->asArray()['_source']['complaints']['open'], 'sprzedawca z reklamacjami bez zmian');
+    }
+
     public function testWrongHeaderIsRejected(): void
     {
         $path = $this->csv([], "id,nip,date\n");

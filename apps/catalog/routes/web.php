@@ -15,6 +15,7 @@ use App\Http\Controllers\Seller\SellerOrderController;
 use App\Http\Controllers\Shop\CartController;
 use App\Http\Controllers\Shop\OrderController;
 use App\Http\Controllers\Shop\ProductPageController;
+use App\Http\Controllers\Shop\ReviewController;
 use App\Http\Controllers\Webhooks\PaymentWebhookController;
 use Illuminate\Support\Facades\Route;
 
@@ -40,6 +41,9 @@ Route::middleware('auth')->group(function () {
     Route::get('orders/{order}', [OrderController::class, 'show'])->whereNumber('order')->name('orders.show');
     Route::post('orders/{order}/pay', [OrderController::class, 'pay'])->whereNumber('order')->name('orders.pay');
     Route::post('orders/{order}/cancel', [OrderController::class, 'cancel'])->whereNumber('order')->name('orders.cancel');
+
+    // ETAP 15: recenzja z odciskiem klienta; throttle chroni przed zalewem recenzjami.
+    Route::post('products/{product}/reviews', [ReviewController::class, 'store'])->whereNumber('product')->middleware('throttle:5,1')->name('products.reviews.store');
 });
 
 Route::middleware(['auth', 'verified'])->group(function () {

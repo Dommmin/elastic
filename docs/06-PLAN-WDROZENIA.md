@@ -463,7 +463,7 @@ procesy seller-360 (przewodnik 13b, krok 15; RUNBOOK #150).
 
 **DoD:** liczbowe porównanie BM25 vs kNN vs hybryda; wiesz, kiedy wektory szkodzą.
 
-**Stan (2026-11-22): ETAP 14 zakończony (14a i 14b) lokalnie** na gałęzi `etap-14-semantyka` (niewypchnięta), laboratorium, nie funkcja
+**Stan (2026-11-22): ETAP 14 zakończony (14a i 14b) lokalnie** na gałęzi `etap-14-semantyka`, scalony do `main` przez PR #24 (2026-11-23), laboratorium, nie funkcja
 sklepu (główny klaster, `products-search` i k3s nietknięte):
 - **14a:** węzeł `es-lab` (profil `ml`, trial, heap 1,5 GB / limit 4 GB) z trybem lab (`make lab-mode-on/off`),
   próbka `id % 15 = 0` (19 824 produkty) z `make lab-export`, model `.multilingual-e5-small` (`semantic_text` + trzy
@@ -496,6 +496,31 @@ Powrót do normalnej pracy po laboratorium: `make lab-mode-off`.
 
 ### ETAP 15 (opcjonalny) — Security analytics lite → **tor 5 z `04`**
 - reguły detekcji nadużyć, `significant_terms`, Kibana Alerting
+
+**Stan (2026-11-25): zrobione lokalnie** na gałęzi `etap-15-detekcja`, DoD sprawdzone na żywym stacku Compose
+(3 węzły ES 9.5.1, Kibana 9.5.1, licencja basic):
+- **Sygnały:** recenzja ze sklepu (`POST /products/{id}/reviews`, blokada wiersza przeciw wyścigowi) z odciskiem
+  klienta: HMAC-SHA256 IP z tajnym `SECURITY_IP_PEPPER` (16 hex) i prefiks `/24` / `/48`, surowe IP nigdzie
+  nie trafia; `offer.price_changed` z `change_pct` liczonym w konsumencie. Data stream `events-security-default`
+  (`dynamic: strict`, ILM usunięcie po 30 dniach, enrich popularności), kolejka `search.security.ingest` + DLQ
+  w istniejącym `analytics-consumer`.
+- **Pięć reguł, cztery narzędzia:** percolator przy ingeście (`price-hug-threshold` z progiem p95 popularności,
+  `fresh-account-5star`), ES|QL w Kibana Alerting z backfillem z tego samego pliku (`review-ip-burst`), EQL
+  `sequence by offer.id` na dwóch data streamach z post-filtrem (`price-bait-and-switch`), `date_histogram` +
+  `moving_fn` + `significant_terms` (`complaints-spike`). Jeden indeks `alerts-security` z kluczem alertu
+  (`_id` = sha1), job `security-detect` co 300 s w `seller360-scheduler`, symulator z prawdą podstawową
+  i `security:report`.
+- **Dowód:** ziarno 1, 5 zasadzonych + 5 bliskich pudeł na regułę: każda reguła TP 5, FP 0, FN 0 (25 alertów,
+  0 bliskich pudeł złapanych); drugi backfill 25 → 25 (idempotencja); `make seller360-verify` dalej `DoD: OK`,
+  reguły ETAPU 12 `ok`; recenzja z UI w ES z haszem i prefiksem, pełnego adresu 0 trafień. Wynik mierzy
+  poprawność ścieżki na danych z zapasem od progów, nie jakość reguł na realnym ruchu. Pomiary w
+  [POMIARY §19](POMIARY.md).
+
+Spec: [`superpowers/specs/2026-11-25-etap-15-detekcja-naduzyc-design.md`](superpowers/specs/2026-11-25-etap-15-detekcja-naduzyc-design.md),
+plan: [`superpowers/plans/2026-11-25-etap-15-detekcja-naduzyc.md`](superpowers/plans/2026-11-25-etap-15-detekcja-naduzyc.md),
+przewodnik: [`blog/etap-15-detekcja-naduzyc.md`](blog/etap-15-detekcja-naduzyc.md), RUNBOOK #158–#167.
+**Nie wdrożone na k3s** (brak serwera; nowej kolejki i polityki RabbitMQ nie ma w manifestach). Sprzątanie danych
+symulacji: `make detection-purge`, potem `make popularity-refresh` i reset transformu `search-stats-daily`.
 
 ---
 

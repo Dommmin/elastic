@@ -136,6 +136,23 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Queue
 metadata:
+  name: search-security-ingest
+spec:
+  name: search.security.ingest
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  arguments:
+    x-dead-letter-exchange: marketplace.dlx
+    x-dead-letter-routing-key: search.security.ingest
+    x-delivery-limit: 5
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
   name: notifications-alerts
 spec:
   name: notifications.alerts
@@ -181,6 +198,19 @@ metadata:
   name: search-seller360-dlq
 spec:
   name: search.seller360.dlq
+  vhost: /
+  type: quorum
+  durable: true
+  autoDelete: false
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Queue
+metadata:
+  name: search-security-ingest-dlq
+spec:
+  name: search.security.ingest.dlq
   vhost: /
   type: quorum
   durable: true
@@ -321,6 +351,32 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
+  name: events-search-security-ingest-review-created
+spec:
+  source: marketplace.events
+  destination: search.security.ingest
+  destinationType: queue
+  routingKey: 'review.created'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
+  name: events-search-security-ingest-price-changed
+spec:
+  source: marketplace.events
+  destination: search.security.ingest
+  destinationType: queue
+  routingKey: 'offer.price_changed'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
   name: events-notifications-alerts-alert
 spec:
   source: marketplace.events
@@ -425,6 +481,19 @@ spec:
 apiVersion: rabbitmq.com/v1beta1
 kind: Binding
 metadata:
+  name: dlx-search-security-ingest-dlq
+spec:
+  source: marketplace.dlx
+  destination: search.security.ingest.dlq
+  destinationType: queue
+  routingKey: 'search.security.ingest'
+  vhost: /
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Binding
+metadata:
   name: dlx-notifications-alerts-dlq-alert
 spec:
   source: marketplace.dlx
@@ -466,6 +535,22 @@ spec:
   name: seller360-cap
   vhost: /
   pattern: '^search\.seller360(\.dlq)?$'
+  applyTo: queues
+  priority: 10
+  definition:
+    max-length: 100000
+    overflow: drop-head
+  rabbitmqClusterReference:
+    name: rabbitmq-ha
+---
+apiVersion: rabbitmq.com/v1beta1
+kind: Policy
+metadata:
+  name: security-ingest-cap
+spec:
+  name: security-ingest-cap
+  vhost: /
+  pattern: '^search\.security\.ingest(\.dlq)?$'
   applyTo: queues
   priority: 10
   definition:

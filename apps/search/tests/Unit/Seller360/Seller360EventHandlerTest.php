@@ -45,6 +45,26 @@ final class Seller360EventHandlerTest extends TestCase
         $this->handler($writer, $redis)($this->event('offer.stock_changed', 'offer', ['seller_id' => 7, 'offer_id' => 99]));
     }
 
+    public function test_zdarzenie_symulatora_bezpieczenstwa_jest_pomijane(): void
+    {
+        $writer = $this->createMock(SectionWriter::class);
+        $writer->expects(self::never())->method('apply');
+        $redis = $this->createMock(\Redis::class);
+        $redis->expects(self::never())->method('sAdd');
+        $redis->expects(self::never())->method('incr');
+
+        $this->handler($writer, $redis)($this->event('offer.price_changed', 'offer', ['seller_id' => 7, 'simulation' => 'security', 'synthetic' => true]));
+    }
+
+    public function test_samo_synthetic_bez_simulation_nadal_oznacza_sprzedawce_jako_brudnego(): void
+    {
+        $writer = $this->createMock(SectionWriter::class);
+        $redis = $this->createMock(\Redis::class);
+        $redis->expects(self::once())->method('sAdd')->with('seller360:dirty:offers', '7');
+
+        $this->handler($writer, $redis)($this->event('offer.price_changed', 'offer', ['seller_id' => 7, 'synthetic' => true]));
+    }
+
     public function test_seller_zapisuje_profile_z_polami_dokumentu_i_regionem(): void
     {
         $writer = $this->createMock(SectionWriter::class);

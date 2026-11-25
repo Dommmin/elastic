@@ -1,0 +1,42 @@
+{
+  "description": "Zdarzenia bezpieczeństwa: event.ingested + product.popularity z enrich product-popularity-policy; błąd wzbogacenia nigdy nie odrzuca zdarzenia",
+  "processors": [
+    {
+      "set": {
+        "field": "event.ingested",
+        "value": "{{_ingest.timestamp}}"
+      }
+    },
+    {
+      "enrich": {
+        "policy_name": "product-popularity-policy",
+        "field": "product.id",
+        "target_field": "_pop",
+        "ignore_missing": true,
+        "max_matches": 1
+      }
+    },
+    {
+      "set": {
+        "field": "product.popularity",
+        "copy_from": "_pop.popularity",
+        "if": "ctx._pop != null && ctx._pop.popularity != null"
+      }
+    },
+    {
+      "remove": {
+        "field": "_pop",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "remove": {
+        "field": "_pop",
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    }
+  ]
+}

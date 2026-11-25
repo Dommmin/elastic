@@ -68,6 +68,15 @@ final class AnalyticsDocumentMapperTest extends TestCase
         $this->assertSame('evt-1', $docs[0]['id']);
     }
 
+    public function test_klikniecie_z_offer_id_ma_offer_id_dla_sekwencji_eql(): void
+    {
+        // ETAP 15: `price-bait-and-switch` łączy kliknięcia i zmiany cen po `offer.id`.
+        $docs = (new AnalyticsDocumentMapper())->map($this->event('user.clicked_result', ['product_id' => 10, 'offer_id' => 77, 'position' => 1]));
+
+        $this->assertSame('77', $docs[0]['doc']['offer']['id']);
+        $this->assertArrayNotHasKey('offer', (new AnalyticsDocumentMapper())->map($this->event('user.clicked_result', ['product_id' => 10]))[0]['doc']);
+    }
+
     public function test_dodanie_do_koszyka_i_user_id(): void
     {
         $docs = (new AnalyticsDocumentMapper())->map($this->event('user.added_to_cart', [
