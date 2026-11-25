@@ -42,9 +42,11 @@ class ComplaintsSectionRefresher
     /**
      * @param  list<int>  $sellerIds
      * @param  SectionWriter|null  $writer  inny cel zapisu (backfill przebudowy kieruje go na nowe indeksy)
+     * @param  bool  $zeroMissing  sprzedawcy bez żadnej reklamacji dostają pustą sekcję (zera, puste listy) —
+     *                             po usunięciu reklamacji (`security:purge-synthetic`, ETAP 15) stara sekcja nie zostaje
      * @return int liczba zapisanych sekcji (`created|updated`)
      */
-    public function refreshSellers(array $sellerIds, ?\DateTimeImmutable $now = null, ?SectionWriter $writer = null): int
+    public function refreshSellers(array $sellerIds, ?\DateTimeImmutable $now = null, ?SectionWriter $writer = null, bool $zeroMissing = false): int
     {
         $writer ??= $this->writer;
         $sellerIds = array_values(array_unique($sellerIds));
@@ -60,7 +62,13 @@ class ComplaintsSectionRefresher
         $written = 0;
         foreach (array_chunk($sellerIds, self::CHUNK) as $chunk) {
             $items = [];
-            foreach ($this->aggregate($chunk, $now) as $sellerId => $section) {
+            $sections = $this->aggregate($chunk, $now);
+            if ($zeroMissing) {
+                foreach ($chunk as $sellerId) {
+                    $sections[$sellerId] ??= ['open' => 0, 'last_30d' => 0, 'top_categories' => [], 'recent_texts' => []];
+                }
+            }
+            foreach ($sections as $sellerId => $section) {
                 $items[] = [
                     'sellerId' => $sellerId,
                     'section' => 'complaints',
