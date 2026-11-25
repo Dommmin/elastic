@@ -60,6 +60,27 @@ final class ProductSyncHandlerTest extends TestCase
         ($this->handler)($this->event('offer.price_changed', 'offer', '4', ['product_id' => 7]));
     }
 
+    public function test_zdarzenie_symulatora_bezpieczenstwa_jest_pomijane_bez_dotykania_projekcji(): void
+    {
+        $this->processedEvents = $this->createMock(ProcessedEventRepository::class);
+        $this->processedEvents->expects(self::never())->method('tryMarkProcessed');
+        $this->catalogClient->expects(self::never())->method('fetchProductProjection');
+        $this->indexer->expects(self::never())->method('indexProduct');
+        $this->indexer->expects(self::never())->method('deleteProduct');
+
+        ($this->handlerWith(new NullLogger()))($this->event('offer.price_changed', 'offer', '4', ['product_id' => 7, 'simulation' => 'security', 'synthetic' => true]));
+    }
+
+    public function test_samo_synthetic_bez_simulation_nadal_projektuje_produkt(): void
+    {
+        $data = ['id' => 7, 'name' => 'Produkt', 'price_min' => 1999];
+        $this->catalogClient->expects(self::once())->method('fetchProductProjection')->with('7')
+            ->willReturn(new ProductProjection($data, 1790000000000123));
+        $this->indexer->expects(self::once())->method('indexProduct')->willReturn(IndexOutcome::Indexed);
+
+        ($this->handler)($this->event('offer.price_changed', 'offer', '4', ['product_id' => 7, 'synthetic' => true]));
+    }
+
     public function test_usuniecie_produktu_kasuje_z_wersja_z_odpowiedzi_404(): void
     {
         $this->catalogClient->expects(self::once())->method('fetchProductProjection')->with('7')

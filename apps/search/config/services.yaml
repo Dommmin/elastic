@@ -60,6 +60,15 @@ services:
         tags:
             - { name: messenger.message_handler, handles: App\Message\IntegrationEvent, from_transport: analytics }
 
+    # ETAP 15: SecurityEventHandler to też BatchHandlerInterface — ta sama pułapka z tagiem co wyżej.
+    App\MessageHandler\SecurityEventHandler:
+        autoconfigure: false
+        tags:
+            - { name: messenger.message_handler, handles: App\Message\IntegrationEvent, from_transport: security }
+
+    # ETAP 15: percolator reguł podmienia Task 5; do tego czasu no-op.
+    App\Security\EventPercolator: '@App\Security\NullEventPercolator'
+
     # ETAP 13 (projektor seller-360): Redis na zbiór `seller360:dirty:offers` i liczniki metryk.
     # Usługa powstaje dopiero z handlerem (proces consume seller360), nie przy starcie kernela.
     Redis:
@@ -102,4 +111,8 @@ services:
     app.messenger.transport.alerts.ack_after_hand_off:
         class: App\Messenger\AckAfterHandOffTransport
         decorates: messenger.transport.alerts
+        arguments: ['@.inner']
+    app.messenger.transport.security.ack_after_hand_off:
+        class: App\Messenger\AckAfterHandOffTransport
+        decorates: messenger.transport.security
         arguments: ['@.inner']

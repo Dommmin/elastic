@@ -42,6 +42,15 @@ final class ProductSyncHandler
 
     public function __invoke(IntegrationEvent $event): void
     {
+        // ETAP 15: symulator detekcji nadużyć wysyła `offer.price_changed` / `review.created` dla prawdziwych
+        // produktów tylko po to, by trafiły do `events-security`. Projekcja produktu nie ma ich dotykać.
+        // Rozstrzyga `simulation`, NIE `synthetic` (to flaga sprzedawców z ETAPU 13, ich zdarzenia mają się projektować).
+        if (($event->data['simulation'] ?? null) === 'security') {
+            $this->logger->debug('Zdarzenie symulatora bezpieczeństwa, pomijam.', ['event_id' => $event->id, 'type' => $event->type]);
+
+            return;
+        }
+
         // Idempotencja (docs/05-SPOJNOSC-DANYCH.md, sekcja 3, [4]).
         // RabbitMQ gwarantuje AT-LEAST-ONCE — redelivery po padzie tego
         // procesu w połowie przetwarzania jest pewnością, nie ryzykiem.

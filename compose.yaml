@@ -778,7 +778,7 @@ services:
       args:
         FRANKENPHP_VERSION: ${FRANKENPHP_VERSION}
         PHP_VERSION: ${PHP_VERSION}
-    command: ["php", "bin/console", "messenger:consume", "analytics", "-vv", "--time-limit=3600", "--memory-limit=256M"]
+    command: ["php", "bin/console", "messenger:consume", "analytics", "security", "-vv", "--time-limit=3600", "--memory-limit=256M"]
     environment:
       <<: *error-tracking-search
       ERROR_TRACKING_PROCESS: analytics-consumer

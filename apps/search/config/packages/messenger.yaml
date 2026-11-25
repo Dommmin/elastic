@@ -73,6 +73,19 @@ framework:
                 retry_strategy:
                     max_retries: 3
                     multiplier: 2
+            # ETAP 15: detekcja nadużyć (offer.price_changed, review.created -> events-security-default).
+            # Własna kolejka i DLQ (search.security.ingest.dlq), ta sama strategia ponowień co przy analityce.
+            security:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                serializer: App\Messenger\ExternalJsonEnvelopeSerializer
+                options:
+                    auto_setup: false
+                    delay: *amqp_retry_delay
+                    queues:
+                        search.security.ingest: ~
+                retry_strategy:
+                    max_retries: 3
+                    multiplier: 2
             alerts:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
                 serializer: App\Messenger\ExternalJsonEnvelopeSerializer

@@ -4,6 +4,7 @@ namespace App\Tests\Integration\Messenger;
 
 use App\MessageHandler\AnalyticsEventHandler;
 use App\MessageHandler\ProductSyncHandler;
+use App\MessageHandler\SecurityEventHandler;
 use App\MessageHandler\Seller360EventHandler;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -33,6 +34,7 @@ final class AnalyticsHandlerRegistrationTest extends KernelTestCase
     public static function handlers(): iterable
     {
         yield 'analytics' => [AnalyticsEventHandler::class, 'from_transport=analytics'];
+        yield 'security' => [SecurityEventHandler::class, 'from_transport=security'];
         yield 'seller360' => [Seller360EventHandler::class, 'from_transport=seller360'];
         yield 'product_sync' => [ProductSyncHandler::class, 'from_transport=product_sync'];
     }
