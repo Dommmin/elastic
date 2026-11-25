@@ -1505,3 +1505,84 @@ Fałszywy alarm 03.11 18:00 `user.searched`: probability 1,5e-7 (mniejsze niż w
 `infra/kibana/rules/ctr-drop.json`, `NOW()` podstawione godzinami okna, `FROM lab-events-user`, dane `[t − 7 d, t)`)
 4 z 6 godzin. Reguła przeliczona godzina po godzinie dla 2026-11-03 → 2026-11-17 (336 h, jednorazowo, poza
 repozytorium): **0 fałszywych alarmów**, 4 trafienia, wszystkie w oknie awarii.
+
+## 19. ETAP 15 — detekcja nadużyć sprzedawców (2026-11-25)
+
+> Pięć reguł na zdarzeniach `events-security-default` (+ `events-user`, `complaints`): percolator przy ingeście
+> (`price-hug-threshold`, `fresh-account-5star`), ES|QL (`review-ip-burst`), EQL (`price-bait-and-switch`),
+> `moving_fn` (`complaints-spike`). Prawda podstawowa z symulatora (`security:simulate`), ocena `security:report`.
+> Lokalny stos Compose, maszyna współdzielona z innymi projektami: czasy **orientacyjne**. Wynik JSON (ignorowany
+> przez git): `apps/catalog/storage/app/private/security/report-15.json`.
+
+### 19.1 Protokół (2026-11-25 09:33–09:40 UTC)
+
+| Krok | Polecenie | Wynik |
+|---|---|---|
+| Stos | es01–03, rabbitmq, catalog-app, search-consumer, analytics-consumer, Kibana; dołożone `seller360-consumer` (import reklamacji) i odtworzony `seller360-scheduler` (montaż `infra/elasticsearch/detection/eql`) | — |
+| Reguły | `make detection-setup` | 2 reguły percolatora, p95 popularności = **0,678549**; reguła Kibany `review-ip-burst` zaktualizowana |
+| Enrich | porównanie `product-popularity` z `.enrich-product-popularity-policy-*` | 7457 = 7457 dokumentów, ten sam p95 i suma `popularity`: migawka aktualna, bez `_execute` |
+| Sprzątanie | `make detection-purge` | 3 zdarzenia (pozostałości testu integracyjnego `it-percolate-*`), poza tym 0 |
+| Symulacja | `make detection-simulate args="--seed=1 --plant=5"` (14 dni) | 1374 koperty: 460 `offer.price_changed`, 622 `review.created`, 292 `user.clicked_result`; 729 reklamacji `SEC-` (import: indexed 729, unmatched 0, failed 0, 30 sekcji); 50 przypadków (5 zasadzonych + 5 bliskich pudeł na regułę); 2,5 s całość |
+| Kolejki | `rabbitmqctl list_queues` co 5 s | `search.security.ingest` 1082 → 82 → **0** w ~10 s, `search.analytics.ingest` 292 → 0 w ~5 s, DLQ 0 |
+| Zdarzenia w ES | `_count` / agregacje | `events-security-default`: 1082 (622 recenzje, 460 zmian cen), wszystkie `labels.synthetic`; 45 z `product.popularity` (oferty z enrich); `events-user-*`: 292 kliknięcia `secsim-*` |
+| Percolator (przy ingeście) | `alerts-security` przed backfillem | 10 alertów: 5 `price-hug-threshold`, 5 `fresh-account-5star` |
+| Backfill | `make detection-detect` (`security:detect --since=15d`) | `complaints-spike` 5, `price-bait-and-switch` 5, `review-ip-burst` 5 → razem **25** alertów |
+| Ocena | `make detection-report` (+ `args="--json"`) | tabela 19.2 |
+
+### 19.2 Skuteczność reguł (ziarno 1, P = 5, 14 dni)
+
+| Reguła | Mechanizm | TP | FP | FP z bliskich pudeł | FN | precision | recall |
+|---|---|---|---|---|---|---|---|
+| `price-hug-threshold` | percolator, `25 ≤ change_pct ≤ 30` i popularność ≥ p95 | 5 | 0 | 0 | 0 | 1,00 | 1,00 |
+| `fresh-account-5star` | percolator, ocena 5 i konto < 24 h | 5 | 0 | 0 | 0 | 1,00 | 1,00 |
+| `review-ip-burst` | ES\|QL, ≥ 5 użytkowników / hasz IP / 1 h | 5 | 0 | 0 | 0 | 1,00 | 1,00 |
+| `price-bait-and-switch` | EQL `sequence by offer.id`, maxspan 48 h + post-filtr | 5 | 0 | 0 | 0 | 1,00 | 1,00 |
+| `complaints-spike` | `date_histogram` + `moving_fn` (7 dni), μ + 3σ i ≥ 5 | 5 | 0 | 0 | 0 | 1,00 | 1,00 |
+
+Alertów 25, ocenionych 25; Kibana live (unscored) 0, prawdziwe spoza symulacji 0, stare syntetyczne spoza zakresu 0.
+Zakres oceny `[2026-11-11T09:35:44Z, 2026-11-25T09:35:44Z]`. Żadne z 25 bliskich pudeł (pudło 24% i 27% przy
+popularności < p95/2, konto 30 h, 4 użytkowników z IP, cena końcowa 1,28× albo sekwencja dłuższa niż 48 h, skok
+≈ μ + 2σ) nie dało alertu. Reguła Kibany `review-ip-burst` patrzy tylko na bieżące okno: zasadzone godziny leżą w
+przeszłości, więc nie wpisała nic (0 dokumentów Kibany); oceniany jest backfill PHP.
+
+**Zastrzeżenie:** 5/5 i 0 FP to wynik na danych zaprojektowanych z zapasem od progów (generator sprawdza w teście,
+że zbiór alarmów liczony od nowa jest dokładnie równy zasadzonym). Mierzy poprawność implementacji reguł na całej
+ścieżce (outbox → RabbitMQ → pipeline/enrich → ES → detektor → `alerts-security`), nie jakość reguł na realnym
+ruchu. Nic nie wymagało diagnozy ani poprawki kodu; progi bez zmian.
+
+### 19.3 Czas `security:detect --since=15d` (w kontenerze `search-consumer`, 3 powtórzenia)
+
+| Zakres | Czas [ms] |
+|---|---|
+| `--rule=complaints-spike` | 779 / 639 / 620 |
+| `--rule=price-bait-and-switch` | 308 / 288 / 305 |
+| `--rule=review-ip-burst` | 170 / 179 / 157 |
+| wszystkie trzy | 764 / 816 / 820 |
+| sam rozruch konsoli (`bin/console list`) | 156 |
+
+Czas obejmuje rozruch Symfony (~150 ms). `price-hug-threshold` i `fresh-account-5star` nie mają detektora wsadowego
+(`Brak detektora dla reguły …`, kod 1): działają w percolatorze przy ingeście, więc ich koszt jest wliczony w opróżnianie
+kolejki `search.security.ingest` (1082 zdarzenia w ~10 s z percolacją). Ten sam detektor uruchomiony w
+`seller360-scheduler` (`--since=24h`, montaże reguł po odtworzeniu kontenera): `complaints-spike` 2, pozostałe 0,
+liczba alertów bez zmian.
+
+### 19.4 Idempotencja, regresje, ścieżka HTTP
+
+| Sprawdzenie | Wynik |
+|---|---|
+| Drugi `make detection-detect` | `alerts-security/_count` 25 → **25** (klucz `sha1(rule.id\|entity.type\|entity.id\|window.start)`); także po 12 przebiegach pomiaru czasu i przebiegu w schedulerze |
+| `make seller360-verify` | 5 dokumentów, zasadzeni 5, trafieni 5, precyzja 1,000, czułość 1,000, bliskie pudła 0, took p50 0 ms / p99 3 ms, **DoD: OK** |
+| Reguły Kibany (`/api/alerting/rules/_find`) | `Analityka: skok zero results` i `Analityka: spadek CTR`: `ok`, `last_run.outcome = succeeded`, bez błędu (09:36 UTC); pozostałe 3 reguły też `ok` |
+| Recenzja przez HTTP | użytkownik z fabryki (`UserFactory`, hasło domyślne fabryki; użytkownik z `DatabaseSeeder` ma zmienione hasło), logowanie formularzem Fortify + CSRF, `POST https://catalog.localhost:8443/products/1/reviews` (ocena 4) → 302; outbox → `outbox:publish` (proces `outbox-publisher` nie działał, 1 zaległe zdarzenie) → dokument w `events-security-default` z `client.ip_hash` (16 hex) i `client.ip_prefix` = **`172.22.0.0/24`**, `user_agent.original`, `user.account_age_hours` 0 |
+| Surowe IP | adres widziany przez Laravel: `172.22.0.1` (brama sieci Docker, ustalona przez dopasowanie hasza w /24); `query_string` `"172.22.0.1"` i `*172.22.0.1*` po wszystkich polach `events-security-*`: **0**; kontrola dodatnia `"172.22.0.0/24"`: 1; payload outboxu bez adresu; tabela `reviews` bez kolumn IP |
+| Ograniczenie | Docker Desktop na Macu: cały ruch z hosta przychodzi z bramy, więc wszyscy klienci lokalni mają ten sam hasz i prefiks; w produkcji (za ingress) potrzebne zaufane proxy / `X-Forwarded-For` |
+
+Recenzja HTTP ma ocenę 4 (konto 0 h z oceną 5 odpaliłoby `fresh-account-5star` jako alert spoza symulacji), więc nie
+dała alertu i nie zmienia tabeli 19.2 (raport po niej: te same 25/25).
+
+### 19.5 Stan po pomiarze
+
+Dane symulacji zostają (zdarzenia, 25 alertów, kliknięcia `secsim-*`, 729 reklamacji `SEC-`) do przewodnika ETAPU 15.
+Sprzątanie: `make detection-purge`, potem `make popularity-refresh` i reset transformu `search-stats-daily`. Zostają też
+użytkownik testowy `etap15-ui-check@example.test`, jego recenzja produktu 1 i jedno zdarzenie `review.created`
+(niesyntetyczne, purge go nie usuwa).
