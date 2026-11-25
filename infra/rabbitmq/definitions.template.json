@@ -107,6 +107,7 @@
       "arguments": {
         "x-queue-type": "quorum",
         "x-dead-letter-exchange": "marketplace.dlx",
+        "x-dead-letter-routing-key": "search.security.ingest",
         "x-delivery-limit": 5
       }
     },
@@ -216,9 +217,7 @@
       "destination_type": "queue", "routing_key": "user.#", "arguments": {} },
 
     { "source": "marketplace.dlx", "vhost": "/", "destination": "search.security.ingest.dlq",
-      "destination_type": "queue", "routing_key": "offer.price_changed", "arguments": {} },
-    { "source": "marketplace.dlx", "vhost": "/", "destination": "search.security.ingest.dlq",
-      "destination_type": "queue", "routing_key": "review.created", "arguments": {} },
+      "destination_type": "queue", "routing_key": "search.security.ingest", "arguments": {} },
 
     { "source": "marketplace.dlx", "vhost": "/", "destination": "search.seller360.dlq",
       "destination_type": "queue", "routing_key": "search.seller360", "arguments": {} },

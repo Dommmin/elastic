@@ -168,6 +168,7 @@
 | [165](#165) | Ponowna symulacja bez purge: FP i stare alerty; purge a transformy ETAPU 12 | Elasticsearch | 15 |
 | [166](#166) | 403 na `security-rules` / `product-popularity` (role `search_service`, `catalog_app`) | Elasticsearch / security | 15 |
 | [167](#167) | Dwie recenzje jednego użytkownika na produkt (wyścig, TOCTOU) | Laravel / Postgres | 15 |
+| [168](#168) | Martwe `offer.price_changed` / `review.created` w obcej DLQ (`search.security.ingest.dlq` ↔ `search.product.sync.dlq`) | RabbitMQ | 15 |
 
 ---
 
@@ -7160,3 +7161,46 @@ recenzję. Sprawdzenie w FormRequest zostaje jako szybka ścieżka. Blokada dzia
 **Czego się nauczyłem**
 Walidacja „unikalności” w kodzie bez blokady albo ograniczenia w bazie to tylko podpowiedź dla UI. Gdy unikalnego
 indeksu nie da się dodać, blokada wiersza rodzica (tu: użytkownika) szereguje konkurencyjne zapisy tanio i lokalnie.
+
+---
+
+<a id="168"></a>
+## 168 — Martwe `offer.price_changed` / `review.created` w obcej DLQ
+
+> ETAP 15 (2026-11-25). Znalezione w przeglądzie całej gałęzi, przed scaleniem. Ten sam problem co #140.
+
+**Objaw**
+Martwa wiadomość projektora produktów (`offer.price_changed`, `review.created`) ląduje także
+w `search.security.ingest.dlq`, a martwe zdarzenie bezpieczeństwa także w `search.product.sync.dlq`. Replay z jednej
+DLQ wpuszcza do konsumenta cudze wiadomości, a licznik DLQ kłamie o tym, który konsument ma kłopot.
+
+**Diagnoza**
+```bash
+docker compose exec -T rabbitmq rabbitmqctl list_bindings source_name destination_name routing_key | grep marketplace.dlx
+docker compose exec -T rabbitmq rabbitmqctl list_queues name arguments | grep security
+```
+Źle: `search.security.ingest.dlq` związana z `marketplace.dlx` kluczami `offer.price_changed` i `review.created`,
+a `search.security.ingest` bez `x-dead-letter-routing-key`.
+
+**Przyczyna**
+Jak w #140: DLX kieruje martwą wiadomość po jej **pierwotnym** kluczu, a `offer.#` i `review.#` są związane
+z `search.product.sync.dlq` od ETAPU 6.
+
+**Naprawa**
+`search.security.ingest` ma `"x-dead-letter-routing-key": "search.security.ingest"`, a DLQ jest związana z
+`marketplace.dlx` **tylko** tym kluczem (wzorzec `search.seller360`). Argumentów kolejki nie da się zmienić
+w miejscu (`import_definitions` ich nie nadpisze, a `inequivalent arg` przy redeklaracji), więc na żywym brokerze:
+sprawdzić, że obie kolejki są puste, usunąć je i wgrać definicje ponownie (`delete_queue --if-empty` nie działa
+dla kolejek quorum, stąd ręczne sprawdzenie):
+```bash
+python3 tools/render-rabbitmq-definitions.py
+docker compose exec -T rabbitmq rabbitmqctl list_queues name messages | grep security   # obie 0, inaczej STOP
+docker compose exec -T rabbitmq sh -c 'rabbitmqctl delete_queue search.security.ingest && rabbitmqctl delete_queue search.security.ingest.dlq && rabbitmqctl import_definitions /etc/rabbitmq/definitions.json'
+docker compose restart analytics-consumer
+```
+Replay z `search.security.ingest.dlq`: przez domyślny exchange z kluczem `search.security.ingest` (pierwotny klucz
+jest w `x-death`), nie przez `marketplace.events`.
+
+**Czego się nauczyłem**
+Lekcję z #140 trzeba stosować przy **każdej** nowej kolejce dzielącej klucze z inną; szablon kolejki z DLQ najlepiej
+kopiować z `search.seller360`, a nie z kolejek sprzed ETAPU 13.

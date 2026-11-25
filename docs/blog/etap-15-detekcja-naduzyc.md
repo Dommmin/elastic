@@ -292,7 +292,10 @@ oba: 7457 = 7457 dokumentów, ten sam p95 (POMIARY §19.1).
 
 **Konsument.** `SecurityEventHandler` to handler partii jak `AnalyticsEventHandler` (500 zdarzeń albo przerwa),
 transport `security`, kolejka `search.security.ingest` z bindingami `offer.price_changed` i `review.created` oraz DLQ
-`search.security.ingest.dlq` (quorum, `delivery-limit` 5). Proces to istniejący `analytics-consumer`:
+`search.security.ingest.dlq` (quorum, `delivery-limit` 5). Kolejka ma `x-dead-letter-routing-key:
+search.security.ingest`, a DLQ jest związana z `marketplace.dlx` tylko tym kluczem: bez tego martwe
+`offer.price_changed` / `review.created` trafiałyby też do `search.product.sync.dlq` i odwrotnie (RUNBOOK #140, #168).
+Proces to istniejący `analytics-consumer`:
 
 ```
 messenger:consume analytics security
@@ -752,6 +755,7 @@ Więcej: [`POMIARY.md` §19](../POMIARY.md).
 | [#165](../RUNBOOK.md#165) | Po ponownej symulacji raport pokazuje FP / stare alerty; purge i transformy ETAPU 12 |
 | [#166](../RUNBOOK.md#166) | 403 `security_exception` na `security-rules` / `product-popularity` (role `search_service`, `catalog_app`) |
 | [#167](../RUNBOOK.md#167) | Dwie recenzje tego samego użytkownika na ten sam produkt (wyścig, TOCTOU) |
+| [#168](../RUNBOOK.md#168) | Martwe `offer.price_changed` / `review.created` w obcej DLQ (brak `x-dead-letter-routing-key`) |
 
 ## Pytania kontrolne
 
