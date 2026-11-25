@@ -6791,7 +6791,7 @@ docker compose exec rabbitmq rabbitmqadmin get queue=search.security.ingest.dlq 
    bez zmiany szablonu), brak data streamu (nie było `make detection-setup`) albo stały błąd ES po 5 dostarczeniach
    (`delivery-limit`). Błąd percolacji (`_msearch`, element `_mget` z `error`) to nack Recoverable zapisanych
    wiadomości: wracają do kolejki i percolują się ponownie (409 = nadal zapisane, id alertu deduplikuje); stały błąd
-   percolacji po 5 dostarczeniach też ląduje w DLQ (wtedy zdarzenie JEST w `events-security`, brakuje tylko alertu).
+   percolacji po wyczerpaniu ponowień też ląduje w DLQ (wtedy zdarzenie JEST w `events-security`, brakuje tylko alertu).
 
 **Naprawa**
 1. `docker compose --profile apps up -d outbox-publisher`; zaległe zdarzenia wyśle sam, jednorazowo można
