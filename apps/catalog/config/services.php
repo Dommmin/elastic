@@ -80,6 +80,12 @@ return [
         'token' => env('INTERNAL_API_TOKEN'),
     ],
 
+    // Pepper do HMAC adresu IP recenzji (ETAP 15, app/Security/ClientFingerprint). Tylko w `.env`.
+    // Pusty = hasz IP nie jest zapisywany (recenzja i tak się zapisuje, log warning).
+    'security' => [
+        'ip_pepper' => env('SECURITY_IP_PEPPER'),
+    ],
+
     // Symulowana bramka płatności (app/FakePaymentGateway, spec §6).
     // `webhook_url` w Compose wskazuje wewnętrzny adres catalog-app w sieci
     // `marketplace` (bez TLS), a nie publiczną nazwę przeglądarkową.

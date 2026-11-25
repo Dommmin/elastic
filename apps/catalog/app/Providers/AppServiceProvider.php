@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Security\ClientFingerprint;
 use App\Seller360\SellerStatsReader;
 use App\Services\Search\Lab\LabEvalRunner;
 use App\Support\ErrorTracking\JobTimeoutReporter;
@@ -33,6 +34,9 @@ class AppServiceProvider extends ServiceProvider
         // Stan wiąże się z obiektem wyjątku (WeakMap), więc singleton jest bezpieczny
         // także w Octane. Listenery w boot(); ADR-0009.
         $this->app->singleton(QueueRetryFilter::class);
+
+        // ETAP 15: odcisk klienta recenzji (hasz IP z pepperem z configu).
+        $this->app->singleton(ClientFingerprint::class, fn () => new ClientFingerprint(config('services.security.ip_pepper')));
 
         // Jeden klient ES na cały request lifecycle — używany przez
         // HealthController (readiness) i przyszły ProductSearchService

@@ -450,6 +450,8 @@ services:
       # Pusty klucz = tunel wyłączony (204).
       GLITCHTIP_FRONTEND_PROJECT_ID: "2"
       GLITCHTIP_FRONTEND_KEY: ${GLITCHTIP_KEY_FRONTEND:-}
+      # Pepper HMAC dla haszu IP recenzji (ETAP 15); pusty = brak haszu IP.
+      SECURITY_IP_PEPPER: ${SECURITY_IP_PEPPER:-}
       GLITCHTIP_UPSTREAM: glitchtip:8000
       # Symulowana bramka płatności (apps/catalog/app/FakePaymentGateway).
       # Adres webhooka to WEWNĄTRZ sieci `marketplace`: zwykłe HTTP na port 80
