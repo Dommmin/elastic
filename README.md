@@ -159,6 +159,7 @@ make up-obs          # profil obs (stack i aplikacje już działają): obs-setup
 make obs-check       # promtool: config, testy reguł alertów; amtool: config Alertmanagera
 make up-errors       # profil errors (Postgres musi działać): GlitchTip + bootstrap (ETAP 11b), UI na :18000
 make lab-mode-on && make lab-up  # profil ml: węzeł es-lab z trialem (wektory, ELSER, anomalie; ETAP 14), zatrzymuje własny główny ES; powrót: make lab-mode-off
+make detection-setup && make detection-simulate args="--seed=1 --plant=5" && make detection-detect && make detection-report  # detekcja nadużyć: percolator, ES|QL, EQL, moving_fn; sprzątanie make detection-purge (ETAP 15)
 make errors-sourcemaps  # build frontu z Debug IDs i upload source map do GlitchTipa
 make errors-smoke    # błędy z HTTP, kolejki, search i przeglądarki -> issues w GlitchTipie
 make errors-tunnel-check  # tunel POST /_errors na żywym catalog-app: 405/413/415, cel z configu, limit 429

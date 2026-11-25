@@ -158,6 +158,16 @@
 | [155](#155) | `rrf-client` ≠ `rrf-native` w tabeli albo `--check-rrf` czerwone | Elasticsearch / catalog | 14a |
 | [156](#156) | ELSER się nie wdraża: HTTP 429, za mało pamięci ML obok E5 | Elasticsearch ML / Docker | 14b |
 | [157](#157) | Job anomalii bez wyników, datafeed zatrzymany albo awaria z `record_score` < 50 (luka w danych, kalendarz) | Elasticsearch ML | 14b |
+| [158](#158) | Zdarzenia bezpieczeństwa nie docierają do ES: kolejka / DLQ rośnie albo recenzja z UI leży w outboksie | RabbitMQ / Symfony / Laravel | 15 |
+| [159](#159) | `detection-setup` / `security:rules:load` pada (enrich, p95); `price-hug-threshold` nie strzela | Elasticsearch | 15 |
+| [160](#160) | `percolate` po referencji: `index_not_found_exception` dla data streamu | Elasticsearch | 15 |
+| [161](#161) | EQL: `mismatched input '.' expecting 'where'` (kategoria z kropką) | Elasticsearch | 15 |
+| [162](#162) | EQL nie znajduje sekwencji: kliknięcia bez `offer.id` | Elasticsearch / Symfony | 15 |
+| [163](#163) | Reguła Kibany `review-ip-burst` nie widzi starych danych, dokumenty konektora ze sklejonymi wartościami | Kibana | 15 |
+| [164](#164) | `complaints-spike`: werdykt zależny od zakresu, alert dla nowego sprzedawcy (`moving_fn`, `extended_bounds`) | Elasticsearch | 15 |
+| [165](#165) | Ponowna symulacja bez purge: FP i stare alerty; purge a transformy ETAPU 12 | Elasticsearch | 15 |
+| [166](#166) | 403 na `security-rules` / `product-popularity` (role `search_service`, `catalog_app`) | Elasticsearch / security | 15 |
+| [167](#167) | Dwie recenzje jednego użytkownika na produkt (wyścig, TOCTOU) | Laravel / Postgres | 15 |
 
 ---
 
@@ -6746,3 +6756,405 @@ Nie obniżać progu asercji: próg 40 przepuściłby też szum i fałszywy alarm
 Wynik ML to nie bezwzględna miara „jak źle jest”, tylko pozycja na tle historii joba. Brudna historia (luki,
 migracje, testy obciążeniowe) przesuwa całą skalę. Przed uruchomieniem detekcji trzeba obejrzeć dane i znane
 odstępstwa oznaczyć kalendarzem; tak samo w produkcji: okna serwisowe, święta, kampanie.
+
+---
+
+<a id="158"></a>
+## 158 — Zdarzenia bezpieczeństwa nie docierają do ES: kolejka rośnie, DLQ rośnie albo recenzja z UI leży w outboksie
+
+> ETAP 15 (2026-11-25). Wariant „outbox” wystąpił przy pomiarze: `outbox-publisher` nie działał.
+
+**Objaw**
+Jeden z trzech:
+1. Recenzja wysłana z UI (302, toast „Dziękujemy za recenzję”) nie pojawia się w `events-security-default`;
+   kolejka `search.security.ingest` jest pusta.
+2. `search.security.ingest` rośnie i nie spada, `alerts-security` nie dostaje alertów percolatora.
+3. Rośnie `search.security.ingest.dlq`.
+
+**Diagnoza**
+```bash
+docker compose ps outbox-publisher analytics-consumer
+docker compose exec rabbitmq rabbitmqctl list_queues name messages messages_unacknowledged | grep security
+docker compose exec catalog-app php artisan tinker --execute 'echo App\Models\Outbox::whereNull("published_at")->count();'
+docker compose logs --since 10m analytics-consumer | grep -iE 'security|error|exception' | tail -20
+docker compose exec rabbitmq rabbitmqadmin get queue=search.security.ingest.dlq count=1 --ack-mode ack_requeue_true   # podgląd BEZ kasowania
+```
+
+**Przyczyna**
+1. `outbox-publisher` (profil `apps`) nie działa: zdarzenie zapisało się w tabeli `outbox`, ale nikt go nie wysłał.
+   Symulator tego nie pokaże, bo publikuje prosto do brokera.
+2. Konsument nie słucha transportu `security`: stary kontener `analytics-consumer` z poleceniem
+   `messenger:consume analytics` (bez `security`) albo kolejka/bindingi nie zostały wgrane do brokera
+   (`definitions.json` wygenerowany, ale nie zaimportowany). Uwaga: `rabbitmqctl list_consumers` pokazuje 0 także dla
+   zdrowego konsumenta (Messenger używa `basic.get`), o życiu świadczy opróżnianie kolejki.
+3. DLQ: dokument odrzucony przez ścisłe mapowanie (`strict_dynamic_mapping_exception`, np. nowe pole w payloadzie
+   bez zmiany szablonu), brak data streamu (nie było `make detection-setup`) albo stały błąd ES po 5 dostarczeniach
+   (`delivery-limit`). Błąd percolacji NIE trafia do DLQ: jest logowany, a wiadomość potwierdzana.
+
+**Naprawa**
+1. `docker compose --profile apps up -d outbox-publisher`; zaległe zdarzenia wyśle sam, jednorazowo można
+   `docker compose exec catalog-app php artisan outbox:publish`.
+2. `python3 tools/render-rabbitmq-definitions.py && docker compose exec rabbitmq rabbitmqctl import_definitions /etc/rabbitmq/definitions.json`,
+   potem `docker compose --profile apps up -d --no-deps analytics-consumer` (odtworzenie, nie restart: polecenie
+   kontenera się zmieniło). Log ma pokazać `Consuming messages from transports "analytics, security"`.
+3. Poprawić przyczynę (szablon w `infra/elasticsearch/detection/template-events-security.json` + `make detection-setup`),
+   potem przenieść wiadomości z DLQ z powrotem (shovel albo ponowna publikacja). Zapis jest idempotentny
+   (`_id` = `event.id`, `op_type: create`), więc powtórka nie zdubluje zdarzeń, a ponowna percolacja nadpisze te
+   same alerty.
+
+**Czego się nauczyłem**
+W architekturze z outboksem „zapisało się” w sklepie nie znaczy „dotarło”. Między bazą a ES są trzy procesy
+(przekaźnik outboxu, broker, konsument) i każdy trzeba umieć sprawdzić osobno: wiersze bez `published_at`, głębokość
+kolejki, log konsumenta.
+
+---
+
+<a id="159"></a>
+## 159 — `make detection-setup` / `security:rules:load` pada: brak polityki enrich albo danych do p95; `price-hug-threshold` nie strzela
+
+> ETAP 15 (2026-11-25).
+
+**Objaw**
+Jeden z trzech:
+1. `make detection-setup`: `BŁĄD: brak polityki enrich product-popularity-policy — najpierw make analytics-setup`.
+2. `security:rules:load`: `Brak danych do percentyla 95 z product-popularity.popularity: najpierw make popularity-refresh`
+   albo `index_not_found_exception` dla `product-popularity`.
+3. Wszystko się ładuje, ale `price-hug-threshold` nie daje alertów (raport: FN), choć podwyżki 25–30% na popularnych
+   produktach są w `events-security-default`.
+
+**Diagnoza**
+```bash
+es GET '/_enrich/policy/product-popularity-policy' </dev/null | jq '.policies | length'
+es GET '/product-popularity/_count' </dev/null
+docker compose exec search-consumer php bin/console security:rules:load --dry-run          # p95, nic nie zapisuje
+es GET '/security-rules/_doc/price-hug-threshold?filter_path=_source.params.p95' </dev/null
+# zdarzenia z podwyżką 25–30%: czy mają product.popularity?
+es GET '/events-security-*/_search?filter_path=hits.hits._source.product' <<'J'
+{"size": 5, "query": {"range": {"offer.change_pct": {"gte": 25, "lte": 30}}}, "_source": ["product"]}
+J
+# migawka enrich vs indeks (liczba dokumentów)
+es GET '/_cat/indices/.enrich-product-popularity-policy-*,product-popularity?h=index,docs.count&expand_wildcards=all' </dev/null
+```
+
+**Przyczyna**
+1. Pipeline `events-security` ma procesor enrich `product-popularity-policy`; bez polityki ES odrzuciłby pipeline
+   (400), więc skrypt sprawdza ją wcześniej. Polityka powstaje w `make analytics-setup` (ETAP 12).
+2. p95 liczy się agregacją `percentiles` na `product-popularity`. Pusty albo brakujący indeks = brak progu.
+3. Trzy warianty: zdarzenie nie ma `product.popularity` (produkt spoza `product-popularity`, enrich nie trafił);
+   migawka enrich (`.enrich-*`) jest starsza niż indeks `product-popularity` (polityka nie była wykonana po zmianie);
+   próg p95 w regule jest z innego stanu popularności (p95 zamrażany przy ładowaniu reguł).
+
+**Naprawa**
+1. `make analytics-setup`, potem `make detection-setup`.
+2. `make popularity-refresh` (liczy `product-popularity` i wykonuje politykę enrich), potem `make detection-setup`.
+3. `make popularity-refresh && make detection-setup`. Zdarzenia już zapisane nie dostaną popularności wstecz,
+   a percolator nie sprawdzi ich ponownie: dla pomiaru `make detection-purge` i ponowna symulacja.
+
+**Czego się nauczyłem**
+Reguła zależy od danych innego etapu (popularność z ETAPU 12) w dwóch miejscach: próg p95 w regule i pole
+w zdarzeniu z enrichu. Oba są migawkami z różnych chwil. Dlatego p95 trafia do dokumentu reguły i do raportu: widać,
+z jakim progiem liczono.
+
+---
+
+<a id="160"></a>
+## 160 — `percolate` po referencji: `index_not_found_exception` dla data streamu
+
+> ETAP 15 (2026-11-25). Znalezione przy pisaniu `SecurityPercolator`.
+
+**Objaw**
+```json
+{"query": {"percolate": {"field": "query", "index": "events-security-default", "id": "01M86T3QTG4V5MZZ0NYSYPP1PA"}}}
+```
+odpowiada `index_not_found_exception: no such index [events-security-default]` z `"excluded_ds": "true"`, choć
+dokument istnieje i `GET events-security-default/_search` go znajduje.
+
+**Diagnoza**
+```bash
+es GET '/_data_stream/events-security-default?filter_path=data_streams.indices.index_name' </dev/null
+es GET '/events-security-default/_search?filter_path=hits.hits._index' <<'J'
+{"size": 1, "query": {"ids": {"values": ["01M86T3QTG4V5MZZ0NYSYPP1PA"]}}}
+J
+```
+
+**Przyczyna**
+Percolate po referencji pobiera dokument zwykłym GET-em po `_id`. GET, `_mget` po samej nazwie i percolate po
+referencji nie działają na data streamie: stream ma wiele indeksów zapasowych (`.ds-…-000001`, `-000002` po
+rolloverze), a `_id` jest unikalne tylko w obrębie jednego z nich.
+
+**Naprawa**
+Podawać konkretny indeks zapasowy (`"index": ".ds-events-security-default-2026.11.25-000001"`). W kodzie:
+`SecurityPercolator` bierze listę indeksów zapasowych z `GET _data_stream/<nazwa>` (od najnowszego, bo świeży
+dokument zwykle leży w indeksie zapisu), znajduje dokumenty `_mget`-em i dopiero wtedy puszcza `_msearch` z
+`percolate` po `index` + `id`. Alternatywa: percolować dokument podany inline (`"document": {…}`), ale wtedy trzeba
+go najpierw pobrać z ES, żeby miał pola z pipeline (`product.popularity`).
+
+**Czego się nauczyłem**
+Data stream to nazwa dla zapisu i wyszukiwania, nie indeks. Wszystko, co adresuje pojedynczy dokument (GET, update,
+delete po `_id`, percolate po referencji), potrzebuje indeksu zapasowego.
+
+---
+
+<a id="161"></a>
+## 161 — EQL: `mismatched input '.' expecting 'where'`
+
+> ETAP 15 (2026-11-25).
+
+**Objaw**
+```
+sequence by offer.id with maxspan=48h [offer.price_changed where offer.change_pct <= -15] ...
+```
+→ `parsing_exception: line 1:45: mismatched input '.' expecting 'where'`.
+
+**Diagnoza**
+Pozycja błędu wskazuje kropkę w nazwie kategorii (`offer.price_changed`), nie w nazwie pola.
+
+**Przyczyna**
+W EQL po `[` stoi kategoria zdarzenia (wartość pola z `event_category_field`, u nas `event.type`). Gramatyka
+przyjmuje gołe słowo bez kropek (`process`, `network`, jak w ECS `event.category`); nasze typy mają kropki, więc
+parser czyta `offer`, potem nie wie, co zrobić z `.`.
+
+**Naprawa**
+Kategoria w cudzysłowie: `["offer.price_changed" where offer.change_pct <= -15]`,
+`["user.clicked_result" where true]`. W pliku `.eql` zwykłe cudzysłowy; w JSON-ie żądania zapisane jako `\"`.
+
+**Czego się nauczyłem**
+EQL wyrósł z ECS, gdzie kategorie to proste słowa. Własne typy zdarzeń z kropkami działają, ale tylko jako napisy.
+Pola z kropkami (`offer.change_pct`) cudzysłowu nie wymagają.
+
+---
+
+<a id="162"></a>
+## 162 — EQL nie znajduje sekwencji wabika: kliknięcia bez `offer.id`
+
+> ETAP 15 (2026-11-25). Znalezione przy symulatorze (Task 9), naprawione w `AnalyticsDocumentMapper`.
+
+**Objaw**
+`security:detect --rule=price-bait-and-switch` zwraca 0 alertów, choć w `events-security-*` są obniżki i podwyżki,
+a w `events-user-*` dziesiątki kliknięć tych ofert. Zapytanie EQL bez kroku kliknięć znajduje pary obniżka →
+podwyżka.
+
+**Diagnoza**
+```bash
+es GET '/events-user-*/_search?filter_path=hits.hits._source' <<'J'
+{"size": 3, "query": {"term": {"event.type": "user.clicked_result"}}, "sort": [{"@timestamp": "desc"}], "_source": ["offer", "product", "session"]}
+J
+es GET '/events-user-*/_count' <<'J'
+{"query": {"bool": {"filter": [{"term": {"event.type": "user.clicked_result"}}], "must_not": {"exists": {"field": "offer.id"}}}}}
+J
+```
+
+**Przyczyna**
+`sequence by offer.id` łączy tylko zdarzenia, które **mają** `offer.id`. Szablon `events-user` miał to pole, ale
+`AnalyticsDocumentMapper::click()` nie przepisywał `offer_id` z payloadu, więc żadne kliknięcie nie miało klucza
+złączenia. Zdarzenia bez klucza EQL po cichu pomija: brak błędu, brak sekwencji.
+
+**Naprawa**
+Mapper przepisuje `offer_id` → `offer.id` (test w `AnalyticsDocumentMapperTest`), potem
+`docker compose restart analytics-consumer`. Kliknięcia zapisane wcześniej klucza nie dostaną (data stream, brak
+przepisania wstecz); dla pomiaru: `make detection-purge` i ponowna symulacja.
+
+**Czego się nauczyłem**
+Reguła łącząca dwa źródła zależy od pola, którego „właścicielem” jest inny etap. Przed regułą sprawdzić, czy klucz
+złączenia istnieje po obu stronach (`exists` / `must_not exists`), a nie tylko w szablonie.
+
+---
+
+<a id="163"></a>
+## 163 — Reguła Kibany `review-ip-burst` nie widzi starych danych albo pisze dokumenty ze sklejonymi wartościami
+
+> ETAP 15 (2026-11-25).
+
+**Objaw**
+1. Po symulacji z datą wsteczną reguła Kibany ma status `ok`, ale w `alerts-security` nie ma jej dokumentów.
+2. W `alerts-security` jest dokument `review-ip-burst` z losowym `_id`, `labels.synthetic: false`, `window.end` = czas
+   przebiegu, a czasem `entity.id` wyglądające jak dwa hasze sklejone w jeden napis (albo zapis konektora odrzucony
+   w logu Kibany).
+3. `security:report` pokazuje „Kibana live (unscored): N”.
+
+**Diagnoza**
+```bash
+docker compose exec -T es01 sh -c 'curl -sS -u "elastic:$ELASTIC_PASSWORD" "http://kibana:5601/api/alerting/rules/_find?search=review-ip-burst&search_fields=tags"' \
+  | jq -c '.data[] | {name, status: .execution_status.status, last: .last_run.outcome, params: .params.timeWindowSize}'
+es GET '/alerts-security/_search?filter_path=hits.hits._id,hits.hits._source.entity,hits.hits._source.window' <<'J'
+{"size": 5, "query": {"term": {"rule.id": "review-ip-burst"}}, "sort": [{"@timestamp": "desc"}]}
+J
+```
+
+**Przyczyna**
+1. Reguła Kibany liczy tylko okno `timeWindowSize` (1 h) przed przebiegiem. Zdarzenia z datą wsteczną nigdy w nie nie
+   wpadną. To nie błąd: Kibana Alerting jest do bieżącego ruchu, nie do historii.
+2. Konektor index wypełnia dokument szablonem Mustache `{{#context.hits}}…{{/context.hits}}`, który iteruje po
+   wszystkich wierszach wyniku i skleja wartości. Konektor nie ustawia `_id` (losowy) i nie zna kubełka (`window.end`
+   to `{{date}}`).
+
+**Naprawa**
+1. Historia: `make detection-detect` (`security:detect --since=15d`), który czyta **ten sam** ES|QL z
+   `infra/kibana/rules/security-review-ip-burst.json` i zapisuje alerty z `_id` z klucza. Na bieżąco robi to też job
+   `security-detect` w `seller360-scheduler` co 5 min (okno 2 h).
+2. Traktować dokumenty Kibany jako sygnał „na żywo” (powiadomienie), a do oceny brać dokumenty PHP:
+   `security:report` liczy tylko dokumenty, których `_id` = `sha1(rule.id|entity.type|entity.id|window.start)` ich
+   własnych pól. `security:purge-synthetic` usuwa dokumenty Kibany na syntetycznych haszach (szuka po haszach, bo
+   flaga `synthetic` u nich zawsze jest `false`).
+
+**Czego się nauczyłem**
+Kibana Alerting i backfill to dwa różne narzędzia: jedno do „teraz”, drugie do historii i pomiaru. Trzymanie
+zapytania w jednym pliku daje tę samą logikę, ale format wyjścia konektora index jest ograniczony do szablonu, więc
+deterministyczny klucz alertu musi powstać gdzie indziej.
+
+---
+
+<a id="164"></a>
+## 164 — `complaints-spike`: inny werdykt w jobie i w backfillu, alert dla nowego sprzedawcy
+
+> ETAP 15 (2026-11-25). Znalezione w recenzji Task 8, naprawione przed pomiarem.
+
+**Objaw**
+1. Ten sam sprzedawca i ta sama doba: backfill `--since=15d` daje alert, job z oknem 2 h nie (albo odwrotnie);
+   w dowodach różne `mean`/`std`.
+2. Sprzedawca, który dostał pierwsze reklamacje w ogóle (np. 6 jednego dnia), ma alert.
+3. Skok nie daje alertu, mimo że „na oko” jest wyraźny, a `mean` w dowodzie jest podejrzanie wysokie.
+
+**Diagnoza**
+```bash
+# dzienne liczby sprzedawcy z 7 dniami przed dobą D (pełne okno zerami)
+es GET '/complaints/_search' <<'J' | jq -c '[.aggregations.d.buckets[] | {d: .key_as_string[0:10], n: .doc_count}]'
+{"size": 0, "query": {"term": {"seller_id": 5004517}},
+ "aggs": {"d": {"date_histogram": {"field": "created_at", "calendar_interval": "1d", "time_zone": "UTC", "min_doc_count": 0,
+   "extended_bounds": {"min": "2026-11-20T00:00:00Z||-7d", "max": "2026-11-20T00:00:00Z"}}}}}
+J
+es GET '/complaints/_search?filter_path=aggregations' <<'J'
+{"size": 0, "query": {"term": {"seller_id": 5004517}}, "aggs": {"first": {"min": {"field": "created_at"}}}}
+J
+```
+
+**Przyczyna**
+1. Bez `extended_bounds` `date_histogram` zaczyna się od pierwszej reklamacji **w zakresie zapytania**, więc
+   `moving_fn` dla tej samej doby ma inną liczbę kubełków historii zależnie od długości zakresu.
+2. Z `extended_bounds` i `min_doc_count: 0` okno nowego sprzedawcy to same zera: średnia 0, σ 0, każde ≥ 5 = alert.
+3. `moving_fn` z `shift: 1` (albo większym) wciąga bieżący dzień do własnej średniej i skok podnosi swój próg.
+
+**Naprawa**
+W `ComplaintsSpikeDetector`: `extended_bounds` od 7 dni przed pierwszą ocenianą dobą + `min_doc_count: 0`
+(werdykt niezależny od zakresu), osobne zapytanie `min(created_at)` bez filtra czasu i ocena doby D tylko, gdy
+pierwsza reklamacja sprzedawcy jest ≥ 7 dni przed D, oraz `shift: 0` (okno 7 kubełków kończy się przed bieżącym:
+dzienne 1, 2, 3, 10 → średnie null, 1,0, 1,5, 2,0). Test: ten sam `_id`, `mean`, `std` dla okna 2 h i backfillu 15 d.
+
+**Czego się nauczyłem**
+Agregacje kroczące są wrażliwe na brzegi: gdzie zaczyna się histogram, czy puste dni są zerami, czy bieżący kubełek
+jest w oknie. Każdą z tych decyzji trzeba sprawdzić na małym, ręcznie policzonym przykładzie, zanim zaufa się
+regule; i wymagać, żeby werdykt nie zależał od zakresu zapytania.
+
+---
+
+<a id="165"></a>
+## 165 — Po ponownej symulacji raport pokazuje FP albo stare alerty; purge i transformy ETAPU 12
+
+> ETAP 15 (2026-11-25).
+
+**Objaw**
+1. Drugi `make detection-simulate` bez sprzątania: `events-security-default` ma dwa razy więcej zdarzeń, raport
+   pokazuje FP albo „stare syntetyczne spoza zakresu symulacji (unscored)” > 0.
+2. Po `make detection-purge` popularność produktów i CTR w Kibanie (ETAP 12) nadal zawierają kliknięcia symulatora.
+3. `make detection-purge` uruchomiony w trakcie opróżniania kolejek zostawia część zdarzeń.
+
+**Diagnoza**
+```bash
+docker compose exec rabbitmq rabbitmqctl list_queues name messages | grep -E 'security|analytics'
+es GET '/events-security-*/_count' <<'J'
+{"query": {"term": {"labels.synthetic": true}}}
+J
+es GET '/events-user-*/_count' <<'J'
+{"query": {"prefix": {"session.id": "secsim-"}}}
+J
+make detection-report | tail -3
+```
+
+**Przyczyna**
+1. Każdy przebieg symulatora liczy czasy względem „teraz”, więc zdarzenia dostają nowe `event.id` (duplikaty), a
+   alerty z poprzedniego przebiegu nie pasują do nowej prawdy. Raport odkłada syntetyczne alerty spoza
+   `[generated_at − days, generated_at]` jako „stare”, ale te w zakresie liczą się jako FP.
+2. Purge usuwa zdarzenia, a nie wyniki transformów: `product-popularity` (wsadowy) trzeba przeliczyć,
+   `search-stats-daily` (ciągły) nie przelicza kubełków po usunięciu zdarzeń.
+3. Purge robi `_delete_by_query` na stanie z chwili uruchomienia; zdarzenia zapisane później zostają.
+
+**Naprawa**
+Kolejność zawsze: kolejki puste → `make detection-purge` → `make detection-simulate` → (kolejki puste) →
+`make detection-detect` → `make detection-report`. Po purge, gdy wraca normalna praca:
+```bash
+make popularity-refresh && make detection-setup
+es POST '/_transform/search-stats-daily/_stop?wait_for_completion=true' </dev/null
+es POST '/_transform/search-stats-daily/_reset' </dev/null
+es POST '/_transform/search-stats-daily/_start' </dev/null
+```
+Purge nie usuwa niesyntetycznych zdarzeń z UI (wygasają z ILM po 30 dniach) ani zbioru dowodowego ETAPU 13.
+
+**Czego się nauczyłem**
+Dane syntetyczne w prawdziwym klastrze muszą mieć znacznik na każdym poziomie (zdarzenie, sesja, identyfikator
+zgłoszenia), inaczej nie da się ich usunąć. A usunięcie źródła nie cofa tego, co już z niego policzono: każdy
+pochodny indeks (transform, migawka enrich, sekcja agregatu) trzeba odświeżyć osobno.
+
+---
+
+<a id="166"></a>
+## 166 — 403 `security_exception` na `security-rules` / `product-popularity` (role `search_service`, `catalog_app`)
+
+> ETAP 15 (2026-11-25). Obie role poszerzone w `infra/elasticsearch/setup-security.sh`.
+
+**Objaw**
+1. `security:rules:load` albo testy integracyjne search: `action [indices:data/write/index] is unauthorized for user
+   [searchsvc] … on indices [security-rules]`.
+2. `security:simulate` w catalogu: 403 przy odczycie `security-rules` albo `product-popularity`.
+
+**Diagnoza**
+```bash
+es GET '/_security/role/search_service?filter_path=*.indices.names' </dev/null
+es GET '/_security/role/catalog_app?filter_path=*.indices' </dev/null
+```
+
+**Przyczyna**
+Wzorce indeksów ról z wcześniejszych etapów (`events-*`, `alerts-*`, `products-*` …) obejmują `events-security-*`
+i `alerts-security`, ale nie `security-rules`. `catalog_app` jest tylko do odczytu i nie miał
+`product-popularity*`, a symulator czyta z niej próg p95 i produkty po obu stronach progu.
+
+**Naprawa**
+W `setup-security.sh`: `search_service` dostaje `security-*` (`all`), `catalog_app` dostaje `read` na
+`product-popularity*` i `security-rules`; lustrzanie w `deploy/k8s/es-roles.yml`. Zastosować na żywym klastrze:
+`docker compose run --rm es-setup` (idempotentne). Na k3s rolę trzeba wgrać osobno.
+
+**Czego się nauczyłem**
+Nowy indeks spoza istniejących wzorców to zawsze pytanie „która rola go widzi”. Najmniejsze uprawnienie dla
+aplikacji tylko do odczytu oznacza dopisywanie jawnych nazw, a nie szerokiego `*`.
+
+---
+
+<a id="167"></a>
+## 167 — Dwie recenzje tego samego użytkownika na ten sam produkt (wyścig, TOCTOU)
+
+> ETAP 15 (2026-11-25). Wskazane przez hook bezpieczeństwa przy Task 3, naprawione przed pomiarem.
+
+**Objaw**
+Użytkownik ma dwie recenzje tego samego produktu (dwa wiersze `reviews`, dwa zdarzenia `review.created`), mimo że
+formularz odrzuca drugą recenzję komunikatem walidacji. Zdarza się przy podwójnym kliknięciu albo dwóch kartach.
+
+**Diagnoza**
+```bash
+docker compose exec catalog-app php artisan tinker --execute 'echo App\Models\Review::selectRaw("user_id, product_id, count(*) c")->groupBy("user_id","product_id")->havingRaw("count(*) > 1")->count();'
+```
+(Dane z seedera z wcześniejszych etapów mają duplikaty; liczy się, czy przybywają nowe, z formularza.)
+
+**Przyczyna**
+TOCTOU (*time of check, time of use*): `StoreReviewRequest` sprawdza „czy już jest recenzja” przed transakcją
+zapisu. Dwa równoległe żądania oba widzą „nie ma” i oba zapisują. Unikalnego indeksu `(product_id, user_id)` nie ma,
+bo historyczne dane go łamią.
+
+**Naprawa**
+`ReviewController` w `DB::transaction` najpierw blokuje wiersz użytkownika
+(`User::whereKey($id)->lockForUpdate()->first()`), potem sprawdza duplikat jeszcze raz i przy duplikacie rzuca
+`ValidationException` (bez wiersza, bez zdarzenia outboxu). Drugie żądanie czeka na blokadę i widzi już pierwszą
+recenzję. Sprawdzenie w FormRequest zostaje jako szybka ścieżka. Blokada działa na Postgresie; na SQLite w testach
+`lockForUpdate` jest bez efektu, więc test symuluje konkurencyjny zapis hookiem.
+
+**Czego się nauczyłem**
+Walidacja „unikalności” w kodzie bez blokady albo ograniczenia w bazie to tylko podpowiedź dla UI. Gdy unikalnego
+indeksu nie da się dodać, blokada wiersza rodzica (tu: użytkownika) szereguje konkurencyjne zapisy tanio i lokalnie.
