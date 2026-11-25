@@ -13,6 +13,9 @@ use Elastic\Elasticsearch\Client;
  * i historia liczą DOKŁADNIE to samo. Doklejamy tylko filtr czasu zaraz po `FROM`. Początek zakresu
  * zaokrąglamy w dół do pełnej godziny, żeby kubełek na brzegu nie był policzony od połowy
  * (niepełny kubełek dałby inną liczbę użytkowników niż live, a alert ma to samo id).
+ *
+ * ES|QL bez `LIMIT` po cichu obcina wynik do 1000 wierszy. Doklejamy własny `LIMIT` na końcu i przy
+ * nasyceniu (wierszy = limit) rzucamy wyjątek, jak strażnik `size` w EQL: lepiej głośno niż zgubić alerty.
  */
 final class ReviewIpBurstDetector implements Detector
 {
@@ -22,6 +25,7 @@ final class ReviewIpBurstDetector implements Detector
         private readonly Client $client,
         private readonly string $ruleFile = '/infra/kibana/rules/security-review-ip-burst.json',
         private readonly string $eventsIndex = 'events-security-*',
+        private readonly int $limit = 10000,
     ) {
     }
 
@@ -41,6 +45,10 @@ final class ReviewIpBurstDetector implements Detector
             $from->format($format),
             $to->setTimezone($utc)->format($format),
         )]])->asArray();
+
+        if (\count($response['values'] ?? []) >= $this->limit) {
+            throw new \RuntimeException(\sprintf('ES|QL %s zwrócił %d wierszy (LIMIT): zawęź zakres, inaczej część alertów zostałaby pominięta.', self::RULE_ID, $this->limit));
+        }
 
         $columns = array_column($response['columns'] ?? [], 'name');
         $alerts = [];
@@ -76,11 +84,12 @@ final class ReviewIpBurstDetector implements Detector
         }
 
         return \sprintf(
-            "FROM %s\n| WHERE @timestamp >= \"%s\" AND @timestamp < \"%s\"%s",
+            "FROM %s\n| WHERE @timestamp >= \"%s\" AND @timestamp < \"%s\"%s\n| LIMIT %d",
             $this->eventsIndex,
             $from,
             $to,
-            substr($esql, \strlen('FROM events-security-*')),
+            rtrim(substr($esql, \strlen('FROM events-security-*'))),
+            $this->limit,
         );
     }
 

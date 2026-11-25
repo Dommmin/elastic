@@ -76,9 +76,9 @@ final class ReviewIpBurstDetectorTest extends TestCase
         $this->client->indices()->refresh(['index' => $this->eventsIndex]);
     }
 
-    private function detector(): ReviewIpBurstDetector
+    private function detector(int $limit = 10000): ReviewIpBurstDetector
     {
-        return new ReviewIpBurstDetector($this->client, self::RULE_FILE, $this->eventsIndex);
+        return new ReviewIpBurstDetector($this->client, self::RULE_FILE, $this->eventsIndex, $limit);
     }
 
     private function detectAll(): array
@@ -135,6 +135,22 @@ final class ReviewIpBurstDetectorTest extends TestCase
         $this->refresh();
 
         self::assertSame([], $this->detectAll());
+    }
+
+    public function test_wynik_rowny_limitowi_rzuca_zamiast_obcinac_po_cichu(): void
+    {
+        foreach (['aaaa000000000001', 'aaaa000000000002'] as $hash) {
+            foreach (range(1, 5) as $i) {
+                $this->review($hash, 'u'.$i);
+            }
+        }
+        $this->refresh();
+
+        self::assertCount(2, $this->detector(3)->detect(new \DateTimeImmutable('2026-11-25T00:00:00Z'), new \DateTimeImmutable('2026-11-25T23:00:00Z')));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('LIMIT');
+        $this->detector(2)->detect(new \DateTimeImmutable('2026-11-25T00:00:00Z'), new \DateTimeImmutable('2026-11-25T23:00:00Z'));
     }
 
     public function test_dwa_przebiegi_zostawiaja_jeden_dokument_w_alerts_security(): void

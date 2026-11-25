@@ -460,8 +460,9 @@ był już w ETAPIE 12, działa na licencji basic.
 **Kibana patrzy tylko na bieżące okno.** Zasadzone przez symulator godziny leżą w przeszłości, więc reguła Kibany nie
 wpisała nic (0 dokumentów, POMIARY §19.2). Do historii służy backfill: `ReviewIpBurstDetector` **czyta tekst
 zapytania z tego samego pliku**, wstawia filtr czasu zaraz po `FROM` (początek zaokrąglony w dół do pełnej godziny,
-żeby kubełek na brzegu nie był policzony od połowy) i puszcza całość przez `_query`. Live i historia liczą dokładnie
-to samo. Plik jest zamontowany tylko do odczytu w `search-consumer` i `seller360-scheduler`.
+żeby kubełek na brzegu nie był policzony od połowy), dokleja `| LIMIT 10000` i puszcza całość przez `_query`. Live
+i historia liczą dokładnie to samo. `LIMIT` jest potrzebny, bo ES|QL bez niego po cichu obcina wynik do 1000 wierszy;
+gdy wierszy jest tyle co limit, detektor rzuca wyjątek (jak strażnik `size` w EQL) zamiast gubić alerty. Plik jest zamontowany tylko do odczytu w `search-consumer` i `seller360-scheduler`.
 
 Zobacz bliskie pudła, obniżając próg w tym samym zapytaniu (tylko odczyt):
 
