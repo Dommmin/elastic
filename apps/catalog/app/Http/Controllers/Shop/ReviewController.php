@@ -55,7 +55,7 @@ class ReviewController extends Controller
                 'review.created',
                 fn (Review $review): array => $review->attributesToArray() + [
                     'client_ip_hash' => $fingerprint->hash($ip),
-                    'client_ip_prefix' => ClientFingerprint::prefix($ip),
+                    'client_ip_prefix' => $fingerprint->prefix($ip),
                     'client_user_agent' => $userAgent,
                     'user_account_age_hours' => (int) $user->created_at->diffInHours(now(), true),
                 ],

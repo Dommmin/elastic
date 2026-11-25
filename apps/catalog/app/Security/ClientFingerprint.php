@@ -25,12 +25,7 @@ final class ClientFingerprint
     /** Hasz IP; null przy pustym pepperze (z ostrzeżeniem) albo niepoprawnym adresie. */
     public function hash(string $ip): ?string
     {
-        if ($this->pepper === null || $this->pepper === '') {
-            if (! self::$warned) {
-                self::$warned = true;
-                Log::warning('SECURITY_IP_PEPPER jest pusty: hasz IP recenzji nie będzie zapisywany.');
-            }
-
+        if (! $this->enabled()) {
             return null;
         }
 
@@ -43,9 +38,18 @@ final class ClientFingerprint
         return substr(hash_hmac('sha256', $normalized, $this->pepper), 0, self::HASH_LENGTH);
     }
 
-    /** Prefiks sieci tekstowo: `/24` dla IPv4 (też mapowanego), `/48` dla IPv6; null przy niepoprawnym IP. */
-    public static function prefix(string $ip): ?string
+    /**
+     * Prefiks sieci tekstowo: `/24` dla IPv4 (też mapowanego), `/48` dla IPv6; null przy niepoprawnym IP.
+     *
+     * Też null przy pustym pepperze: oba pola IP idą w parze (spec §5.1 „pusty pepper → pola IP null”),
+     * żeby niekompletna konfiguracja nie zostawiała w zdarzeniach połowy odcisku.
+     */
+    public function prefix(string $ip): ?string
     {
+        if (! $this->enabled()) {
+            return null;
+        }
+
         $normalized = self::normalize($ip);
 
         if ($normalized === null) {
@@ -59,6 +63,21 @@ final class ClientFingerprint
         $masked = substr($packed, 0, $keep).str_repeat("\0", strlen($packed) - $keep);
 
         return inet_ntop($masked).'/'.($isV4 ? 24 : 48);
+    }
+
+    /** Czy pepper jest ustawiony; przy pustym jedno ostrzeżenie na proces. Jedyne miejsce tej decyzji. */
+    private function enabled(): bool
+    {
+        if ($this->pepper !== null && $this->pepper !== '') {
+            return true;
+        }
+
+        if (! self::$warned) {
+            self::$warned = true;
+            Log::warning('SECURITY_IP_PEPPER jest pusty: hasz i prefiks IP recenzji nie będą zapisywane.');
+        }
+
+        return false;
     }
 
     public static function userAgent(?string $ua): ?string

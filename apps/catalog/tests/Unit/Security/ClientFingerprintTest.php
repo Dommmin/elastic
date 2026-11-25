@@ -36,10 +36,19 @@ test('adres mapowany IPv4 daje ten sam hasz co zwykły IPv4', function () {
 });
 
 test('prefiks sieci: /24 dla IPv4, /48 dla IPv6, IPv4 z adresu mapowanego', function () {
-    expect(ClientFingerprint::prefix('203.0.113.7'))->toBe('203.0.113.0/24')
-        ->and(ClientFingerprint::prefix('2001:db8:1:2::5'))->toBe('2001:db8:1::/48')
-        ->and(ClientFingerprint::prefix('::ffff:203.0.113.7'))->toBe('203.0.113.0/24')
-        ->and(ClientFingerprint::prefix('x'))->toBeNull();
+    $f = new ClientFingerprint('pieprz');
+
+    expect($f->prefix('203.0.113.7'))->toBe('203.0.113.0/24')
+        ->and($f->prefix('2001:db8:1:2::5'))->toBe('2001:db8:1::/48')
+        ->and($f->prefix('::ffff:203.0.113.7'))->toBe('203.0.113.0/24')
+        ->and($f->prefix('x'))->toBeNull();
+});
+
+test('pusty pepper: prefiks też null, oba pola IP idą w parze', function () {
+    Log::spy();
+
+    expect((new ClientFingerprint(''))->prefix('203.0.113.7'))->toBeNull()
+        ->and((new ClientFingerprint(null))->prefix('2001:db8:1:2::5'))->toBeNull();
 });
 
 test('user-agent obcięty do 256 znaków, null zostaje null', function () {
@@ -53,6 +62,7 @@ test('pusty pepper loguje ostrzeżenie tylko raz na proces', function () {
     $f = new ClientFingerprint('');
 
     $f->hash('203.0.113.7');
+    $f->prefix('203.0.113.7');
     $f->hash('203.0.113.8');
 
     Log::shouldHaveReceived('warning')->once();

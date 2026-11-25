@@ -65,7 +65,7 @@ test('druga recenzja tego samego użytkownika na ten sam produkt jest odrzucona'
         ->and(Outbox::where('event_type', 'review.created')->count())->toBe(1);
 });
 
-test('pusty pepper nie blokuje zapisu, hasz IP jest null', function () {
+test('pusty pepper nie blokuje zapisu, hasz i prefiks IP są null', function () {
     config(['services.security.ip_pepper' => '']);
     app()->forgetInstance(ClientFingerprint::class);
 
@@ -79,7 +79,7 @@ test('pusty pepper nie blokuje zapisu, hasz IP jest null', function () {
     $payload = Outbox::where('event_type', 'review.created')->firstOrFail()->payload;
     expect(Review::count())->toBe(1)
         ->and($payload['client_ip_hash'])->toBeNull()
-        ->and($payload['client_ip_prefix'])->toBe('127.0.0.0/24');
+        ->and($payload['client_ip_prefix'])->toBeNull();
 });
 
 test('User-Agent z niepoprawnym UTF-8 nie psuje zapisu', function () {

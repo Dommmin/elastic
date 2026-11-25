@@ -240,9 +240,9 @@ Szczegóły `ClientFingerprint`:
 - adres IPv4 mapowany w IPv6 (`::ffff:203.0.113.7`) jest najpierw sprowadzany do IPv4, więc ma ten sam hasz i prefiks
   `/24`; IPv6 dostaje prefiks `/48`,
 - hasz liczony z postaci kanonicznej (`inet_ntop`), więc `2001:DB8::1` i `2001:db8:0:0::1` dają to samo,
-- **pusty pepper** nie psuje sklepu: hasz jest `null`, log ostrzega raz na proces, recenzja się zapisuje. Prefiks
-  `/24` nadal trafia do zdarzenia (liczy się bez sekretu), a `review-ip-burst` takich recenzji nie widzi
-  (`client.ip_hash IS NOT NULL`).
+- **pusty pepper** nie psuje sklepu: hasz **i prefiks** są `null` (oba pola IP idą w parze, decyzja w jednym
+  miejscu `ClientFingerprint`), log ostrzega raz na proces, recenzja się zapisuje. `review-ip-burst` takich recenzji
+  nie widzi (`client.ip_hash IS NOT NULL`).
 
 **Sprawdź sam** (konto testowe z fabryki projektu, logowanie przez UI; adres sklepu daje `make urls`): wyślij
 recenzję z oceną **4** (konto założone przed chwilą z oceną 5 odpaliłoby `fresh-account-5star` jako alert spoza
@@ -686,7 +686,7 @@ granicę, a oszust, który ją zna, staje tuż za nią.
 |---|---|---|
 | `price-hug-threshold` | podwyżki 24% (albo dwóch po 15% w różne dni); podwyżki 28% na produkcie spoza górnych 5% popularności; produktu bez popularności w enrichu; produktu, który wszedł do górnych 5% po ostatnim `make detection-setup` (próg p95 jest zamrożony w regule) | trzy podwyżki 24,0% na ofertach z popularnością 0,72–1,05 bez alertu; podwyżki 26–28% na ofertach z popularnością ~0,2 bez alertu |
 | `fresh-account-5star` | konta 25-godzinnego; konta założonego tydzień wcześniej „na zapas”; oceny 4 | 5 recenzji od kont 30 h bez alertu (zasadzone: 2, 6, 10, 11, 19 h) |
-| `review-ip-burst` | 4 kont z jednego adresu; 5 kont rozłożonych na dwie godziny (granica kubełka `BUCKET(1 hour)`, np. 3 o 10:50 i 2 o 11:10); 5 kont z 5 adresów jednej sieci (reguła patrzy na hasz pełnego adresu, nie na prefiks); recenzji bez haszu (pusty pepper) | 5 haszy z 4 użytkownikami w godzinie bez alertu |
+| `review-ip-burst` | 4 kont z jednego adresu; 5 kont rozłożonych na dwie godziny (granica kubełka `BUCKET(1 hour)`, np. 3 o 10:50 i 2 o 11:10); 5 kont z 5 adresów jednej sieci (reguła patrzy na hasz pełnego adresu, nie na prefiks); recenzji bez haszu i prefiksu (pusty pepper) | 5 haszy z 4 użytkownikami w godzinie bez alertu |
 | `price-bait-and-switch` | podwyżki do 1,28 ×; tej samej sekwencji rozciągniętej na 52–60 h; wabika z 19 kliknięciami; jednej podwyżki o 31% (to już moderacja); kliknięć bez `offer.id` | 8 sekwencji z EQL → 5 alertów (3 odrzucone przy 1,28 ×); 2 sekwencje dłuższe niż 48 h EQL nie zwrócił |
 | `complaints-spike` | skoku o 2σ; skoku do 4 reklamacji przy zerowej historii (minimum 5); sprzedawcy bez 7 dni historii; powolnego wzrostu (średnia rośnie razem z nim); skoku rozłożonego na dwie doby UTC | np. sprzedawca 5007368: historia `3,1,0,3,0,1,4`, 5 reklamacji, próg 6,17; sprzedawca 5007521: 6 reklamacji przy progu 7,61 — bez alertu |
 
@@ -725,7 +725,7 @@ Więcej: [`POMIARY.md` §19](../POMIARY.md).
 - **Reguła Kibany oceniana tylko jakościowo.** Jej dokumenty mają losowy `_id`, sklejone wartości przy kilku wierszach
   i `synthetic: false`; raport ich nie liczy. Mierzony jest backfill PHP z tym samym ES|QL.
 - **Percolator nie przegląda historii**, a p95 jest zamrożony w regule do następnego `make detection-setup`.
-- **Pusty pepper** wyłącza hasz, ale nie prefiks.
+- **Pusty pepper** wyłącza oba pola IP (hasz i prefiks): takie recenzje są dla `review-ip-burst` niewidoczne.
 - **Kliknięcia symulatora trafiają do `events-user`** i wchodzą do transformów ETAPU 12 (popularność, CTR); purge je
   usuwa, ale wyników transformów nie przelicza (sekcja „Powrót do normalnej pracy”).
 - **Okno percolatora ma rozdzielczość sekundy**: dwie zmiany ceny tej samej oferty w tej samej sekundzie dają jeden

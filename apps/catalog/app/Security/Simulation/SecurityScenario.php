@@ -513,7 +513,7 @@ final class SecurityScenario
                 'body' => null,
                 'created_at' => $at->format(DateTimeInterface::ATOM),
                 'client_ip_hash' => $this->fingerprint->hash($ip),
-                'client_ip_prefix' => ClientFingerprint::prefix($ip),
+                'client_ip_prefix' => $this->fingerprint->prefix($ip),
                 'client_user_agent' => self::USER_AGENTS[$this->random->getInt(0, count(self::USER_AGENTS) - 1)],
                 'user_account_age_hours' => $ageHours,
             ]),
