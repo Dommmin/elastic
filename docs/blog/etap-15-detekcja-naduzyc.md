@@ -75,8 +75,8 @@ z ziarnem; przewodnik (ten) mówi, dlaczego reguła trafiła do percolatora, Kib
 | EQL `sequence by offer.id` na **dwóch źródłach** (`events-security-*` + `events-user-*`) | Zmiany cen i kliknięcia leżą w różnych data streamach; EQL łączy je po `offer.id` |
 | `complaints-spike` na **reklamacjach** z ETAPU 13 (`complaints`) | Domeny zwrotów nie ma; reklamacje już są w ES z `seller_id`, `created_at`, `category` |
 | Hasz IP = **HMAC-SHA256 z tajnym pepperem**, 16 hex; do tego prefiks `/24` (IPv6 `/48`) | Repo jest publiczne, a IP to dane osobowe. Surowe IP nigdzie nie trafia (Postgres, outbox, RabbitMQ, ES). Uzasadnienie HMAC zamiast zwykłego haszu: krok 2 |
-| ILM `events-security`: **usunięcie po 30 dniach** | Krótka retencja = mniej danych osobowych |
-| **Bez nowych kontenerów** | Transport `security` konsumuje istniejący `analytics-consumer` (`messenger:consume analytics security`); `security:detect` to job istniejącego `seller360-scheduler` co 300 s. Maszyna jest współdzielona, budżet pamięci bez zmian |
+| ILM `events-security`: **usunięcie ok. 30 dni od rolloveru (do ~31 dni)** | Krótka retencja = mniej danych osobowych. `min_age: 30d` w fazie delete liczy się od rolloveru indeksu zapasowego (rollover co 1 d), więc najstarsze zdarzenie żyje do ~31 dni |
+| **Bez nowych kontenerów** | Transport `security` konsumuje istniejący `analytics-consumer` (`messenger:consume analytics security`; pierwszy transport ma priorytet, więc pod ciągłym ruchem analityki zdarzenia bezpieczeństwa czekają, krok 3); `security:detect` to job istniejącego `seller360-scheduler` co 300 s. Maszyna jest współdzielona, budżet pamięci bez zmian |
 | `alerts-security` to **zwykły indeks**, nie data stream; `_id` = sha1 klucza alertu | Ponowne wykrycie ma nadpisać ten sam dokument (idempotencja), a data stream przyjmuje tylko `create` |
 | Symulator **nie tworzy użytkowników w bazie** | Identyfikatory od 920 000 000 i wiek konta wprost w zdarzeniu; zdarzenia trafiają tylko do ES, Postgres zostaje czysty |
 | Symulowane zdarzenia niosą `data.simulation = 'security'` | Te same `offer.price_changed` / `review.created` trafiają też do kolejek `product.sync` i `search.seller360`. Te konsumenty potwierdzają i pomijają zdarzenia symulacji, więc symulowane ceny nie zmieniają produktów ani `seller-360` (i `seller360-verify` zostaje 5/5) |
@@ -107,7 +107,7 @@ apps/search/
 infra/elasticsearch/
   setup-detection.sh                           make detection-setup: sekcje [1] ES, [2] reguły percolatora, [3] Kibana
   detection/template-events-security.json      data stream, dynamic: strict
-  detection/ilm-events-security.json           rollover 1d/1gb, delete po 30d
+  detection/ilm-events-security.json           rollover 1d/1gb, delete 30d od rolloveru
   detection/pipeline-events-security.json      event.ingested + enrich product.popularity (błąd nie odrzuca)
   detection/index-security-rules.json          pole query typu percolator + kopia mapowania zdarzeń
   detection/index-alerts-security.json         alerty, evidence: flattened
@@ -231,7 +231,7 @@ Ochrona trzyma **tylko dopóki pepper jest tajny**. Dlatego leży wyłącznie w 
 `.env.example` ma pusty `SECURITY_IP_PEPPER=`, a repo jest publiczne. Kto pozna pepper, odwróci każdy hasz w jego
 `/24` w ułamku sekundy. Zmiana peppera zrywa ciągłość: te same adresy dostaną nowe hasze, a reguła `review-ip-burst`
 przestanie łączyć stare recenzje z nowymi (to może być pożądane po wycieku). Trzecia warstwa to retencja: data stream
-`events-security` kasuje dane po **30 dniach** (ILM), więc nawet przy wycieku peppera stare hasze same znikają.
+`events-security` kasuje dane ok. **30 dni od rolloveru** (ILM, do ~31 dni), więc nawet przy wycieku peppera stare hasze same znikają.
 
 16 znaków hex to 64 bity: kolizja dwóch różnych adresów jest praktycznie niemożliwa przy naszej skali, a krótszy
 identyfikator jest czytelniejszy w alertach.
@@ -270,14 +270,14 @@ reguły. W produkcji za ingressem trzeba ustawić zaufane proxy (`TRUSTED_PROXIE
 ## Krok 3 — data stream `events-security` i konsument
 
 **Data stream** `events-security-default` (szablon `events-security`, `dynamic: strict`, ILM rollover 1 d / 1 GB,
-usunięcie po 30 dniach). Pola w stylu ECS: `@timestamp`, `event.{id,type,ingested}`, `offer.{id,old_price_cents,
+usunięcie ok. 30 dni od rolloveru, do ~31 dni: `min_age` fazy delete liczy się od rolloveru, nie od zdarzenia). Pola w stylu ECS: `@timestamp`, `event.{id,type,ingested}`, `offer.{id,old_price_cents,
 new_price_cents,change_pct}`, `product.{id,popularity}`, `seller.id`, `user.{id,account_age_hours}`,
 `review.{id,rating}`, `client.{ip_hash,ip_prefix}`, `user_agent.original`, `labels.synthetic`. `strict` oznacza, że
 literówka w nazwie pola kończy się błędem 400, a nie cichym nowym polem.
 
 ```bash
 es GET '/_data_stream/events-security-default?filter_path=data_streams.template,data_streams.ilm_policy,data_streams.indices.index_name' </dev/null
-es GET '/_ilm/policy/events-security?filter_path=*.policy.phases.delete.min_age' </dev/null   # "30d"
+es GET '/_ilm/policy/events-security?filter_path=*.policy.phases.delete.min_age' </dev/null   # "30d" (od rolloveru)
 ```
 
 **Pipeline** `events-security`: `event.ingested` z czasu ingestu i `product.popularity` z istniejącej polityki
@@ -300,6 +300,9 @@ Proces to istniejący `analytics-consumer`:
 ```
 messenger:consume analytics security
 ```
+
+Kolejność transportów to priorytet: Messenger bierze wiadomość z `security` tylko wtedy, gdy `analytics` jest pusty,
+więc przy ciągłym obciążeniu analityką zdarzenia bezpieczeństwa (i percolacja) czekają.
 
 Zapis: `_bulk` z `op_type: create` i `_id` = `event.id`, więc 409 = duplikat = potwierdzenie (jak w ETAPIE 12).
 `change_pct = round((new − old) / old × 100, 2)` liczy mapper, ze znakiem. Przy `old_price_cents = 0` pola nie ma:
@@ -810,8 +813,8 @@ es POST '/_transform/search-stats-daily/_reset' </dev/null
 es POST '/_transform/search-stats-daily/_start' </dev/null
 ```
 
-Purge nie usuwa prawdziwych recenzji z UI (niesyntetyczne zdarzenia `review.created` zostają do wygaśnięcia ILM po
-30 dniach) ani zbioru dowodowego ETAPU 13 (`SIM-` i `seller-360` syntetycznych sprzedawców). Ponowna symulacja **bez**
+Purge nie usuwa prawdziwych recenzji z UI (niesyntetyczne zdarzenia `review.created` zostają do wygaśnięcia ILM, ok.
+30 dni od rolloveru) ani zbioru dowodowego ETAPU 13 (`SIM-` i `seller-360` syntetycznych sprzedawców). Ponowna symulacja **bez**
 purge daje duplikaty zdarzeń z innymi `event.id` i stare alerty: kolejność to zawsze purge, potem simulate
 (RUNBOOK [#165](../RUNBOOK.md#165)).
 

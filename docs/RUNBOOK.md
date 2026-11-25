@@ -7103,7 +7103,7 @@ es POST '/_transform/search-stats-daily/_stop?wait_for_completion=true' </dev/nu
 es POST '/_transform/search-stats-daily/_reset' </dev/null
 es POST '/_transform/search-stats-daily/_start' </dev/null
 ```
-Purge nie usuwa niesyntetycznych zdarzeń z UI (wygasają z ILM po 30 dniach) ani zbioru dowodowego ETAPU 13.
+Purge nie usuwa niesyntetycznych zdarzeń z UI (wygasają z ILM ok. 30 dni od rolloveru, do ~31 dni) ani zbioru dowodowego ETAPU 13.
 
 **Czego się nauczyłem**
 Dane syntetyczne w prawdziwym klastrze muszą mieć znacznik na każdym poziomie (zdarzenie, sesja, identyfikator
