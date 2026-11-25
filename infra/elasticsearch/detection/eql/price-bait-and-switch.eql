@@ -1,0 +1,5 @@
+sequence by offer.id with maxspan=48h
+  ["offer.price_changed" where offer.change_pct <= -15]
+  ["user.clicked_result" where true] with runs=20
+  ["offer.price_changed" where offer.change_pct > 0]
+  ["offer.price_changed" where offer.change_pct > 0]

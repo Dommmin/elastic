@@ -7,6 +7,7 @@ use App\Security\AlertWriter;
 use App\Security\Detector;
 use App\Security\SecurityDetectJob;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 
 final class SecurityDetectJobTest extends TestCase
 {
@@ -68,5 +69,50 @@ final class SecurityDetectJobTest extends TestCase
 
         self::assertSame(['a' => 1], $counts);
         self::assertSame([1, 0], [$a, $b]);
+    }
+
+    public function test_wyjatek_jednego_detektora_nie_blokuje_pozostalych_i_job_rzuca_na_koncu(): void
+    {
+        $ok = 0;
+        $f = $t = null;
+        $failing = new class implements Detector {
+            public function id(): string { return 'zepsuty'; }
+
+            public function detect(\DateTimeImmutable $from, \DateTimeImmutable $to): array { throw new \RuntimeException('ES nie odpowiada'); }
+        };
+        $writer = $this->createMock(AlertWriter::class);
+        $writer->expects(self::once())->method('write')->willReturn(0);
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())->method('error')->with(self::stringContains('zepsuty'), self::anything());
+
+        $job = new SecurityDetectJob([$failing, $this->detector('dobry', $ok, $f, $t)], $writer, null, $logger);
+
+        try {
+            $job->run();
+            self::fail('Job miał rzucić po przebiegu wszystkich detektorów.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('zepsuty', $e->getMessage());
+        }
+        self::assertSame(1, $ok);
+    }
+
+    public function test_detect_zbiera_bledy_zamiast_je_rzucac(): void
+    {
+        $ok = 0;
+        $f = $t = null;
+        $failing = new class implements Detector {
+            public function id(): string { return 'zepsuty'; }
+
+            public function detect(\DateTimeImmutable $from, \DateTimeImmutable $to): array { throw new \RuntimeException('ES nie odpowiada'); }
+        };
+        $writer = $this->createStub(AlertWriter::class);
+        $job = new SecurityDetectJob([$failing, $this->detector('dobry', $ok, $f, $t)], $writer);
+
+        $failures = [];
+        $counts = $job->detect(new \DateTimeImmutable('-1 day'), new \DateTimeImmutable(), null, $failures);
+
+        self::assertSame(['dobry' => 0], $counts);
+        self::assertSame(['zepsuty'], array_keys($failures));
+        self::assertSame(1, $ok);
     }
 }

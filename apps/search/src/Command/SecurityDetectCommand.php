@@ -41,15 +41,10 @@ final class SecurityDetectCommand extends Command
         $from = $to->modify(\sprintf('-%d %s', $m[1], $m[2] === 'h' ? 'hours' : 'days'));
         $rule = $input->getOption('rule');
 
-        try {
-            $counts = $this->job->detect($from, $to, \is_string($rule) && $rule !== '' ? $rule : null);
-        } catch (\Throwable $e) {
-            $output->writeln('<error>'.$e->getMessage().'</error>');
+        $failures = [];
+        $counts = $this->job->detect($from, $to, \is_string($rule) && $rule !== '' ? $rule : null, $failures);
 
-            return Command::FAILURE;
-        }
-
-        if ($counts === []) {
+        if ($counts === [] && $failures === []) {
             $output->writeln('<error>Brak detektora'.(\is_string($rule) ? " dla reguły {$rule}" : '').'.</error>');
 
             return Command::FAILURE;
@@ -57,7 +52,10 @@ final class SecurityDetectCommand extends Command
         foreach ($counts as $id => $count) {
             $output->writeln(\sprintf('%s: %d alert(ów)', $id, $count));
         }
+        foreach ($failures as $id => $e) {
+            $output->writeln(\sprintf('<error>%s: %s</error>', $id, $e->getMessage()));
+        }
 
-        return Command::SUCCESS;
+        return $failures === [] ? Command::SUCCESS : Command::FAILURE;
     }
 }

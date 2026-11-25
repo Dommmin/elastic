@@ -872,6 +872,8 @@ services:
       - ./infra/reference:/infra/reference:ro
       # job security-detect (ETAP 15) czyta ES|QL reguły review-ip-burst z pliku reguły Kibany
       - ./infra/kibana/rules:/infra/kibana/rules:ro
+      # ...a EQL reguły price-bait-and-switch z pliku .eql
+      - ./infra/elasticsearch/detection/eql:/infra/elasticsearch/detection/eql:ro
     depends_on:
       es01: { condition: service_healthy }
       redis: { condition: service_healthy }
