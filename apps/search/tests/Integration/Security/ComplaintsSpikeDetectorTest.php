@@ -117,6 +117,46 @@ final class ComplaintsSpikeDetectorTest extends TestCase
         self::assertSame([], $this->detect());
     }
 
+    public function test_pierwsza_reklamacja_wczoraj_i_6_dzis_nie_daje_alertu(): void
+    {
+        $this->complaints(108, 6, 1);
+        $this->complaints(108, 7, 6);
+
+        self::assertSame([], $this->detect());
+    }
+
+    public function test_jedna_stara_reklamacja_i_6_dzis_daje_alert_ze_srednia_zero(): void
+    {
+        $this->complaints(109, -12, 1);
+        $this->complaints(109, 7, 6);
+
+        $alerts = $this->detect();
+
+        self::assertCount(1, $alerts);
+        self::assertSame(0.0, $alerts[0]->evidence['mean']);
+        self::assertSame('0,0,0,0,0,0,0', $alerts[0]->evidence['daily_counts']);
+    }
+
+    public function test_werdykt_ten_sam_dla_okna_2h_i_backfillu(): void
+    {
+        $this->complaints(109, -12, 1);
+        $this->complaints(109, 7, 6);
+        $this->seller(101, [1, 2, 1, 2, 1, 2, 1], 12);
+        $this->complaints(108, 6, 1);
+        $this->complaints(108, 7, 6);
+
+        $short = $this->detect(self::EVAL_DAY.'T21:00:00Z', self::EVAL_DAY.'T23:00:00Z');
+        $long = array_filter(
+            $this->detect('2026-11-05T00:00:00Z', '2026-11-20T00:00:00Z'),
+            static fn ($a) => $a->windowStart->format('Y-m-d') === self::EVAL_DAY,
+        );
+        $ids = static fn (array $alerts): array => array_values(array_map(static fn ($a) => [$a->entityId, $a->evidence['mean'], $a->evidence['std']], $alerts));
+        $sort = static function (array $rows): array { sort($rows); return $rows; };
+
+        self::assertSame($sort($ids($short)), $sort($ids($long)));
+        self::assertCount(2, $short);
+    }
+
     public function test_nowy_sprzedawca_z_6_reklamacjami_jednego_dnia_nie_ma_historii(): void
     {
         $this->complaints(103, 7, 6);

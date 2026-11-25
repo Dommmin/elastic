@@ -12,11 +12,12 @@ use Elastic\Elasticsearch\Client;
  *
  * Średnią i σ liczy sam Elasticsearch: na każdego sprzedawcę dzienny `date_histogram` z agregacjami
  * `moving_fn` po `_count`. Z `shift: 0` okno 7 kubełków kończy się PRZED bieżącym, więc dzień nie liczy
- * sam siebie (inaczej skok podniósłby własny próg). Histogram celowo NIE ma `extended_bounds` ani
- * zer przed pierwszą reklamacją: sprzedawca bez historii ma puste okno, `moving_fn` zwraca null i
- * `isSpike` nie strzela (nowy sprzedawca z 6 reklamacjami jednego dnia to nie skok, tylko start).
- * Dni bez reklamacji w środku historii wypełnia `min_doc_count: 0` zerami, więc rzadkie reklamacje
- * obniżają średnią, jak należy.
+ * sam siebie (inaczej skok podniósłby własny próg). Histogram ma `extended_bounds` od 7 dni przed pierwszą
+ * oceniana dobą i `min_doc_count: 0`, więc każda oceniana doba ma pełne, zerami uzupełnione okno 7 dni,
+ * a werdykt nie zależy od długości zakresu (job 2 h i backfill 15 d dają to samo).
+ * Brak historii wykrywamy osobno: dobę D oceniamy tylko, gdy PIERWSZA reklamacja sprzedawcy w ogóle
+ * (min(created_at) bez filtra czasu) jest co najmniej 7 dni przed D. Nowy sprzedawca z 6 reklamacjami
+ * to start, nie skok; `isSpike` nadal zwraca false dla `mean === null`.
  *
  * Zakres: oceniamy każdą dobę UTC dotykającą `[from, to)` (job co 5 min z oknem 2 h ocenia bieżącą
  * dobę „do teraz”; backfill `--since=15d` ocenia wszystkie 15 dób). Okno alertu to cała doba, więc
@@ -33,7 +34,7 @@ final class ComplaintsSpikeDetector implements Detector
     private const BACKGROUND_DAYS = 30;
     /** Ile identyfikatorów sprzedawców wchodzi do jednego zapytania z histogramem. */
     private const SELLER_CHUNK = 500;
-    private const MAX_SELLERS = 10000;
+    private const PAGE = 1000;
     /** Prefiks identyfikatora zgłoszenia z symulatora (Task 9). */
     private const SIMULATOR_PREFIX = 'SEC-';
 
@@ -70,10 +71,15 @@ final class ComplaintsSpikeDetector implements Detector
 
         $alerts = [];
         foreach (array_chunk($this->sellersWithComplaints($firstDay, $rangeEnd), self::SELLER_CHUNK) as $sellers) {
-            foreach ($this->histograms($sellers, $lookbackStart, $rangeEnd) as $sellerId => $buckets) {
+            $firstComplaints = $this->firstComplaints($sellers);
+            foreach ($this->histograms($sellers, $lookbackStart, $lastDay, $rangeEnd) as $sellerId => $buckets) {
                 foreach ($buckets as $bucket) {
                     $day = (new \DateTimeImmutable('@'.intdiv((int) $bucket['key'], 1000)))->setTimezone($utc);
                     if ($day < $firstDay || $day > $lastDay) {
+                        continue;
+                    }
+                    $first = $firstComplaints[$sellerId] ?? null;
+                    if ($first === null || $first > $day->modify('-'.self::HISTORY_DAYS.' days')) {
                         continue;
                     }
                     $count = (int) $bucket['doc_count'];
@@ -91,28 +97,64 @@ final class ComplaintsSpikeDetector implements Detector
         return $alerts;
     }
 
-    /** @return list<int> sprzedawcy z choć jedną reklamacją w `[from, to)` */
+    /** @return list<int> sprzedawcy z choć jedną reklamacją w `[from, to)`; composite z `after_key`, bez sztywnego limitu */
     private function sellersWithComplaints(\DateTimeImmutable $from, \DateTimeImmutable $to): array
+    {
+        $sellers = [];
+        $after = null;
+        do {
+            $composite = ['size' => self::PAGE, 'sources' => [['seller' => ['terms' => ['field' => 'seller_id']]]]];
+            if ($after !== null) {
+                $composite['after'] = $after;
+            }
+            $response = $this->client->search(['index' => $this->index, 'body' => [
+                'size' => 0,
+                'query' => $this->dayRange($from, $to),
+                'aggs' => ['sellers' => ['composite' => $composite]],
+            ]])->asArray();
+
+            $page = $response['aggregations']['sellers'];
+            foreach ($page['buckets'] as $bucket) {
+                $sellers[] = (int) $bucket['key']['seller'];
+            }
+            $after = $page['after_key'] ?? null;
+        } while ($after !== null && $page['buckets'] !== []);
+
+        return $sellers;
+    }
+
+    /**
+     * Doba (UTC) pierwszej reklamacji sprzedawcy w całej historii (bez filtra czasu).
+     *
+     * @param  list<int>  $sellers
+     * @return array<int, \DateTimeImmutable>
+     */
+    private function firstComplaints(array $sellers): array
     {
         $response = $this->client->search(['index' => $this->index, 'body' => [
             'size' => 0,
-            'query' => $this->dayRange($from, $to),
-            'aggs' => ['sellers' => ['terms' => ['field' => 'seller_id', 'size' => self::MAX_SELLERS]]],
+            'query' => ['terms' => ['seller_id' => $sellers]],
+            'aggs' => ['sellers' => [
+                'terms' => ['field' => 'seller_id', 'size' => \count($sellers)],
+                'aggs' => ['first' => ['min' => ['field' => 'created_at']]],
+            ]],
         ]])->asArray();
 
-        $terms = $response['aggregations']['sellers'];
-        if (($terms['sum_other_doc_count'] ?? 0) > 0) {
-            throw new \RuntimeException(\sprintf('complaints-spike: więcej niż %d sprzedawców z reklamacjami w oknie; dziel zakres.', self::MAX_SELLERS));
+        $result = [];
+        foreach ($response['aggregations']['sellers']['buckets'] as $bucket) {
+            if (isset($bucket['first']['value'])) {
+                $result[(int) $bucket['key']] = (new \DateTimeImmutable('@'.intdiv((int) $bucket['first']['value'], 1000)))->setTimezone(new \DateTimeZone('UTC'))->setTime(0, 0);
+            }
         }
 
-        return array_map(static fn (array $b): int => (int) $b['key'], $terms['buckets']);
+        return $result;
     }
 
     /**
      * @param  list<int>  $sellers
      * @return array<int, list<array<string, mixed>>> kubełki dobowe na sprzedawcę; każdy z kluczem `history` (liczby 7 poprzednich kubełków)
      */
-    private function histograms(array $sellers, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    private function histograms(array $sellers, \DateTimeImmutable $from, \DateTimeImmutable $lastDay, \DateTimeImmutable $to): array
     {
         $response = $this->client->search(['index' => $this->index, 'body' => [
             'size' => 0,
@@ -123,7 +165,9 @@ final class ComplaintsSpikeDetector implements Detector
             'aggs' => ['sellers' => [
                 'terms' => ['field' => 'seller_id', 'size' => \count($sellers)],
                 'aggs' => ['days' => [
-                    'date_histogram' => ['field' => 'created_at', 'calendar_interval' => '1d', 'time_zone' => 'UTC', 'min_doc_count' => 0],
+                    'date_histogram' => ['field' => 'created_at', 'calendar_interval' => '1d', 'time_zone' => 'UTC', 'min_doc_count' => 0,
+                        'extended_bounds' => ['min' => $from->format(\DATE_ATOM), 'max' => $lastDay->format(\DATE_ATOM)],
+                    ],
                     'aggs' => [
                         'mean' => ['moving_fn' => [
                             'buckets_path' => '_count', 'window' => self::HISTORY_DAYS, 'shift' => 0,
@@ -204,8 +248,9 @@ final class ComplaintsSpikeDetector implements Detector
             'query' => $this->dayRange($start, $end),
             'aggs' => ['sellers' => ['significant_terms' => [
                 'field' => 'seller_id',
-                'size' => 20,
+                'size' => 1,
                 'min_doc_count' => 1,
+                'include' => [$sellerId],
                 'background_filter' => $this->dayRange($end->modify('-'.self::BACKGROUND_DAYS.' days'), $end),
             ]]],
         ]])->asArray();
