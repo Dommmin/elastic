@@ -305,7 +305,7 @@ detection-report: ## Precyzja/czułość reguł wobec prawdy symulatora (args="-
 	$(DC) exec search-consumer php bin/console security:report --truth=/tmp/planted-security.json $(args)
 
 .PHONY: detection-purge
-detection-purge: ## Usuwa dane symulatora: zdarzenia i alerty syntetyczne, kliknięcia secsim-*, reklamacje SEC- (po opróżnieniu kolejek)
+detection-purge: ## Usuwa dane symulatora (zdarzenia, alerty, kliknięcia secsim-*, reklamacje SEC-); NIE przelicza transformów ETAPU 12: potem make popularity-refresh i reset search-stats-daily (CTR)
 	$(DC) exec search-consumer php bin/console security:purge-synthetic
 
 ## Laboratorium semantyki i ML (ETAP 14, profil ml)

@@ -139,11 +139,47 @@ final class DetectionScoreTest extends TestCase
         self::assertSame([$php, $realOnCase], $parts['scored']);
         self::assertSame(1, $parts['kibana']);
         self::assertSame(1, $parts['unrelated']);
+        self::assertSame(0, $parts['stale']);
     }
 
     public function test_alert_id_liczy_formule_sha1_z_wlasnych_pol(): void
     {
         self::assertSame(sha1('review-ip-burst|ip_hash|abc|2026-11-20T10:00:00+00:00'), DetectionScore::alertId($this->alert(start: '2026-11-20T11:00:00+01:00')));
         self::assertNull(DetectionScore::alertId(['rule' => ['id' => 'x']]));
+    }
+
+    public function test_syntetyczne_alerty_spoza_zakresu_symulacji_to_stare_i_nieoceniane(): void
+    {
+        $inRange = $this->alert();
+        $stale = $this->alert(entity: 'stary', start: '2026-11-01T10:00:00+00:00', end: '2026-11-01T11:00:00+00:00');
+        // Doba skoku zaczyna się przed generated_at − days, ale kończy w zakresie: to przecięcie, nie stary alert.
+        $edge = $this->alert(rule: 'complaints-spike', entity: '5', start: '2026-11-10T00:00:00+00:00', end: '2026-11-11T00:00:00+00:00', entityType: 'seller');
+        $hits = array_map(static fn (array $a): array => ['_id' => DetectionScore::alertId($a), '_source' => $a], [$inRange, $stale, $edge]);
+
+        $parts = DetectionScore::partition([$this->case()], $hits, new \DateTimeImmutable('2026-11-10T12:00:00+00:00'), new \DateTimeImmutable('2026-11-24T12:00:00+00:00'));
+
+        self::assertSame([$inRange, $edge], $parts['scored']);
+        self::assertSame(1, $parts['stale']);
+        self::assertSame(0, $parts['kibana']);
+        self::assertSame(0, $parts['unrelated']);
+    }
+
+    public function test_bez_zakresu_symulacji_nic_nie_jest_stare(): void
+    {
+        $stale = $this->alert(entity: 'stary', start: '2026-11-01T10:00:00+00:00', end: '2026-11-01T11:00:00+00:00');
+
+        $parts = DetectionScore::partition([$this->case()], [['_id' => DetectionScore::alertId($stale), '_source' => $stale]]);
+
+        self::assertSame([$stale], $parts['scored']);
+        self::assertSame(0, $parts['stale']);
+    }
+
+    public function test_zakres_z_pliku_prawdy_to_generated_at_minus_days(): void
+    {
+        [$from, $to] = DetectionScore::truthRange(['generated_at' => '2026-11-25T12:00:00+00:00', 'days' => 14]);
+
+        self::assertSame('2026-11-11T12:00:00+00:00', $from->format(\DATE_ATOM));
+        self::assertSame('2026-11-25T12:00:00+00:00', $to->format(\DATE_ATOM));
+        self::assertSame([null, null], DetectionScore::truthRange(['generated_at' => '2026-11-25T12:00:00+00:00']));
     }
 }

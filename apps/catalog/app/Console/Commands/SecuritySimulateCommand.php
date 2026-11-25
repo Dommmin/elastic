@@ -16,6 +16,7 @@ use InvalidArgumentException;
 use JsonException;
 use Random\Engine\Mt19937;
 use Random\Randomizer;
+use RuntimeException;
 
 /**
  * Symulator detekcji nadużyć (ETAP 15, Task 9): koperty `offer.price_changed`, `review.created` i
@@ -76,7 +77,13 @@ class SecuritySimulateCommand extends Command
         $high = $this->offers($popularity->productsAtLeast($p95 * SecurityScenario::HIGH_MARGIN, 1_000));
         $low = $this->offers($popularity->productsBelow($p95 * SecurityScenario::LOW_MARGIN, self::OFFER_LIMIT));
         $background = $this->offers(null);
-        $sellers = $this->sellers();
+        try {
+            $sellers = $this->sellers();
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        }
 
         $now = (new DateTimeImmutable('@'.now()->getTimestamp()))->setTimezone(new DateTimeZone('UTC'));
         /** @var array{other: list<array{category: string, body: string}>} $templates */
@@ -103,7 +110,7 @@ class SecuritySimulateCommand extends Command
         $complaints = ComplaintsCsvWriter::write($csv, $seed, $result['complaints'], $now, SecurityScenario::TICKET_PREFIX);
 
         $truth = rtrim((string) config('services.security.simulation_dir'), '/').'/'.self::TRUTH_FILE;
-        $this->writeTruth($truth, $seed, $now, $p95, $result['cases']);
+        $this->writeTruth($truth, $seed, $days, $now, $p95, $result['cases']);
 
         $types = array_count_values(array_column($result['envelopes'], 'type'));
         ksort($types);
@@ -139,38 +146,21 @@ class SecuritySimulateCommand extends Command
      * Syntetyczni sprzedawcy ETAPU 13 bez zasadzonych i bliskich pudeł z jego `planted.json`
      * oraz bez sprzedawców, którzy mają reklamacje `SIM-` w CSV ETAPU 13.
      *
+     * Plik, który istnieje, ale nie daje się odczytać, przerywa symulację: ciche pominięcie wyłączyłoby
+     * wykluczenie, a skoki `SEC-` mogłyby trafić na zbiór dowodowy ETAPU 13 (`seller360-verify`).
+     * Brak pliku przy istniejących syntetycznych sprzedawcach to tylko ostrzeżenie (np. świeży checkout).
+     *
      * @return list<array{id: int, nip: string}>
+     *
+     * @throws RuntimeException plik ETAPU 13 istnieje, ale jest nieczytelny albo niepoprawny
      */
     private function sellers(): array
     {
-        $excludedIds = [];
-        $planted = (string) config('seller360.simulation_dir').'/planted.json';
-        if (is_file($planted)) {
-            try {
-                $json = json_decode((string) file_get_contents($planted), true, flags: JSON_THROW_ON_ERROR);
-            } catch (JsonException) {
-                $json = [];
-            }
-            foreach ($json['planted'] ?? [] as $id) {
-                $excludedIds[(int) $id] = true;
-            }
-            foreach ($json['near_misses'] ?? [] as $nearMiss) {
-                $excludedIds[(int) ($nearMiss['id'] ?? 0)] = true;
-            }
-        }
+        $synthetic = DB::table('sellers')->where('synthetic', true)->whereNotNull('nip')->orderBy('id')->get(['id', 'nip']);
+        $excludedIds = $this->etap13PlantedIds((string) config('seller360.simulation_dir').'/planted.json', $synthetic->isNotEmpty());
+        $excludedNips = $this->etap13ComplaintNips($this->absolute((string) $this->option('seller360-complaints')), $synthetic->isNotEmpty());
 
-        $excludedNips = [];
-        $csv = $this->absolute((string) $this->option('seller360-complaints'));
-        if (is_file($csv) && ($handle = fopen($csv, 'r')) !== false) {
-            $header = fgetcsv($handle, escape: '') ?: [];
-            $column = array_search('nip', $header, true);
-            while ($column !== false && ($row = fgetcsv($handle, escape: '')) !== false) {
-                $excludedNips[(string) ($row[$column] ?? '')] = true;
-            }
-            fclose($handle);
-        }
-
-        return DB::table('sellers')->where('synthetic', true)->whereNotNull('nip')->orderBy('id')->get(['id', 'nip'])
+        return $synthetic
             ->reject(fn (object $s): bool => isset($excludedIds[(int) $s->id]) || isset($excludedNips[(string) $s->nip]))
             ->map(fn (object $s): array => ['id' => (int) $s->id, 'nip' => (string) $s->nip])
             ->values()
@@ -178,9 +168,80 @@ class SecuritySimulateCommand extends Command
     }
 
     /**
+     * @return array<int, true>
+     */
+    private function etap13PlantedIds(string $path, bool $warnIfMissing): array
+    {
+        if (! file_exists($path)) {
+            if ($warnIfMissing) {
+                $this->warn("Brak planted.json ETAPU 13 ({$path}): nie wykluczam zasadzonych i bliskich pudeł seller-360.");
+            }
+
+            return [];
+        }
+        $contents = is_readable($path) ? file_get_contents($path) : false;
+        if ($contents === false) {
+            throw new RuntimeException("Nie można odczytać planted.json ETAPU 13: {$path}");
+        }
+        try {
+            $json = json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new RuntimeException("Niepoprawny JSON w planted.json ETAPU 13 ({$path}): {$e->getMessage()}");
+        }
+        if (! is_array($json) || ! is_array($json['planted'] ?? null) || ! is_array($json['near_misses'] ?? null)) {
+            throw new RuntimeException("planted.json ETAPU 13 ({$path}) nie ma list `planted` i `near_misses`.");
+        }
+
+        $ids = [];
+        foreach ($json['planted'] as $id) {
+            $ids[(int) $id] = true;
+        }
+        foreach ($json['near_misses'] as $nearMiss) {
+            if (! is_array($nearMiss) || ! isset($nearMiss['id'])) {
+                throw new RuntimeException("planted.json ETAPU 13 ({$path}): bliskie pudło bez `id`.");
+            }
+            $ids[(int) $nearMiss['id']] = true;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * @return array<string, true>
+     */
+    private function etap13ComplaintNips(string $path, bool $warnIfMissing): array
+    {
+        if (! file_exists($path)) {
+            if ($warnIfMissing) {
+                $this->warn("Brak CSV reklamacji ETAPU 13 ({$path}): nie wykluczam sprzedawców z reklamacjami SIM-.");
+            }
+
+            return [];
+        }
+        $handle = is_readable($path) ? fopen($path, 'r') : false;
+        if ($handle === false) {
+            throw new RuntimeException("Nie można odczytać CSV reklamacji ETAPU 13: {$path}");
+        }
+        try {
+            $column = array_search('nip', fgetcsv($handle, escape: '') ?: [], true);
+            if ($column === false) {
+                throw new RuntimeException("CSV reklamacji ETAPU 13 ({$path}) nie ma kolumny `nip`.");
+            }
+            $nips = [];
+            while (($row = fgetcsv($handle, escape: '')) !== false) {
+                $nips[(string) ($row[$column] ?? '')] = true;
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return $nips;
+    }
+
+    /**
      * @param  list<array<string, string>>  $cases
      */
-    private function writeTruth(string $path, int $seed, DateTimeImmutable $now, float $p95, array $cases): void
+    private function writeTruth(string $path, int $seed, int $days, DateTimeImmutable $now, float $p95, array $cases): void
     {
         if (! is_dir(dirname($path))) {
             mkdir(dirname($path), 0775, true);
@@ -188,6 +249,8 @@ class SecuritySimulateCommand extends Command
         file_put_contents($path, json_encode([
             'seed' => $seed,
             'generated_at' => $now->format(DateTimeInterface::ATOM),
+            // Zakres symulacji [generated_at − days, generated_at]: security:report odróżnia po nim stare alerty syntetyczne.
+            'days' => $days,
             'p95' => $p95,
             'cases' => $cases,
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n");

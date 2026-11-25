@@ -418,3 +418,46 @@ test('reguły policzone od nowa na danych strzelają dokładnie dla zasadzonych 
     'ziarno 9, P=5, 10 dni' => [9, 5, 10],
     'ziarno 42, P=4, 20 dni' => [42, 4, 20],
 ]);
+
+test('uszkodzony planted.json ETAPU 13 przerywa symulację zamiast wyłączać wykluczenie', function () {
+    file_put_contents($this->dir.'/seller360/planted.json', '{"planted": [1, 2');
+
+    $this->artisan('security:simulate', ['--complaints' => $this->csv, '--seller360-complaints' => $this->seller360Csv])
+        ->expectsOutputToContain('planted.json')
+        ->assertFailed();
+    expect($this->publisher->envelopes)->toBeEmpty()
+        ->and(file_exists($this->csv))->toBeFalse();
+});
+
+test('planted.json bez list planted/near_misses też przerywa symulację', function () {
+    file_put_contents($this->dir.'/seller360/planted.json', '{"planted": "5000001"}');
+
+    $this->artisan('security:simulate', ['--complaints' => $this->csv, '--seller360-complaints' => $this->seller360Csv])
+        ->assertFailed();
+    expect($this->publisher->envelopes)->toBeEmpty();
+});
+
+test('CSV ETAPU 13 bez kolumny nip przerywa symulację', function () {
+    file_put_contents($this->seller360Csv, "ticket_id,created_at\nSIM-1-0000001,2026-11-20T10:00:00+00:00\n");
+
+    $this->artisan('security:simulate', ['--complaints' => $this->csv, '--seller360-complaints' => $this->seller360Csv])
+        ->expectsOutputToContain('nip')
+        ->assertFailed();
+    expect($this->publisher->envelopes)->toBeEmpty();
+});
+
+test('brak planted.json i CSV ETAPU 13 przy syntetycznych sprzedawcach daje ostrzeżenia, a symulacja idzie dalej', function () {
+    unlink($this->dir.'/seller360/planted.json');
+
+    $this->artisan('security:simulate', ['--seed' => 7, '--plant' => 2, '--complaints' => $this->csv, '--seller360-complaints' => $this->dir.'/brak.csv'])
+        ->expectsOutputToContain('Brak planted.json ETAPU 13')
+        ->expectsOutputToContain('Brak CSV reklamacji ETAPU 13')
+        ->assertSuccessful();
+    expect($this->publisher->envelopes)->not->toBeEmpty();
+});
+
+test('plik prawdy zawiera liczbę dni symulacji', function () {
+    runSecuritySimulate($this, ['--days' => 12]);
+
+    expect(securityTruth($this)['days'])->toBe(12);
+});

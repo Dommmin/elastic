@@ -74,12 +74,15 @@ final class DetectionScore
      * R7: oceniamy tylko alerty z detektorów PHP — `_id` równy sha1 klucza alertu z jego własnych pól. Dokumenty
      * konektora Kibany (losowe `_id`) liczymy osobno (`kibana`). Z ocenianych bierzemy syntetyczne i te na encji
      * z prawdy (reguła + encja); pozostałe niesyntetyczne to prawdziwe dane spoza symulacji (`unrelated`).
+     * Alert syntetyczny, którego okno nie przecina zakresu symulacji `[$from, $to]` (brzegi włącznie), pochodzi
+     * z wcześniejszego przebiegu bez purge — liczymy go jako `stale`, a nie jako FP. Bez zakresu (stary plik prawdy
+     * bez `days`) nic nie jest stare.
      *
      * @param  list<array<string, string>>  $cases
      * @param  list<array{_id: string, _source: array<string, mixed>}>  $hits
-     * @return array{scored: list<array<string, mixed>>, kibana: int, unrelated: int}
+     * @return array{scored: list<array<string, mixed>>, kibana: int, unrelated: int, stale: int}
      */
-    public static function partition(array $cases, array $hits): array
+    public static function partition(array $cases, array $hits, ?\DateTimeImmutable $from = null, ?\DateTimeImmutable $to = null): array
     {
         $entities = [];
         foreach ($cases as $case) {
@@ -89,6 +92,7 @@ final class DetectionScore
         $scored = [];
         $kibana = 0;
         $unrelated = 0;
+        $stale = 0;
         foreach ($hits as $hit) {
             $source = $hit['_source'];
             if (self::alertId($source) !== $hit['_id']) {
@@ -96,14 +100,44 @@ final class DetectionScore
                 continue;
             }
             $key = self::entityKey((string) $source['rule']['id'], (string) $source['entity']['type'], (string) $source['entity']['id']);
-            if (($source['labels']['synthetic'] ?? false) === true || isset($entities[$key])) {
+            $synthetic = ($source['labels']['synthetic'] ?? false) === true;
+            if ($synthetic && $from !== null && $to !== null && ! self::withinRange($source, $from, $to)) {
+                $stale++;
+            } elseif ($synthetic || isset($entities[$key])) {
                 $scored[] = $source;
             } else {
                 $unrelated++;
             }
         }
 
-        return ['scored' => $scored, 'kibana' => $kibana, 'unrelated' => $unrelated];
+        return ['scored' => $scored, 'kibana' => $kibana, 'unrelated' => $unrelated, 'stale' => $stale];
+    }
+
+    /**
+     * Zakres symulacji z pliku prawdy: `[generated_at − days, generated_at]`; `[null, null]`, gdy pliku nie da się
+     * tak odczytać (np. prawda sprzed dodania `days`).
+     *
+     * @param  array<string, mixed>  $truth
+     * @return array{?\DateTimeImmutable, ?\DateTimeImmutable}
+     */
+    public static function truthRange(array $truth): array
+    {
+        $to = self::time($truth['generated_at'] ?? null);
+        $days = $truth['days'] ?? null;
+        if ($to === null || ! \is_int($days) || $days < 1) {
+            return [null, null];
+        }
+
+        return [$to->modify("-{$days} days"), $to];
+    }
+
+    /** @param array<string, mixed> $alert */
+    private static function withinRange(array $alert, \DateTimeImmutable $from, \DateTimeImmutable $to): bool
+    {
+        $start = self::time($alert['window']['start'] ?? null);
+        $end = self::time($alert['window']['end'] ?? null) ?? $start;
+
+        return $start !== null && $start <= $to && $end >= $from;
     }
 
     /** sha1 klucza alertu (jak {@see Alert::id()}) z pól dokumentu; null, gdy pól brak lub okno nie jest datą. */

@@ -17,7 +17,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  * precision, recall; `--json` dla POMIARY.
  *
  * R7: oceniane są tylko alerty detektorów PHP (`_id` = sha1 klucza z ich pól); dokumenty konektora Kibany
- * liczymy osobno jako „Kibana live (unscored)”, a niesyntetyczne alerty spoza prawdy — jako prawdziwe dane.
+ * liczymy osobno jako „Kibana live (unscored)”, niesyntetyczne alerty spoza prawdy — jako prawdziwe dane,
+ * a syntetyczne spoza zakresu `[generated_at − days, generated_at]` — jako stare (poprzednie przebiegi bez purge).
  * Wszystkie alerty czytamy przez point-in-time z `search_after`, bez limitu 10 000.
  */
 #[AsCommand(name: 'security:report', description: 'Precyzja i czułość reguł detekcji wobec prawdy podstawowej symulatora')]
@@ -62,7 +63,11 @@ final class SecurityReportCommand extends Command
         }
 
         $hits = $this->alerts();
-        $parts = DetectionScore::partition($cases, $hits);
+        [$from, $to] = DetectionScore::truthRange($truth);
+        if ($from === null) {
+            $output->writeln('<comment>Plik prawdy bez `days`: stare alerty syntetyczne (z wcześniejszych przebiegów) liczą się jako FP.</comment>');
+        }
+        $parts = DetectionScore::partition($cases, $hits, $from, $to);
         $score = DetectionScore::score($cases, $parts['scored']);
 
         if ($input->getOption('json')) {
@@ -74,6 +79,8 @@ final class SecurityReportCommand extends Command
                 'alerts_scored' => \count($parts['scored']),
                 'kibana_live_unscored' => $parts['kibana'],
                 'real_unscored' => $parts['unrelated'],
+                'stale_unscored' => $parts['stale'],
+                'range' => $from === null ? null : ['from' => $from->format(\DATE_ATOM), 'to' => $to->format(\DATE_ATOM)],
                 'rules' => $score,
             ], \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE | \JSON_PRESERVE_ZERO_FRACTION | \JSON_THROW_ON_ERROR));
 
@@ -88,7 +95,7 @@ final class SecurityReportCommand extends Command
             $table->addRow([$rule, $s['tp'], $s['fp'], $s['fp_near_miss'], $s['fn'], $format($s['precision']), $format($s['recall'])]);
         }
         $table->render();
-        $output->writeln(\sprintf('Alertów: %d, ocenionych: %d, Kibana live (unscored): %d, prawdziwe spoza symulacji (unscored): %d', \count($hits), \count($parts['scored']), $parts['kibana'], $parts['unrelated']));
+        $output->writeln(\sprintf('Alertów: %d, ocenionych: %d, Kibana live (unscored): %d, prawdziwe spoza symulacji (unscored): %d, stare syntetyczne spoza zakresu symulacji (unscored): %d', \count($hits), \count($parts['scored']), $parts['kibana'], $parts['unrelated'], $parts['stale']));
 
         return Command::SUCCESS;
     }
