@@ -1550,6 +1550,11 @@ przeszłości, więc nie wpisała nic (0 dokumentów Kibany); oceniany jest back
 ścieżce (outbox → RabbitMQ → pipeline/enrich → ES → detektor → `alerts-security`), nie jakość reguł na realnym
 ruchu. Nic nie wymagało diagnozy ani poprawki kodu; progi bez zmian.
 
+**`price-bait-and-switch` mierzony tylko na kliknięciach symulatora.** EQL łączy kliknięcia ze zmianami cen po
+`offer.id`, a prawdziwe kliknięcia sklepu (wynik wyszukiwania → produkt, `ProductPageController::recordClick`) nie
+niosą `offer_id`, bo nie mają kontekstu oferty. Wynik 5/5 tej reguły dotyczy więc wyłącznie kliknięć symulowanych;
+na ruchu ze sklepu reguła dziś nie strzeli (RUNBOOK #162).
+
 ### 19.3 Czas `security:detect --since=15d` (w kontenerze `search-consumer`, 3 powtórzenia)
 
 | Zakres | Czas [ms] |

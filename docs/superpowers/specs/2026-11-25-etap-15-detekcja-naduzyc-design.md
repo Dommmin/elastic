@@ -118,6 +118,10 @@ sklep (Laravel)                        RabbitMQ marketplace.events           sea
 - **Kliknięcia (istniejące).** `user.clicked_result` w `events-user-*` (`AnalyticsDocumentMapper`)
   ma `offer.id`, gdy payload niesie `offer_id` — źródło „widoczności” dla reguły EQL. Builder sprawdza
   testem, że prawdziwe kliknięcia ze sklepu niosą `offer_id`; symulator zawsze je ustawia.
+  **Odstępstwo (2026-11-25):** prawdziwe kliknięcia ze sklepu `offer_id` nie niosą
+  (`ProductPageController::recordClick` to klik wyniku wyszukiwania w produkt, bez kontekstu oferty), a emisji
+  kliknięć w tym etapie nie zmieniamy. `price-bait-and-switch` jest zmierzony tylko na kliknięciach symulatora
+  i na ruchu ze sklepu nie strzeli; opisane w przewodniku (krok 7, ograniczenia), RUNBOOK #162 i POMIARY §19.2.
 - **Reklamacje (istniejące).** Indeks `complaints` z ETAPU 13 (`seller_id`, `created_at`, `category`).
 
 ### 5.2 `events-security`

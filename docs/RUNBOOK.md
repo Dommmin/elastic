@@ -6957,6 +6957,12 @@ Mapper przepisuje `offer_id` → `offer.id` (test w `AnalyticsDocumentMapperTest
 `docker compose restart analytics-consumer`. Kliknięcia zapisane wcześniej klucza nie dostaną (data stream, brak
 przepisania wstecz); dla pomiaru: `make detection-purge` i ponowna symulacja.
 
+**Ograniczenie, które zostaje:** poprawka mappera pomaga tylko kliknięciom, które **niosą** `offer_id`, a takie
+wysyła wyłącznie symulator. Prawdziwe kliknięcia sklepu (`ProductPageController::recordClick`) to kliknięcia wyniku
+wyszukiwania w produkt, bez kontekstu oferty (produkt ma wiele ofert), więc `offer_id` nie mają i reguła na ruchu ze
+sklepu nie strzeli. `price-bait-and-switch` jest zmierzony tylko na kliknięciach symulowanych (POMIARY §19.2); emisji
+kliknięć świadomie nie zmieniamy w ETAPIE 15.
+
 **Czego się nauczyłem**
 Reguła łącząca dwa źródła zależy od pola, którego „właścicielem” jest inny etap. Przed regułą sprawdzić, czy klucz
 złączenia istnieje po obu stronach (`exists` / `must_not exists`), a nie tylko w szablonie.

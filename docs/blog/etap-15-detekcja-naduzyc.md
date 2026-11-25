@@ -516,6 +516,14 @@ analityki go nie przepisywał, choć szablon miał to pole. EQL nigdy nie złąc
 Poprawka w `AnalyticsDocumentMapper` (`offer_id` → `offer.id`) i restart `analytics-consumer`.
 RUNBOOK [#162](../RUNBOOK.md#162).
 
+**Uwaga: reguła działa dziś tylko na kliknięciach symulatora.** Poprawka mappera przenosi `offer_id`, gdy payload go
+ma, ale prawdziwe kliknięcia sklepu go **nie mają**: to kliknięcia wyniku wyszukiwania w stronę produktu
+(`ProductPageController::recordClick`, payload `search_id`, `query`, `product_id`, `position`), a produkt ma wiele
+ofert i kliknięcie nie wskazuje żadnej. `offer_id` ustawia tylko symulator. Zatem `price-bait-and-switch` jest
+zmierzony wyłącznie na kliknięciach symulowanych i na ruchu ze sklepu nie strzeli. Żeby działał naprawdę, trzeba by
+emitować kliknięcia z kontekstem oferty (np. klik w konkretną ofertę na stronie produktu) albo złączać po
+`product.id` zamiast `offer.id`; świadomie tego nie robimy w tym etapie.
+
 **Post-filtr w PHP.** EQL nie liczy stosunków między zdarzeniami sekwencji („cena końcowa / cena sprzed obniżki”).
 `PriceBaitAndSwitchDetector::accept()` sprawdza po EQL: co najmniej dwie zmiany ceny, każda `|change_pct| ≤ 30`
 (większe łapie strażnik i moderacja) i `cena końcowa × 10 ≥ cena sprzed obniżki × 13` na całkowitych groszach (bez
@@ -731,6 +739,9 @@ Więcej: [`POMIARY.md` §19](../POMIARY.md).
   przy pięciu kontach w godzinie `review-ip-burst` strzeli.
 - **Reguła Kibany oceniana tylko jakościowo.** Jej dokumenty mają losowy `_id`, sklejone wartości przy kilku wierszach
   i `synthetic: false`; raport ich nie liczy. Mierzony jest backfill PHP z tym samym ES|QL.
+- **`price-bait-and-switch` mierzony tylko na kliknięciach symulatora.** Prawdziwe kliknięcia sklepu (wynik
+  wyszukiwania → produkt) nie mają `offer_id`, więc `sequence by offer.id` ich nie złączy i na ruchu ze sklepu reguła
+  nie strzeli (krok 7, RUNBOOK #162).
 - **Percolator nie przegląda historii**, a p95 jest zamrożony w regule do następnego `make detection-setup`.
 - **Pusty pepper** wyłącza oba pola IP (hasz i prefiks): takie recenzje są dla `review-ip-burst` niewidoczne.
 - **Kliknięcia symulatora trafiają do `events-user`** i wchodzą do transformów ETAPU 12 (popularność, CTR); purge je
